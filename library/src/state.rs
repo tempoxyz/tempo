@@ -1,7 +1,7 @@
-use std::collections::HashSet;
 use malachite_core_types::Round;
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use crate::context::MalachiteContext;
 use crate::height::Height;

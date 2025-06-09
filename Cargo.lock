@@ -931,9 +931,13 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "anyhow",
+ "library",
  "reth-chainspec",
  "reth-ethereum",
  "reth-ethereum-primitives",
+ "reth-node-builder",
+ "reth-node-core",
+ "reth-node-ethereum",
  "reth-tasks",
  "serde_json",
  "tokio",
@@ -6140,6 +6144,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-ethereum-payload-builder"
+version = "1.4.8"
+source = "git+https://github.com/paradigmxyz/reth?branch=main#19cac33830df7ac73c69a2dd79c542fd8a2a8b4d"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "reth-basic-payload-builder",
+ "reth-chainspec",
+ "reth-errors",
+ "reth-ethereum-primitives",
+ "reth-evm",
+ "reth-evm-ethereum",
+ "reth-payload-builder",
+ "reth-payload-builder-primitives",
+ "reth-payload-primitives",
+ "reth-payload-validator",
+ "reth-primitives-traits",
+ "reth-revm",
+ "reth-storage-api",
+ "reth-transaction-pool",
+ "revm",
+ "tracing",
+]
+
+[[package]]
 name = "reth-ethereum-primitives"
 version = "1.4.8"
 source = "git+https://github.com/paradigmxyz/reth?branch=main#19cac33830df7ac73c69a2dd79c542fd8a2a8b4d"
@@ -6695,6 +6726,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-node-ethereum"
+version = "1.4.8"
+source = "git+https://github.com/paradigmxyz/reth?branch=main#19cac33830df7ac73c69a2dd79c542fd8a2a8b4d"
+dependencies = [
+ "alloy-eips",
+ "alloy-rpc-types-engine",
+ "alloy-rpc-types-eth",
+ "eyre",
+ "reth-chainspec",
+ "reth-consensus",
+ "reth-engine-primitives",
+ "reth-ethereum-consensus",
+ "reth-ethereum-engine-primitives",
+ "reth-ethereum-payload-builder",
+ "reth-ethereum-primitives",
+ "reth-evm",
+ "reth-evm-ethereum",
+ "reth-network",
+ "reth-node-api",
+ "reth-node-builder",
+ "reth-payload-primitives",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-revm",
+ "reth-rpc",
+ "reth-rpc-api",
+ "reth-rpc-builder",
+ "reth-rpc-eth-types",
+ "reth-rpc-server-types",
+ "reth-tracing",
+ "reth-transaction-pool",
+ "reth-trie-db",
+ "revm",
+]
+
+[[package]]
 name = "reth-node-events"
 version = "1.4.8"
 source = "git+https://github.com/paradigmxyz/reth?branch=main#19cac33830df7ac73c69a2dd79c542fd8a2a8b4d"
@@ -6817,6 +6884,16 @@ dependencies = [
  "serde",
  "thiserror 2.0.12",
  "tokio",
+]
+
+[[package]]
+name = "reth-payload-validator"
+version = "1.4.8"
+source = "git+https://github.com/paradigmxyz/reth?branch=main#19cac33830df7ac73c69a2dd79c542fd8a2a8b4d"
+dependencies = [
+ "alloy-consensus",
+ "alloy-rpc-types-engine",
+ "reth-primitives-traits",
 ]
 
 [[package]]
@@ -7779,6 +7856,7 @@ dependencies = [
  "ark-ff 0.5.0",
  "ark-serialize 0.5.0",
  "aurora-engine-modexp",
+ "blst",
  "c-kzg",
  "cfg-if",
  "k256",

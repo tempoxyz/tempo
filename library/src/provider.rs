@@ -1,5 +1,5 @@
-use malachite_core_types::{SigningProvider, PrivateKey, Signature, PublicKey};
 use crate::context::MalachiteContext;
+use malachite_core_types::{PrivateKey, PublicKey, Signature, SigningProvider};
 
 // TODO: Implement Ed25519Provider
 #[derive(Debug)]

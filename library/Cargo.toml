@@ -12,7 +12,6 @@ rand.workspace = true
 # Malachite dependencies
 malachite-core-types.workspace = true
 
-
 # Reth dependencies
 reth-chainspec.workspace = true
 reth-tasks.workspace = true

@@ -1,8 +1,16 @@
 use std::sync::Arc;
 
-use reth_tasks::TaskManager;
 use reth_chainspec::ChainSpec;
-// use reth_primitives::alloy::Genesis; // TODO get correct Genesis import from reth-primitives
+use reth_node_builder::{NodeBuilder, NodeHandle};
+use reth_node_core::{
+    args::{DevArgs, RpcServerArgs},
+    node_config::NodeConfig,
+};
+use reth_node_ethereum::EthereumNode;
+use reth_node_ethereum::node::EthereumAddOns;
+use reth_tasks::TaskManager;
+
+use library::consensus::MalachiteConsensusBuilder;
 
 use anyhow::Result;
 
@@ -10,15 +18,29 @@ use anyhow::Result;
 async fn main() -> Result<()> {
     let task_manager = TaskManager::current();
 
-    // let node_config = NodeConfig::test()
-    //     .dev()
-    //     .with_dev(DevArgs {
-    //         dev: true,
-    //         block_max_transactions: None,
-    //         block_time: Some(std::time::Duration::from_secs(1)),
-    //     })
-    //     .with_rpc(RpcServerArgs::default().with_http())
-    //     .with_chain(custom_chain());
+    let node_config = NodeConfig::test()
+        .dev()
+        .with_dev(DevArgs {
+            dev: true,
+            block_max_transactions: None,
+            block_time: Some(std::time::Duration::from_secs(1)),
+        })
+        .with_rpc(RpcServerArgs::default().with_http())
+        .with_chain(custom_chain());
+
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config)
+        .testing_node(tasks.executor())
+        .with_types::<EthereumNode>()
+        .with_components(EthereumNode::components().consensus(MalachiteConsensusBuilder::new()))
+        .with_add_ons::<EthereumAddOns>()
+        .launch_with_fn(|builder| {
+            let launcher = MalachiteNodeLauncher::new(tasks.executor(), builder.config().datadir());
+            builder.launch_with(launcher)
+        })
+        .await?;
 
     Ok(())
 }

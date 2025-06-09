@@ -2,9 +2,6 @@
 resolver = "3"
 members = ["app", "library"]
 
-# [patch.crates-io]
-# hickory-resolver = { version = "0.25.0-alpha5" }
-
 [workspace.dependencies]
 anyhow = "1.0.98"
 tokio = { version = "1.45.1", features = ["full"] }
@@ -23,6 +20,8 @@ reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "main", 
 reth-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-primitives" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-execution-types" }
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-primitives-traits" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-node-core" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-node-ethereum" }
 
 # Alloy dependencies
 alloy = { version = "1.0.9", default-features = false }

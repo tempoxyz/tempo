@@ -1,6 +1,6 @@
 use core::fmt;
-use serde::{Deserialize, Serialize};
 use malachite_core_types::Height as MalachiteHeight;
+use serde::{Deserialize, Serialize};
 
 /// A blockchain height
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
