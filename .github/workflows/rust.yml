@@ -21,4 +21,46 @@ jobs:
       uses: Swatinem/rust-cache@v2
     
     - name: Build
-      run: cargo build --verbose 
+      run: cargo build --verbose
+
+  node-test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@v2
+    
+    - name: Test node startup
+      run: |
+        # Start the node in the background and capture output
+        timeout 60 cargo run -- node 2>&1 | tee node_output.log &
+        NODE_PID=$!
+        
+        # Wait for the specific log message
+        echo "Waiting for node to start and show status..."
+        timeout 30 bash -c '
+        while true; do
+          if grep -q "Status connected_peers=0 latest_block=0" node_output.log 2>/dev/null; then
+            echo "Found expected log message!"
+            exit 0
+          fi
+          sleep 1
+        done
+        '
+        
+        # Kill the node process
+        kill $NODE_PID 2>/dev/null || true
+        
+        # Check if we found the message
+        if grep -q "Status connected_peers=0 latest_block=0" node_output.log; then
+          echo "Node test completed successfully"
+          exit 0
+        else
+          echo "Expected log message not found"
+          cat node_output.log
+          exit 1 
