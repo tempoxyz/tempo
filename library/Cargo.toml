@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 
 eyre.workspace = true
+serde.workspace = true
+rand.workspace = true
 
 # Malachite dependencies
 malachite-core-types.workspace = true
@@ -15,7 +17,14 @@ reth-chainspec.workspace = true
 reth-tasks.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-node-builder.workspace = true
+reth-node-core.workspace = true
 reth-consensus.workspace = true
+reth-primitives.workspace = true
+reth-execution-types.workspace = true
+reth-primitives-traits.workspace = true
+reth-provider.workspace = true
+reth-rpc-builder.workspace = true
+reth-rpc-eth-api.workspace = true
 
 # [patch.crates-io]
 # hickory-resolver = "0.25.0-alpha.4"
