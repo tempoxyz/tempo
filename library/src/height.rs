@@ -1,6 +1,6 @@
 use core::fmt;
-use malachitebft_core_types::Height as MalachiteHeight;
 use serde::{Deserialize, Serialize};
+use malachitebft_core_types::Height as MalachiteHeight;
 
 /// A blockchain height
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
@@ -10,7 +10,7 @@ impl MalachiteHeight for Height {
     const ZERO: Self = Height(0);
     const INITIAL: Self = Height(1);
 
-    fn as_u64(&self) -> u64 {
+     fn as_u64(&self) -> u64 {
         self.0
     }
 
@@ -28,6 +28,16 @@ impl MalachiteHeight for Height {
 
     fn decrement_by(&self, n: u64) -> Option<Self> {
         self.0.checked_sub(n).map(Self)
+    }
+}
+
+impl Height {
+    pub const fn new(height: u64) -> Self {
+        Self(height)
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
     }
 }
 

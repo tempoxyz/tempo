@@ -8,17 +8,18 @@ use reth::payload::{PayloadBuilderHandle, PayloadServiceCommand};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::path::Path;
 use tokio::sync::mpsc;
 
 use crate::context::MalachiteContext;
 use crate::height::Height;
 use crate::provider::Ed25519Provider;
-use crate::utils::seed_from_address;
 use crate::store::store::Store;
+use crate::utils::seed_from_address;
 
 /// Represents the internal state of the application node
 /// Contains information about current height, round, proposals and blocks
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct State {
     pub ctx: MalachiteContext,
     pub config: Config,
@@ -40,7 +41,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(ctx: MalachiteContext, config: Config, genesis: Genesis, address: Address) -> Self {
+    pub fn new(ctx: MalachiteContext, config: Config, genesis: Genesis, address: Address, store_path: impl AsRef<Path>) -> Self {
         let (tx, _rx) = mpsc::unbounded_channel();
 
         Self {
@@ -53,7 +54,7 @@ impl State {
             current_proposer: None,
             current_role: Role::None,
             peers: HashSet::new(),
-            store: Store::new(),
+            store: Store::new(store_path).unwrap(),
             signing_provider: Ed25519Provider::new(),
             streams_map: PartStreamsMap::new(),
             rng: StdRng::seed_from_u64(seed_from_address(&address, std::process::id() as u64)),

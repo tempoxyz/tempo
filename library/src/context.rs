@@ -1,16 +1,17 @@
+use crate::height::Height;
+use crate::provider::Ed25519Provider;
+use crate::state::Address;
+use hex;
 use malachitebft_core_types::{
-    Address as MalachiteAddress, Context, Extension as MalachiteExtension, Height as MalachiteHeight,
-    NilOrVal, Proposal as MalachiteProposal, ProposalPart as MalachiteProposalPart,
-    Round, SigningScheme, Value as MalachiteValue, Validator as MalachiteValidator,
-    ValidatorSet as MalachiteValidatorSet, Vote as MalachiteVote, VoteType, SignedMessage,
+    Address as MalachiteAddress, Context, Extension as MalachiteExtension,
+    NilOrVal, Proposal as MalachiteProposal,
+    ProposalPart as MalachiteProposalPart, Round, SignedMessage,
+    Validator as MalachiteValidator, ValidatorSet as MalachiteValidatorSet,
+    Value as MalachiteValue, Vote as MalachiteVote, VoteType,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::Display;
-use crate::state::Address;
-use crate::height::Height;
-use crate::provider::Ed25519Provider;
-use hex;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RoundWrapper(Round);
@@ -264,7 +265,9 @@ impl Context for MalachiteContext {
         round: Round,
     ) -> &'a Self::Validator {
         // For demonstration, always select the first validator
-        validators.get_by_index(0).expect("ValidatorSet is not empty")
+        validators
+            .get_by_index(0)
+            .expect("ValidatorSet is not empty")
     }
 
     fn new_proposal(

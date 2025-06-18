@@ -3,6 +3,11 @@ use thiserror::Error;
 
 use redb::{Database, TableDefinition};
 
+use crate::store::key::{HeightKey, UndecidedValueKey};
+
+const CERTIFICATES_TABLE: redb::TableDefinition<HeightKey, Vec<u8>> =
+    redb::TableDefinition::new("certificates");
+
 const DECIDED_VALUES_TABLE: redb::TableDefinition<HeightKey, Vec<u8>> =
     TableDefinition::new("decided_values");
 
@@ -14,6 +19,8 @@ pub enum StoreError {
     #[error("Database error: {0}")]
     Database(#[from] redb::DatabaseError),
 }
+
+#[derive(Debug)]
 pub struct Store {
     db: redb::Database,
 }

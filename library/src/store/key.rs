@@ -1,11 +1,39 @@
 use core::mem::size_of;
+use std::fmt;
 
-use malachite_core_types::{Height, Round, ValueId};
+use crate::height::Height;
+use malachitebft_core_types::Round;
+use serde::{Deserialize, Serialize};
 
 pub type UndecidedValueKey = (HeightKey, RoundKey, ValueIdKey);
 
 #[derive(Copy, Clone, Debug)]
 pub struct HeightKey;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Serialize, Deserialize)]
+pub struct ValueId(u64);
+
+impl ValueId {
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for ValueId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl fmt::Display for ValueId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:x}", self.0)
+    }
+}
 
 impl redb::Value for HeightKey {
     type SelfType<'a> = Height;

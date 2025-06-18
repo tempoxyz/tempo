@@ -18,15 +18,12 @@ use reth_trie_db::MerklePatriciaTrie;
 
 /// Type configuration for a regular Malachite node.
 #[derive(Debug, Clone)]
-pub struct MalachiteNode{
-    // Consensus state
-    pub state: State,
-}
+pub struct MalachiteNode {}
 
 impl MalachiteNode {
     /// Create a new MalachiteNode
-    pub fn new(state: State) -> Self {
-        Self { state }
+    pub fn new() -> Self {
+        Self {}
     }
 }
 

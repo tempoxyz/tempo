@@ -19,13 +19,14 @@ fn main() -> eyre::Result<()> {
     let config = Config::new();
     let genesis = Genesis::new("1".to_string());
     let address = Address::new([0; 20]);
+    let store_path = Path::new("malachite.db");
 
     Cli::<MalachiteChainSpecParser, NoArgs>::parse().run(|builder, _: NoArgs| async move {
-        let state = State::new(ctx, config, genesis, address);
+        let state = State::new(ctx, config, genesis, address, store_path);
 
-        let malachite_node = MalachiteNode::new(state);
+        let malachite_node = MalachiteNode::new();
         let NodeHandle {
-            node ,
+            node,
             node_exit_future,
         } = builder.node(malachite_node).launch().await?;
 
