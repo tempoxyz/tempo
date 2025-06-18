@@ -12,7 +12,8 @@ clap.workspace = true
 tracing.workspace = true
 hex.workspace = true
 tokio.workspace = true
-
+redb.workspace = true
+thiserror.workspace = true
 
 # Malachite dependencies
 malachitebft-core-types.workspace = true

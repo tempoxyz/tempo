@@ -5489,6 +5489,7 @@ dependencies = [
  "informalsystems-malachitebft-app-channel",
  "informalsystems-malachitebft-core-types",
  "rand 0.9.1",
+ "redb",
  "reth",
  "reth-chainspec",
  "reth-cli",
@@ -5513,6 +5514,7 @@ dependencies = [
  "reth-tracing",
  "reth-trie-db",
  "serde",
+ "thiserror 2.0.12",
  "tokio",
  "tracing",
 ]
@@ -7160,6 +7162,15 @@ name = "recvmsg"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
+
+[[package]]
+name = "redb"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cef6a6d3a65ea334d6cdfb31fa2525c20184b7aa7bd1ad1e2e37502610d4609f"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "redox_syscall"

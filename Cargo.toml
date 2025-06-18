@@ -12,6 +12,8 @@ rand = "0.9.1"
 clap = { version = "4.5", features = ["derive"] }
 tracing = "0.1"
 hex = "0.4"
+redb = "2.6.0"
+thiserror = "2.0.12" 
 
 # Reth dependencies
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-node-builder", features = ["test-utils"] }

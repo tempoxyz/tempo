@@ -14,6 +14,7 @@ use crate::context::MalachiteContext;
 use crate::height::Height;
 use crate::provider::Ed25519Provider;
 use crate::utils::seed_from_address;
+use crate::store::store::Store;
 
 /// Represents the internal state of the application node
 /// Contains information about current height, round, proposals and blocks
@@ -218,44 +219,6 @@ impl fmt::Display for PeerId {
 impl fmt::Debug for PeerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PeerId({})", self)
-    }
-}
-
-// Use reth store implementation
-#[derive(Debug, Clone)]
-pub struct Store {
-    // This would typically interface with reth's storage layer
-    // For now, we'll use a simple in-memory store
-    data: HashMap<Vec<u8>, Vec<u8>>,
-}
-
-impl Store {
-    pub fn new() -> Self {
-        Self {
-            data: HashMap::new(),
-        }
-    }
-
-    pub fn get(&self, key: &[u8]) -> Option<&Vec<u8>> {
-        self.data.get(key)
-    }
-
-    pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.data.insert(key, value);
-    }
-
-    pub fn delete(&mut self, key: &[u8]) -> Option<Vec<u8>> {
-        self.data.remove(key)
-    }
-
-    pub fn contains_key(&self, key: &[u8]) -> bool {
-        self.data.contains_key(key)
-    }
-}
-
-impl Default for Store {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

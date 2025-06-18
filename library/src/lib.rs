@@ -8,4 +8,5 @@ pub mod node;
 pub mod provider;
 pub mod run;
 pub mod state;
+pub mod store;
 pub mod utils;
