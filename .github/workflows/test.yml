@@ -2,9 +2,9 @@ name: test
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   merge_group:
 
 env:
@@ -50,7 +50,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: Build with MSRV
-        run: cargo build --bin reth-malachite
+        run: cargo build --bin tempo
         env:
           RUSTFLAGS: -D warnings
 
@@ -68,3 +68,4 @@ jobs:
         uses: re-actors/alls-green@release/v1
         with:
           jobs: ${{ toJSON(needs) }}
+
