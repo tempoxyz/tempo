@@ -153,7 +153,7 @@ codegen-units = 1
 
 [workspace.dependencies]
 
-# Reth dependencies
+# reth
 reth = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-chainspec" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-cli" }
@@ -199,6 +199,7 @@ malachitebft-core-consensus = { git = "https://github.com/informalsystems/malach
 malachitebft-core-types = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-core-types", features = ["serde"] }
 malachitebft-signing-ed25519 = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-signing-ed25519", features = ["serde", "rand"] }
 malachitebft-sync = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-sync" }
+malachitebft-proto = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-proto" }
 
 # misc
 anyhow = "1.0.98"
@@ -222,16 +223,13 @@ tracing = "0.1"
 
 # proto
 prost = "0.13"
-malachitebft-proto = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-proto" }
-
-# 
 prost-build = "0.13"
 protox = "0.7"
 
 [patch.crates-io]
 libp2p-dns = { git = "https://github.com/informalsystems/rust-libp2p.git", branch = "reth" }
 
-# Alloy patches to match reth dependencies
+# alloy patches for reth dependencies
 alloy-consensus = { git = "https://github.com/alloy-rs/alloy", rev = "08fa016ed950b6e65f810fc9cdef7cf38fbc63f6" }
 alloy-eips = { git = "https://github.com/alloy-rs/alloy", rev = "08fa016ed950b6e65f810fc9cdef7cf38fbc63f6" }
 alloy-genesis = { git = "https://github.com/alloy-rs/alloy", rev = "08fa016ed950b6e65f810fc9cdef7cf38fbc63f6" }
