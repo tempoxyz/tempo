@@ -1,0 +1,87 @@
+[package]
+name = "malachite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "TODO:"
+
+[lints]
+workspace = true
+
+[dependencies]
+
+# reth
+reth.workspace = true
+reth-chainspec.workspace = true
+reth-cli.workspace = true
+reth-cli-commands.workspace = true
+reth-cli-util.workspace = true
+reth-consensus.workspace = true
+reth-db.workspace = true
+reth-db-api.workspace = true
+reth-engine-primitives.workspace = true
+reth-ethereum-engine-primitives.workspace = true
+reth-ethereum-forks.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-execution-types.workspace = true
+reth-node-builder.workspace = true
+reth-node-core.workspace = true
+reth-node-ethereum.workspace = true
+reth-payload-builder.workspace = true
+reth-payload-primitives.workspace = true
+reth-primitives.workspace = true
+reth-primitives-traits.workspace = true
+reth-provider.workspace = true
+reth-rpc-builder.workspace = true
+reth-rpc-eth-api.workspace = true
+reth-storage-api.workspace = true
+reth-tasks.workspace = true
+reth-tracing.workspace = true
+reth-trie-db.workspace = true
+
+# alloy
+alloy.workspace = true
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-genesis.workspace = true
+alloy-primitives.workspace = true
+alloy-rpc-types-engine.workspace = true
+alloy-trie.workspace = true
+
+# malachite
+malachitebft-app.workspace = true
+malachitebft-app-channel.workspace = true
+malachitebft-codec.workspace = true
+malachitebft-core-consensus.workspace = true
+malachitebft-core-types.workspace = true
+malachitebft-signing-ed25519.workspace = true
+malachitebft-sync.workspace = true
+malachitebft-proto.workspace = true
+
+# misc
+prost.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bincode.workspace = true
+bytes.workspace = true
+clap.workspace = true
+eyre.workspace = true
+hex.workspace = true
+multiaddr.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha3.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protox.workspace = true

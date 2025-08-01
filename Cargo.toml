@@ -1,18 +1,10 @@
-[package]
-name = "reth-malachite"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.86"
+[workspace]
 
-[lib]
-name = "reth_malachite"
-path = "src/lib.rs"
+# TODO: update to specific crates
+members = ["crates/*"]
+resolver = "2"
 
-[[bin]]
-name = "reth-malachite"
-path = "bin/reth-malachite.rs"
-
-[dependencies]
+[workspace.dependencies]
 # Core dependencies
 anyhow = "1.0.98"
 async-trait = "0.1"
@@ -84,7 +76,7 @@ malachitebft-sync = { git = "https://github.com/informalsystems/malachite", bran
 prost = "0.13"
 malachitebft-proto = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-proto" }
 
-[build-dependencies]
+# Build dependencies
 prost-build = "0.13"
 protox = "0.7"
 
