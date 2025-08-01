@@ -3,7 +3,11 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.86"
 
-members = ["crates/malachite"]
+[workspace]
+members = [
+  "bin/tempo",
+  "crates/malachite"
+]
 
 # Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021
 # https://doc.rust-lang.org/edition-guide/rust-2021/default-cargo-resolver.html
@@ -153,6 +157,10 @@ codegen-units = 1
 
 [workspace.dependencies]
 
+
+# malachite
+malachite = { path = "crates/malachite" }
+
 # reth
 reth = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-chainspec" }
@@ -191,7 +199,7 @@ alloy-primitives = "1.2.0"
 alloy-rpc-types-engine = "1.0.12"
 alloy-trie = "0.9.0"
 
-# malachite
+# malachite-bft
 malachitebft-app = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-app" }
 malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-app-channel" }
 malachitebft-codec = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-codec" }

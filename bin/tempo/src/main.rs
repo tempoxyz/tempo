@@ -13,9 +13,7 @@
 //! Configuration can be provided via command-line arguments or configuration files.
 
 use clap::Parser;
-use reth::builder::NodeHandle;
-use reth_chainspec::EthChainSpec;
-use reth_malachite::{
+use malachite::{
     app::{node::RethNode, Config, Genesis, State, ValidatorInfo},
     cli::{Cli, MalachiteArgs, MalachiteChainSpecParser},
     consensus::{start_consensus_engine, EngineConfig},
@@ -23,6 +21,8 @@ use reth_malachite::{
     store::tables::Tables,
     types::Address,
 };
+use reth::builder::NodeHandle;
+use reth_chainspec::EthChainSpec;
 use std::{fs, sync::Arc};
 
 fn main() -> eyre::Result<()> {
