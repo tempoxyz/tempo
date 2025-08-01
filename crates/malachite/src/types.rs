@@ -93,7 +93,7 @@ impl From<u64> for ValueId {
 }
 
 impl fmt::Display for ValueId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }

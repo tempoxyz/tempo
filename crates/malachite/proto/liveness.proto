@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package reth_malachite;
+package malachite;
 
 import "consensus.proto";
 

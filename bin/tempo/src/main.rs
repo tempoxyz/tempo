@@ -36,7 +36,7 @@ fn main() -> eyre::Result<()> {
             // Load configuration from file if provided, otherwise use defaults
             let config = if args.consensus_config.is_some() && args.config_file().exists() {
                 tracing::info!("Loading config from: {:?}", args.config_file());
-                reth_malachite::app::config_loader::load_config(&args.config_file())?
+                malachite::app::config_loader::load_config(&args.config_file())?
             } else {
                 Config::new()
             };
@@ -44,7 +44,7 @@ fn main() -> eyre::Result<()> {
             // Load genesis from file if provided, otherwise use default
             let mut genesis = if args.genesis.is_some() && args.genesis_file().exists() {
                 tracing::info!("Loading genesis from: {:?}", args.genesis_file());
-                reth_malachite::app::config_loader::load_genesis(&args.genesis_file())?
+                malachite::app::config_loader::load_genesis(&args.genesis_file())?
             } else {
                 // Create a default genesis with initial validators
                 let validator_address = Address::new([1; 20]);
@@ -61,9 +61,7 @@ fn main() -> eyre::Result<()> {
                     args.validator_key_file()
                 );
                 let (addr, pubkey, privkey) =
-                    reth_malachite::app::config_loader::load_validator_key(
-                        &args.validator_key_file(),
-                    )?;
+                    malachite::app::config_loader::load_validator_key(&args.validator_key_file())?;
                 tracing::info!("Loaded validator address: {:?}", addr);
                 (addr, Some(pubkey), Some(privkey))
             } else {
@@ -107,7 +105,7 @@ fn main() -> eyre::Result<()> {
 
             // Create the signing provider if we have a validator key
             let signing_provider = if let Some(privkey) = validator_privkey {
-                match reth_malachite::provider::Ed25519Provider::from_bytes(&privkey) {
+                match malachite::provider::Ed25519Provider::from_bytes(&privkey) {
                     Ok(provider) => {
                         tracing::info!("Created signing provider for validator");
                         Some(provider)
@@ -152,7 +150,7 @@ fn main() -> eyre::Result<()> {
             let engine_config = if config_file_path.exists() {
                 tracing::info!("Loading Malachite config from: {:?}", config_file_path);
                 // Load from config file
-                reth_malachite::consensus::config_loader::load_engine_config(
+                malachite::consensus::config_loader::load_engine_config(
                     &config_file_path,
                     args.chain_id(),
                     args.node_id(),

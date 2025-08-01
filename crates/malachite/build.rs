@@ -1,3 +1,5 @@
+//! Build script for malachite crate. Generates Rust code from Protocol Buffer definitions.
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protos = &[
         "proto/consensus.proto",
