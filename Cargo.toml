@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "reth-malachite"
-path = "src/bin/reth-malachite.rs"
+path = "bin/reth-malachite.rs"
 
 [dependencies]
 # Core dependencies
