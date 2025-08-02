@@ -5,8 +5,9 @@ rust-version = "1.86"
 
 [workspace]
 members = [
+  "crates/malachite",
   "bin/tempo",
-  "crates/malachite"
+  "bin/benches/crescendo"
 ]
 
 # Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021

@@ -1,0 +1,11 @@
+inherits = "default.toml"
+
+[rate_limiting]
+initial_ratelimit = 250
+ratelimit_thresholds = [
+    [500, 1_000],
+    [5_000, 2_500],
+    [50_000, 10_000],
+    [200_000, 50_000],
+    [400_000, 100_000],
+]

@@ -1,0 +1,36 @@
+[package]
+name = "crescendo"
+version = "0.1.0"
+edition = "2021"
+
+
+
+# TODO: update to workspace deps
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http = "1"
+http-body-util = "0.1"
+thousands = "0.2.0"
+tokio-metrics = "0.4.3"
+rlimit = "0.10.2"
+num_cpus = "1.17.0"
+crossbeam-utils = "0.8.21"
+mimalloc = "0.1.47"
+alloy = { version = "1", features = ["genesis", "signers"] }
+alloy-evm = "0.13"
+alloy-consensus = { version = "1", features = ["secp256k1"] }
+alloy-signer-local = { version = "1", features = ["mnemonic"] }
+core_affinity = "0.8.3"
+rayon = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+simple-tqdm = { version = "0.2.0", features = ["rayon"] }
+rand = "0.9.1"
+ratelimit = "0.10"
+clap = { version = "4.5", features = ["derive", "env"] }
+toml = "0.8"
+parking_lot = "0.12.4"
+dashmap = "6.1"

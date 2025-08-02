@@ -1,0 +1,17 @@
+inherits = "aggressive.toml"
+
+[rate_limiting]
+initial_ratelimit = 500
+ratelimit_thresholds = [
+    [2_500, 1_000],
+    [5_000, 2_500],
+    [25_000, 500_000],
+]
+
+[network_worker]
+total_connections = 20_000
+tx_queue_empty_sleep_ms = 5
+
+[workers]
+tx_gen_worker_percentage = 0.3
+network_worker_percentage = 0.7

@@ -1,4 +1,5 @@
 # reth x malachite integration
+
 The goal of this app is to integrate the Reth execution library and the Malachite BFT consensus library to produce a “full” node prototype capable of both consensus and execution. This new reth node opens the possibility of building new ethereum based alt-L1 networks fully within the existing, battle-tested reth ecosystem of tools.
 
 ## Documentation
@@ -19,6 +20,7 @@ The project includes a comprehensive e2e testing framework located in the `./tes
 For detailed instructions on using the e2e testing framework, see the [Testnet README](./testnet/README.md).
 
 Quick start:
+
 ```bash
 # Launch a 3-node test network
 $ ./testnet/spawn.sh
