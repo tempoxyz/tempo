@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::{path::PathBuf, sync::OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +45,8 @@ impl Config {
             })?;
 
             // Merge the current config over the inherited one.
-            config_value = merge_toml_values(toml::Value::try_from(inherited_config)?, config_value);
+            config_value =
+                merge_toml_values(toml::Value::try_from(inherited_config)?, config_value);
         }
 
         // Remove the inherits field before deserializing.

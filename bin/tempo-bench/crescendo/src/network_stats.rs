@@ -1,5 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use crossbeam_utils::CachePadded;
 use thousands::Separable;
@@ -13,8 +15,10 @@ pub struct NetworkStats {
 // other frequently accessed memory can occur. To mitigate, we pad stats
 // to the length of a full cache line to avoid conflict. This is measured
 // to increase RPS by >10% in the release profile at the time of writing.
-pub static NETWORK_STATS: CachePadded<NetworkStats> =
-    CachePadded::new(NetworkStats { requests: AtomicU64::new(0), errors: AtomicU64::new(0) });
+pub static NETWORK_STATS: CachePadded<NetworkStats> = CachePadded::new(NetworkStats {
+    requests: AtomicU64::new(0),
+    errors: AtomicU64::new(0),
+});
 
 impl NetworkStats {
     pub fn inc_requests_by(&self, count: usize) {

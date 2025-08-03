@@ -1,20 +1,19 @@
-use std::sync::LazyLock;
-use std::time::Instant;
+use std::{sync::LazyLock, time::Instant};
 
-use alloy::network::TxSignerSync;
-use alloy::primitives::{Address, TxKind, U256};
-use alloy::sol;
-use alloy::sol_types::SolCall;
+use alloy::{
+    network::TxSignerSync,
+    primitives::{Address, TxKind, U256},
+    sol,
+    sol_types::SolCall,
+};
 use alloy_consensus::{SignableTransaction, TxLegacy};
-use alloy_signer_local::coins_bip39::English;
-use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
+use alloy_signer_local::{coins_bip39::English, MnemonicBuilder, PrivateKeySigner};
 use dashmap::DashMap;
 use rand::Rng;
 use rayon::prelude::*;
 use thousands::Separable;
 
-use crate::config;
-use crate::tx_queue::TX_QUEUE;
+use crate::{config, tx_queue::TX_QUEUE};
 
 static NONCE_MAP: LazyLock<DashMap<u32, u64>> = LazyLock::new(|| {
     let map = DashMap::with_capacity(config::get().tx_gen_worker.num_accounts as usize);
@@ -29,10 +28,21 @@ static SIGNER_LIST: LazyLock<Vec<PrivateKeySigner>> = LazyLock::new(|| {
     let config = &config::get().tx_gen_worker;
     let list: Vec<PrivateKeySigner> = (0..config.num_accounts)
         .into_par_iter()
-        .map(|i| MnemonicBuilder::<English>::default().phrase(&config.mnemonic).index(i).unwrap().build().unwrap())
+        .map(|i| {
+            MnemonicBuilder::<English>::default()
+                .phrase(&config.mnemonic)
+                .index(i)
+                .unwrap()
+                .build()
+                .unwrap()
+        })
         .collect();
     let duration = start.elapsed();
-    println!("[+] Initalized signer list of length {} in {:.1?}", config.num_accounts.separate_with_commas(), duration);
+    println!(
+        "[+] Initalized signer list of length {} in {:.1?}",
+        config.num_accounts.separate_with_commas(),
+        duration
+    );
     list
 });
 
@@ -61,7 +71,9 @@ pub fn tx_gen_worker(_worker_id: u32) {
 
         let (signer, recipient) = (
             &SIGNER_LIST[account_index as usize],
-            SIGNER_LIST[rng.random_range(0..(config.num_accounts / config.recipient_distribution_factor)) as usize] // Send to 1/Nth of the accounts.
+            SIGNER_LIST[rng
+                .random_range(0..(config.num_accounts / config.recipient_distribution_factor))
+                as usize] // Send to 1/Nth of the accounts.
                 .address(),
         );
 

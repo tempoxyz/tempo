@@ -34,7 +34,10 @@ pub fn maybe_pin_thread(core_id: CoreId) {
     }
 
     if !core_affinity::set_for_current(core_id) {
-        panic!("[!] Failed to pin thread to core {}. Try disabling thread_pinning in your config.", core_id.id);
+        panic!(
+            "[!] Failed to pin thread to core {}. Try disabling thread_pinning in your config.",
+            core_id.id
+        );
     }
 }
 
@@ -78,7 +81,8 @@ pub fn merge_toml_values(base: toml::Value, overlay: toml::Value) -> toml::Value
                 match base_table.get(&key) {
                     Some(base_value) if base_value.is_table() && overlay_value.is_table() => {
                         // Recursively merge nested tables
-                        base_table.insert(key, merge_toml_values(base_value.clone(), overlay_value));
+                        base_table
+                            .insert(key, merge_toml_values(base_value.clone(), overlay_value));
                     }
                     _ => {
                         // Replace the value

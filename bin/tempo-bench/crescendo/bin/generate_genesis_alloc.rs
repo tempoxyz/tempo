@@ -1,9 +1,6 @@
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
+use std::{collections::BTreeMap, fs, path::Path};
 
-use alloy::signers::local::MnemonicBuilder;
-use alloy::signers::utils::secret_key_to_address;
+use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
 use alloy_signer_local::coins_bip39::English;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -24,12 +21,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_par_iter()
         .tqdm()
         .map(|worker_id| {
-            let signer =
-                MnemonicBuilder::<English>::default().phrase(MNEMONIC).index(worker_id).unwrap().build().unwrap();
+            let signer = MnemonicBuilder::<English>::default()
+                .phrase(MNEMONIC)
+                .index(worker_id)
+                .unwrap()
+                .build()
+                .unwrap();
 
             let address = secret_key_to_address(signer.credential());
 
-            (format!("{address:?}"), AccountBalance { balance: "0xD3C21BCECCEDA1000000".to_string() })
+            (
+                format!("{address:?}"),
+                AccountBalance {
+                    balance: "0xD3C21BCECCEDA1000000".to_string(),
+                },
+            )
         })
         .collect();
 

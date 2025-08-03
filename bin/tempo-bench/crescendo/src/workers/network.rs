@@ -4,14 +4,13 @@ use alloy::primitives::{hex, Bytes};
 use http::StatusCode;
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::TokioExecutor,
+};
 use thousands::Separable;
 
-use crate::config;
-use crate::network_stats::NETWORK_STATS;
-use crate::tx_queue::TX_QUEUE;
+use crate::{config, network_stats::NETWORK_STATS, tx_queue::TX_QUEUE};
 
 pub async fn network_worker(worker_id: usize) {
     let config = &config::get().network_worker;
@@ -57,8 +56,8 @@ pub async fn network_worker(worker_id: usize) {
                     // Note: May be better to print for random workers, or a range, or the median + last + first.
                     if worker_id == 0 {
                         let duration = start_time.elapsed();
-                        let implied_total_rps =
-                            (txs.len() as f64 / duration.as_secs_f64()) * (config.total_connections as f64);
+                        let implied_total_rps = (txs.len() as f64 / duration.as_secs_f64())
+                            * (config.total_connections as f64);
                         println!(
                             "[~] Worker {} request duration: {:.1?} ({} implied total RPS)",
                             worker_id,
@@ -75,7 +74,12 @@ pub async fn network_worker(worker_id: usize) {
 
                                 let error_count = body_str.matches("\"error\":").count();
                                 if error_count > 0 {
-                                    println!("[!] RPC response ({}/{} errored): {}", error_count, txs.len(), body_str);
+                                    println!(
+                                        "[!] RPC response ({}/{} errored): {}",
+                                        error_count,
+                                        txs.len(),
+                                        body_str
+                                    );
                                     NETWORK_STATS.inc_errors_by(error_count);
                                 }
 
@@ -84,7 +88,8 @@ pub async fn network_worker(worker_id: usize) {
                             Err(e) => {
                                 eprintln!("[!] Failed to read response body: {e:?}");
                                 NETWORK_STATS.inc_errors_by(txs.len());
-                                tokio::time::sleep(Duration::from_millis(config.error_sleep_ms)).await;
+                                tokio::time::sleep(Duration::from_millis(config.error_sleep_ms))
+                                    .await;
                             }
                         }
                     } else {

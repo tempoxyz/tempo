@@ -1,6 +1,8 @@
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use parking_lot::Mutex;
 use ratelimit::Ratelimiter;
@@ -38,7 +40,8 @@ pub static TX_QUEUE: std::sync::LazyLock<TxQueue> = std::sync::LazyLock::new(TxQ
 
 impl TxQueue {
     pub fn push_txs(&self, txs: Vec<Vec<u8>>) {
-        self.total_added.fetch_add(txs.len() as u64, Ordering::Relaxed);
+        self.total_added
+            .fetch_add(txs.len() as u64, Ordering::Relaxed);
         self.queue.lock().extend(txs);
     }
 
@@ -48,7 +51,9 @@ impl TxQueue {
 
     pub async fn pop_at_most(&self, max_count: usize) -> Option<Vec<Vec<u8>>> {
         // Assume the queue has sufficient items for now.
-        let allowed = (0..max_count).take_while(|_| self.rate_limiter.try_wait().is_ok()).count();
+        let allowed = (0..max_count)
+            .take_while(|_| self.rate_limiter.try_wait().is_ok())
+            .count();
         if allowed == 0 {
             return None;
         }
@@ -63,7 +68,8 @@ impl TxQueue {
             queue.drain(..to_drain).collect::<Vec<_>>()
         };
 
-        self.total_popped.fetch_add(drained.len() as u64, Ordering::Relaxed);
+        self.total_popped
+            .fetch_add(drained.len() as u64, Ordering::Relaxed);
 
         Some(drained)
     }
@@ -79,10 +85,12 @@ impl TxQueue {
             let total_added = self.total_added.load(Ordering::Relaxed);
             let total_popped = self.total_popped.load(Ordering::Relaxed);
             let current_queue_len = self.queue_len();
-            let added_per_second = (total_added - last_total_added) / measurement_interval.as_secs();
-            let popped_per_second = (total_popped - last_total_popped) / measurement_interval.as_secs();
-            let delta_per_second =
-                ((current_queue_len as i64 - last_queue_len as i64) as f64 / measurement_interval.as_secs_f64()) as i64;
+            let added_per_second =
+                (total_added - last_total_added) / measurement_interval.as_secs();
+            let popped_per_second =
+                (total_popped - last_total_popped) / measurement_interval.as_secs();
+            let delta_per_second = ((current_queue_len as i64 - last_queue_len as i64) as f64
+                / measurement_interval.as_secs_f64()) as i64;
 
             // Adjust rate limit based on total popped transactions and thresholds.
             let rate_config = &config::get().rate_limiting;
@@ -95,7 +103,10 @@ impl TxQueue {
                 .unwrap_or(rate_config.initial_ratelimit);
 
             if self.rate_limiter.refill_amount() != new_rate_limit {
-                println!("[+] Adjusting rate limit to {} txs/s", new_rate_limit.separate_with_commas());
+                println!(
+                    "[+] Adjusting rate limit to {} txs/s",
+                    new_rate_limit.separate_with_commas()
+                );
                 self.rate_limiter.set_max_tokens(new_rate_limit).unwrap(); // Burst limit must be set first.
                 self.rate_limiter.set_refill_amount(new_rate_limit).unwrap();
                 self.rate_limiter.set_available(0).unwrap(); // Prevent bursts.

@@ -1,16 +1,14 @@
-use std::future::pending;
-use std::path::PathBuf;
-use std::thread;
-use std::time::Duration;
 use clap::Parser;
+use crescendo::{
+    config,
+    config::Config,
+    network_stats::NETWORK_STATS,
+    tx_queue::TX_QUEUE,
+    utils, workers,
+    workers::{DesireType, WorkerType},
+};
 use mimalloc::MiMalloc;
-use crescendo::config::Config;
-use crescendo::network_stats::NETWORK_STATS;
-use crescendo::tx_queue::TX_QUEUE;
-use crescendo::workers::{DesireType, WorkerType};
-use crescendo::{config, workers, utils};
-
-
+use std::{future::pending, path::PathBuf, thread, time::Duration};
 
 #[global_allocator]
 // Increases RPS by ~5.5% at the time of
@@ -31,15 +29,21 @@ struct CliArgs {
 async fn main() {
     let args = CliArgs::parse();
 
-    let config_path = args.config_file.or(args.config).expect("[!] Config file path must be provided.");
+    let config_path = args
+        .config_file
+        .or(args.config)
+        .expect("[!] Config file path must be provided.");
     println!("[~] Loading config from {}...", config_path.display());
     config::init(if config_path.exists() {
-        Config::from_file(&config_path).unwrap_or_else(|e| panic!("[!] Failed to load config file: {e:?}"))
+        Config::from_file(&config_path)
+            .unwrap_or_else(|e| panic!("[!] Failed to load config file: {e:?}"))
     } else {
         panic!("[!] Config file not found: {}", config_path.display());
     });
 
-    if let Err(err) = utils::increase_nofile_limit(config::get().network_worker.total_connections * 10) {
+    if let Err(err) =
+        utils::increase_nofile_limit(config::get().network_worker.total_connections * 10)
+    {
         println!("[!] Failed to increase file descriptor limit: {err}.");
     }
 
@@ -47,7 +51,10 @@ async fn main() {
     println!("[*] Detected {} effective cores.", core_ids.len());
 
     // Initialize Rayon with explicit thread count.
-    rayon::ThreadPoolBuilder::new().num_threads(core_ids.len()).build_global().unwrap();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(core_ids.len())
+        .build_global()
+        .unwrap();
 
     // Pin the tokio runtime to a core (if enabled).
     utils::maybe_pin_thread(core_ids.pop().unwrap());
@@ -56,8 +63,14 @@ async fn main() {
     let (workers, worker_counts) = workers::assign_workers(
         core_ids, // Doesn't include the main runtime core.
         vec![
-            (WorkerType::TxGen, DesireType::Percentage(config::get().workers.tx_gen_worker_percentage)),
-            (WorkerType::Network, DesireType::Percentage(config::get().workers.network_worker_percentage)),
+            (
+                WorkerType::TxGen,
+                DesireType::Percentage(config::get().workers.tx_gen_worker_percentage),
+            ),
+            (
+                WorkerType::Network,
+                DesireType::Percentage(config::get().workers.network_worker_percentage),
+            ),
         ],
         config::get().workers.thread_pinning, // Only log core ranges if thread pinning is actually enabled.
     );
@@ -85,7 +98,10 @@ async fn main() {
             WorkerType::Network => {
                 thread::spawn(move || {
                     utils::maybe_pin_thread(core_id);
-                    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
 
                     rt.block_on(async {
                         for i in 0..connections_per_network_worker {
@@ -104,10 +120,12 @@ async fn main() {
     println!("[*] Starting reporters...");
 
     // Start reporters.
-    tokio::spawn(TX_QUEUE.start_reporter(Duration::from_secs(config::get().reporters.tx_queue_report_interval_secs)));
-    tokio::spawn(
-        NETWORK_STATS.start_reporter(Duration::from_secs(config::get().reporters.network_stats_report_interval_secs)),
-    )
+    tokio::spawn(TX_QUEUE.start_reporter(Duration::from_secs(
+        config::get().reporters.tx_queue_report_interval_secs,
+    )));
+    tokio::spawn(NETWORK_STATS.start_reporter(Duration::from_secs(
+        config::get().reporters.network_stats_report_interval_secs,
+    )))
     .await // Keep the main thread alive forever.
     .unwrap();
 }

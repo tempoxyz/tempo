@@ -39,7 +39,10 @@ pub fn assign_workers(
     mut core_ids: Vec<CoreId>,
     assignments: Vec<(WorkerType, DesireType)>,
     log_core_ranges: bool, // Enable to log the range of cores each worker should be pinned to.
-) -> (Vec<(core_affinity::CoreId, WorkerType)>, HashMap<WorkerType, u64>) {
+) -> (
+    Vec<(core_affinity::CoreId, WorkerType)>,
+    HashMap<WorkerType, u64>,
+) {
     let mut result = Vec::new();
     let mut worker_counts: HashMap<WorkerType, u64> = HashMap::new();
     let mut worker_cores: HashMap<WorkerType, Vec<CoreId>> = HashMap::new();
