@@ -18,7 +18,9 @@ use clap::Parser;
 use reth_chainspec::ChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::node::NoArgs;
-use std::sync::Arc;
+use reth_db::DatabaseEnv;
+use reth_node_builder::{NodeBuilder, WithLaunchContext};
+use std::{future::Future, sync::Arc};
 
 /// Malachite chain spec parser
 #[derive(Debug, Clone, Default)]
@@ -62,11 +64,20 @@ where
     pub fn run<L, Fut>(self, launcher: L) -> eyre::Result<()>
     where
         L: FnOnce(
-            reth::builder::WithLaunchContext<
-                reth::builder::NodeBuilder<std::sync::Arc<reth_db::DatabaseEnv>, C::ChainSpec>,
-            >,
-            Ext,
-        ) -> Fut,
+                reth::builder::WithLaunchContext<
+                    reth::builder::NodeBuilder<std::sync::Arc<reth_db::DatabaseEnv>, C::ChainSpec>,
+                >,
+                Ext,
+            ) -> Fut
+            + std::ops::AsyncFnOnce(
+                reth_node_builder::WithLaunchContext<
+                    reth_node_builder::NodeBuilder<
+                        std::sync::Arc<reth_db::DatabaseEnv>,
+                        reth_chainspec::ChainSpec,
+                    >,
+                >,
+                Ext,
+            ) -> eyre::Result<()>,
         Fut: std::future::Future<Output = eyre::Result<()>>,
     {
         use reth::CliRunner;
@@ -77,12 +88,14 @@ where
     pub fn with_runner<L, Fut>(self, runner: reth::CliRunner, launcher: L) -> eyre::Result<()>
     where
         L: FnOnce(
-            reth::builder::WithLaunchContext<
-                reth::builder::NodeBuilder<std::sync::Arc<reth_db::DatabaseEnv>, C::ChainSpec>,
-            >,
-            Ext,
-        ) -> Fut,
-        Fut: std::future::Future<Output = eyre::Result<()>>,
+                WithLaunchContext<NodeBuilder<std::sync::Arc<DatabaseEnv>, C::ChainSpec>>,
+                Ext,
+            ) -> Fut
+            + std::ops::AsyncFnOnce(
+                WithLaunchContext<NodeBuilder<Arc<reth_db::DatabaseEnv>, ChainSpec>>,
+                Ext,
+            ) -> eyre::Result<()>,
+        Fut: Future<Output = eyre::Result<()>>,
     {
         let _guard = self.init_tracing()?;
         tracing::info!(target: "malachite::cli", "Initialized tracing, debug log directory: {}", self.logs.log_file_directory);
