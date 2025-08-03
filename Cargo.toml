@@ -6,7 +6,7 @@ rust-version = "1.88"
 [workspace]
 members = [
   "bin/tempo",
-  "crates/malachite"
+  "crates/consensus"
 ]
 
 # Resolver 3 is available with edition 2024
@@ -67,7 +67,7 @@ lto = "fat"
 codegen-units = 1
 
 [workspace.dependencies]
-malachite = { path = "crates/malachite" }
+tempo-consensus = { path = "crates/consensus" }
 reth = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-chainspec" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-cli" }
