@@ -1,7 +1,7 @@
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.86"
+edition = "2024"
+rust-version = "1.88"
 
 [workspace]
 members = [
@@ -9,9 +9,8 @@ members = [
   "crates/malachite"
 ]
 
-# Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021
-# https://doc.rust-lang.org/edition-guide/rust-2021/default-cargo-resolver.html
-resolver = "2"
+# Resolver 3 is available with edition 2024
+resolver = "3"
 
 # [workspace.lints]
 # rust.missing_debug_implementations = "warn"
