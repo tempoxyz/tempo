@@ -925,10 +925,10 @@ impl State {
     /// In Malachite, blocks have instant finality - once committed, they're immediately finalized
     async fn get_finalized_hash(&self) -> Result<B256> {
         // Get the highest decided block height from the store
-        if let Some(max_height) = self.get_max_decided_height().await {
-            if let Some(decided) = self.get_decided_value(max_height).await {
-                return Ok(decided.value.hash());
-            }
+        if let Some(max_height) = self.get_max_decided_height().await
+            && let Some(decided) = self.get_decided_value(max_height).await
+        {
+            return Ok(decided.value.hash());
         }
 
         // If no decided blocks yet, use genesis
