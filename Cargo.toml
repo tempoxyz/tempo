@@ -68,11 +68,7 @@ lto = "fat"
 codegen-units = 1
 
 [workspace.dependencies]
-
-# malachite
 malachite = { path = "crates/malachite" }
-
-# reth
 reth = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-chainspec" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-cli" }
@@ -100,8 +96,6 @@ reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "main
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-tasks" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-tracing" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "main", package = "reth-trie-db" }
-
-# alloy
 alloy = { version = "1.0.12", default-features = false }
 alloy-consensus = { version = "1.0.12", features = ["serde-bincode-compat"] }
 alloy-eips = { version = "1.0.12", features = ["serde"] }
@@ -109,8 +103,6 @@ alloy-genesis = "1.0.12"
 alloy-primitives = "1.2.0"
 alloy-rpc-types-engine = "1.0.12"
 alloy-trie = "0.9.0"
-
-# malachite-bft
 malachitebft-app = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-app" }
 malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-app-channel" }
 malachitebft-codec = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-codec" }
@@ -119,8 +111,6 @@ malachitebft-core-types = { git = "https://github.com/informalsystems/malachite"
 malachitebft-signing-ed25519 = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-signing-ed25519", features = ["serde", "rand"] }
 malachitebft-sync = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-sync" }
 malachitebft-proto = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-proto" }
-
-# misc
 anyhow = "1.0.98"
 async-trait = "0.1"
 base64 = "0.22"
@@ -139,8 +129,6 @@ thiserror = "2.0"
 tokio = { version = "1.45.1", features = ["full"] }
 toml = "0.8"
 tracing = "0.1"
-
-# proto
 prost = "0.13"
 prost-build = "0.13"
 protox = "0.7"
