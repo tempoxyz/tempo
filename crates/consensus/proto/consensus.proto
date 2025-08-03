@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package malachite;
+package tempo;
 
 message Address {
     bytes value = 1;
