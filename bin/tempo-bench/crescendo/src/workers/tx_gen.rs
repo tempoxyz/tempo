@@ -39,7 +39,7 @@ static SIGNER_LIST: LazyLock<Vec<PrivateKeySigner>> = LazyLock::new(|| {
         .collect();
     let duration = start.elapsed();
     println!(
-        "[+] Initalized signer list of length {} in {:.1?}",
+        "[+] Initialized signer list of length {} in {:.1?}",
         config.num_accounts.separate_with_commas(),
         duration
     );
@@ -59,7 +59,7 @@ pub fn tx_gen_worker(_worker_id: u32) {
     let mut tx_batch = Vec::with_capacity(config.batch_size as usize);
 
     loop {
-        let account_index = rng.random_range(0..config.num_accounts); // Acount we'll be sending from.
+        let account_index = rng.random_range(0..config.num_accounts); // Account we'll be sending from.
 
         // Get and increment nonce atomically.
         let nonce = {
