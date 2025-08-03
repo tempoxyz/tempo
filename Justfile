@@ -8,11 +8,11 @@ install-cross:
 
 [group('build')]
 [doc('Builds all tempo binaries in cargo release mode')]
-build-all-release extra_args="": (_build-release "reth-malachite" extra_args)
+build-all-release extra_args="": (_build-release "tempo" extra_args)
 
 [group('build')]
 [doc('Builds all tempo binaries')]
-build-all extra_args="": (_build "reth-malachite" extra_args)
+build-all extra_args="": (_build "tempo" extra_args)
 
 _build-release binary extra_args="": (_build binary "-r " + extra_args)
 
