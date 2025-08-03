@@ -6,14 +6,11 @@ rust-version.workspace = true
 description = "Tempo node implementation"
 default-run = "tempo"
 
-[lints]
-workspace = true
-
+# [lints]
+# workspace = true
 
 [dependencies]
-malachite.workspace = true
-
-# reth
+tempo-consensus.workspace = true
 reth.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
@@ -41,8 +38,6 @@ reth-storage-api.workspace = true
 reth-tasks.workspace = true
 reth-tracing.workspace = true
 reth-trie-db.workspace = true
-
-# alloy
 alloy.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
@@ -50,8 +45,6 @@ alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-trie.workspace = true
-
-# malachite
 malachitebft-app.workspace = true
 malachitebft-app-channel.workspace = true
 malachitebft-codec.workspace = true
@@ -60,8 +53,6 @@ malachitebft-core-types.workspace = true
 malachitebft-signing-ed25519.workspace = true
 malachitebft-sync.workspace = true
 malachitebft-proto.workspace = true
-
-# misc
 prost.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
@@ -81,7 +72,6 @@ thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
-
 
 [[bin]]
 name = "tempo"

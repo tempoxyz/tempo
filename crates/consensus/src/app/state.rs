@@ -20,13 +20,13 @@
 //! - Validator configuration and cryptographic keys
 
 use crate::{
+    ProposalPart, Value,
     context::{BasePeer, BasePeerAddress, BasePeerSet, MalachiteContext},
     height::Height,
     provider::{Ed25519Provider, PublicKey},
     store::{DecidedValue, Store},
     types::{Address, ValueId},
     utils::seed_from_address,
-    ProposalPart, Value,
 };
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
@@ -39,7 +39,7 @@ use malachitebft_app_channel::app::{
 use malachitebft_core_types::{
     CommitCertificate, Height as HeightTrait, Round, Validity, VoteExtensions,
 };
-use rand::{rngs::StdRng, SeedableRng};
+use rand::{SeedableRng, rngs::StdRng};
 use reth_engine_primitives::BeaconConsensusEngineHandle;
 use reth_node_builder::{NodeTypes, PayloadTypes};
 use reth_node_ethereum::EthereumNode;
@@ -925,10 +925,10 @@ impl State {
     /// In Malachite, blocks have instant finality - once committed, they're immediately finalized
     async fn get_finalized_hash(&self) -> Result<B256> {
         // Get the highest decided block height from the store
-        if let Some(max_height) = self.get_max_decided_height().await {
-            if let Some(decided) = self.get_decided_value(max_height).await {
-                return Ok(decided.value.hash());
-            }
+        if let Some(max_height) = self.get_max_decided_height().await
+            && let Some(decided) = self.get_decided_value(max_height).await
+        {
+            return Ok(decided.value.hash());
         }
 
         // If no decided blocks yet, use genesis

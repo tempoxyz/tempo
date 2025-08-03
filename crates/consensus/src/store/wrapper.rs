@@ -1,7 +1,7 @@
 //! Store wrapper for easier integration with the State module.
 
 use super::{BlockStore, RethStore};
-use crate::{context::MalachiteContext, height::Height, Value, ValueId};
+use crate::{Value, ValueId, context::MalachiteContext, height::Height};
 use alloy_primitives::B256;
 use eyre::Result;
 use malachitebft_app_channel::app::types::ProposedValue;

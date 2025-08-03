@@ -3,7 +3,7 @@ syntax = "proto3";
 import "consensus.proto";
 import "liveness.proto";
 
-package malachite;
+package tempo;
 
 message PeerId {
     bytes id = 1;

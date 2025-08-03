@@ -1,6 +1,6 @@
 //! RethStore implementation that uses reth's database infrastructure for persistent storage.
 
-use crate::{context::MalachiteContext, height::Height, Value, ValueId};
+use crate::{Value, ValueId, context::MalachiteContext, height::Height};
 use eyre::Result;
 use malachitebft_app_channel::app::types::ProposedValue;
 use malachitebft_core_types::{CommitCertificate, Round};
@@ -14,11 +14,11 @@ use thiserror::Error;
 use tracing::{debug, error, trace};
 
 use super::{
+    BlockStore,
     tables::{
         BlockKey, Blocks, ConsensusState, DecidedValue, DecidedValues, HeightKey, ProposalKey,
         StoredBlock, StoredProposal, UndecidedProposals,
     },
-    BlockStore,
 };
 
 #[derive(Debug, Error)]

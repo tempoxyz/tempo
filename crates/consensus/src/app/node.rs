@@ -20,8 +20,8 @@ use reth::{
 };
 use reth_chainspec::ChainSpec;
 use reth_node_builder::{
-    components::{BasicPayloadServiceBuilder, ComponentsBuilder, PayloadServiceBuilder},
     BuilderContext, ConfigureEvm, FullNodeTypes, Node, NodeComponentsBuilder, NodeTypes,
+    components::{BasicPayloadServiceBuilder, ComponentsBuilder, PayloadServiceBuilder},
 };
 use reth_node_ethereum::node::{
     EthereumAddOns, EthereumEngineValidatorBuilder, EthereumEthApiBuilder, EthereumNetworkBuilder,

@@ -13,7 +13,7 @@ GENESIS_FILE="$NODES_DIR/genesis.json"
 cat > "$GENESIS_FILE" <<EOF
 {
   "genesis_time": "$(date -u +"%Y-%m-%dT%H:%M:%S.000000000Z")",
-  "chain_id": "reth-malachite-testnet",
+  "chain_id": "tempo-testnet",
   "initial_height": "1",
   "validators": [
 EOF

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# spawn.sh - Launch a test network of reth-malachite nodes
+# spawn.sh - Launch a test network of tempo nodes
 # Usage: ./spawn.sh [num_nodes] [options]
 
 set -e
@@ -11,7 +11,7 @@ BLOCK_TIME=${BLOCK_TIME:-1s}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 NODES_DIR="$SCRIPT_DIR/nodes"
-BINARY="$PROJECT_ROOT/target/debug/reth-malachite"
+BINARY="$PROJECT_ROOT/target/debug/tempo"
 
 # Colors for output
 RED='\033[0;31m'
@@ -39,11 +39,11 @@ warn() {
     echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
-# Kill any reth-malachite processes
+# Kill any tempo processes
 kill_reth_processes() {
-    if pgrep -f "reth-malachite" > /dev/null; then
-        log "Stopping existing reth-malachite processes..."
-        pkill -f "reth-malachite" 2>/dev/null || true
+    if pgrep -f "tempo" > /dev/null; then
+        log "Stopping existing tempo processes..."
+        pkill -f "tempo" 2>/dev/null || true
         sleep 2  # Give processes time to exit
     fi
 }
@@ -52,7 +52,7 @@ kill_reth_processes() {
 cleanup() {
     log "Cleaning up..."
     
-    # Kill any existing reth-malachite processes
+    # Kill any existing tempo processes
     kill_reth_processes
     
     if [ "$1" == "clean" ]; then
@@ -89,11 +89,11 @@ log "Starting $NUM_NODES node test network"
 kill_reth_processes
 
 # Build the binary
-log "Building reth-malachite..."
+log "Building tempo..."
 cd "$PROJECT_ROOT"
 cargo build
 if [ ! -f "$BINARY" ]; then
-    error "Failed to build reth-malachite binary"
+    error "Failed to build tempo binary"
     exit 1
 fi
 
@@ -193,7 +193,7 @@ for ((i=0; i<$NUM_NODES; i++)); do
         --validator-key "$NODE_DIR/malachite/config/priv_validator_key.json" \
         --genesis "$NODE_DIR/malachite/config/genesis.json" \
         --node-id "node-$i" \
-        --chain-id "reth-malachite-testnet" \
+        --chain-id "tempo-testnet" \
         > "$LOG_FILE" 2>&1 &
     
     PID=$!

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package malachite;
+package tempo;
 
 import "consensus.proto";
 
