@@ -6,8 +6,8 @@ rust-version.workspace = true
 description = "Tempo node implementation"
 default-run = "tempo"
 
-[lints]
-workspace = true
+# [lints]
+# workspace = true
 
 
 [dependencies]
