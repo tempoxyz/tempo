@@ -8,28 +8,27 @@ jobs:
     name: Build
     runs-on: depot-ubuntu-24.04-16
     steps:
-    - uses: actions/checkout@v2
-    - uses: rui314/setup-mold@v1
-    - uses: taiki-e/install-action@just
-    - uses: dtolnay/rust-toolchain@stable
-      with:
-        target: x86_64-unknown-linux-gnu
-    - name: Cache
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    - name: Install cross main
-      run: |
-        just install-cross
-    - run: |
-        just build-all-release
-    - uses: actions/upload-artifact@v4
-      with:
-        name: tempo-x86_64-unknown-linux-gnu
-        path: target/x86_64-unknown-linux-gnu/release/reth-malachite
+      - uses: actions/checkout@v2
+      - uses: rui314/setup-mold@v1
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install cross main
+        run: |
+          just install-cross
+      - run: |
+          just build-all-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tempo-x86_64-unknown-linux-gnu
+          path: target/x86_64-unknown-linux-gnu/release/tempo
 
-    
