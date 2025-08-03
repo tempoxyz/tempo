@@ -1,6 +1,6 @@
 # Reth-Malachite Test Network
 
-This directory contains scripts and configurations for running a local test network of reth-malachite nodes.
+This directory contains scripts and configurations for running a local test network of tempo nodes.
 
 ## Prerequisites
 
