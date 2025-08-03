@@ -7,7 +7,7 @@ rust-version = "1.86"
 members = [
   "crates/malachite",
   "bin/tempo",
-  "bin/benches/crescendo"
+  "bin/tempo-bench/crescendo"
 ]
 
 # Explicitly set the resolver to version 2, which is the default for packages with edition >= 2021
@@ -157,8 +157,6 @@ lto = "fat"
 codegen-units = 1
 
 [workspace.dependencies]
-
-
 # malachite
 malachite = { path = "crates/malachite" }
 

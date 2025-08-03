@@ -2,20 +2,15 @@ use std::future::pending;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
-
 use clap::Parser;
 use mimalloc::MiMalloc;
+use crescendo::config::Config;
+use crescendo::network_stats::NETWORK_STATS;
+use crescendo::tx_queue::TX_QUEUE;
+use crescendo::workers::{DesireType, WorkerType};
+use crescendo::{config, workers, utils};
 
-mod config;
-mod network_stats;
-mod tx_queue;
-mod utils;
-mod workers;
 
-use crate::config::Config;
-use crate::network_stats::NETWORK_STATS;
-use crate::tx_queue::TX_QUEUE;
-use crate::workers::{DesireType, WorkerType};
 
 #[global_allocator]
 // Increases RPS by ~5.5% at the time of
