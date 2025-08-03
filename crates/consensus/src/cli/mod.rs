@@ -111,7 +111,7 @@ where
 // Temporary custom chain implementation - should be replaced with proper chain spec
 fn custom_malachite_chain() -> ChainSpec {
     use alloy_genesis::{Genesis, GenesisAccount};
-    use alloy_primitives::{Address, Bytes, B256, U256};
+    use alloy_primitives::{Address, B256, Bytes, U256};
     use reth_chainspec::{Chain, ChainSpecBuilder};
     use std::collections::BTreeMap;
 

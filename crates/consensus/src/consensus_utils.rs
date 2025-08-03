@@ -1,7 +1,7 @@
 use reth_chainspec::ChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
 use reth_execution_types::BlockExecutionResult;
-use reth_node_builder::{components::ConsensusBuilder, Block, BuilderContext, FullNodeTypes};
+use reth_node_builder::{Block, BuilderContext, FullNodeTypes, components::ConsensusBuilder};
 use reth_primitives::{SealedBlock, SealedHeader};
 use std::sync::Arc;
 

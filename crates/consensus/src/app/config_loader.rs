@@ -159,4 +159,4 @@ pub fn load_validator_key(key_path: &Path) -> Result<(Address, Vec<u8>, Vec<u8>)
 }
 
 // Add base64 dependency
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};

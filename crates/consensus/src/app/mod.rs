@@ -45,6 +45,6 @@ pub mod state;
 
 // Re-export commonly used types from state module
 pub use state::{
-    decode_block, decode_value, decode_value_with_block, encode_block, encode_value,
-    encode_value_with_block, reload_log_level, Config, Genesis, Role, State, ValidatorInfo,
+    Config, Genesis, Role, State, ValidatorInfo, decode_block, decode_value,
+    decode_value_with_block, encode_block, encode_value, encode_value_with_block, reload_log_level,
 };

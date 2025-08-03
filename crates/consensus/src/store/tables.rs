@@ -1,18 +1,19 @@
 //! Database table definitions for consensus data.
 
 use crate::{
-    codec::{decode_commit_certificate, encode_commit_certificate, ProtoCodec},
+    Value,
+    codec::{ProtoCodec, decode_commit_certificate, encode_commit_certificate},
     context::MalachiteContext,
     height::Height,
-    Value,
 };
 use alloy_primitives::B256;
 use malachitebft_app_channel::app::types::ProposedValue;
 use malachitebft_codec::Codec;
 use malachitebft_core_types::{CommitCertificate, Round};
 use reth_db::{
+    DatabaseError, TableSet, TableType, TableViewer,
     table::{Compress, Decode, Decompress, Encode, TableInfo},
-    tables, DatabaseError, TableSet, TableType, TableViewer,
+    tables,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -316,7 +317,7 @@ impl Encode for BlockKey {
     type Encoded = [u8; 32];
 
     fn encode(self) -> Self::Encoded {
-        self.0 .0
+        self.0.0
     }
 }
 
