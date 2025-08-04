@@ -26,7 +26,7 @@ struct CliArgs {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> eyre::Result<()> {
     let args = CliArgs::parse();
 
     let config_path = args
@@ -126,6 +126,8 @@ async fn main() {
     tokio::spawn(NETWORK_STATS.start_reporter(Duration::from_secs(
         config::get().reporters.network_stats_report_interval_secs,
     )))
-    .await // Keep the main thread alive forever.
-    .unwrap();
+    .await?;
+
+
+    Ok(())
 }

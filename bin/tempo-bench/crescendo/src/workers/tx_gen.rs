@@ -52,14 +52,17 @@ sol! {
     }
 }
 
+
+    //  TODO: pre generate `n` transactions from all of these accounts and then send them all
+//  through the queue which will throttle tps accordingly. 
 pub fn tx_gen_worker(_worker_id: u32) {
     let config = &config::get().tx_gen_worker;
 
-    let mut rng = rand::rng();
+    let mut rng = rand::thread_rng();
     let mut tx_batch = Vec::with_capacity(config.batch_size as usize);
 
     loop {
-        let account_index = rng.random_range(0..config.num_accounts); // Account we'll be sending from.
+        let account_index = rng.gen_range(0..config.num_accounts); // Account we'll be sending from.
 
         // Get and increment nonce atomically.
         let nonce = {
@@ -72,7 +75,7 @@ pub fn tx_gen_worker(_worker_id: u32) {
         let (signer, recipient) = (
             &SIGNER_LIST[account_index as usize],
             SIGNER_LIST[rng
-                .random_range(0..(config.num_accounts / config.recipient_distribution_factor))
+                .gen_range(0..(config.num_accounts / config.recipient_distribution_factor))
                 as usize] // Send to 1/Nth of the accounts.
                 .address(),
         );
@@ -88,7 +91,7 @@ pub fn tx_gen_worker(_worker_id: u32) {
                 value: U256::ZERO,
                 input: ERC20::transferCall {
                     to: recipient,
-                    amount: U256::from(rng.random_range(1..=config.max_transfer_amount)),
+                    amount: U256::from(rng.gen_range(1..=config.max_transfer_amount)),
                 }
                 .abi_encode()
                 .into(),
