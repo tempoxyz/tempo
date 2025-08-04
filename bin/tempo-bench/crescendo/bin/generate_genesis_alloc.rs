@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    let output_path = Path::new("genesis-alloc.json");
+    let output_path = Path::new("genesis.json");
     let json = serde_json::to_string_pretty(&genesis_alloc)?;
     fs::write(output_path, json)?;
 
