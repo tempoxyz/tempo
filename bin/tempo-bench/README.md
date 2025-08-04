@@ -37,6 +37,19 @@ Start `reth` with optimized settings
 just start-reth
 ```
 
+For the most accurate results, make sure to clear the datadir after each run.
+
+```bash
+# Linux (default: $XDG_DATA_HOME/reth/ or $HOME/.local/share/reth/)
+rm -rf $HOME/.local/share/reth/
+
+# macOS (default: $HOME/Library/Application Support/reth/)
+rm -rf "$HOME/Library/Application Support/reth/"
+
+# Windows (default: %APPDATA%/reth/)
+rmdir /s "%APPDATA%\reth"
+```
+
 ## Configuration
 
 Crescendo uses TOML configuration files located in `crescendo/configs/`. You can either run with a preconfigured TOML or create your own.
