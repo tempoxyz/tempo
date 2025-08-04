@@ -7,7 +7,7 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_consensus::{SignableTransaction, TxLegacy};
-use alloy_signer_local::{coins_bip39::English, MnemonicBuilder, PrivateKeySigner};
+use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use dashmap::DashMap;
 use rand::Rng;
 use rayon::prelude::*;
@@ -52,9 +52,8 @@ sol! {
     }
 }
 
-
-    //  TODO: pre generate `n` transactions from all of these accounts and then send them all
-//  through the queue which will throttle tps accordingly. 
+//  TODO: pre generate `n` transactions from all of these accounts and then send them all
+//  through the queue which will throttle tps accordingly.
 pub fn tx_gen_worker(_worker_id: u32) {
     let config = &config::get().tx_gen_worker;
 

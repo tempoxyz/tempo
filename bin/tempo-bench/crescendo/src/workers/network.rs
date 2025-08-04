@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 
-use alloy::primitives::{hex, Bytes};
+use alloy::primitives::{Bytes, hex};
 use http::StatusCode;
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper_util::{
-    client::legacy::{connect::HttpConnector, Client},
+    client::legacy::{Client, connect::HttpConnector},
     rt::TokioExecutor,
 };
 use thousands::Separable;

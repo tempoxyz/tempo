@@ -12,9 +12,9 @@
 //!
 //! Configuration can be provided via command-line arguments or configuration files.
 
-use std::{fs, sync::Arc};
 use clap::Parser;
 use reth_node_builder::NodeHandle;
+use std::{fs, sync::Arc};
 use tempo_consensus::{
     app::{Config, Genesis, State, ValidatorInfo, node::RethNode},
     cli::{Cli, MalachiteArgs, MalachiteChainSpecParser},

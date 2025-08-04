@@ -73,13 +73,15 @@ pub fn assign_workers(
 
     // Second pass: ensure each percentage worker gets at least one core
     for (worker_type, _) in &percentage_assignments {
-        if remaining_cores > 0 && !worker_counts.contains_key(worker_type)
-            && let Some(core_id) = core_ids.pop() {
-                result.push((core_id, *worker_type));
-                *worker_counts.entry(*worker_type).or_insert(0) += 1;
-                worker_cores.entry(*worker_type).or_default().push(core_id);
-                remaining_cores -= 1;
-            }
+        if remaining_cores > 0
+            && !worker_counts.contains_key(worker_type)
+            && let Some(core_id) = core_ids.pop()
+        {
+            result.push((core_id, *worker_type));
+            *worker_counts.entry(*worker_type).or_insert(0) += 1;
+            worker_cores.entry(*worker_type).or_default().push(core_id);
+            remaining_cores -= 1;
+        }
     }
 
     for (worker_type, percentage) in percentage_assignments {

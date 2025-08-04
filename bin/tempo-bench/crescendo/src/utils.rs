@@ -13,7 +13,9 @@ pub fn increase_nofile_limit(min_limit: u64) -> io::Result<u64> {
     println!("[*] At startup, file descriptor limit:      soft = {soft}, hard = {hard}");
 
     if hard < min_limit {
-        panic!("[!] File descriptor hard limit is too low. Please increase it to at least {min_limit}.");
+        panic!(
+            "[!] File descriptor hard limit is too low. Please increase it to at least {min_limit}."
+        );
     }
 
     if soft != hard {
