@@ -11,7 +11,7 @@ struct AccountBalance {
     balance: String,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub fn generate_genesis_alloc() -> Result<(), Box<dyn std::error::Error>> {
     const NUM_ACCOUNTS: u32 = 50_000;
     const MNEMONIC: &str = "test test test test test test test test test test test junk";
 

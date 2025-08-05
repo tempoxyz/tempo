@@ -1,15 +1,7 @@
 [package]
-name = "crescendo"
+name = "tempo-bench"
 version.workspace = true
 edition.workspace = true
-
-[[bin]]
-name = "crescendo"
-path = "bin/crescendo.rs"
-
-[[bin]]
-name = "generate-genesis-alloc"
-path = "bin/generate_genesis_alloc.rs"
 
 [dependencies]
 # Workspace dependencies

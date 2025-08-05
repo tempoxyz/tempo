@@ -6,7 +6,7 @@ rust-version = "1.88"
 [workspace]
 members = [
   "bin/tempo",
-  "bin/tempo-bench/crescendo",
+  "bin/tempo-bench",
   "crates/consensus"
 ]
 

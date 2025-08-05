@@ -2533,40 +2533,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crescendo"
-version = "0.1.0"
-dependencies = [
- "alloy",
- "alloy-consensus",
- "alloy-evm 0.13.0",
- "alloy-signer-local",
- "clap",
- "core_affinity",
- "crossbeam-utils",
- "dashmap 6.1.0",
- "eyre",
- "hex",
- "http 1.3.1",
- "http-body-util",
- "hyper",
- "hyper-util",
- "mimalloc",
- "num_cpus",
- "parking_lot",
- "rand 0.8.5",
- "ratelimit",
- "rayon",
- "rlimit",
- "serde",
- "serde_json",
- "simple-tqdm",
- "thousands",
- "tokio",
- "tokio-metrics",
- "toml",
-]
-
-[[package]]
 name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11721,6 +11687,40 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "tempo-bench"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "alloy-consensus",
+ "alloy-evm 0.13.0",
+ "alloy-signer-local",
+ "clap",
+ "core_affinity",
+ "crossbeam-utils",
+ "dashmap 6.1.0",
+ "eyre",
+ "hex",
+ "http 1.3.1",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "mimalloc",
+ "num_cpus",
+ "parking_lot",
+ "rand 0.8.5",
+ "ratelimit",
+ "rayon",
+ "rlimit",
+ "serde",
+ "serde_json",
+ "simple-tqdm",
+ "thousands",
+ "tokio",
+ "tokio-metrics",
+ "toml",
 ]
 
 [[package]]
