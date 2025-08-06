@@ -1,8 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::OnceLock};
 
-use serde::{Deserialize, Serialize};
-
-use crate::utils::merge_toml_values;
+use crate::crescendo::utils::merge_toml_values;
 
 /// Global configuration instance for the application.
 static CONFIG_INSTANCE: OnceLock<Config> = OnceLock::new();

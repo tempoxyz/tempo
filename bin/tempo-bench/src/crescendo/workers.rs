@@ -1,11 +1,9 @@
-use std::collections::HashMap;
-
 use core_affinity::CoreId;
+use std::collections::HashMap;
 
 pub use crate::crescendo::network::network_worker;
 pub use crate::crescendo::tx_gen::tx_gen_worker;
-
-use crate::utils::format_ranges;
+use crate::crescendo::utils::format_ranges;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum WorkerType {

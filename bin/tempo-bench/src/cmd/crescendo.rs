@@ -1,10 +1,7 @@
-use crate::{
-    crescendo::{
-        DesireType, NETWORK_STATS, TX_QUEUE, WorkerType,
-        config::{self, Config},
-        workers,
-    },
-    utils,
+use crate::crescendo::{
+    DesireType, NETWORK_STATS, TX_QUEUE, WorkerType,
+    config::{self, Config},
+    utils, workers,
 };
 use clap::Parser;
 use std::{future::pending, path::PathBuf, thread, time::Duration};

@@ -1,7 +1,6 @@
 mod cmd;
 mod crescendo;
 mod opts;
-mod utils;
 
 use clap::Parser;
 use mimalloc::MiMalloc;
