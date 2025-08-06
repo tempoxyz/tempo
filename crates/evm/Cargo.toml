@@ -9,7 +9,7 @@ description = "TODO:"
 # workspace = true
 
 [dependencies]
-tempo-precompiles = { path = "../precompiles" }
+tempo-precompiles.workspace = true
 reth.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true

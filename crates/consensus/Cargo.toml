@@ -9,7 +9,7 @@ description = "TODO:"
 # workspace = true
 
 [dependencies]
-tempo-evm = { path = "../evm" }
+tempo-evm.workspace = true
 reth.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
