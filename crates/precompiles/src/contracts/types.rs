@@ -20,8 +20,8 @@ sol! {
     }
 
     #[derive(Debug, PartialEq, Eq)]
-    interface IERC20 {
-        // ERC20 Standard Functions
+    interface ITIP20 {
+        // Standard token functions
         function name() external view returns (string);
         function symbol() external view returns (string);
         function decimals() external view returns (uint8);
@@ -83,7 +83,7 @@ sol! {
     }
 
     #[derive(Debug, PartialEq, Eq)]
-    interface IERC20Factory {
+    interface ITIP20Factory {
         event TokenCreated(uint256 indexed tokenId, string name, string symbol, uint8 decimals, string currency, address admin);
 
         function createToken(
@@ -131,9 +131,9 @@ sol! {
 }
 
 #[macro_export]
-macro_rules! erc20_err {
+macro_rules! tip20_err {
     ($err:ident) => {
-        $crate::contracts::types::ERC20Error::$err($crate::contracts::types::IERC20::$err {})
+        $crate::contracts::types::TIP20Error::$err($crate::contracts::types::ITIP20::$err {})
     };
 }
 
@@ -147,9 +147,9 @@ macro_rules! tip403_err {
 }
 
 // Use the auto-generated error and event enums
-pub use IERC20::{IERC20Errors as ERC20Error, IERC20Events as ERC20Event};
-pub use IERC20Factory::IERC20FactoryEvents as ERC20FactoryEvent;
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
+pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
+pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };

@@ -1,7 +1,7 @@
 use crate::contracts::{
-    erc20::ERC20Token,
+    tip20::TIP20Token,
     storage::StorageProvider,
-    types::{ERC20Error, IERC20, IRolesAuth, RolesAuthError},
+    types::{TIP20Error, ITIP20, IRolesAuth, RolesAuthError},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
@@ -15,38 +15,38 @@ mod gas_costs {
 }
 
 #[rustfmt::skip]
-impl<'a, S: StorageProvider> Precompile for ERC20Token<'a, S> {
+impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
 
         // Metadata
-        dispatch_view_call!(self, selector, IERC20::nameCall, name, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, IERC20::symbolCall, symbol, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, IERC20::decimalsCall, decimals, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, IERC20::currencyCall, currency, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, IERC20::totalSupplyCall, total_supply, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, ITIP20::nameCall, name, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, ITIP20::symbolCall, symbol, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, ITIP20::decimalsCall, decimals, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, ITIP20::currencyCall, currency, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, ITIP20::totalSupplyCall, total_supply, gas_costs::METADATA);
 
         // View functions
-        dispatch_view_call!(self, selector, IERC20::balanceOfCall, balance_of, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, IERC20::allowanceCall, allowance, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, IERC20::noncesCall, nonces, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, IERC20::saltsCall, salts, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, ITIP20::balanceOfCall, balance_of, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, ITIP20::allowanceCall, allowance, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, ITIP20::noncesCall, nonces, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, ITIP20::saltsCall, salts, calldata, gas_costs::VIEW_FUNCTIONS);
 
-        // State-changing functions (standard erc20)
-        dispatch_mutating_call!(self, selector, IERC20::transferFromCall, transfer_from, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error, returns);
-        dispatch_mutating_call!(self, selector, IERC20::transferCall, transfer, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error, returns);
-        dispatch_mutating_call!(self, selector, IERC20::approveCall, approve, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error, returns);
-        dispatch_mutating_call!(self, selector, IERC20::permitCall, permit, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+        // State-changing functions (standard token)
+        dispatch_mutating_call!(self, selector, ITIP20::transferFromCall, transfer_from, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
+        dispatch_mutating_call!(self, selector, ITIP20::transferCall, transfer, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
+        dispatch_mutating_call!(self, selector, ITIP20::approveCall, approve, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
+        dispatch_mutating_call!(self, selector, ITIP20::permitCall, permit, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
 
         // State-changing functions (tip20 specific)
-        dispatch_mutating_call!(self, selector, IERC20::changeTransferPolicyIdCall, change_transfer_policy_id, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
-        dispatch_mutating_call!(self, selector, IERC20::setSupplyCapCall, set_supply_cap, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
-        dispatch_mutating_call!(self, selector, IERC20::pauseCall, pause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
-        dispatch_mutating_call!(self, selector, IERC20::unpauseCall, unpause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
-        dispatch_mutating_call!(self, selector, IERC20::mintCall, mint, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
-        dispatch_mutating_call!(self, selector, IERC20::burnCall, burn, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
-        dispatch_mutating_call!(self, selector, IERC20::burnBlockedCall, burn_blocked, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
-        dispatch_mutating_call!(self, selector, IERC20::transferWithMemoCall, transfer_with_memo, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+        dispatch_mutating_call!(self, selector, ITIP20::changeTransferPolicyIdCall, change_transfer_policy_id, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+        dispatch_mutating_call!(self, selector, ITIP20::setSupplyCapCall, set_supply_cap, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+        dispatch_mutating_call!(self, selector, ITIP20::pauseCall, pause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+        dispatch_mutating_call!(self, selector, ITIP20::unpauseCall, unpause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+        dispatch_mutating_call!(self, selector, ITIP20::mintCall, mint, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+        dispatch_mutating_call!(self, selector, ITIP20::burnCall, burn, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+        dispatch_mutating_call!(self, selector, ITIP20::burnBlockedCall, burn_blocked, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+        dispatch_mutating_call!(self, selector, ITIP20::transferWithMemoCall, transfer_with_memo, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
 
         // RolesAuth functions
         dispatch_view_call!(self.get_roles_contract(), selector, IRolesAuth::hasRoleCall, has_role, calldata, gas_costs::VIEW_FUNCTIONS);
@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn test_function_selector_dispatch() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = ERC20Token::new(1, &mut storage);
+        let mut token = TIP20Token::new(1, &mut storage);
         let sender = Address::from([1u8; 20]);
 
         // Test invalid selector
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn test_balance_of_calldata_handling() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = ERC20Token::new(1, &mut storage);
+        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let account = Address::from([2u8; 20]);
@@ -113,7 +113,7 @@ mod tests {
         token
             .mint(
                 &admin,
-                IERC20::mintCall {
+                ITIP20::mintCall {
                     to: account,
                     amount: test_balance,
                 },
@@ -121,7 +121,7 @@ mod tests {
             .unwrap();
 
         // Valid balanceOf call
-        let balance_of_call = IERC20::balanceOfCall { account };
+        let balance_of_call = ITIP20::balanceOfCall { account };
         let calldata = balance_of_call.abi_encode();
 
         let result = token.call(&Bytes::from(calldata), &sender).unwrap();
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn test_mint_updates_storage() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = ERC20Token::new(1, &mut storage);
+        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
@@ -159,11 +159,11 @@ mod tests {
             .unwrap();
 
         // Check initial balance is zero
-        let initial_balance = token.balance_of(IERC20::balanceOfCall { account: recipient });
+        let initial_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient });
         assert_eq!(initial_balance, U256::ZERO);
 
         // Create mint call
-        let mint_call = IERC20::mintCall {
+        let mint_call = ITIP20::mintCall {
             to: recipient,
             amount: mint_amount,
         };
@@ -174,14 +174,14 @@ mod tests {
         assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
 
         // Verify balance was updated in storage
-        let final_balance = token.balance_of(IERC20::balanceOfCall { account: recipient });
+        let final_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient });
         assert_eq!(final_balance, mint_amount);
     }
 
     #[test]
     fn test_transfer_updates_balances() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = ERC20Token::new(1, &mut storage);
+        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
@@ -209,7 +209,7 @@ mod tests {
         token
             .mint(
                 &admin,
-                IERC20::mintCall {
+                ITIP20::mintCall {
                     to: sender,
                     amount: initial_sender_balance,
                 },
@@ -218,16 +218,16 @@ mod tests {
 
         // Check initial balances
         assert_eq!(
-            token.balance_of(IERC20::balanceOfCall { account: sender }),
+            token.balance_of(ITIP20::balanceOfCall { account: sender }),
             initial_sender_balance
         );
         assert_eq!(
-            token.balance_of(IERC20::balanceOfCall { account: recipient }),
+            token.balance_of(ITIP20::balanceOfCall { account: recipient }),
             U256::ZERO
         );
 
         // Create transfer call
-        let transfer_call = IERC20::transferCall {
+        let transfer_call = ITIP20::transferCall {
             to: recipient,
             amount: transfer_amount,
         };
@@ -242,9 +242,9 @@ mod tests {
         assert!(success);
 
         // Verify balances were updated correctly
-        let final_sender_balance = token.balance_of(IERC20::balanceOfCall { account: sender });
+        let final_sender_balance = token.balance_of(ITIP20::balanceOfCall { account: sender });
         let final_recipient_balance =
-            token.balance_of(IERC20::balanceOfCall { account: recipient });
+            token.balance_of(ITIP20::balanceOfCall { account: recipient });
 
         assert_eq!(
             final_sender_balance,

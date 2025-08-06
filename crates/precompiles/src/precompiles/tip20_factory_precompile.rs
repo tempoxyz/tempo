@@ -3,9 +3,9 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 
 use crate::contracts::{
-    erc20_factory::ERC20Factory,
+    tip20_factory::TIP20Factory,
     storage::StorageProvider,
-    types::{ERC20Error, IERC20Factory},
+    types::{TIP20Error, ITIP20Factory},
 };
 
 mod gas_costs {
@@ -14,15 +14,15 @@ mod gas_costs {
 }
 
 #[rustfmt::skip]
-impl<'a, S: StorageProvider> Precompile for ERC20Factory<'a, S> {
+impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
 
         // View functions
-        dispatch_view_call!(self, selector, IERC20Factory::tokenIdCounterCall, token_id_counter, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, ITIP20Factory::tokenIdCounterCall, token_id_counter, gas_costs::VIEW_FUNCTIONS);
 
         // State-changing functions
-        dispatch_mutating_call!(self, selector, IERC20Factory::createTokenCall, create_token, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error, returns);
+        dispatch_mutating_call!(self, selector, ITIP20Factory::createTokenCall, create_token, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
 
         // If no selector matched, return error
         Err(PrecompileError::Other("Unknown function selector".to_string()))
@@ -42,7 +42,7 @@ mod tests {
     #[test]
     fn test_function_selector_dispatch() {
         let mut factory_storage = HashMapStorageProvider::new(1);
-        let mut factory = ERC20Factory::new(&mut factory_storage);
+        let mut factory = TIP20Factory::new(&mut factory_storage);
         let sender = Address::from([1u8; 20]);
 
         // Test invalid selector
@@ -57,11 +57,11 @@ mod tests {
     #[test]
     fn test_create_token() {
         let mut factory_storage = HashMapStorageProvider::new(1);
-        let mut factory = ERC20Factory::new(&mut factory_storage);
+        let mut factory = TIP20Factory::new(&mut factory_storage);
         let sender = Address::from([1u8; 20]);
 
         // Create token call
-        let create_call = IERC20Factory::createTokenCall {
+        let create_call = ITIP20Factory::createTokenCall {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             decimals: 18,
