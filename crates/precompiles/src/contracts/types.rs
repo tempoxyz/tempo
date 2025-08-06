@@ -118,10 +118,10 @@ sol! {
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
 
         // Events
-        event PolicyAdminUpdate(uint64 indexed policyId, address indexed updater, uint64 indexed adminPolicyId);
+        event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, uint64 indexed adminPolicyId);
         event PolicyCreated(uint64 indexed policyId, address indexed updater, uint8 policyType);
-        event WhitelistUpdate(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
-        event BlacklistUpdate(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
+        event WhitelistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
+        event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
 
         // Errors
         error Unauthorized();

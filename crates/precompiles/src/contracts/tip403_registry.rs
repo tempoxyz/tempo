@@ -119,7 +119,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyAdminUpdate(ITIP403Registry::PolicyAdminUpdate {
+            TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
                 policyId: new_policy_id,
                 updater: *msg_sender,
                 adminPolicyId: call.adminPolicyId,
@@ -172,7 +172,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 PolicyType::Whitelist => {
                     self.storage.emit_event(
                         TIP403_REGISTRY_ADDRESS,
-                        TIP403RegistryEvent::WhitelistUpdate(ITIP403Registry::WhitelistUpdate {
+                        TIP403RegistryEvent::WhitelistUpdated(ITIP403Registry::WhitelistUpdated {
                             policyId: new_policy_id,
                             updater: *msg_sender,
                             account: *account,
@@ -184,7 +184,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 PolicyType::Blacklist => {
                     self.storage.emit_event(
                         TIP403_REGISTRY_ADDRESS,
-                        TIP403RegistryEvent::BlacklistUpdate(ITIP403Registry::BlacklistUpdate {
+                        TIP403RegistryEvent::BlacklistUpdated(ITIP403Registry::BlacklistUpdated {
                             policyId: new_policy_id,
                             updater: *msg_sender,
                             account: *account,
@@ -209,7 +209,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyAdminUpdate(ITIP403Registry::PolicyAdminUpdate {
+            TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
                 policyId: new_policy_id,
                 updater: *msg_sender,
                 adminPolicyId: admin_policy_id,
@@ -243,7 +243,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyAdminUpdate(ITIP403Registry::PolicyAdminUpdate {
+            TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
                 policyId: call.policyId,
                 updater: *msg_sender,
                 adminPolicyId: call.adminPolicyId,
@@ -275,7 +275,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::WhitelistUpdate(ITIP403Registry::WhitelistUpdate {
+            TIP403RegistryEvent::WhitelistUpdated(ITIP403Registry::WhitelistUpdated {
                 policyId: call.policyId,
                 updater: *msg_sender,
                 account: call.account,
@@ -308,7 +308,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::BlacklistUpdate(ITIP403Registry::BlacklistUpdate {
+            TIP403RegistryEvent::BlacklistUpdated(ITIP403Registry::BlacklistUpdated {
                 policyId: call.policyId,
                 updater: *msg_sender,
                 account: call.account,
