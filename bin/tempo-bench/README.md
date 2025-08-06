@@ -4,10 +4,12 @@
 
 ## Installation
 
-Install `tempo-bench`
+Install `tempo` and `tempo-bench`
 
 ```bash
 cargo install --path bin/tempo-bench --profile maxperf
+cargo install --path bin/tempo --profile maxperf
+
 ```
 
 ### Overview
@@ -162,7 +164,7 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
 ### 2. Start Tempo
 
 ```bash
-just start-tempo <path_to_genesis_json>
+just start-tempo genesis.json
 ```
 
 ### 3. Run crescendo

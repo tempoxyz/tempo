@@ -19,3 +19,8 @@ _build-release binary extra_args="": (_build binary "-r " + extra_args)
 _build binary extra_args="":
     CROSS_CONTAINER_IN_CONTAINER={{act_debug_mode}} RUSTFLAGS="-C link-arg=-lgcc -Clink-arg=-static-libgcc" \
         {{cargo_build_binary}} build {{extra_args}} --target x86_64-unknown-linux-gnu --bin {{binary}}
+
+[group('bench')]
+[doc('Start tempo with genesis file for benchmarking')]
+start-tempo genesis_file="genesis.json":
+    just -f bin/tempo-bench/justfile start-tempo {{genesis_file}}
