@@ -16,7 +16,7 @@ pub static UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 pub mod slots {
     use crate::contracts::storage::slots::to_u256;
     use alloy::primitives::U256;
-    
+
     pub const ROLES: U256 = to_u256(0);
     pub const ROLE_ADMIN: U256 = to_u256(1);
 }
