@@ -103,12 +103,12 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     }
 
     pub fn nonces(&mut self, call: IERC20::noncesCall) -> U256 {
-        let slot = mapping_slot(&call.owner, slots::NONCES);
+        let slot = mapping_slot(call.owner, slots::NONCES);
         self.storage.sload(self.token_id, slot)
     }
 
     pub fn salts(&mut self, call: IERC20::saltsCall) -> bool {
-        let slot = double_mapping_slot(&call.owner, &call.salt, slots::SALTS);
+        let slot = double_mapping_slot(call.owner, call.salt, slots::SALTS);
         self.storage.sload(self.token_id, slot) != U256::ZERO
     }
 
@@ -377,7 +377,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         }
 
         // Get and increment nonce
-        let nonce_slot = mapping_slot(&call.owner, slots::NONCES);
+        let nonce_slot = mapping_slot(call.owner, slots::NONCES);
         let nonce = self.storage.sload(self.token_id, nonce_slot);
         self.storage
             .sstore(self.token_id, nonce_slot, nonce + U256::from(1));

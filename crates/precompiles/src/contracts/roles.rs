@@ -194,28 +194,28 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     // Internal implementation functions
 
     fn has_role_internal(&mut self, account: &Address, role: B256) -> bool {
-        let slot = double_mapping_slot(account, &role, self.roles_base_slot);
+        let slot = double_mapping_slot(account, role, self.roles_base_slot);
         self.storage.sload(self.contract_id, slot) != U256::ZERO
     }
 
     pub fn grant_role_internal(&mut self, account: &Address, role: B256) {
-        let slot = double_mapping_slot(account, &role, self.roles_base_slot);
+        let slot = double_mapping_slot(account, role, self.roles_base_slot);
         self.storage.sstore(self.contract_id, slot, U256::ONE);
     }
 
     fn revoke_role_internal(&mut self, account: &Address, role: B256) {
-        let slot = double_mapping_slot(account, &role, self.roles_base_slot);
+        let slot = double_mapping_slot(account, role, self.roles_base_slot);
         self.storage.sstore(self.contract_id, slot, U256::ZERO);
     }
 
     fn get_role_admin_internal(&mut self, role: B256) -> B256 {
-        let slot = mapping_slot(&role, self.role_admin_base_slot);
+        let slot = mapping_slot(role, self.role_admin_base_slot);
         let admin = self.storage.sload(self.contract_id, slot);
         B256::from(admin) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     }
 
     fn set_role_admin_internal(&mut self, role: B256, admin_role: B256) {
-        let slot = mapping_slot(&role, self.role_admin_base_slot);
+        let slot = mapping_slot(role, self.role_admin_base_slot);
         self.storage
             .sstore(self.contract_id, slot, U256::from_be_bytes(admin_role.0));
     }
@@ -276,28 +276,28 @@ impl<'a, S: StorageProvider> RolesAuthProvider<'a, S> {
 
 impl<'a, S: StorageProvider> RolesAuthTrait for RolesAuthProvider<'a, S> {
     fn has_role(&mut self, account: &Address, role: B256) -> bool {
-        let slot = double_mapping_slot(account, &role, self.roles_base_slot);
+        let slot = double_mapping_slot(account, role, self.roles_base_slot);
         self.storage.sload(self.contract_id, slot) != U256::ZERO
     }
 
     fn grant_role(&mut self, account: &Address, role: B256) {
-        let slot = double_mapping_slot(account, &role, self.roles_base_slot);
+        let slot = double_mapping_slot(account, role, self.roles_base_slot);
         self.storage.sstore(self.contract_id, slot, U256::ONE);
     }
 
     fn revoke_role(&mut self, account: &Address, role: B256) {
-        let slot = double_mapping_slot(account, &role, self.roles_base_slot);
+        let slot = double_mapping_slot(account, role, self.roles_base_slot);
         self.storage.sstore(self.contract_id, slot, U256::ZERO);
     }
 
     fn get_role_admin(&mut self, role: B256) -> B256 {
-        let slot = mapping_slot(&role, self.role_admin_base_slot);
+        let slot = mapping_slot(role, self.role_admin_base_slot);
         let admin = self.storage.sload(self.contract_id, slot);
         B256::from(admin) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     }
 
     fn set_role_admin(&mut self, role: B256, admin_role: B256) {
-        let slot = mapping_slot(&role, self.role_admin_base_slot);
+        let slot = mapping_slot(role, self.role_admin_base_slot);
         self.storage
             .sstore(self.contract_id, slot, U256::from_be_bytes(admin_role.0));
     }

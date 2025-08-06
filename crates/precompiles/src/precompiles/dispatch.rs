@@ -43,7 +43,7 @@ macro_rules! dispatch_mutating_call {
                 }
                 Err(e) => {
                     return Err(PrecompileError::Other(
-                        <crate::contracts::types::ERC20Error as ::alloy::sol_types::SolInterface>::abi_encode(&e)
+                        <$crate::contracts::types::ERC20Error as ::alloy::sol_types::SolInterface>::abi_encode(&e)
                             .iter()
                             .map(|b| format!("{:02x}", b))
                             .collect(),
