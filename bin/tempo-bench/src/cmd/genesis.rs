@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
-use clap::Parser;
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
 use alloy_signer_local::coins_bip39::English;
+use clap::Parser;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use simple_tqdm::ParTqdm;
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AccountBalance {
@@ -17,15 +17,19 @@ pub struct GenesisArgs {
     /// Number of accounts to generate
     #[arg(short, long, default_value = "50000")]
     pub accounts: u32,
-    
+
     /// Output file path
     #[arg(short, long, default_value = "genesis.json")]
     pub output: PathBuf,
-    
+
     /// Mnemonic to use for account generation
-    #[arg(short, long, default_value = "test test test test test test test test test test test junk")]
+    #[arg(
+        short,
+        long,
+        default_value = "test test test test test test test test test test test junk"
+    )]
     pub mnemonic: String,
-    
+
     /// Balance for each account (in hex)
     #[arg(short, long, default_value = "0xD3C21BCECCEDA1000000")]
     pub balance: String,
@@ -39,10 +43,10 @@ impl GenesisArgs {
 }
 
 fn generate_genesis_alloc(
-    num_accounts: u32, 
-    output_path: &PathBuf, 
-    mnemonic: &str, 
-    balance: &str
+    num_accounts: u32,
+    output_path: &PathBuf,
+    mnemonic: &str,
+    balance: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Generating {num_accounts} accounts...");
 

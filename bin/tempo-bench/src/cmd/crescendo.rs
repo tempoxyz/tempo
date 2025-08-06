@@ -1,11 +1,13 @@
-use clap::Parser;
-use std::{future::pending, path::PathBuf, thread, time::Duration};
 use crate::{
-    config,
-    config::Config,
-    crescendo::{NETWORK_STATS, TX_QUEUE, DesireType, WorkerType, workers},
+    crescendo::{
+        DesireType, NETWORK_STATS, TX_QUEUE, WorkerType,
+        config::{self, Config},
+        workers,
+    },
     utils,
 };
+use clap::Parser;
+use std::{future::pending, path::PathBuf, thread, time::Duration};
 
 /// Run Crescendo benchmarking
 #[derive(Parser, Debug)]
@@ -18,15 +20,18 @@ pub struct CrescendoArgs {
 impl CrescendoArgs {
     pub async fn run(self) -> eyre::Result<()> {
         let config_path = self.config;
-        
+
         if !config_path.exists() {
-            return Err(eyre::eyre!("Config file not found: {}", config_path.display()));
+            return Err(eyre::eyre!(
+                "Config file not found: {}",
+                config_path.display()
+            ));
         }
 
         println!("[~] Loading config from {}...", config_path.display());
         config::init(
             Config::from_file(&config_path)
-                .map_err(|e| eyre::eyre!("Failed to load config file: {:?}", e))?
+                .map_err(|e| eyre::eyre!("Failed to load config file: {:?}", e))?,
         );
 
         if let Err(err) =
@@ -94,7 +99,8 @@ impl CrescendoArgs {
                         rt.block_on(async {
                             for i in 0..connections_per_network_worker {
                                 tokio::spawn(workers::network_worker(
-                                    (network_worker_id * connections_per_network_worker + i) as usize,
+                                    (network_worker_id * connections_per_network_worker + i)
+                                        as usize,
                                 ));
                             }
                             pending::<()>().await; // Keep the runtime alive forever.

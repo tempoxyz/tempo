@@ -1,3 +1,4 @@
+pub mod config;
 pub mod network;
 pub mod network_stats;
 pub mod tx_gen;

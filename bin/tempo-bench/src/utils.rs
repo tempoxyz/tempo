@@ -1,9 +1,7 @@
-use std::io;
-
+use crate::crescendo::config;
 use core_affinity::CoreId;
 use rlimit::Resource;
-
-use crate::config;
+use std::io;
 
 /// Increase the file descriptor limit to the given minimum.
 ///
