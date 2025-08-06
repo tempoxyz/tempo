@@ -1,0 +1,31 @@
+- name: Download tempo binary ZIP
+  get_url:
+    url: "{{ tempo_download_url }}"
+    dest: /tmp/tempo.zip
+    mode: '0755'
+    headers:
+      Accept: "application/vnd.github+json"
+      X-GitHub-Api-Version: "2022-11-28"
+      Authorization: "Bearer {{ tempo_github_token }}"
+    unredirected_headers:
+    - Authorization
+
+- name: Unarchive tempo binary
+  unarchive:
+    src: /tmp/tempo.zip
+    dest: /usr/local/bin
+    remote_src: yes
+  become: yes
+
+- name: Delete tempo binary Zip
+  file:
+    path: /tmp/tempo.zip
+    state: absent
+
+- name: Install tempo systemd service
+  template:
+    src: tempo.service.j2
+    dest: /etc/systemd/system/tempo.service
+    mode: '0644'
+  become: yes
+  notify: reload systemd

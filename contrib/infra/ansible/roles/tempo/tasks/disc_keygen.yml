@@ -1,0 +1,49 @@
+---
+- name: Create malachite reth directory
+  file:
+    path: "{{ ansible_env.HOME }}/malachite/reth"
+    state: directory
+    mode: '0755'
+
+- name: Remove existing discovery files when force reset
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - "{{ ansible_env.HOME }}/malachite/reth/discovery-secret.pem"
+    - "{{ ansible_env.HOME }}/malachite/reth/discovery-secret"
+  when: tempo_force_reset
+
+- name: Generate secp256k1 private key
+  command: openssl ecparam -name secp256k1 -genkey -noout -out "{{ ansible_env.HOME }}/malachite/reth/discovery-secret.pem"
+  args:
+    creates: "{{ ansible_env.HOME }}/malachite/reth/discovery-secret.pem"
+
+- name: Check if discovery secret file exists
+  stat:
+    path: "{{ ansible_env.HOME }}/malachite/reth/discovery-secret"
+  register: discovery_secret_stat
+
+- name: Extract raw private key hex
+  shell: |
+    openssl ec -in "{{ ansible_env.HOME }}/malachite/reth/discovery-secret.pem" -noout -text | \
+    sed -n '/^ *priv:/,/^ *pub:/p' | sed '1d;$d' | tr -d ' \n:'
+  register: disc_priv_key_hex_output
+
+- name: Extract raw public key hex
+  shell: |
+    openssl ec -in "{{ ansible_env.HOME }}/malachite/reth/discovery-secret.pem" -pubout -noout -text | \
+    sed -n '/^ *pub:/,/^ *ASN1/p' | sed '1d;$d' | tr -d ' :\n' | sed 's/^04//'
+  register: disc_pub_key_hex_output
+
+- name: Set discovery key variables
+  set_fact:
+    disc_priv_key_hex: "{{ disc_priv_key_hex_output.stdout }}"
+    disc_pub_key_hex: "{{ disc_pub_key_hex_output.stdout }}"
+
+- name: Save discovery secret to file
+  copy:
+    content: "{{ disc_priv_key_hex }}"
+    dest: "{{ ansible_env.HOME }}/malachite/reth/discovery-secret"
+    mode: '0600'
+  when: not discovery_secret_stat.stat.exists or tempo_force_reset

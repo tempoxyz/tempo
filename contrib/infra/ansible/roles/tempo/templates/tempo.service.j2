@@ -1,0 +1,35 @@
+[Unit]
+Description=Tempo Node
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+Group={{ ansible_user }}
+WorkingDirectory={{ ansible_env.HOME }}/malachite
+ExecStart=/usr/local/bin/reth-malachite node --datadir {{ ansible_env.HOME }}/malachite/reth \
+  --port 30303 \
+  --discovery.port 30303 \
+  --http \
+  --http.addr 0.0.0.0 \
+  --http.port 8545 \
+  --http.api eth,net,web3 \
+  --authrpc.port 8551 \
+  --metrics 9000 \
+  --ipcdisable \
+  --malachite-home {{ ansible_env.HOME }}/malachite \
+  --consensus-config {{ ansible_env.HOME }}/malachite/config/malachite.toml \
+  --validator-key {{ ansible_env.HOME }}/malachite/config/priv_validator_key.json \
+  --genesis {{ ansible_env.HOME }}/malachite/config/genesis.json \
+  --node-id "{{ ansible_host }}" \
+  --chain-id "{{ tempo_chain_id }}"
+
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tempo
+
+[Install]
+WantedBy=multi-user.target

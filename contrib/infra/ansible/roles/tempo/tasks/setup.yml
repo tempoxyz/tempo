@@ -1,0 +1,34 @@
+- name: Slurp priv_validator_key.json from each host
+  slurp:
+    src: "{{ ansible_env.HOME }}/malachite/config/priv_validator_key.json"
+  register: priv_validator_key_json
+
+- name: Set priv_validator variables from JSON
+  set_fact:
+    priv_validator_address: "{{ (priv_validator_key_json.content | b64decode | from_json).address }}"
+    priv_validator_pub_key_type: "{{ (priv_validator_key_json.content | b64decode | from_json).pub_key.type }}"
+    priv_validator_pub_key_value: "{{ (priv_validator_key_json.content | b64decode | from_json).pub_key.value }}"
+
+- name: Set genesis_time fact in required format
+  set_fact:
+    genesis_time: "{{ '%Y-%m-%dT%H:%M:%S.000000000Z' | strftime(ansible_date_time.epoch | int) }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate and copy genesis + config files
+  template:
+    src: "{{ item }}.j2"
+    dest: "{{ ansible_env.HOME }}/malachite/config/{{ item }}"
+  with_items:
+  - genesis.json
+  - malachite.toml
+
+- name: Create reth directory
+  file:
+    path: "{{ ansible_env.HOME }}/malachite/reth"
+    state: directory
+  
+- name: Generate and copy reth config files
+  template:
+    src: "reth.toml.j2"
+    dest: "{{ ansible_env.HOME }}/malachite/reth/reth.toml"

@@ -32,11 +32,45 @@ impl ChainSpecParser for MalachiteChainSpecParser {
     const SUPPORTED_CHAINS: &'static [&'static str] = &["malachite"];
 
     fn parse(s: &str) -> eyre::Result<Arc<Self::ChainSpec>> {
-        // For now, return a basic chain spec - this should be implemented properly
         match s {
             "malachite" => Ok(Arc::new(custom_malachite_chain())),
-            _ => Err(eyre::eyre!("Unknown chain: {}", s)),
+            path if std::path::Path::new(path).exists() => {
+                // Try to parse as genesis file
+                Self::parse_genesis_file(path)
+            }
+            _ => Err(eyre::eyre!("Unknown chain or file not found: {}", s)),
         }
+    }
+}
+
+impl MalachiteChainSpecParser {
+    /// Parse a genesis file and create a ChainSpec from it
+    fn parse_genesis_file(path: &str) -> eyre::Result<Arc<ChainSpec>> {
+        use alloy_genesis::Genesis;
+        use reth_chainspec::ChainSpecBuilder;
+        use std::fs;
+
+        // Read and parse the genesis file
+        let genesis_content = fs::read_to_string(path)?;
+        let genesis: Genesis = serde_json::from_str(&genesis_content)?;
+
+        // Extract chain ID from genesis config or use default
+        let chain_id = if genesis.config.chain_id == 0 {
+            2600
+        } else {
+            genesis.config.chain_id
+        };
+
+        // Build ChainSpec from genesis
+        let chain_spec = ChainSpecBuilder::default()
+            .chain(reth_chainspec::Chain::from_id(chain_id))
+            .genesis(genesis)
+            .paris_activated()
+            .shanghai_activated()
+            .cancun_activated()
+            .build();
+
+        Ok(Arc::new(chain_spec))
     }
 }
 

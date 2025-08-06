@@ -1,0 +1,44 @@
+---
+- name: Set up Tailscale
+  include_role:
+    name: artis3n.tailscale
+  vars:
+    tailscale_authkey: "{{ tempo_tailscale_authkey }}"
+    tailscale_args: "--ssh"
+    tailscale_tags:
+      - "devnet"
+
+- name: Install required packages
+  apt:
+    pkg:
+      - ufw
+      - unzip
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Set UFW default incoming policy to deny
+  community.general.ufw:
+    direction: incoming
+    policy: deny
+  become: yes
+
+- name: Set UFW default outgoing policy to allow
+  community.general.ufw:
+    direction: outgoing
+    policy: allow
+  become: yes
+
+- name: Allow all traffic on tailscale0 interface
+  community.general.ufw:
+    rule: allow
+    interface: tailscale0
+    direction: in
+    from_ip: any
+    to_ip: any
+  become: yes
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+  become: yes

@@ -59,7 +59,7 @@ impl Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkWorkerConfig {
-    pub target_url: String,
+    pub target_urls: Vec<String>,
     pub total_connections: u64,
 
     pub batch_factor: usize,

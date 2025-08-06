@@ -1,0 +1,13 @@
+#SPDX-License-Identifier: MIT-0
+---
+# defaults file for bootstrap
+
+# UFW configuration
+bootstrap_ufw_default_incoming: deny
+bootstrap_ufw_default_outgoing: allow
+bootstrap_ufw_enabled: true
+
+# Packages to install
+bootstrap_packages:
+  - ufw
+  - unzip

@@ -1,34 +1,60 @@
 on:
   push:
-    branches: [production]
+    branches: [main]
   pull_request:
 
 jobs:
   build:
     name: Build
     runs-on: depot-ubuntu-24.04-16
+    outputs:
+      artifact_id: "${{ steps.binary_upload.outputs.artifact-id }}"
     steps:
-      - uses: actions/checkout@v2
-      - uses: rui314/setup-mold@v1
-      - uses: taiki-e/install-action@just
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          target: x86_64-unknown-linux-gnu
-      - name: Cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Install cross main
-        run: |
-          just install-cross
-      - run: |
-          just build-all-release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tempo-x86_64-unknown-linux-gnu
-          path: target/x86_64-unknown-linux-gnu/release/tempo
-
+    - uses: actions/checkout@v2
+    - uses: rui314/setup-mold@v1
+    - uses: taiki-e/install-action@just
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        target: x86_64-unknown-linux-gnu
+    - name: Cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Install cross main
+      run: |
+        just install-cross
+    - run: |
+        just build-all-release
+    - uses: actions/upload-artifact@v4
+      id: binary_upload
+      with:
+        name: tempo-x86_64-unknown-linux-gnu
+        path: target/x86_64-unknown-linux-gnu/release/tempo
+  deploy:
+    name: Deploy to devnet-1
+    runs-on: depot-ubuntu-24.04-4
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+    - uses: actions/checkout@v2
+    - uses: taiki-e/install-action@just
+    - name: Install Ansible
+      shell: bash
+      run: |
+        sudo apt update
+        sudo apt install -y ansible
+    - name: Export vault password file
+      working-directory: contrib/infra/ansible
+      env:
+        ANSIBLE_VAULT_PASSWORD: "${{secrets.ANSIBLE_VAULT_PASSWORD}}"
+      run: |
+        echo -e "$ANSIBLE_VAULT_PASSWORD" >> vault.key
+    - name: Run playbook
+      working-directory: contrib/infra/ansible
+      run: |
+        just dependencies
+        just run-playbook-ci devnet devnet-1 "tempo_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{needs.build.outputs.artifact_id}}/zip'"

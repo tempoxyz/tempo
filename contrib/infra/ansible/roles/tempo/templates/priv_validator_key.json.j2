@@ -1,0 +1,11 @@
+{
+  "address": "{{ address }}",
+  "pub_key": {
+    "type": "tendermint/PubKeyEd25519",
+    "value": "{{ pub_key_base64.stdout }}"
+  },
+  "priv_key": {
+    "type": "tendermint/PrivKeyEd25519",
+    "value": "{{ priv_key_base64.stdout }}"
+  }
+} 

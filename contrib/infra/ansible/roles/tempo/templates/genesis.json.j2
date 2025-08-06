@@ -1,0 +1,22 @@
+{
+  "genesis_time": "{{ genesis_time }}",
+  "chain_id": "reth-malachite-testnet",
+  "initial_height": "1",
+  "validators": [
+{% for host in groups['all'] %}
+  {
+    "address": "{{ hostvars[host]['priv_validator_address'] }}",
+    "pub_key": {
+      "type": "{{ hostvars[host]['priv_validator_pub_key_type'] }}",
+      "value": "{{ hostvars[host]['priv_validator_pub_key_value'] }}"
+    },
+    "power": "1",
+    "name": "{{ host }}"
+  }{% if not loop.last %},{% endif %}
+{% endfor %}
+  ],
+  "app_state": {
+    "accounts": [],
+    "balances": []
+  }
+}

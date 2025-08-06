@@ -1,0 +1,7 @@
+#SPDX-License-Identifier: MIT-0
+---
+# defaults file for caddy
+
+caddy_upstream_host: localhost
+caddy_upstream_port: 8545
+caddy_listen_port: 443

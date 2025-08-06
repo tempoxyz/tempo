@@ -1,0 +1,8 @@
+#SPDX-License-Identifier: MIT-0
+---
+# handlers file for tempo
+
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+  become: yes

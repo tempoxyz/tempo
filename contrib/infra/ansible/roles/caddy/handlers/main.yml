@@ -1,0 +1,9 @@
+#SPDX-License-Identifier: MIT-0
+---
+# handlers file for caddy
+
+- name: restart caddy
+  systemd:
+    name: caddy
+    state: restarted
+  become: yes

@@ -1,0 +1,11 @@
+# Minimal Reth configuration
+[stages]
+[prune]
+
+[peers]
+trusted_nodes = [
+{% for host in groups['devnet-1'] %}
+  "enode://{{ hostvars[host]['disc_pub_key_hex'] }}@{{ host }}:30303"{% if not loop.last %},{% endif %}
+
+{% endfor %}
+]

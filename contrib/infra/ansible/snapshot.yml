@@ -1,0 +1,54 @@
+---
+- name: Create malachite snapshot
+  hosts: all
+  tags: snapshot
+  vars:
+    snapshot_date: "{{ ansible_date_time.date }}"
+    archive_name: "snapshot-{{ snapshot_date }}-{{ ansible_hostname }}.tar.gz"
+    
+  tasks:
+    - name: Check if malachite directory exists
+      stat:
+        path: "{{ ansible_env.HOME }}/malachite"
+      register: malachite_dir
+
+    - name: Fail if malachite directory doesn't exist
+      fail:
+        msg: "Malachite directory does not exist at {{ ansible_env.HOME }}/malachite"
+      when: not malachite_dir.stat.exists
+
+    - name: Stop Tempo service
+      systemd:
+        name: tempo
+        state: stopped
+      become: yes
+
+    - name: Create archive of malachite directory
+      community.general.archive:
+        path: "{{ ansible_env.HOME }}/malachite"
+        dest: "/tmp/{{ archive_name }}"
+        format: gz
+        mode: '0644'
+
+    - name: Download archive to local machine
+      ansible.posix.synchronize:
+        src: "/tmp/{{ archive_name }}"
+        dest: "./snapshots/{{ archive_name }}"
+        mode: pull
+
+    - name: Remove temporary archive from remote host
+      file:
+        path: "/tmp/{{ archive_name }}"
+        state: absent
+
+    - name: Start Tempo service
+      systemd:
+        name: tempo
+        state: started
+      become: yes
+
+    - name: Display snapshot location
+      debug:
+        msg: "Snapshot saved to ./snapshots/{{ archive_name }}"
+      delegate_to: localhost
+      run_once: true

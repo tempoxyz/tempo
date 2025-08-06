@@ -1,0 +1,54 @@
+---
+- name: Install Caddy
+  apt:
+    name: caddy
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Create SSL certificate directory
+  file:
+    path: /etc/caddy/certs
+    state: directory
+    mode: '0700'
+    owner: caddy
+    group: caddy
+  become: yes
+
+- name: Install Cloudflare certificate
+  copy:
+    content: "{{ tempo_cloudflare_ca }}"
+    dest: /etc/caddy/certs/cert.pem
+    mode: '0600'
+    owner: caddy
+    group: caddy
+  become: yes
+  notify: restart caddy
+
+- name: Install Cloudflare private key
+  copy:
+    content: "{{ tempo_cloudflare_private_key }}"
+    dest: /etc/caddy/certs/key.pem
+    mode: '0600'
+    owner: caddy
+    group: caddy
+  become: yes
+  notify: restart caddy
+
+- name: Generate Caddyfile
+  template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    mode: '0644'
+    owner: root
+    group: root
+  become: yes
+  notify: restart caddy
+
+- name: Enable and start Caddy service
+  systemd:
+    name: caddy
+    state: started
+    enabled: yes
+    daemon_reload: yes
+  become: yes

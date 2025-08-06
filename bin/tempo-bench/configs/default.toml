@@ -1,5 +1,5 @@
 [network_worker]
-target_url = "http://127.0.0.1:8545"
+target_urls = ["http://127.0.0.1:8545"]
 total_connections = 10_000 # Limited by # of ephemeral ports.
 
 batch_factor = 1

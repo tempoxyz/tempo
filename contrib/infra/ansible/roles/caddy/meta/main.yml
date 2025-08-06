@@ -1,0 +1,20 @@
+#SPDX-License-Identifier: MIT-0
+---
+galaxy_info:
+  author: Tempo Team
+  description: Caddy reverse proxy for Tempo RPC endpoints
+  min_ansible_version: "2.9"
+  
+  platforms:
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+
+  galaxy_tags:
+    - web
+    - proxy
+    - ssl
+    - caddy
+
+dependencies: []

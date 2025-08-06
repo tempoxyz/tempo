@@ -1,0 +1,45 @@
+- name: Stop the Tempo service
+  systemd:
+    name: tempo
+    state: stopped
+    enabled: no
+    daemon_reload: yes
+  become: yes
+
+- name: Reset the network if needed
+  file:
+    path: "{{ ansible_env.HOME }}/malachite"
+    state: absent
+  when: tempo_force_reset
+
+- name: Check if validator key exists
+  stat:
+    path: "{{ ansible_env.HOME }}/malachite/config/priv_validator_key.json"
+  register: validator_key_stat
+
+- name: Include key generation tasks
+  include_tasks: keygen.yml
+  when: not validator_key_stat.stat.exists or tempo_force_reset
+
+- name: Include discovery key generation tasks
+  include_tasks: disc_keygen.yml
+
+- name: Include installation tasks
+  include_tasks: install.yml
+
+- name: Check if genesis file exists
+  stat:
+    path: "{{ ansible_env.HOME }}/malachite/config/genesis.json"
+  register: genesis_file_stat
+
+- name: Include setup tasks
+  include_tasks: setup.yml
+  when: not genesis_file_stat.stat.exists
+
+- name: Enable and start tempo service
+  systemd:
+    name: tempo
+    state: restarted
+    enabled: yes
+    daemon_reload: yes
+  become: yes

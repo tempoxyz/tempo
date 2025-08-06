@@ -1,0 +1,123 @@
+# Node configuration template for reth-malachite
+# This file uses environment variable substitution
+
+# Node identifier
+moniker = "{{ ansible_host }}"
+
+# Consensus configuration
+[consensus]
+# How long to wait before proposing a new block
+timeout_propose = "5s"
+timeout_propose_delta = "1s"
+# How long to wait for prevotes
+timeout_prevote = "2s"
+timeout_prevote_delta = "1s"
+# How long to wait for precommits
+timeout_precommit = "2s"
+timeout_precommit_delta = "1s"
+# How long to wait before entering next round
+timeout_commit = "2s"
+
+# Whether to skip timeout_commit if all signatures are collected
+skip_timeout_commit = true
+
+# Value payload type
+value_payload = "proposal-and-parts"
+
+# Queue capacity
+queue_capacity = 100
+
+# Timeout for rebroadcasting
+timeout_rebroadcast = "5s"
+
+# Consensus P2P configuration
+[consensus.p2p]
+# Address to listen on for P2P connections
+listen_addr = "/ip4/0.0.0.0/tcp/26656"
+
+# Persistent peers to maintain connections with
+persistent_peers = [{% set peers = [] %}{% for host in groups['all'] %}{% if host != ansible_host %}{% set _ = peers.append('"/ip4/' ~ hostvars[host]['ansible_tailscale0']['ipv4']['address'] ~ '/tcp/26656"') %}{% endif %}{% endfor %}{{ peers | join(', ') }}]
+
+# Allow duplicate IPs in peer connections
+allow_duplicate_ip = true
+
+# Node ID (automatically derived from validator key)
+# node_id = ""
+
+# Transport protocol
+transport = "tcp"
+
+# Maximum size for pubsub messages
+pubsub_max_size = "4.2 MB"
+
+# Maximum size for RPC messages
+rpc_max_size = "10.5 MB"
+
+[consensus.p2p.discovery]
+# Enable peer discovery
+enabled = false
+bootstrap_protocol = "full"
+selector = "random"
+num_outbound_peers = 2
+num_inbound_peers = 2
+max_connections_per_peer = 1
+ephemeral_connection_timeout = "5s"
+
+[consensus.p2p.protocol]
+type = "gossipsub"
+mesh_n = 6
+mesh_n_high = 12
+mesh_n_low = 4
+mesh_outbound_min = 2
+
+# WAL (Write-Ahead Log) configuration
+[wal]
+# Enable write-ahead logging
+enabled = true
+
+# Directory for WAL files
+dir = "data/wal"
+
+# Metrics configuration
+[metrics]
+# Enable Prometheus metrics
+enabled = true
+
+# Metrics server listen address
+listen_addr = "0.0.0.0:9000"
+
+# Prefix for metric names
+namespace = "malachite"
+
+# Runtime configuration
+[runtime]
+# Runtime flavor (single_threaded or multi_threaded)
+flavor = "single_threaded"
+
+# Number of worker threads for async runtime
+num_threads = 4
+
+# Thread name prefix
+thread_name = "malachite-{{ ansible_host }}"
+
+# Application configuration
+[app]
+# Block production time
+block_time = "1s"
+
+# Fee recipient address for this validator
+fee_recipient = "0x0000000000000000000000000000000000000000"
+
+# Whether to produce empty blocks
+empty_blocks = true
+
+# Maximum gas per block
+max_gas_per_block = 30000000
+
+# Chain configuration
+[chain]
+# Chain ID
+id = 1337
+
+# Network ID (same as chain ID for simplicity)
+network_id = 1337

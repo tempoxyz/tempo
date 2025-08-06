@@ -1,0 +1,50 @@
+- name: Bootstrap system
+  hosts: devnet-1
+  tags: bootstrap
+  roles:
+  - role: bootstrap
+
+- name: Set up devnet
+  hosts: devnet-1
+  tags: devnet
+  roles:
+  - role: tempo
+- name: Set up loadbalancer
+  hosts: devnet-1
+  tags: loadbalancer
+  roles:
+  - role: caddy
+- name: Set up Grafana Alloy
+  hosts: devnet-1
+  become: true
+  tasks:
+    - name: Install Alloy
+      ansible.builtin.include_role:
+        name: grafana.grafana.alloy
+      vars:
+        alloy_config: |
+          prometheus.scrape "default" {
+            targets = [{"__address__" = "localhost:9000"}]
+            forward_to = [prometheus.relabel.instance.receiver]
+          }
+
+          prometheus.relabel "instance" {
+            forward_to = [prometheus.remote_write.prom.receiver]
+
+            rule {
+              action = "replace"
+              target_label = "instance"
+              replacement = "{{ tempo_chain_id }}-{{ ansible_hostname }}"
+            }
+          }
+
+          prometheus.remote_write "prom" {
+            endpoint {
+                url = "https://prometheus-prod-56-prod-us-east-2.grafana.net/api/prom/push"
+
+                basic_auth {
+                  username = "2586637"
+                  password = "{{ tempo_grafana_api_token }}"
+                }
+            }
+          }
