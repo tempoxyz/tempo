@@ -6,7 +6,7 @@
 //!
 //! # Components
 //!
-//! - [`RethNode`]: Node type configuration with Malachite consensus
+//! - [`TempoNode`]: Node type configuration with Malachite consensus & Tempo EVM
 //! - [`MalachitePayloadServiceBuilder`]: Custom payload builder for Malachite
 //!
 //! The configuration uses standard Ethereum components for most functionality

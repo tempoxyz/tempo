@@ -8,7 +8,7 @@ pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: u64) -> U256 {
     U256::from_be_bytes(keccak256(&data).0)
 }
 
-/// Compute storage slot for a double mapping (mapping[key1][key2])
+/// Compute storage slot for a double mapping (mapping\[key1\]\[key2\])
 pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
     key1: T,
     key2: U,
