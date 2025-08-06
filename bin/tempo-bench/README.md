@@ -1,6 +1,6 @@
-# Benchmarking Ethereum networks with `crescendo`
+# Benchmarking Ethereum networks with `tempo-bench`
 
-The binary contained in this directory, `crescendo`, is a high-performance tool for load testing Ethereum-compatible networks. It generates and sends large volumes of ERC-20 token transfer transactions to benchmark network throughput and identify performance bottlenecks.
+The binary contained in this directory, `tempo-bench`, is a high-performance tool for load testing Ethereum-compatible networks. It provides multiple subcommands for benchmarking and test data generation.
 
 ## Installation
 
@@ -12,42 +12,80 @@ cd reth
 cargo install --path bin/reth --profile maxperf
 ```
 
-Install `crescendo`
+Install `tempo-bench`
 
 ```bash
-cd bin/tempo-bench
-cargo install --path crescendo --profile maxperf
+cargo install --path bin/tempo-bench --profile maxperf
 ```
 
-## Generate test accounts
+## Commands
 
-Before running benchmarks, generate pre-funded accounts for the `genesis.json`
+### Overview
 
-```bash
-cargo run --bin generate-genesis-alloc
+```
+Usage: tempo-bench <COMMAND>
+
+Commands:
+  crescendo         Run Crescendo benchmarking
+  generate-genesis  Generate genesis allocation file for testing
+  help              Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
-This creates `genesis.json` with 50_000 accounts, each funded with 1_000_000 ETH.
+### generate-genesis - Create Test Accounts
 
-## Running the Benchmarks
+Generate pre-funded test accounts for benchmarking:
 
-Start `reth` with optimized settings
+```
+Usage: tempo-bench generate-genesis [OPTIONS]
 
-```bash
-just start-reth
+Options:
+  -a, --accounts <ACCOUNTS>  Number of accounts to generate [default: 50000]
+  -o, --output <OUTPUT>      Output file path [default: genesis.json]
+  -m, --mnemonic <MNEMONIC>  Mnemonic to use for account generation [default: "test test test test test test test test test test test junk"]
+  -b, --balance <BALANCE>    Balance for each account (in hex) [default: 0xD3C21BCECCEDA1000000]
+  -h, --help                 Print help
 ```
 
-For the most accurate results, make sure to clear the datadir after each run.
+**Examples:**
 
 ```bash
-# Linux (default: $XDG_DATA_HOME/reth/ or $HOME/.local/share/reth/)
-rm -rf $HOME/.local/share/reth/
+# Generate 50,000 accounts with default settings
+tempo-bench generate-genesis
 
-# macOS (default: $HOME/Library/Application Support/reth/)
-rm -rf "$HOME/Library/Application Support/reth/"
+# Generate 25,000 accounts with custom output file
+tempo-bench generate-genesis --accounts 25000 --output test-genesis.json
 
-# Windows (default: %APPDATA%/reth/)
-rmdir /s "%APPDATA%\reth"
+# Generate accounts with custom balance (1M ETH in hex)
+tempo-bench generate-genesis --balance 0xD3C21BCECCEDA1000000
+```
+
+### crescendo - Run Load Tests
+
+Execute high throughput tx load testing:
+
+```
+Usage: tempo-bench crescendo --config <CONFIG>
+
+Options:
+  -c, --config <CONFIG>  Path to the configuration file
+  -h, --help             Print help
+```
+
+**Examples:**
+
+```bash
+# Run with default balanced configuration
+tempo-bench crescendo --config configs/default.toml
+
+# Run with aggressive high-throughput settings
+tempo-bench crescendo --config configs/aggressive.toml
+
+# Run with maximum stress test settings
+tempo-bench crescendo --config configs/max.toml
 ```
 
 ## Configuration
@@ -106,14 +144,6 @@ tx_gen_worker_percentage = 0.1        # 10% of cores for transaction generation
 network_worker_percentage = 0.9       # 90% of cores for network I/O
 ```
 
-## Running the Benchmarks
-
-Start crescendo with your chosen configuration:
-
-```bash
-crescendo <path_to_config> --chain <path_to_genesis.json>
-```
-
 ### Example Output
 
 ```
@@ -130,3 +160,36 @@ crescendo <path_to_config> --chain <path_to_genesis.json>
 ```
 
 The benchmark will continuously output performance metrics including transaction generation rates, network throughput, queue lengths, and response times. As the total transaction count increases, the rate limiter will automatically scale up according to your configured thresholds.
+
+## Quick Start
+
+### 1. Generate genesis.json
+
+```bash
+tempo-bench generate-genesis --accounts 50000 --output genesis.json
+```
+
+### 2. Start Reth
+
+```bash
+just start-reth
+```
+
+### 3. Run crescendo
+
+```bash
+tempo-bench crescendo --config configs/default.toml
+```
+
+For the most accurate results, make sure to clear the datadir after each run.
+
+```bash
+# Linux (default: $XDG_DATA_HOME/reth/ or $HOME/.local/share/reth/)
+rm -rf $HOME/.local/share/reth/
+
+# macOS (default: $HOME/Library/Application Support/reth/)
+rm -rf "$HOME/Library/Application Support/reth/"
+
+# Windows (default: %APPDATA%/reth/)
+rmdir /s "%APPDATA%\reth"
+```
