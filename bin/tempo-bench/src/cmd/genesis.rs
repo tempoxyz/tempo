@@ -6,10 +6,9 @@ use alloy::{
 use alloy_signer_local::coins_bip39::English;
 use clap::Parser;
 use rayon::prelude::*;
-use reth_chainspec::{Chain, ChainSpec, ChainSpecBuilder};
 use serde::{Deserialize, Serialize};
 use simple_tqdm::ParTqdm;
-use std::{collections::BTreeMap, default, fs, path::PathBuf, str::FromStr, u64};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AccountBalance {
@@ -46,20 +45,6 @@ pub struct GenesisArgs {
 
 impl GenesisArgs {
     pub async fn run(self) -> eyre::Result<()> {
-        let mut chain_spec = ChainSpecBuilder::mainnet()
-            .chain(Chain::from(self.chain_id))
-            .homestead_activated()
-            .constantinople_activated()
-            .byzantium_activated()
-            .petersburg_activated()
-            .istanbul_activated()
-            .berlin_activated()
-            .london_activated()
-            .shanghai_activated()
-            .cancun_activated()
-            .prague_activated()
-            .build();
-
         println!("Generating {:?} accounts...", self.accounts);
 
         let alloc: BTreeMap<Address, GenesisAccount> = (0..self.accounts)
