@@ -9,7 +9,6 @@ use alloy::{
 use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use dashmap::DashMap;
-use rand::Rng;
 use rayon::prelude::*;
 use thousands::Separable;
 
@@ -57,26 +56,26 @@ sol! {
 pub fn tx_gen_worker(_worker_id: u32) {
     let config = &config::get().tx_gen_worker;
 
-    let mut rng = rand::thread_rng();
     let mut tx_batch = Vec::with_capacity(config.batch_size as usize);
 
     loop {
-        let account_index = rng.gen_range(0..config.num_accounts); // Account we'll be sending from.
+        // Account we'll be sending from.
+        let sender_index = fastrand::u32(..config.num_accounts);
+        // Send to 1/Nth of the accounts.
+        let recipient_index =
+            fastrand::u32(..(config.num_accounts / config.recipient_distribution_factor));
 
         // Get and increment nonce atomically.
         let nonce = {
-            let mut entry = NONCE_MAP.get_mut(&account_index).unwrap();
+            let mut entry = NONCE_MAP.get_mut(&sender_index).unwrap();
             let current_nonce = *entry;
             *entry = current_nonce + 1;
             current_nonce
         };
 
-        let (signer, recipient) = (
-            &SIGNER_LIST[account_index as usize],
-            SIGNER_LIST[rng
-                .gen_range(0..(config.num_accounts / config.recipient_distribution_factor))
-                as usize] // Send to 1/Nth of the accounts.
-                .address(),
+        let (signer, recipient_addr) = (
+            &SIGNER_LIST[sender_index as usize],
+            SIGNER_LIST[recipient_index as usize].address(),
         );
 
         let tx = sign_and_encode_tx(
@@ -89,8 +88,8 @@ pub fn tx_gen_worker(_worker_id: u32) {
                 to: TxKind::Call(config.token_contract_address.parse::<Address>().unwrap()),
                 value: U256::ZERO,
                 input: ERC20::transferCall {
-                    to: recipient,
-                    amount: U256::from(rng.gen_range(1..=config.max_transfer_amount)),
+                    to: recipient_addr,
+                    amount: U256::from(fastrand::u64(1..=config.max_transfer_amount)),
                 }
                 .abi_encode()
                 .into(),
