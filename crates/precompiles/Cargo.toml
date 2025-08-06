@@ -37,7 +37,7 @@ reth-storage-api.workspace = true
 reth-tasks.workspace = true
 reth-tracing.workspace = true
 reth-trie-db.workspace = true
-alloy.workspace = true
+alloy = { workspace = true, features = ["sol-types"] }
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-genesis.workspace = true

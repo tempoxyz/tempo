@@ -1,52 +1,21 @@
-use std::sync::LazyLock;
+use alloy::primitives::{Address, B256, IntoLogData, U256};
 
-use alloy::{
-    primitives::{Address, B256, IntoLogData, U256},
-    sol,
-};
-
-use crate::contracts::storage::{
-    StorageProvider,
-    slots::{double_mapping_slot, mapping_slot},
+use crate::contracts::{
+    storage::{
+        StorageProvider,
+        slots::{double_mapping_slot, mapping_slot},
+    },
+    types::{IRolesAuth, RolesAuthError, RolesAuthEvent},
 };
 
 // Constants
-pub static DEFAULT_ADMIN_ROLE: LazyLock<B256> = LazyLock::new(|| B256::ZERO);
-pub static UNGRANTABLE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(U256::MAX));
+pub static DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
+pub static UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 
 // Storage layout constants for roles
 pub mod slots {
     pub const ROLES: u64 = 0;
     pub const ROLE_ADMIN: u64 = 1;
-}
-
-sol! {
-    #[derive(Debug, PartialEq, Eq)]
-    interface RolesAuth {
-        // Role Management Functions
-        function grantRole(bytes32 role, address account) external;
-        function revokeRole(bytes32 role, address account) external;
-        function renounceRole(bytes32 role) external;
-        function setRoleAdmin(bytes32 role, bytes32 adminRole) external;
-        function hasRole(address account, bytes32 role) external view returns (bool);
-        function getRoleAdmin(bytes32 role) external view returns (bytes32);
-
-        // Events
-        event RoleMembershipUpdated(bytes32 indexed role, address indexed account, address indexed sender, bool hasRole);
-        event RoleAdminUpdated(bytes32 indexed role, bytes32 indexed newAdminRole, address indexed sender);
-
-        // Errors
-        error Unauthorized();
-    }
-}
-
-// Re-export for convenience
-pub use RolesAuth::{RolesAuthErrors as RolesError, RolesAuthEvents as RolesEvent};
-
-/// Error type that can be converted to contract-specific errors
-#[derive(Debug)]
-pub enum RolesAuthError {
-    Unauthorized,
 }
 
 /// Complete roles system that handles calldata parsing and event emission
@@ -74,28 +43,28 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
     /// Initialize the UNGRANTABLE_ROLE to be self-administered
     pub fn initialize(&mut self) {
-        self.set_role_admin_internal(*UNGRANTABLE_ROLE, *UNGRANTABLE_ROLE);
+        self.set_role_admin_internal(UNGRANTABLE_ROLE, UNGRANTABLE_ROLE);
     }
 
     /// Grant the default admin role to an account
     pub fn grant_default_admin(&mut self, admin: &Address) {
-        self.grant_role_internal(admin, *DEFAULT_ADMIN_ROLE);
+        self.grant_role_internal(admin, DEFAULT_ADMIN_ROLE);
     }
 
     // Public functions that handle calldata and emit events
 
-    pub fn has_role(&mut self, call: RolesAuth::hasRoleCall) -> bool {
+    pub fn has_role(&mut self, call: IRolesAuth::hasRoleCall) -> bool {
         self.has_role_internal(&call.account, call.role)
     }
 
-    pub fn get_role_admin(&mut self, call: RolesAuth::getRoleAdminCall) -> B256 {
+    pub fn get_role_admin(&mut self, call: IRolesAuth::getRoleAdminCall) -> B256 {
         self.get_role_admin_internal(call.role)
     }
 
     pub fn grant_role(
         &mut self,
         msg_sender: &Address,
-        call: RolesAuth::grantRoleCall,
+        call: IRolesAuth::grantRoleCall,
     ) -> Result<(), RolesAuthError> {
         let admin_role = self.get_role_admin_internal(call.role);
         self.check_role_internal(msg_sender, admin_role)?;
@@ -104,7 +73,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
         self.storage.emit_event(
             self.contract_id,
-            RolesEvent::RoleMembershipUpdated(RolesAuth::RoleMembershipUpdated {
+            RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: call.account,
                 sender: *msg_sender,
@@ -119,7 +88,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     pub fn revoke_role(
         &mut self,
         msg_sender: &Address,
-        call: RolesAuth::revokeRoleCall,
+        call: IRolesAuth::revokeRoleCall,
     ) -> Result<(), RolesAuthError> {
         let admin_role = self.get_role_admin_internal(call.role);
         self.check_role_internal(msg_sender, admin_role)?;
@@ -128,7 +97,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
         self.storage.emit_event(
             self.contract_id,
-            RolesEvent::RoleMembershipUpdated(RolesAuth::RoleMembershipUpdated {
+            RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: call.account,
                 sender: *msg_sender,
@@ -143,7 +112,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     pub fn renounce_role(
         &mut self,
         msg_sender: &Address,
-        call: RolesAuth::renounceRoleCall,
+        call: IRolesAuth::renounceRoleCall,
     ) -> Result<(), RolesAuthError> {
         self.check_role_internal(msg_sender, call.role)?;
 
@@ -151,7 +120,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
         self.storage.emit_event(
             self.contract_id,
-            RolesEvent::RoleMembershipUpdated(RolesAuth::RoleMembershipUpdated {
+            RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: *msg_sender,
                 sender: *msg_sender,
@@ -166,7 +135,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     pub fn set_role_admin(
         &mut self,
         msg_sender: &Address,
-        call: RolesAuth::setRoleAdminCall,
+        call: IRolesAuth::setRoleAdminCall,
     ) -> Result<(), RolesAuthError> {
         let current_admin_role = self.get_role_admin_internal(call.role);
         self.check_role_internal(msg_sender, current_admin_role)?;
@@ -175,7 +144,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
         self.storage.emit_event(
             self.contract_id,
-            RolesEvent::RoleAdminUpdated(RolesAuth::RoleAdminUpdated {
+            RolesAuthEvent::RoleAdminUpdated(IRolesAuth::RoleAdminUpdated {
                 role: call.role,
                 newAdminRole: call.adminRole,
                 sender: *msg_sender,
@@ -194,117 +163,35 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     // Internal implementation functions
 
     fn has_role_internal(&mut self, account: &Address, role: B256) -> bool {
-        let slot = double_mapping_slot(account, role, self.roles_base_slot);
+        let slot = double_mapping_slot(account, &role, self.roles_base_slot);
         self.storage.sload(self.contract_id, slot) != U256::ZERO
     }
 
     pub fn grant_role_internal(&mut self, account: &Address, role: B256) {
-        let slot = double_mapping_slot(account, role, self.roles_base_slot);
+        let slot = double_mapping_slot(account, &role, self.roles_base_slot);
         self.storage.sstore(self.contract_id, slot, U256::ONE);
     }
 
     fn revoke_role_internal(&mut self, account: &Address, role: B256) {
-        let slot = double_mapping_slot(account, role, self.roles_base_slot);
+        let slot = double_mapping_slot(account, &role, self.roles_base_slot);
         self.storage.sstore(self.contract_id, slot, U256::ZERO);
     }
 
     fn get_role_admin_internal(&mut self, role: B256) -> B256 {
-        let slot = mapping_slot(role, self.role_admin_base_slot);
+        let slot = mapping_slot(&role, self.role_admin_base_slot);
         let admin = self.storage.sload(self.contract_id, slot);
         B256::from(admin) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     }
 
     fn set_role_admin_internal(&mut self, role: B256, admin_role: B256) {
-        let slot = mapping_slot(role, self.role_admin_base_slot);
+        let slot = mapping_slot(&role, self.role_admin_base_slot);
         self.storage
             .sstore(self.contract_id, slot, U256::from_be_bytes(admin_role.0));
     }
 
     fn check_role_internal(&mut self, account: &Address, role: B256) -> Result<(), RolesAuthError> {
         if !self.has_role_internal(account, role) {
-            return Err(RolesAuthError::Unauthorized);
-        }
-        Ok(())
-    }
-}
-
-/// Trait for contracts that implement role-based access control
-/// This is the low-level trait, most contracts should use RolesAuthContract instead
-pub trait RolesAuthTrait {
-    fn has_role(&mut self, account: &Address, role: B256) -> bool;
-    fn get_role_admin(&mut self, role: B256) -> B256;
-    fn grant_role(&mut self, account: &Address, role: B256);
-    fn revoke_role(&mut self, account: &Address, role: B256);
-    fn set_role_admin(&mut self, role: B256, admin_role: B256);
-    fn check_role(&mut self, account: &Address, role: B256) -> Result<(), RolesError>;
-}
-
-/// Generic implementation of role-based access control
-/// Most contracts should use RolesAuthContract instead of this directly
-pub struct RolesAuthProvider<'a, S: StorageProvider> {
-    storage: &'a mut S,
-    contract_id: u64,
-    roles_base_slot: u64,
-    role_admin_base_slot: u64,
-}
-
-impl<'a, S: StorageProvider> RolesAuthProvider<'a, S> {
-    pub fn new(
-        storage: &'a mut S,
-        contract_id: u64,
-        roles_base_slot: u64,
-        role_admin_base_slot: u64,
-    ) -> Self {
-        Self {
-            storage,
-            contract_id,
-            roles_base_slot,
-            role_admin_base_slot,
-        }
-    }
-
-    /// Initialize the UNGRANTABLE_ROLE to be self-administered
-    pub fn initialize(&mut self) {
-        self.set_role_admin(*UNGRANTABLE_ROLE, *UNGRANTABLE_ROLE);
-    }
-
-    /// Grant the default admin role to an account
-    pub fn grant_default_admin(&mut self, admin: &Address) {
-        self.grant_role(admin, *DEFAULT_ADMIN_ROLE);
-    }
-}
-
-impl<'a, S: StorageProvider> RolesAuthTrait for RolesAuthProvider<'a, S> {
-    fn has_role(&mut self, account: &Address, role: B256) -> bool {
-        let slot = double_mapping_slot(account, role, self.roles_base_slot);
-        self.storage.sload(self.contract_id, slot) != U256::ZERO
-    }
-
-    fn grant_role(&mut self, account: &Address, role: B256) {
-        let slot = double_mapping_slot(account, role, self.roles_base_slot);
-        self.storage.sstore(self.contract_id, slot, U256::ONE);
-    }
-
-    fn revoke_role(&mut self, account: &Address, role: B256) {
-        let slot = double_mapping_slot(account, role, self.roles_base_slot);
-        self.storage.sstore(self.contract_id, slot, U256::ZERO);
-    }
-
-    fn get_role_admin(&mut self, role: B256) -> B256 {
-        let slot = mapping_slot(role, self.role_admin_base_slot);
-        let admin = self.storage.sload(self.contract_id, slot);
-        B256::from(admin) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
-    }
-
-    fn set_role_admin(&mut self, role: B256, admin_role: B256) {
-        let slot = mapping_slot(role, self.role_admin_base_slot);
-        self.storage
-            .sstore(self.contract_id, slot, U256::from_be_bytes(admin_role.0));
-    }
-
-    fn check_role(&mut self, account: &Address, role: B256) -> Result<(), RolesError> {
-        if !self.has_role(account, role) {
-            return Err(RolesError::Unauthorized(RolesAuth::Unauthorized {}));
+            return Err(RolesAuthError::Unauthorized(IRolesAuth::Unauthorized {}));
         }
         Ok(())
     }
@@ -331,9 +218,9 @@ mod tests {
         roles.grant_default_admin(&admin);
 
         // Test hasRole
-        let has_admin = roles.has_role(RolesAuth::hasRoleCall {
+        let has_admin = roles.has_role(IRolesAuth::hasRoleCall {
             account: admin,
-            role: *DEFAULT_ADMIN_ROLE,
+            role: DEFAULT_ADMIN_ROLE,
         });
         assert!(has_admin);
 
@@ -341,7 +228,7 @@ mod tests {
         roles
             .grant_role(
                 &admin,
-                RolesAuth::grantRoleCall {
+                IRolesAuth::grantRoleCall {
                     role: custom_role,
                     account: user,
                 },
@@ -349,7 +236,7 @@ mod tests {
             .unwrap();
 
         // Check custom role
-        let has_custom = roles.has_role(RolesAuth::hasRoleCall {
+        let has_custom = roles.has_role(IRolesAuth::hasRoleCall {
             account: user,
             role: custom_role,
         });
@@ -375,7 +262,7 @@ mod tests {
         roles
             .set_role_admin(
                 &admin,
-                RolesAuth::setRoleAdminCall {
+                IRolesAuth::setRoleAdminCall {
                     role: custom_role,
                     adminRole: admin_role,
                 },
@@ -384,7 +271,7 @@ mod tests {
 
         // Check role admin
         let retrieved_admin =
-            roles.get_role_admin(RolesAuth::getRoleAdminCall { role: custom_role });
+            roles.get_role_admin(IRolesAuth::getRoleAdminCall { role: custom_role });
         assert_eq!(retrieved_admin, admin_role);
     }
 
@@ -401,7 +288,7 @@ mod tests {
 
         // Renounce role
         roles
-            .renounce_role(&user, RolesAuth::renounceRoleCall { role: custom_role })
+            .renounce_role(&user, IRolesAuth::renounceRoleCall { role: custom_role })
             .unwrap();
 
         // Check role is removed
@@ -422,12 +309,15 @@ mod tests {
         // Try to grant role without permission
         let result = roles.grant_role(
             &user,
-            RolesAuth::grantRoleCall {
+            IRolesAuth::grantRoleCall {
                 role: custom_role,
                 account: other,
             },
         );
 
-        assert!(matches!(result, Err(RolesAuthError::Unauthorized)));
+        assert!(matches!(
+            result,
+            Err(RolesAuthError::Unauthorized(IRolesAuth::Unauthorized {}))
+        ));
     }
 }

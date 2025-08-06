@@ -5,7 +5,7 @@ use alloy::primitives::{Address, B256, IntoLogData, U256, keccak256};
 use crate::{
     contracts::{
         IERC20, StorageProvider,
-        roles::{DEFAULT_ADMIN_ROLE, RolesAuth, RolesAuthContract},
+        roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
         types::{ERC20Error, ERC20Event},
     },
@@ -29,7 +29,8 @@ mod slots {
     pub const ALLOWANCES: u64 = 11;
     pub const NONCES: u64 = 12;
     pub const SALTS: u64 = 13;
-    // Roles storage is at slots 14 and 15, used by RolesAuthProvider
+    pub const ROLES_BASE_SLOT: u64 = 14; // via RolesAuthContract
+    pub const ROLE_ADMIN_BASE_SLOT: u64 = 15; // via RolesAuthContract
 }
 
 #[derive(Debug)]
@@ -118,7 +119,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         msg_sender: &Address,
         call: IERC20::changeTransferPolicyIdCall,
     ) -> Result<(), ERC20Error> {
-        self.check_role(msg_sender, *DEFAULT_ADMIN_ROLE)?;
+        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
         self.storage.sstore(
             self.token_id,
             U256::from(slots::TRANSFER_POLICY_ID),
@@ -141,7 +142,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         msg_sender: &Address,
         call: IERC20::setSupplyCapCall,
     ) -> Result<(), ERC20Error> {
-        self.check_role(msg_sender, *DEFAULT_ADMIN_ROLE)?;
+        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
         if call.newSupplyCap < self.total_supply() {
             return Err(erc20_err!(SupplyCapExceeded));
         }
@@ -447,82 +448,6 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
 
         Ok(())
     }
-
-    // Role Management Functions (delegating to RolesAuthContract)
-    pub fn has_role(&mut self, call: IERC20::hasRoleCall) -> bool {
-        let mut roles = self.get_roles_contract();
-        roles.has_role(RolesAuth::hasRoleCall {
-            account: call.account,
-            role: call.role,
-        })
-    }
-
-    pub fn get_role_admin(&mut self, call: IERC20::getRoleAdminCall) -> B256 {
-        let mut roles = self.get_roles_contract();
-        roles.get_role_admin(RolesAuth::getRoleAdminCall { role: call.role })
-    }
-
-    pub fn grant_role(
-        &mut self,
-        msg_sender: &Address,
-        call: IERC20::grantRoleCall,
-    ) -> Result<(), ERC20Error> {
-        let mut roles = self.get_roles_contract();
-        roles
-            .grant_role(
-                msg_sender,
-                RolesAuth::grantRoleCall {
-                    role: call.role,
-                    account: call.account,
-                },
-            )
-            .map_err(|_| erc20_err!(PolicyForbids))
-    }
-
-    pub fn revoke_role(
-        &mut self,
-        msg_sender: &Address,
-        call: IERC20::revokeRoleCall,
-    ) -> Result<(), ERC20Error> {
-        let mut roles = self.get_roles_contract();
-        roles
-            .revoke_role(
-                msg_sender,
-                RolesAuth::revokeRoleCall {
-                    role: call.role,
-                    account: call.account,
-                },
-            )
-            .map_err(|_| erc20_err!(PolicyForbids))
-    }
-
-    pub fn renounce_role(
-        &mut self,
-        msg_sender: &Address,
-        call: IERC20::renounceRoleCall,
-    ) -> Result<(), ERC20Error> {
-        let mut roles = self.get_roles_contract();
-        roles
-            .renounce_role(msg_sender, RolesAuth::renounceRoleCall { role: call.role })
-            .map_err(|_| erc20_err!(PolicyForbids))
-    }
-
-    pub fn set_role_admin(
-        &mut self,
-        msg_sender: &Address,
-        call: IERC20::setRoleAdminCall,
-    ) -> Result<(), ERC20Error> {
-        let mut roles = self.get_roles_contract();
-        roles
-            .set_role_admin(
-                msg_sender,
-                RolesAuth::setRoleAdminCall {
-                    role: call.role,
-                    adminRole: call.adminRole,
-                },
-            )
-            .map_err(|_| erc20_err!(PolicyForbids))
-    }
 }
 
 // Utility functions
@@ -586,6 +511,16 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         Ok(())
     }
 
+    // Helper to get a RolesAuthContract instance
+    pub fn get_roles_contract(&mut self) -> RolesAuthContract<'_, S> {
+        RolesAuthContract::new(
+            self.storage,
+            self.token_id,
+            slots::ROLES_BASE_SLOT,
+            slots::ROLE_ADMIN_BASE_SLOT,
+        )
+    }
+
     #[inline]
     fn get_balance(&mut self, account: &Address) -> U256 {
         let slot = mapping_slot(account, slots::BALANCES);
@@ -621,11 +556,6 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         roles
             .check_role(account, role)
             .map_err(|_| erc20_err!(PolicyForbids))
-    }
-
-    // Helper to get a RolesAuthContract instance
-    fn get_roles_contract(&mut self) -> RolesAuthContract<'_, S> {
-        RolesAuthContract::new(self.storage, self.token_id, 14, 15) // slots::ROLES would be 14, ROLE_ADMIN would be 15
     }
 
     fn check_not_paused(&mut self) -> Result<(), ERC20Error> {

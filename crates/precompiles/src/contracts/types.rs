@@ -2,6 +2,24 @@ use alloy::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
+    interface IRolesAuth {
+        // Role Management Functions
+        function grantRole(bytes32 role, address account) external;
+        function revokeRole(bytes32 role, address account) external;
+        function renounceRole(bytes32 role) external;
+        function setRoleAdmin(bytes32 role, bytes32 adminRole) external;
+        function hasRole(address account, bytes32 role) external view returns (bool);
+        function getRoleAdmin(bytes32 role) external view returns (bytes32);
+
+        // Events
+        event RoleMembershipUpdated(bytes32 indexed role, address indexed account, address indexed sender, bool hasRole);
+        event RoleAdminUpdated(bytes32 indexed role, bytes32 indexed newAdminRole, address indexed sender);
+
+        // Errors
+        error Unauthorized();
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
     interface IERC20 {
         // ERC20 Standard Functions
         function name() external view returns (string);
@@ -26,21 +44,13 @@ sol! {
         function mint(address to, uint256 amount) external;
         function burn(uint256 amount) external;
         function burnBlocked(address from, uint256 amount) external;
-        function transferWithMemo(address to, uint256 amount, bytes memo) external;
+        function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
-
-        // Role Management Functions
-        function grantRole(bytes32 role, address account) external;
-        function revokeRole(bytes32 role, address account) external;
-        function renounceRole(bytes32 role) external;
-        function setRoleAdmin(bytes32 role, bytes32 adminRole) external;
-        function hasRole(address account, bytes32 role) external view returns (bool);
-        function getRoleAdmin(bytes32 role) external view returns (bytes32);
 
         // EIP-712 Permit
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
@@ -52,7 +62,7 @@ sol! {
         event Mint(address indexed to, uint256 amount);
         event Burn(address indexed from, uint256 amount);
         event BurnBlocked(address indexed from, uint256 amount);
-        event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes memo);
+        event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 memo);
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
@@ -99,3 +109,4 @@ macro_rules! erc20_err {
 // Use the auto-generated error and event enums
 pub use IERC20::{IERC20Errors as ERC20Error, IERC20Events as ERC20Event};
 pub use IERC20Factory::IERC20FactoryEvents as ERC20FactoryEvent;
+pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};

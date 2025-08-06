@@ -1,13 +1,15 @@
-use crate::contracts::{erc20::ERC20Token, storage::StorageProvider, types::IERC20};
+use crate::contracts::{
+    erc20::ERC20Token,
+    storage::StorageProvider,
+    types::{ERC20Error, IERC20, IRolesAuth, RolesAuthError},
+};
 use alloy::{
     primitives::{Address, Bytes},
     sol_types::SolCall,
 };
 use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 
-use crate::{
-    dispatch_metadata_call, dispatch_mutating_call, dispatch_view_call, precompiles::Precompile,
-};
+use crate::{dispatch_mutating_call, dispatch_view_call, precompiles::Precompile};
 
 mod gas_costs {
     pub const METADATA: u64 = 50;
@@ -21,17 +23,41 @@ impl<'a, S: StorageProvider> Precompile for ERC20Token<'a, S> {
         let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
 
         // Metadata
-        dispatch_metadata_call!(self, selector, IERC20::nameCall, name, gas_costs::METADATA);
-        dispatch_metadata_call!(self, selector, IERC20::symbolCall, symbol, gas_costs::METADATA);
-        dispatch_metadata_call!(self, selector, IERC20::decimalsCall, decimals, gas_costs::METADATA);
-        dispatch_metadata_call!(self, selector, IERC20::totalSupplyCall, total_supply, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, IERC20::nameCall, name, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, IERC20::symbolCall, symbol, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, IERC20::decimalsCall, decimals, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, IERC20::currencyCall, currency, gas_costs::METADATA);
+        dispatch_view_call!(self, selector, IERC20::totalSupplyCall, total_supply, gas_costs::METADATA);
 
         // View functions
         dispatch_view_call!(self, selector, IERC20::balanceOfCall, balance_of, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, IERC20::allowanceCall, allowance, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, IERC20::noncesCall, nonces, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, IERC20::saltsCall, salts, calldata, gas_costs::VIEW_FUNCTIONS);
 
-        // State-changing functions
-        dispatch_mutating_call!(self, selector, IERC20::transferCall, transfer, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, returns);
-        dispatch_mutating_call!(self, selector, IERC20::mintCall, mint, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS);
+        // State-changing functions (standard erc20)
+        dispatch_mutating_call!(self, selector, IERC20::transferFromCall, transfer_from, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error, returns);
+        dispatch_mutating_call!(self, selector, IERC20::transferCall, transfer, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error, returns);
+        dispatch_mutating_call!(self, selector, IERC20::approveCall, approve, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error, returns);
+        dispatch_mutating_call!(self, selector, IERC20::permitCall, permit, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+
+        // State-changing functions (tip20 specific)
+        dispatch_mutating_call!(self, selector, IERC20::changeTransferPolicyIdCall, change_transfer_policy_id, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+        dispatch_mutating_call!(self, selector, IERC20::setSupplyCapCall, set_supply_cap, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+        dispatch_mutating_call!(self, selector, IERC20::pauseCall, pause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+        dispatch_mutating_call!(self, selector, IERC20::unpauseCall, unpause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+        dispatch_mutating_call!(self, selector, IERC20::mintCall, mint, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+        dispatch_mutating_call!(self, selector, IERC20::burnCall, burn, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+        dispatch_mutating_call!(self, selector, IERC20::burnBlockedCall, burn_blocked, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+        dispatch_mutating_call!(self, selector, IERC20::transferWithMemoCall, transfer_with_memo, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error);
+
+        // RolesAuth functions
+        dispatch_view_call!(self.get_roles_contract(), selector, IRolesAuth::hasRoleCall, has_role, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self.get_roles_contract(), selector, IRolesAuth::getRoleAdminCall, get_role_admin, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::grantRoleCall, grant_role, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
+        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::revokeRoleCall, revoke_role, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
+        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::renounceRoleCall, renounce_role, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
+        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::setRoleAdminCall, set_role_admin, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
 
         // If no selector matched, return error
         Err(PrecompileError::Other("Unknown function selector".to_string()))
@@ -40,7 +66,7 @@ impl<'a, S: StorageProvider> Precompile for ERC20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::contracts::HashMapStorageProvider;
+    use crate::contracts::{HashMapStorageProvider, types::IRolesAuth};
     use alloy::{primitives::U256, sol_types::SolValue};
 
     use super::*;
@@ -76,9 +102,10 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
         token
+            .get_roles_contract()
             .grant_role(
                 &admin,
-                IERC20::grantRoleCall {
+                IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: admin,
                 },
@@ -127,9 +154,10 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
         token
+            .get_roles_contract()
             .grant_role(
                 &admin,
-                IERC20::grantRoleCall {
+                IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: sender,
                 },
@@ -175,9 +203,10 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
         token
+            .get_roles_contract()
             .grant_role(
                 &admin,
-                IERC20::grantRoleCall {
+                IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: admin,
                 },

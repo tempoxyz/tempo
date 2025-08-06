@@ -3,7 +3,9 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 
 use crate::contracts::{
-    erc20_factory::ERC20Factory, storage::StorageProvider, types::IERC20Factory,
+    erc20_factory::ERC20Factory,
+    storage::StorageProvider,
+    types::{ERC20Error, IERC20Factory},
 };
 
 mod gas_costs {
@@ -16,11 +18,11 @@ impl<'a, S: StorageProvider> Precompile for ERC20Factory<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
 
-        // State-changing functions
-        dispatch_mutating_call!(self, selector, IERC20Factory::createTokenCall, create_token, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, returns);
-
         // View functions
         dispatch_view_call!(self, selector, IERC20Factory::tokenIdCounterCall, token_id_counter, calldata, gas_costs::VIEW_FUNCTIONS);
+
+        // State-changing functions
+        dispatch_mutating_call!(self, selector, IERC20Factory::createTokenCall, create_token, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error, returns);
 
         // If no selector matched, return error
         Err(PrecompileError::Other("Unknown function selector".to_string()))
