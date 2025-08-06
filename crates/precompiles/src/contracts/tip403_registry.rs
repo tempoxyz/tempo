@@ -47,6 +47,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 slots::POLICY_ID_COUNTER,
                 U256::from(2),
             );
+            return 2;
         }
         counter_val.to::<u64>()
     }
