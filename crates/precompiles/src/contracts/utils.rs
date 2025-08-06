@@ -1,4 +1,4 @@
-use alloy::primitives::{address, Address};
+use alloy::primitives::{Address, address};
 
 pub const FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");
 
@@ -14,7 +14,9 @@ pub fn token_id_to_address(token_id: u64) -> Address {
 }
 
 pub fn address_is_token_address(address: &Address) -> bool {
-    address.as_slice().starts_with(&[0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    address.as_slice().starts_with(&[
+        0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ])
 }
 
 pub fn address_to_token_id_unchecked(address: &Address) -> u64 {
@@ -29,14 +31,26 @@ mod tests {
 
     #[test]
     fn test_token_id_to_address_values() {
-        assert_eq!(token_id_to_address(0), address!("0x20C0000000000000000000000000000000000000"));
+        assert_eq!(
+            token_id_to_address(0),
+            address!("0x20C0000000000000000000000000000000000000")
+        );
 
-        assert_eq!(token_id_to_address(1), address!("0x20C0000000000000000000000000000000000001"));
+        assert_eq!(
+            token_id_to_address(1),
+            address!("0x20C0000000000000000000000000000000000001")
+        );
 
         // Test max u64
-        assert_eq!(token_id_to_address(u64::MAX), address!("0x20C000000000000000000000FFFFFFFFFFFFFFFF"));
+        assert_eq!(
+            token_id_to_address(u64::MAX),
+            address!("0x20C000000000000000000000FFFFFFFFFFFFFFFF")
+        );
 
-        assert_eq!(token_id_to_address(0x123456789ABCDEF0u64), address!("0x20C000000000000000000000123456789ABCDEF0"));
+        assert_eq!(
+            token_id_to_address(0x123456789ABCDEF0u64),
+            address!("0x20C000000000000000000000123456789ABCDEF0")
+        );
     }
 
     #[test]
@@ -44,7 +58,7 @@ mod tests {
         // Verify that all addresses start with 0x20 and have zeros in the middle
         for token_id in 1..=1_000_000 {
             let address = token_id_to_address(token_id);
-            let bytes = address.0 .0;
+            let bytes = address.0.0;
 
             // First byte should be 0x20
             assert_eq!(bytes[0], 0x20);
@@ -66,7 +80,13 @@ mod tests {
     fn test_address_to_token_id_unchecked() {
         assert_eq!(address_to_token_id_unchecked(&token_id_to_address(0)), (0));
         assert_eq!(address_to_token_id_unchecked(&token_id_to_address(1)), (1));
-        assert_eq!(address_to_token_id_unchecked(&token_id_to_address(u64::MAX)), (u64::MAX));
-        assert_eq!(address_to_token_id_unchecked(&token_id_to_address(0x123456789ABCDEF0u64)), (0x123456789ABCDEF0u64));
+        assert_eq!(
+            address_to_token_id_unchecked(&token_id_to_address(u64::MAX)),
+            (u64::MAX)
+        );
+        assert_eq!(
+            address_to_token_id_unchecked(&token_id_to_address(0x123456789ABCDEF0u64)),
+            (0x123456789ABCDEF0u64)
+        );
     }
 }

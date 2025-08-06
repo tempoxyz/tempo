@@ -1,4 +1,4 @@
-use alloy::primitives::{keccak256, U256};
+use alloy::primitives::{U256, keccak256};
 
 /// Compute storage slot for a mapping
 pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: u64) -> U256 {
@@ -9,7 +9,11 @@ pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: u64) -> U256 {
 }
 
 /// Compute storage slot for a double mapping (mapping[key1][key2])
-pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(key1: T, key2: U, base_slot: u64) -> U256 {
+pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
+    key1: T,
+    key2: U,
+    base_slot: u64,
+) -> U256 {
     let intermediate_slot = mapping_slot(key1, base_slot);
     let mut data = Vec::new();
     data.extend_from_slice(key2.as_ref());
