@@ -41,7 +41,7 @@ mod tests {
 
     #[test]
     fn test_function_selector_dispatch() {
-        let mut factory_storage = HashMapStorageProvider::new();
+        let mut factory_storage = HashMapStorageProvider::new(1);
         let mut factory = ERC20Factory::new(&mut factory_storage);
         let sender = Address::from([1u8; 20]);
 
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn test_create_token() {
-        let mut factory_storage = HashMapStorageProvider::new();
+        let mut factory_storage = HashMapStorageProvider::new(1);
         let mut factory = ERC20Factory::new(&mut factory_storage);
         let sender = Address::from([1u8; 20]);
 

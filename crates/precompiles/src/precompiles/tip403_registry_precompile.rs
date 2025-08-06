@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn test_is_authorized_precompile() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut precompile = TIP403Registry::new(&mut storage);
         let user = Address::from([1u8; 20]);
 
@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn test_create_policy_precompile() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut precompile = TIP403Registry::new(&mut storage);
         let admin = Address::from([1u8; 20]);
 

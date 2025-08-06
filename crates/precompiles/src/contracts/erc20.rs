@@ -473,7 +473,6 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         decimals: u8,
         currency: &str,
         admin: &Address,
-        chain_id: u64,
     ) -> Result<(), ERC20Error> {
         // EVM invariant that empty accounts do nothing, so must give some code.
         self.storage.set_code(self.token_address, vec![0xef]);
@@ -502,7 +501,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         );
         domain_data.extend_from_slice(keccak256(name.as_bytes()).as_slice());
         domain_data.extend_from_slice(keccak256(b"1").as_slice());
-        domain_data.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+        domain_data.extend_from_slice(&U256::from(self.storage.chain_id()).to_be_bytes::<32>());
         domain_data.extend_from_slice(self.token_address.as_slice());
         let domain_separator = keccak256(&domain_data);
         self.storage.sstore(
@@ -675,7 +674,7 @@ mod tests {
 
     #[test]
     fn test_mint_increases_balance_and_supply() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let addr = Address::from([1u8; 20]);
         let amount = U256::from(100);
@@ -683,9 +682,7 @@ mod tests {
         {
             let mut token = ERC20Token::new(token_id, &mut storage);
             // Initialize with admin
-            token
-                .initialize("Test", "TST", 18, "USD", &admin, 1)
-                .unwrap();
+            token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
 
             // Grant issuer role to admin
             let mut roles = token.get_roles_contract();
@@ -716,7 +713,7 @@ mod tests {
 
     #[test]
     fn test_transfer_moves_balance() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let from = Address::from([1u8; 20]);
         let to = Address::from([2u8; 20]);
@@ -724,9 +721,7 @@ mod tests {
         let token_id = 1;
         {
             let mut token = ERC20Token::new(token_id, &mut storage);
-            token
-                .initialize("Test", "TST", 18, "USD", &admin, 1)
-                .unwrap();
+            token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
             let mut roles = token.get_roles_contract();
             roles.grant_role_internal(&admin, *ISSUER_ROLE);
 
@@ -763,12 +758,10 @@ mod tests {
 
     #[test]
     fn test_transfer_insufficient_balance_fails() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let mut token = ERC20Token::new(1, &mut storage);
-        token
-            .initialize("Test", "TST", 18, "USD", &admin, 1)
-            .unwrap();
+        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
         let from = Address::from([1u8; 20]);
         let to = Address::from([2u8; 20]);
         let amount = U256::from(100);

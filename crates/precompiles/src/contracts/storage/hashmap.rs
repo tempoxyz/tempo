@@ -5,26 +5,26 @@ use alloy::primitives::{Address, LogData, U256};
 use crate::contracts::storage::StorageProvider;
 
 pub struct HashMapStorageProvider {
-    pub internals: HashMap<(Address, U256), U256>,
+    internals: HashMap<(Address, U256), U256>,
     pub events: HashMap<Address, Vec<LogData>>,
-}
-
-impl Default for HashMapStorageProvider {
-    fn default() -> Self {
-        Self::new()
-    }
+    chain_id: u64,
 }
 
 impl HashMapStorageProvider {
-    pub fn new() -> Self {
+    pub fn new(chain_id: u64) -> Self {
         Self {
             internals: HashMap::new(),
             events: HashMap::new(),
+            chain_id,
         }
     }
 }
 
 impl StorageProvider for HashMapStorageProvider {
+    fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
     fn set_code(&mut self, _address: Address, _code: Vec<u8>) {
         // noop
     }

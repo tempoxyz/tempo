@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn test_function_selector_dispatch() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut token = ERC20Token::new(1, &mut storage);
         let sender = Address::from([1u8; 20]);
 
@@ -85,16 +85,14 @@ mod tests {
     }
     #[test]
     fn test_balance_of_calldata_handling() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut token = ERC20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let account = Address::from([2u8; 20]);
 
         // Initialize token with admin
-        token
-            .initialize("Test", "TST", 18, "USD", &admin, 1)
-            .unwrap();
+        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
@@ -136,7 +134,7 @@ mod tests {
 
     #[test]
     fn test_mint_updates_storage() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut token = ERC20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
@@ -144,9 +142,7 @@ mod tests {
         let mint_amount = U256::from(500);
 
         // Initialize token with admin
-        token
-            .initialize("Test", "TST", 18, "USD", &admin, 1)
-            .unwrap();
+        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to sender
         use alloy::primitives::keccak256;
@@ -184,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_transfer_updates_balances() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut token = ERC20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
@@ -193,9 +189,7 @@ mod tests {
         let initial_sender_balance = U256::from(1000);
 
         // Initialize token with admin
-        token
-            .initialize("Test", "TST", 18, "USD", &admin, 1)
-            .unwrap();
+        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;

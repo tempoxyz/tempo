@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_create_policy() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
         let admin = Address::from([1u8; 20]);
 
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_is_authorized_special_policies() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
         let user = Address::from([1u8; 20]);
 
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_whitelist_policy() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
         let admin = Address::from([1u8; 20]);
         let user = Address::from([2u8; 20]);
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_blacklist_policy() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
         let admin = Address::from([1u8; 20]);
         let user = Address::from([2u8; 20]);

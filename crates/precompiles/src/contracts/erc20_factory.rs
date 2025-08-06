@@ -37,16 +37,12 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
             token_id + U256::ONE,
         ); // Increment.
 
-        // TODO: Get chain_id from context
-        let chain_id = 1u64;
-
         ERC20Token::new(token_id.try_into().unwrap(), self.storage).initialize(
             &call.name,
             &call.symbol,
             call.decimals,
             &call.currency,
             &call.admin,
-            chain_id,
         )?;
         self.storage.emit_event(
             FACTORY_ADDRESS,
