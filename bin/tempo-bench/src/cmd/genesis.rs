@@ -47,7 +47,7 @@ pub struct GenesisArgs {
 impl GenesisArgs {
     pub async fn run(self) -> eyre::Result<()> {
         let chain_spec = ChainSpecBuilder::mainnet()
-            .chain(Chain::Id(self.chain_id))
+            .chain(Chain::from(self.chain_id))
             .homestead_activated()
             .constantinople_activated()
             .byzantium_activated()
