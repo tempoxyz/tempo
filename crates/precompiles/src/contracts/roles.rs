@@ -13,7 +13,7 @@ pub static UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 
 pub struct RolesAuthContract<'a, S: StorageProvider> {
     storage: &'a mut S,
-    contract_id: u64,
+    parent_contract_address: Address,
     roles_slot: U256,
     role_admin_slot: U256,
 }
@@ -21,13 +21,13 @@ pub struct RolesAuthContract<'a, S: StorageProvider> {
 impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     pub fn new(
         storage: &'a mut S,
-        contract_id: u64,
+        parent_contract_address: Address,
         roles_slot: U256,
         role_admin_slot: U256,
     ) -> Self {
         Self {
             storage,
-            contract_id,
+            parent_contract_address,
             roles_slot,
             role_admin_slot,
         }
@@ -64,7 +64,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
         self.grant_role_internal(&call.account, call.role);
 
         self.storage.emit_event(
-            self.contract_id,
+            self.parent_contract_address,
             RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: call.account,
@@ -88,7 +88,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
         self.revoke_role_internal(&call.account, call.role);
 
         self.storage.emit_event(
-            self.contract_id,
+            self.parent_contract_address,
             RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: call.account,
@@ -111,7 +111,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
         self.revoke_role_internal(msg_sender, call.role);
 
         self.storage.emit_event(
-            self.contract_id,
+            self.parent_contract_address,
             RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: *msg_sender,
@@ -135,7 +135,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
         self.set_role_admin_internal(call.role, call.adminRole);
 
         self.storage.emit_event(
-            self.contract_id,
+            self.parent_contract_address,
             RolesAuthEvent::RoleAdminUpdated(IRolesAuth::RoleAdminUpdated {
                 role: call.role,
                 newAdminRole: call.adminRole,
@@ -156,29 +156,34 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
     fn has_role_internal(&mut self, account: &Address, role: B256) -> bool {
         let slot = double_mapping_slot(account, role, self.roles_slot);
-        self.storage.sload(self.contract_id, slot) != U256::ZERO
+        self.storage.sload(self.parent_contract_address, slot) != U256::ZERO
     }
 
     pub fn grant_role_internal(&mut self, account: &Address, role: B256) {
         let slot = double_mapping_slot(account, role, self.roles_slot);
-        self.storage.sstore(self.contract_id, slot, U256::ONE);
+        self.storage
+            .sstore(self.parent_contract_address, slot, U256::ONE);
     }
 
     fn revoke_role_internal(&mut self, account: &Address, role: B256) {
         let slot = double_mapping_slot(account, role, self.roles_slot);
-        self.storage.sstore(self.contract_id, slot, U256::ZERO);
+        self.storage
+            .sstore(self.parent_contract_address, slot, U256::ZERO);
     }
 
     fn get_role_admin_internal(&mut self, role: B256) -> B256 {
         let slot = mapping_slot(role, self.role_admin_slot);
-        let admin = self.storage.sload(self.contract_id, slot);
+        let admin = self.storage.sload(self.parent_contract_address, slot);
         B256::from(admin) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     }
 
     fn set_role_admin_internal(&mut self, role: B256, admin_role: B256) {
         let slot = mapping_slot(role, self.role_admin_slot);
-        self.storage
-            .sstore(self.contract_id, slot, U256::from_be_bytes(admin_role.0));
+        self.storage.sstore(
+            self.parent_contract_address,
+            slot,
+            U256::from_be_bytes(admin_role.0),
+        );
     }
 
     fn check_role_internal(&mut self, account: &Address, role: B256) -> Result<(), RolesAuthError> {
@@ -192,6 +197,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 #[cfg(test)]
 mod tests {
     use alloy::primitives::keccak256;
+    use alloy_primitives::address;
 
     use super::*;
     use crate::contracts::storage::hashmap::HashMapStorageProvider;
@@ -199,7 +205,10 @@ mod tests {
     #[test]
     fn test_role_contract_grant_and_check() {
         let mut storage = HashMapStorageProvider::new();
-        let mut roles = RolesAuthContract::new(&mut storage, 1, U256::ZERO, U256::ONE);
+        let test_address = Address::from([
+            0x20, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]);
+        let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
 
         let admin = Address::from([1u8; 20]);
         let user = Address::from([2u8; 20]);
@@ -235,13 +244,14 @@ mod tests {
         assert!(has_custom);
 
         // Verify events were emitted
-        assert_eq!(storage.events[&1].len(), 1); // One grant event
+        assert_eq!(storage.events[&test_address].len(), 1); // One grant event
     }
 
     #[test]
     fn test_role_admin_functions() {
         let mut storage = HashMapStorageProvider::new();
-        let mut roles = RolesAuthContract::new(&mut storage, 1, U256::ZERO, U256::ONE);
+        let test_address = address!("0x20C0000000000000000000000000000000000001");
+        let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
 
         let admin = Address::from([1u8; 20]);
         let custom_role = B256::from(keccak256(b"CUSTOM_ROLE"));
@@ -270,7 +280,8 @@ mod tests {
     #[test]
     fn test_renounce_role() {
         let mut storage = HashMapStorageProvider::new();
-        let mut roles = RolesAuthContract::new(&mut storage, 1, U256::ZERO, U256::ONE);
+        let test_address = address!("0x20C0000000000000000000000000000000000001");
+        let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
 
         let user = Address::from([1u8; 20]);
         let custom_role = B256::from(keccak256(b"CUSTOM_ROLE"));
@@ -290,7 +301,8 @@ mod tests {
     #[test]
     fn test_unauthorized_access() {
         let mut storage = HashMapStorageProvider::new();
-        let mut roles = RolesAuthContract::new(&mut storage, 1, U256::ZERO, U256::ONE);
+        let test_address = address!("0x20C0000000000000000000000000000000000001");
+        let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
 
         let user = Address::from([1u8; 20]);
         let other = Address::from([2u8; 20]);

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use alloy::primitives::{LogData, U256};
+use alloy::primitives::{Address, LogData, U256};
 
 use crate::contracts::storage::StorageProvider;
 
 pub struct HashMapStorageProvider {
-    pub internals: HashMap<(u64, U256), U256>,
-    pub events: HashMap<u64, Vec<LogData>>,
+    pub internals: HashMap<(Address, U256), U256>,
+    pub events: HashMap<Address, Vec<LogData>>,
 }
 
 impl Default for HashMapStorageProvider {
@@ -25,21 +25,21 @@ impl HashMapStorageProvider {
 }
 
 impl StorageProvider for HashMapStorageProvider {
-    fn set_code(&mut self, _token_id: u64, _code: Vec<u8>) {
+    fn set_code(&mut self, _address: Address, _code: Vec<u8>) {
         // noop
     }
 
-    fn sstore(&mut self, token_id: u64, key: U256, value: U256) {
-        self.internals.insert((token_id, key), value);
+    fn sstore(&mut self, address: Address, key: U256, value: U256) {
+        self.internals.insert((address, key), value);
     }
 
-    fn emit_event(&mut self, _token_id: u64, event: LogData) {
-        self.events.entry(_token_id).or_default().push(event);
+    fn emit_event(&mut self, address: Address, event: LogData) {
+        self.events.entry(address).or_default().push(event);
     }
 
-    fn sload(&mut self, token_id: u64, key: U256) -> U256 {
+    fn sload(&mut self, address: Address, key: U256) -> U256 {
         self.internals
-            .get(&(token_id, key))
+            .get(&(address, key))
             .copied()
             .unwrap_or(U256::ZERO)
     }

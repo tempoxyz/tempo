@@ -5,6 +5,7 @@ use crate::contracts::{
     erc20::ERC20Token,
     storage::StorageProvider,
     types::{ERC20Error, ERC20FactoryEvent, IERC20Factory},
+    utils::FACTORY_ADDRESS,
 };
 
 mod slots {
@@ -30,8 +31,11 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
         call: createTokenCall,
     ) -> Result<U256, ERC20Error> {
         let token_id = self._token_id_counter();
-        self.storage
-            .sstore(u64::MAX, slots::TOKEN_ID_COUNTER, token_id + U256::ONE); // Increment.
+        self.storage.sstore(
+            FACTORY_ADDRESS,
+            slots::TOKEN_ID_COUNTER,
+            token_id + U256::ONE,
+        ); // Increment.
 
         // TODO: Get chain_id from context
         let chain_id = 1u64;
@@ -45,7 +49,7 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
             chain_id,
         )?;
         self.storage.emit_event(
-            token_id.try_into().unwrap(),
+            FACTORY_ADDRESS,
             ERC20FactoryEvent::TokenCreated(IERC20Factory::TokenCreated {
                 tokenId: token_id,
                 name: call.name,
@@ -65,6 +69,6 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
 
     #[inline]
     pub fn _token_id_counter(&mut self) -> U256 {
-        self.storage.sload(u64::MAX, slots::TOKEN_ID_COUNTER)
+        self.storage.sload(FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)
     }
 }

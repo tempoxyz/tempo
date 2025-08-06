@@ -1,8 +1,8 @@
-use alloy::primitives::{Log, LogData, U256};
+use alloy::primitives::{Address, Log, LogData, U256};
 use reth::revm::state::Bytecode;
 use reth_evm::EvmInternals;
 
-use crate::contracts::{storage::StorageProvider, utils::token_id_to_address};
+use crate::contracts::storage::StorageProvider;
 
 pub struct EvmStorageProvider<'a> {
     pub internals: EvmInternals<'a>,
@@ -15,29 +15,25 @@ impl<'a> EvmStorageProvider<'a> {
 }
 
 impl<'a> StorageProvider for EvmStorageProvider<'a> {
-    fn set_code(&mut self, token_id: u64, code: Vec<u8>) {
-        self.internals.set_code(
-            token_id_to_address(token_id),
-            Bytecode::new_raw(code.into()),
-        );
-    }
-
-    fn sstore(&mut self, token_id: u64, key: U256, value: U256) {
+    fn set_code(&mut self, address: Address, code: Vec<u8>) {
         self.internals
-            .sstore(token_id_to_address(token_id), key, value)
-            .unwrap();
+            .set_code(address, Bytecode::new_raw(code.into()));
     }
 
-    fn emit_event(&mut self, token_id: u64, event: LogData) {
+    fn sstore(&mut self, address: Address, key: U256, value: U256) {
+        self.internals.sstore(address, key, value).unwrap();
+    }
+
+    fn emit_event(&mut self, address: Address, event: LogData) {
         self.internals.log(Log {
-            address: token_id_to_address(token_id),
+            address,
             data: event,
         });
     }
 
-    fn sload(&mut self, token_id: u64, key: U256) -> U256 {
+    fn sload(&mut self, address: Address, key: U256) -> U256 {
         self.internals
-            .sload(token_id_to_address(token_id), key)
+            .sload(address, key)
             .map_or(U256::ZERO, |value| value.data)
     }
 }
