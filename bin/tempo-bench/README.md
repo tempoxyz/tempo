@@ -167,7 +167,7 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
     reth node --http --http.addr 0.0.0.0 \
     --http.port 8545 --http.api all \
     --dev --dev.block-time 1s \
-    --chain <path_to_genesis> \
+    --chain genesis.json \
     --engine.disable-precompile-cache \
     --builder.gaslimit 3000000000 \
     --builder.max-tasks 8 \
