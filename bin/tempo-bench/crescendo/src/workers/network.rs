@@ -43,9 +43,12 @@ pub async fn network_worker(worker_id: usize) {
                     .join(",")
             );
 
+            // For hitting multiple RPCs, randomly select a target URL from the array.
+            let target_url = &config.target_urls[fastrand::usize(..config.target_urls.len())];
+
             let req = Request::builder()
                 .method("POST")
-                .uri(&config.target_url)
+                .uri(target_url)
                 .header("Content-Type", "application/json")
                 .body(Full::new(Bytes::from(json_body.into_bytes())))
                 .unwrap();
