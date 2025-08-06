@@ -1,7 +1,6 @@
 use alloy::primitives::{Address, IntoLogData, U256};
 
 use crate::contracts::{
-    ITIP20Factory::createTokenCall,
     storage::StorageProvider,
     tip20::TIP20Token,
     types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
@@ -28,7 +27,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
     pub fn create_token(
         &mut self,
         _sender: &Address,
-        call: createTokenCall,
+        call: ITIP20Factory::createTokenCall,
     ) -> Result<U256, TIP20Error> {
         let token_id = self.token_id_counter();
         self.storage.sstore(
