@@ -1,0 +1,121 @@
+use clap::Parser;
+use std::{future::pending, path::PathBuf, thread, time::Duration};
+use crate::{
+    config,
+    config::Config,
+    crescendo::{NETWORK_STATS, TX_QUEUE, DesireType, WorkerType, workers},
+    utils,
+};
+
+/// Run Crescendo benchmarking
+#[derive(Parser, Debug)]
+pub struct CrescendoArgs {
+    /// Path to the configuration file
+    #[arg(short, long)]
+    pub config: PathBuf,
+}
+
+impl CrescendoArgs {
+    pub async fn run(self) -> eyre::Result<()> {
+        let config_path = self.config;
+        
+        if !config_path.exists() {
+            return Err(eyre::eyre!("Config file not found: {}", config_path.display()));
+        }
+
+        println!("[~] Loading config from {}...", config_path.display());
+        config::init(
+            Config::from_file(&config_path)
+                .map_err(|e| eyre::eyre!("Failed to load config file: {:?}", e))?
+        );
+
+        if let Err(err) =
+            utils::increase_nofile_limit(config::get().network_worker.total_connections * 10)
+        {
+            println!("[!] Failed to increase file descriptor limit: {err}.");
+        }
+
+        let mut core_ids = core_affinity::get_core_ids().unwrap();
+        println!("[*] Detected {} effective cores.", core_ids.len());
+
+        // Initialize Rayon with explicit thread count.
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(core_ids.len())
+            .build_global()
+            .unwrap();
+
+        // Pin the tokio runtime to a core (if enabled).
+        utils::maybe_pin_thread(core_ids.pop().unwrap());
+
+        // Given our desired breakdown of workers, translate this into actual numbers of workers to spawn.
+        let (workers, worker_counts) = workers::assign_workers(
+            core_ids, // Doesn't include the main runtime core.
+            vec![
+                (
+                    WorkerType::TxGen,
+                    DesireType::Percentage(config::get().workers.tx_gen_worker_percentage),
+                ),
+                (
+                    WorkerType::Network,
+                    DesireType::Percentage(config::get().workers.network_worker_percentage),
+                ),
+            ],
+            config::get().workers.thread_pinning, // Only log core ranges if thread pinning is actually enabled.
+        );
+
+        let connections_per_network_worker =
+            config::get().network_worker.total_connections / worker_counts[&WorkerType::Network];
+        println!("[*] Connections per network worker: {connections_per_network_worker}");
+
+        // TODO: Having the assign_workers function do this would be cleaner.
+        let mut tx_gen_worker_id = 0;
+        let mut network_worker_id = 0;
+
+        println!("[*] Starting workers...");
+
+        // Spawn the workers, pinning them to the appropriate cores if enabled.
+        for (core_id, worker_type) in workers {
+            match worker_type {
+                WorkerType::TxGen => {
+                    thread::spawn(move || {
+                        utils::maybe_pin_thread(core_id);
+                        workers::tx_gen_worker(tx_gen_worker_id);
+                    });
+                    tx_gen_worker_id += 1;
+                }
+                WorkerType::Network => {
+                    thread::spawn(move || {
+                        utils::maybe_pin_thread(core_id);
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
+
+                        rt.block_on(async {
+                            for i in 0..connections_per_network_worker {
+                                tokio::spawn(workers::network_worker(
+                                    (network_worker_id * connections_per_network_worker + i) as usize,
+                                ));
+                            }
+                            pending::<()>().await; // Keep the runtime alive forever.
+                        });
+                    });
+                    network_worker_id += 1;
+                }
+            }
+        }
+
+        println!("[*] Starting reporters...");
+
+        // Start reporters.
+        tokio::spawn(TX_QUEUE.start_reporter(Duration::from_secs(
+            config::get().reporters.tx_queue_report_interval_secs,
+        )));
+        tokio::spawn(NETWORK_STATS.start_reporter(Duration::from_secs(
+            config::get().reporters.network_stats_report_interval_secs,
+        )))
+        .await?;
+
+        Ok(())
+    }
+}

@@ -5,7 +5,13 @@ edition.workspace = true
 
 [dependencies]
 # Workspace dependencies
-alloy = { workspace = true, features = ["genesis", "signers", "signer-local", "network", "sol-types"] }
+alloy = { workspace = true, features = [
+  "genesis",
+  "signers",
+  "signer-local",
+  "network",
+  "sol-types",
+] }
 alloy-consensus = { workspace = true, features = ["secp256k1"] }
 clap = { workspace = true, features = ["derive", "env"] }
 eyre.workspace = true

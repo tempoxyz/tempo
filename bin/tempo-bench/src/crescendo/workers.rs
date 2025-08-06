@@ -2,11 +2,8 @@ use std::collections::HashMap;
 
 use core_affinity::CoreId;
 
-mod network;
-mod tx_gen;
-
-pub use network::network_worker;
-pub use tx_gen::tx_gen_worker;
+pub use crate::crescendo::network::network_worker;
+pub use crate::crescendo::tx_gen::tx_gen_worker;
 
 use crate::utils::format_ranges;
 
