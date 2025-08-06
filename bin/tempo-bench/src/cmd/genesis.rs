@@ -6,14 +6,8 @@ use alloy::{
 use alloy_signer_local::coins_bip39::English;
 use clap::Parser;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 use simple_tqdm::ParTqdm;
 use std::{collections::BTreeMap, fs, path::PathBuf};
-
-#[derive(Debug, Serialize, Deserialize)]
-struct AccountBalance {
-    balance: String,
-}
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
