@@ -1,6 +1,6 @@
 on:
   push:
-    branches: [production]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -38,6 +38,7 @@ jobs:
     name: Deploy to devnet-1
     runs-on: depot-ubuntu-24.04-4
     needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v2
     - uses: taiki-e/install-action@just
