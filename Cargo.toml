@@ -4,11 +4,7 @@ edition = "2024"
 rust-version = "1.88"
 
 [workspace]
-members = [
-  "bin/tempo",
-  "bin/tempo-bench",
-  "crates/consensus"
-]
+members = ["bin/tempo", "bin/tempo-bench", "crates/consensus"]
 
 # Resolver 3 is available with edition 2024
 resolver = "3"
@@ -80,15 +76,23 @@ reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-engine-primitives" }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-ethereum-engine-primitives" }
 reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-ethereum-forks" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-ethereum-primitives", features = ["serde-bincode-compat"] }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-ethereum-primitives", features = [
+  "serde-bincode-compat",
+] }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-execution-types" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-node-builder", features = ["test-utils"] }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-node-builder", features = [
+  "test-utils",
+] }
 reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-node-core" }
 reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-node-ethereum" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-payload-builder" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-payload-primitives" }
-reth-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-primitives", features = ["serde-bincode-compat"] }
-reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-primitives-traits", features = ["serde-bincode-compat"] }
+reth-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-primitives", features = [
+  "serde-bincode-compat",
+] }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-primitives-traits", features = [
+  "serde-bincode-compat",
+] }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-provider" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-rpc-builder" }
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-rpc-eth-api" }
@@ -107,8 +111,13 @@ malachitebft-app = { git = "https://github.com/informalsystems/malachite", branc
 malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-app-channel" }
 malachitebft-codec = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-codec" }
 malachitebft-core-consensus = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-core-consensus" }
-malachitebft-core-types = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-core-types", features = ["serde"] }
-malachitebft-signing-ed25519 = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-signing-ed25519", features = ["serde", "rand"] }
+malachitebft-core-types = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-core-types", features = [
+  "serde",
+] }
+malachitebft-signing-ed25519 = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-signing-ed25519", features = [
+  "serde",
+  "rand",
+] }
 malachitebft-sync = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-sync" }
 malachitebft-proto = { git = "https://github.com/informalsystems/malachite", branch = "no-dns", package = "informalsystems-malachitebft-proto" }
 anyhow = "1.0.98"

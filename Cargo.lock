@@ -11713,6 +11713,7 @@ dependencies = [
  "rand 0.8.5",
  "ratelimit",
  "rayon",
+ "reth-chainspec",
  "rlimit",
  "serde",
  "serde_json",
