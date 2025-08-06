@@ -1,22 +1,21 @@
 use alloy::primitives::{Address, address};
 
 pub const FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");
+const TOKEN_PREFIX: [u8; 12] = [
+    0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
 
 /// Converts a token ID to its corresponding contract address
-/// Uses the pattern: 0x20C0000000000000000000000000000000000000 + token_id
+/// Uses the pattern: TOKEN_PREFIX ++ token_id
 pub fn token_id_to_address(token_id: u64) -> Address {
-    // Base address: 0x20C0000000000000000000000000000000000000
     let mut address_bytes = [0u8; 20];
-    address_bytes[0] = 0x20;
-    address_bytes[1] = 0xC0;
+    address_bytes[..12].copy_from_slice(&TOKEN_PREFIX);
     address_bytes[12..20].copy_from_slice(&token_id.to_be_bytes());
     Address::from(address_bytes)
 }
 
 pub fn address_is_token_address(address: &Address) -> bool {
-    address.as_slice().starts_with(&[
-        0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ])
+    address.as_slice().starts_with(&TOKEN_PREFIX)
 }
 
 pub fn address_to_token_id_unchecked(address: &Address) -> u64 {
