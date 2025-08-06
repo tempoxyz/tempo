@@ -107,19 +107,19 @@ sol! {
 
         // View Functions
         function policyIdCounter() external view returns (uint64);
-        function policyData(uint64 policyId) external view returns (uint8 policyType, uint64 adminPolicyId);
+        function policyData(uint64 policyId) external view returns (PolicyType policyType, uint64 adminPolicyId);
         function isAuthorized(uint64 policyId, address user) external view returns (bool);
 
         // State-Changing Functions
-        function createPolicy(uint64 adminPolicyId, uint8 policyType) external returns (uint64);
-        function createPolicyWithAccounts(uint64 adminPolicyId, uint8 policyType, address[] accounts) external returns (uint64);
+        function createPolicy(uint64 adminPolicyId, PolicyType policyType) external returns (uint64);
+        function createPolicyWithAccounts(uint64 adminPolicyId, PolicyType policyType, address[] accounts) external returns (uint64);
         function setPolicyAdmin(uint64 policyId, uint64 adminPolicyId) external;
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
 
         // Events
         event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, uint64 indexed adminPolicyId);
-        event PolicyCreated(uint64 indexed policyId, address indexed updater, uint8 policyType);
+        event PolicyCreated(uint64 indexed policyId, address indexed updater, PolicyType policyType);
         event WhitelistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
         event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
 

@@ -23,7 +23,7 @@ impl<'a, S: StorageProvider> Precompile for TIP403Registry<'a, S> {
         dispatch_view_call!(self, selector, ITIP403Registry::policyDataCall, policy_data, calldata, gas_costs::VIEW_FUNCTIONS);
         dispatch_view_call!(self, selector, ITIP403Registry::isAuthorizedCall, is_authorized, calldata, gas_costs::VIEW_FUNCTIONS);
 
-        // // State-changing functions
+        // State-changing functions
         dispatch_mutating_call!(self, selector, ITIP403Registry::createPolicyCall, create_policy, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError, returns);
         dispatch_mutating_call!(self, selector, ITIP403Registry::createPolicyWithAccountsCall, create_policy_with_accounts, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError, returns);
         dispatch_mutating_call!(self, selector, ITIP403Registry::setPolicyAdminCall, set_policy_admin, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError);
@@ -67,7 +67,7 @@ mod tests {
 
         let call = ITIP403Registry::createPolicyCall {
             adminPolicyId: 1,
-            policyType: 0, // Whitelist
+            policyType: ITIP403Registry::PolicyType::WHITELIST,
         };
         let calldata = call.abi_encode();
         let result = precompile.call(&calldata, &admin);

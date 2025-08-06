@@ -24,25 +24,9 @@ pub struct TIP403Registry<'a, S: StorageProvider> {
     storage: &'a mut S,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PolicyType {
-    Whitelist = 0,
-    Blacklist = 1,
-}
-
-impl From<u8> for PolicyType {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => PolicyType::Whitelist,
-            1 => PolicyType::Blacklist,
-            _ => panic!("Invalid policy type: {}", value), // Should never happen.
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct PolicyData {
-    pub policy_type: PolicyType,
+    pub policy_type: ITIP403Registry::PolicyType,
     pub admin_policy_id: u64,
 }
 
@@ -73,7 +57,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
     ) -> ITIP403Registry::policyDataReturn {
         let data = self.get_policy_data(call.policyId);
         ITIP403Registry::policyDataReturn {
-            policyType: data.policy_type as u8,
+            policyType: data.policy_type,
             adminPolicyId: data.admin_policy_id,
         }
     }
@@ -101,7 +85,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         self.set_policy_data(
             new_policy_id,
             &PolicyData {
-                policy_type: PolicyType::from(call.policyType),
+                policy_type: call.policyType,
                 admin_policy_id: call.adminPolicyId,
             },
         );
@@ -136,12 +120,12 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         call: ITIP403Registry::createPolicyWithAccountsCall,
     ) -> Result<u64, TIP403RegistryError> {
         let mut admin_policy_id = call.adminPolicyId;
-        let policy_type = PolicyType::from(call.policyType);
+        let policy_type = call.policyType;
         let new_policy_id = self.policy_id_counter();
 
         // Handle special case for self-owned policy (type(uint64).max)
         if admin_policy_id == u64::MAX {
-            if policy_type != PolicyType::Whitelist {
+            if policy_type != ITIP403Registry::PolicyType::WHITELIST {
                 return Err(tip403_err!(SelfOwnedPolicyMustBeWhitelist));
             }
             admin_policy_id = new_policy_id;
@@ -169,7 +153,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
             self.set_policy_set(new_policy_id, account, true);
 
             match policy_type {
-                PolicyType::Whitelist => {
+                ITIP403Registry::PolicyType::WHITELIST => {
                     self.storage.emit_event(
                         TIP403_REGISTRY_ADDRESS,
                         TIP403RegistryEvent::WhitelistUpdated(ITIP403Registry::WhitelistUpdated {
@@ -181,7 +165,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                         .into_log_data(),
                     );
                 }
-                PolicyType::Blacklist => {
+                ITIP403Registry::PolicyType::BLACKLIST => {
                     self.storage.emit_event(
                         TIP403_REGISTRY_ADDRESS,
                         TIP403RegistryEvent::BlacklistUpdated(ITIP403Registry::BlacklistUpdated {
@@ -192,6 +176,9 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                         })
                         .into_log_data(),
                     );
+                }
+                ITIP403Registry::PolicyType::__Invalid => {
+                    return Err(tip403_err!(IncompatiblePolicyType));
                 }
             }
         }
@@ -267,7 +254,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         }
 
         // Check policy type
-        if data.policy_type != PolicyType::Whitelist {
+        if data.policy_type != ITIP403Registry::PolicyType::WHITELIST {
             return Err(tip403_err!(IncompatiblePolicyType));
         }
 
@@ -300,7 +287,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         }
 
         // Check policy type
-        if data.policy_type != PolicyType::Blacklist {
+        if data.policy_type != ITIP403Registry::PolicyType::BLACKLIST {
             return Err(tip403_err!(IncompatiblePolicyType));
         }
 
@@ -330,7 +317,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let admin_policy_id = (value.to::<u128>() >> 64) as u64;
 
         PolicyData {
-            policy_type: PolicyType::from(policy_type),
+            policy_type: policy_type.try_into().unwrap(),
             admin_policy_id,
         }
     }
@@ -368,8 +355,9 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         ) != U256::ZERO;
 
         match data.policy_type {
-            PolicyType::Whitelist => is_in_set,
-            PolicyType::Blacklist => !is_in_set,
+            ITIP403Registry::PolicyType::WHITELIST => is_in_set,
+            ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
+            ITIP403Registry::PolicyType::__Invalid => false,
         }
     }
 }
@@ -393,7 +381,7 @@ mod tests {
             &admin,
             ITIP403Registry::createPolicyCall {
                 adminPolicyId: 1, // Always-allow admin
-                policyType: 0,    // Whitelist
+                policyType: ITIP403Registry::PolicyType::WHITELIST,
             },
         );
         assert!(result.is_ok());
@@ -404,7 +392,7 @@ mod tests {
 
         // Check policy data
         let data = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 2 });
-        assert_eq!(data.policyType, 0); // Whitelist
+        assert_eq!(data.policyType, ITIP403Registry::PolicyType::WHITELIST);
         assert_eq!(data.adminPolicyId, 1);
     }
 
@@ -434,7 +422,7 @@ mod tests {
                 &admin,
                 ITIP403Registry::createPolicyCall {
                     adminPolicyId: 1,
-                    policyType: 0, // Whitelist
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
                 },
             )
             .unwrap();
@@ -477,7 +465,7 @@ mod tests {
                 &admin,
                 ITIP403Registry::createPolicyCall {
                     adminPolicyId: 1,
-                    policyType: 1, // Blacklist
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
                 },
             )
             .unwrap();

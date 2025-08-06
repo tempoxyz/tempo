@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, IntoLogData, U256};
 
 use crate::contracts::{
-    IERC20Factory::{createTokenCall, tokenIdCounterCall},
+    IERC20Factory::createTokenCall,
     erc20::ERC20Token,
     storage::StorageProvider,
     types::{ERC20Error, ERC20FactoryEvent, IERC20Factory},
