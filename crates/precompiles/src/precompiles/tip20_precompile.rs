@@ -1,7 +1,7 @@
 use crate::contracts::{
-    tip20::TIP20Token,
     storage::StorageProvider,
-    types::{TIP20Error, ITIP20, IRolesAuth, RolesAuthError},
+    tip20::TIP20Token,
+    types::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};

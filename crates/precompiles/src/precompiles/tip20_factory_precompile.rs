@@ -3,9 +3,9 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 
 use crate::contracts::{
-    tip20_factory::TIP20Factory,
     storage::StorageProvider,
-    types::{TIP20Error, ITIP20Factory},
+    tip20_factory::TIP20Factory,
+    types::{ITIP20Factory, TIP20Error},
 };
 
 mod gas_costs {
