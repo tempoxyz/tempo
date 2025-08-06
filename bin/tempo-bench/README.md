@@ -10,8 +10,6 @@ Install `tempo-bench`
 cargo install --path bin/tempo-bench --profile maxperf
 ```
 
-## Commands
-
 ### Overview
 
 ```
@@ -27,7 +25,9 @@ Options:
   -V, --version  Print version
 ```
 
-### generate-genesis - Create Test Accounts
+## Commands
+
+### `generate-genesis`
 
 Generate pre-funded test accounts for benchmarking:
 
@@ -55,9 +55,9 @@ tempo-bench generate-genesis --accounts 25000 --output test-genesis.json
 tempo-bench generate-genesis --balance 0xD3C21BCECCEDA1000000
 ```
 
-### crescendo - Run Load Tests
+### `crescendo`
 
-Execute high throughput tx load testing:
+High throughput tx load testing
 
 ```
 Usage: tempo-bench crescendo --config <CONFIG>
@@ -80,15 +80,13 @@ tempo-bench crescendo --config configs/aggressive.toml
 tempo-bench crescendo --config configs/max.toml
 ```
 
-## Configuration
-
 Crescendo uses TOML configuration files located in `crescendo/configs/`. You can either run with a preconfigured TOML or create your own.
 
 - `default.toml` - Balanced settings for general benchmarking
 - `aggressive.toml` - High-performance settings for maximum throughput
 - `max.toml` - Extreme settings for stress testing
 
-### Network settings
+#### Network settings
 
 ```toml
 [network_worker]
@@ -99,7 +97,7 @@ error_sleep_ms = 100                  # Sleep duration after network errors
 tx_queue_empty_sleep_ms = 25          # Sleep when transaction queue is empty
 ```
 
-### Transaction generation
+#### Transaction generation
 
 ```toml
 [tx_gen_worker]
@@ -114,7 +112,7 @@ max_transfer_amount = 10              # Maximum token transfer amount
 batch_size = 1_000                    # Txs to generate before pushing to queue
 ```
 
-### Rate limiting
+#### Rate limiting
 
 ```toml
 [rate_limiting]
@@ -127,7 +125,7 @@ ratelimit_thresholds = [
 ]
 ```
 
-### Worker allocation
+#### Worker allocation
 
 ```toml
 [workers]
@@ -136,7 +134,7 @@ tx_gen_worker_percentage = 0.1        # 10% of cores for transaction generation
 network_worker_percentage = 0.9       # 90% of cores for network I/O
 ```
 
-### Example Output
+#### Example Output
 
 ```
 [~] Loading config from crescendo/configs/default.toml...
