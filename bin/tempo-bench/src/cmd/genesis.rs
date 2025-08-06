@@ -1,5 +1,5 @@
 use alloy::{
-    genesis::GenesisAccount,
+    genesis::{ChainConfig, Genesis, GenesisAccount},
     primitives::{Address, U256},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use reth_chainspec::{Chain, ChainSpec, ChainSpecBuilder};
 use serde::{Deserialize, Serialize};
 use simple_tqdm::ParTqdm;
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf, u64};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AccountBalance {
@@ -46,7 +46,7 @@ pub struct GenesisArgs {
 
 impl GenesisArgs {
     pub async fn run(self) -> eyre::Result<()> {
-        let chain_spec = ChainSpecBuilder::mainnet()
+        let mut chain_spec = ChainSpecBuilder::mainnet()
             .chain(Chain::from(self.chain_id))
             .homestead_activated()
             .constantinople_activated()
@@ -82,10 +82,10 @@ impl GenesisArgs {
             })
             .collect::<eyre::Result<BTreeMap<Address, GenesisAccount>>>()?;
 
-        let mut genesis = chain_spec.genesis.clone();
-        genesis.alloc = accounts;
+        chain_spec.genesis.alloc = accounts;
+        chain_spec.genesis.gas_limit = u64::MAX;
 
-        let json = serde_json::to_string_pretty(&genesis)?;
+        let json = serde_json::to_string_pretty(&chain_spec.genesis)?;
         fs::write(self.output, json)?;
 
         Ok(())
