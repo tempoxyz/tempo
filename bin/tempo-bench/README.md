@@ -1,16 +1,8 @@
-# Benchmarking Ethereum networks with `tempo-bench`
+# `tempo-bench`
 
-The binary contained in this directory, `tempo-bench`, is a high-performance tool for load testing Ethereum-compatible networks. It provides multiple subcommands for benchmarking and test data generation.
+`tempo-bench` is benchmarking suite for Tempo node components.
 
 ## Installation
-
-Install Reth
-
-```bash
-git clone https://github.com/paradigmxyz/reth
-cd reth
-cargo install --path bin/reth --profile maxperf
-```
 
 Install `tempo-bench`
 
@@ -169,10 +161,10 @@ The benchmark will continuously output performance metrics including transaction
 tempo-bench generate-genesis --accounts 50000 --output genesis.json
 ```
 
-### 2. Start Reth
+### 2. Start Tempo
 
 ```bash
-just start-reth
+just start-tempo <path_to_genesis_json>
 ```
 
 ### 3. Run crescendo

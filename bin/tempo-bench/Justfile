@@ -1,9 +1,9 @@
-start-reth:
-    rm -rf ~/.local/share/reth/
+start-tempo genesis_file="genesis.json":
     ulimit -n 1000000
-    reth node --http --http.addr 0.0.0.0 \
+    tempo node --http --http.addr 0.0.0.0 \
     --http.port 8545 --http.api all \
     --dev --dev.block-time 1s \
+    --chain {{genesis_file}} \
     --engine.disable-precompile-cache \
     --builder.gaslimit 3000000000 \
     --builder.max-tasks 8 \
