@@ -1,6 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, Bytes, U256},
+    primitives::{Address, Bytes, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_signer_local::coins_bip39::English;
@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use reth_chainspec::{Chain, ChainSpec, ChainSpecBuilder};
 use serde::{Deserialize, Serialize};
 use simple_tqdm::ParTqdm;
-use std::{collections::BTreeMap, fs, path::PathBuf, u64};
+use std::{collections::BTreeMap, default, fs, path::PathBuf, str::FromStr, u64};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AccountBalance {
@@ -82,12 +82,38 @@ impl GenesisArgs {
             })
             .collect::<eyre::Result<BTreeMap<Address, GenesisAccount>>>()?;
 
-        chain_spec.genesis.alloc = alloc;
-        chain_spec.genesis.gas_limit = u64::MAX;
-        chain_spec.genesis.nonce = 0x42;
-        chain_spec.genesis.extra_data = Bytes::from_static(b"tempo-genesis");
+        let chain_config = ChainConfig {
+            chain_id: self.chain_id,
+            homestead_block: Some(0),
+            eip150_block: Some(0),
+            eip155_block: Some(0),
+            eip158_block: Some(0),
+            byzantium_block: Some(0),
+            constantinople_block: Some(0),
+            petersburg_block: Some(0),
+            istanbul_block: Some(0),
+            berlin_block: Some(0),
+            london_block: Some(0),
+            merge_netsplit_block: Some(0),
+            shanghai_time: Some(0),
+            cancun_time: Some(0),
+            prague_time: Some(0),
+            terminal_total_difficulty: Some(U256::from(0)),
+            terminal_total_difficulty_passed: true,
+            deposit_contract_address: Some(address!("0x00000000219ab540356cBB839Cbe05303d7705Fa")),
+            ..Default::default()
+        };
 
-        let json = serde_json::to_string_pretty(&chain_spec.genesis)?;
+        let mut genesis = Genesis::default()
+            .with_gas_limit(u64::MAX)
+            .with_nonce(0x42)
+            .with_extra_data(Bytes::from_static(b"tempo-genesis"))
+            .with_coinbase(Address::ZERO);
+
+        genesis.alloc = alloc;
+        genesis.config = chain_config;
+
+        let json = serde_json::to_string_pretty(&genesis)?;
         fs::write(self.output, json)?;
 
         Ok(())
