@@ -1,5 +1,6 @@
 use alloy::primitives::{Address, address};
 
+pub const TIP403_REGISTRY_ADDRESS: Address = address!("0x403C000000000000000000000000000000000000");
 pub const FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");
 const TOKEN_PREFIX: [u8; 12] = [
     0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

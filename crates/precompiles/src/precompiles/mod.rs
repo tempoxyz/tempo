@@ -4,6 +4,7 @@ use reth::revm::precompile::PrecompileResult;
 mod dispatch;
 pub mod erc20_factory_precompile;
 pub mod erc20_precompile;
+pub mod tip403_registry_precompile;
 
 pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult;

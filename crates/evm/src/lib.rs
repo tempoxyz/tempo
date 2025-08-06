@@ -15,8 +15,11 @@ use reth_evm::{
 };
 use tempo_precompiles::{
     contracts::{
-        ERC20Factory, ERC20Token, EvmStorageProvider,
-        utils::{FACTORY_ADDRESS, address_is_token_address, address_to_token_id_unchecked},
+        ERC20Factory, ERC20Token, EvmStorageProvider, TIP403Registry,
+        utils::{
+            FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, address_is_token_address,
+            address_to_token_id_unchecked,
+        },
     },
     precompiles::Precompile,
 };
@@ -45,6 +48,10 @@ impl TempoEvmFactory {
                 }
                 a if *a == FACTORY_ADDRESS => Some(DynPrecompile::new(move |input| {
                     ERC20Factory::new(&mut EvmStorageProvider::new(input.internals))
+                        .call(input.data, &input.caller)
+                })),
+                a if *a == TIP403_REGISTRY_ADDRESS => Some(DynPrecompile::new(move |input| {
+                    TIP403Registry::new(&mut EvmStorageProvider::new(input.internals))
                         .call(input.data, &input.caller)
                 })),
                 _ => None,

@@ -60,7 +60,7 @@ macro_rules! dispatch_mutating_call {
 
             match $contract.$method($msg_sender, call) {
                 Ok(()) => {
-                    return Ok(PrecompileOutput::new($gas, Bytes::new()));
+                    return Ok(PrecompileOutput::new($gas, alloy_primitives::Bytes::new()));
                 }
                 Err(e) => {
                     return Err(PrecompileError::Other(

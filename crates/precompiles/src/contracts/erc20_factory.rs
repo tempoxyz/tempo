@@ -30,7 +30,7 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
         _sender: &Address,
         call: createTokenCall,
     ) -> Result<U256, ERC20Error> {
-        let token_id = self._token_id_counter();
+        let token_id = self.token_id_counter();
         self.storage.sstore(
             FACTORY_ADDRESS,
             slots::TOKEN_ID_COUNTER,
@@ -63,12 +63,7 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
         Ok(token_id)
     }
 
-    pub fn token_id_counter(&mut self, _call: tokenIdCounterCall) -> U256 {
-        self._token_id_counter()
-    }
-
-    #[inline]
-    pub fn _token_id_counter(&mut self) -> U256 {
+    pub fn token_id_counter(&mut self) -> U256 {
         self.storage.sload(FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)
     }
 }

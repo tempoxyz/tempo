@@ -96,9 +96,40 @@ sol! {
 
         function tokenIdCounter() external view returns (uint256);
     }
+
+    #[derive(Debug, PartialEq, Eq)]
+    interface ITIP403Registry {
+        // Enums
+        enum PolicyType {
+            WHITELIST,
+            BLACKLIST
+        }
+
+        // View Functions
+        function policyIdCounter() external view returns (uint64);
+        function policyData(uint64 policyId) external view returns (uint8 policyType, uint64 adminPolicyId);
+        function isAuthorized(uint64 policyId, address user) external view returns (bool);
+
+        // State-Changing Functions
+        function createPolicy(uint64 adminPolicyId, uint8 policyType) external returns (uint64);
+        function createPolicyWithAccounts(uint64 adminPolicyId, uint8 policyType, address[] accounts) external returns (uint64);
+        function setPolicyAdmin(uint64 policyId, uint64 adminPolicyId) external;
+        function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
+        function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
+
+        // Events
+        event PolicyAdminUpdate(uint64 indexed policyId, address indexed updater, uint64 indexed adminPolicyId);
+        event PolicyCreated(uint64 indexed policyId, address indexed updater, uint8 policyType);
+        event WhitelistUpdate(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
+        event BlacklistUpdate(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
+
+        // Errors
+        error Unauthorized();
+        error IncompatiblePolicyType();
+        error SelfOwnedPolicyMustBeWhitelist();
+    }
 }
 
-/// Macro to simplify ERC20 error creation, where we have custom errors with no arguments.
 #[macro_export]
 macro_rules! erc20_err {
     ($err:ident) => {
@@ -106,7 +137,19 @@ macro_rules! erc20_err {
     };
 }
 
+#[macro_export]
+macro_rules! tip403_err {
+    ($err:ident) => {
+        $crate::contracts::types::TIP403RegistryError::$err(
+            $crate::contracts::types::ITIP403Registry::$err {},
+        )
+    };
+}
+
 // Use the auto-generated error and event enums
 pub use IERC20::{IERC20Errors as ERC20Error, IERC20Events as ERC20Event};
 pub use IERC20Factory::IERC20FactoryEvents as ERC20FactoryEvent;
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
+pub use ITIP403Registry::{
+    ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
+};

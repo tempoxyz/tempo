@@ -19,7 +19,7 @@ impl<'a, S: StorageProvider> Precompile for ERC20Factory<'a, S> {
         let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
 
         // View functions
-        dispatch_view_call!(self, selector, IERC20Factory::tokenIdCounterCall, token_id_counter, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, IERC20Factory::tokenIdCounterCall, token_id_counter, gas_costs::VIEW_FUNCTIONS);
 
         // State-changing functions
         dispatch_mutating_call!(self, selector, IERC20Factory::createTokenCall, create_token, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, ERC20Error, returns);

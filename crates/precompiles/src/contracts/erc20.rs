@@ -4,7 +4,7 @@ use alloy::primitives::{Address, B256, IntoLogData, U256, keccak256};
 
 use crate::{
     contracts::{
-        IERC20, StorageProvider,
+        IERC20, ITIP403Registry, StorageProvider, TIP403Registry,
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
         types::{ERC20Error, ERC20Event},
@@ -44,10 +44,10 @@ pub struct ERC20Token<'a, S: StorageProvider> {
 }
 
 // ERC20-specific role constants
-static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"PAUSE_ROLE")));
-static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"UNPAUSE_ROLE")));
-static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"ISSUER_ROLE")));
-static BURN_BLOCKED_ROLE: LazyLock<B256> =
+pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"PAUSE_ROLE")));
+pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"UNPAUSE_ROLE")));
+pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"ISSUER_ROLE")));
+pub static BURN_BLOCKED_ROLE: LazyLock<B256> =
     LazyLock::new(|| B256::from(keccak256(b"BURN_BLOCKED_ROLE")));
 
 // Precompile functions
@@ -278,8 +278,15 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
         // Check if the address is blocked from transferring
-        // TODO: Implement TIP403Registry check
-        // For now, we'll skip the check and proceed with the burn
+        let transfer_policy_id = self.transfer_policy_id();
+        let mut registry = TIP403Registry::new(self.storage);
+        if registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: transfer_policy_id,
+            user: call.from,
+        }) {
+            // Only allow burning from addresses that are blocked from transferring
+            return Err(erc20_err!(PolicyForbids));
+        }
 
         self._transfer(&call.from, &Address::ZERO, call.amount)?;
 
@@ -452,7 +459,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
 // Utility functions
 impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn new(token_id: u64, storage: &'a mut S) -> Self {
-        ERC20Token {
+        Self {
             token_address: token_id_to_address(token_id),
             storage,
         }
@@ -571,11 +578,29 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
 
     fn check_transfer_authorized(
         &mut self,
-        _from: &Address,
-        _to: &Address,
+        from: &Address,
+        to: &Address,
     ) -> Result<(), ERC20Error> {
-        // TODO: Implement TIP403Registry checks
-        // For now, always allow transfers
+        let transfer_policy_id = self.transfer_policy_id();
+        let mut registry = TIP403Registry::new(self.storage);
+
+        // Check if 'from' address is authorized
+        let from_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: transfer_policy_id,
+            user: *from,
+        });
+
+        // Check if 'to' address is authorized
+        let to_authorized_call = ITIP403Registry::isAuthorizedCall {
+            policyId: transfer_policy_id,
+            user: *to,
+        };
+        let to_authorized = registry.is_authorized(to_authorized_call);
+
+        if !from_authorized || !to_authorized {
+            return Err(erc20_err!(PolicyForbids));
+        }
+
         Ok(())
     }
 

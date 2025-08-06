@@ -3,10 +3,7 @@ use crate::contracts::{
     storage::StorageProvider,
     types::{ERC20Error, IERC20, IRolesAuth, RolesAuthError},
 };
-use alloy::{
-    primitives::{Address, Bytes},
-    sol_types::SolCall,
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 
 use crate::{dispatch_mutating_call, dispatch_view_call, precompiles::Precompile};
@@ -68,6 +65,7 @@ impl<'a, S: StorageProvider> Precompile for ERC20Token<'a, S> {
 mod tests {
     use crate::contracts::{HashMapStorageProvider, types::IRolesAuth};
     use alloy::{primitives::U256, sol_types::SolValue};
+    use alloy_primitives::Bytes;
 
     use super::*;
 
