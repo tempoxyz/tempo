@@ -1,0 +1,837 @@
+use std::sync::LazyLock;
+
+use alloy::primitives::{Address, B256, IntoLogData, U256, keccak256};
+
+use crate::{
+    contracts::{
+        IERC20, StorageProvider,
+        roles::{DEFAULT_ADMIN_ROLE, RolesAuth, RolesAuthContract},
+        storage::slots::{double_mapping_slot, mapping_slot},
+        types::{ERC20Error, ERC20Event},
+    },
+    erc20_err,
+};
+
+/// Storage layout constants for ERC20 tokens
+mod slots {
+    // Variables
+    pub const NAME: u64 = 0;
+    pub const SYMBOL: u64 = 1;
+    pub const DECIMALS: u64 = 2;
+    pub const TOTAL_SUPPLY: u64 = 3;
+    pub const CURRENCY: u64 = 4;
+    pub const DOMAIN_SEPARATOR: u64 = 5;
+    pub const TRANSFER_POLICY_ID: u64 = 6;
+    pub const SUPPLY_CAP: u64 = 7;
+    pub const PAUSED: u64 = 8;
+    // Mappings
+    pub const BALANCES: u64 = 10;
+    pub const ALLOWANCES: u64 = 11;
+    pub const NONCES: u64 = 12;
+    pub const SALTS: u64 = 13;
+    // Roles storage is at slots 14 and 15, used by RolesAuthProvider
+}
+
+#[derive(Debug)]
+pub struct ERC20Token<'a, S: StorageProvider> {
+    token_id: u64,
+    storage: &'a mut S,
+}
+
+// ERC20-specific role constants
+static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"PAUSE_ROLE")));
+static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"UNPAUSE_ROLE")));
+static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"ISSUER_ROLE")));
+static BURN_BLOCKED_ROLE: LazyLock<B256> =
+    LazyLock::new(|| B256::from(keccak256(b"BURN_BLOCKED_ROLE")));
+
+// Precompile functions
+impl<'a, S: StorageProvider> ERC20Token<'a, S> {
+    // Metadata getters
+    pub fn name(&mut self) -> String {
+        self.read_string(U256::from(slots::NAME))
+    }
+
+    pub fn symbol(&mut self) -> String {
+        self.read_string(U256::from(slots::SYMBOL))
+    }
+
+    pub fn decimals(&mut self) -> u8 {
+        self.storage
+            .sload(self.token_id, U256::from(slots::DECIMALS))
+            .to::<u8>()
+    }
+
+    pub fn currency(&mut self) -> String {
+        self.read_string(U256::from(slots::CURRENCY))
+    }
+
+    pub fn total_supply(&mut self) -> U256 {
+        self.storage
+            .sload(self.token_id, U256::from(slots::TOTAL_SUPPLY))
+    }
+
+    pub fn supply_cap(&mut self) -> U256 {
+        self.storage
+            .sload(self.token_id, U256::from(slots::SUPPLY_CAP))
+    }
+
+    pub fn paused(&mut self) -> bool {
+        self.storage.sload(self.token_id, U256::from(slots::PAUSED)) != U256::ZERO
+    }
+
+    pub fn transfer_policy_id(&mut self) -> u64 {
+        self.storage
+            .sload(self.token_id, U256::from(slots::TRANSFER_POLICY_ID))
+            .to::<u64>()
+    }
+
+    pub fn domain_separator(&mut self) -> B256 {
+        B256::from(
+            self.storage
+                .sload(self.token_id, U256::from(slots::DOMAIN_SEPARATOR)),
+        )
+    }
+
+    // View functions
+    pub fn balance_of(&mut self, call: IERC20::balanceOfCall) -> U256 {
+        self.get_balance(&call.account)
+    }
+
+    pub fn allowance(&mut self, call: IERC20::allowanceCall) -> U256 {
+        self.get_allowance(&call.owner, &call.spender)
+    }
+
+    pub fn nonces(&mut self, call: IERC20::noncesCall) -> U256 {
+        let slot = mapping_slot(&call.owner, slots::NONCES);
+        self.storage.sload(self.token_id, slot)
+    }
+
+    pub fn salts(&mut self, call: IERC20::saltsCall) -> bool {
+        let slot = double_mapping_slot(&call.owner, &call.salt, slots::SALTS);
+        self.storage.sload(self.token_id, slot) != U256::ZERO
+    }
+
+    // Admin functions
+    pub fn change_transfer_policy_id(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::changeTransferPolicyIdCall,
+    ) -> Result<(), ERC20Error> {
+        self.check_role(msg_sender, *DEFAULT_ADMIN_ROLE)?;
+        self.storage.sstore(
+            self.token_id,
+            U256::from(slots::TRANSFER_POLICY_ID),
+            U256::from(call.newPolicyId),
+        );
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::TransferPolicyUpdate(IERC20::TransferPolicyUpdate {
+                updater: *msg_sender,
+                newPolicyId: call.newPolicyId,
+            })
+            .into_log_data(),
+        );
+        Ok(())
+    }
+
+    pub fn set_supply_cap(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::setSupplyCapCall,
+    ) -> Result<(), ERC20Error> {
+        self.check_role(msg_sender, *DEFAULT_ADMIN_ROLE)?;
+        if call.newSupplyCap < self.total_supply() {
+            return Err(erc20_err!(SupplyCapExceeded));
+        }
+        self.storage.sstore(
+            self.token_id,
+            U256::from(slots::SUPPLY_CAP),
+            call.newSupplyCap,
+        );
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::SupplyCapUpdate(IERC20::SupplyCapUpdate {
+                updater: *msg_sender,
+                newSupplyCap: call.newSupplyCap,
+            })
+            .into_log_data(),
+        );
+        Ok(())
+    }
+
+    pub fn pause(
+        &mut self,
+        msg_sender: &Address,
+        _call: IERC20::pauseCall,
+    ) -> Result<(), ERC20Error> {
+        self.check_role(msg_sender, *PAUSE_ROLE)?;
+        self.storage
+            .sstore(self.token_id, U256::from(slots::PAUSED), U256::from(1));
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::PauseStateUpdate(IERC20::PauseStateUpdate {
+                updater: *msg_sender,
+                isPaused: true,
+            })
+            .into_log_data(),
+        );
+        Ok(())
+    }
+
+    pub fn unpause(
+        &mut self,
+        msg_sender: &Address,
+        _call: IERC20::unpauseCall,
+    ) -> Result<(), ERC20Error> {
+        self.check_role(msg_sender, *UNPAUSE_ROLE)?;
+        self.storage
+            .sstore(self.token_id, U256::from(slots::PAUSED), U256::ZERO);
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::PauseStateUpdate(IERC20::PauseStateUpdate {
+                updater: *msg_sender,
+                isPaused: false,
+            })
+            .into_log_data(),
+        );
+        Ok(())
+    }
+
+    // Token operations
+    pub fn mint(&mut self, msg_sender: &Address, call: IERC20::mintCall) -> Result<(), ERC20Error> {
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
+        let total_supply = self.total_supply();
+
+        let new_supply = total_supply
+            .checked_add(call.amount)
+            .ok_or(erc20_err!(SupplyCapExceeded))?;
+
+        let supply_cap = self.supply_cap();
+        if new_supply > supply_cap {
+            return Err(erc20_err!(SupplyCapExceeded));
+        }
+
+        self.set_total_supply(new_supply);
+
+        let to_balance = self.get_balance(&call.to);
+        let new_to_balance: alloy::primitives::Uint<256, 4> =
+            to_balance
+                .checked_add(call.amount)
+                .ok_or(erc20_err!(SupplyCapExceeded))?;
+        self.set_balance(&call.to, new_to_balance);
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::Transfer(IERC20::Transfer {
+                from: Address::ZERO,
+                to: call.to,
+                amount: call.amount,
+            })
+            .into_log_data(),
+        );
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::Mint(IERC20::Mint {
+                to: call.to,
+                amount: call.amount,
+            })
+            .into_log_data(),
+        );
+
+        Ok(())
+    }
+
+    pub fn burn(&mut self, msg_sender: &Address, call: IERC20::burnCall) -> Result<(), ERC20Error> {
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
+
+        self._transfer(msg_sender, &Address::ZERO, call.amount)?;
+
+        let total_supply = self.total_supply();
+        let new_supply = total_supply
+            .checked_sub(call.amount)
+            .ok_or(erc20_err!(InsufficientBalance))?;
+        self.set_total_supply(new_supply);
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::Burn(IERC20::Burn {
+                from: *msg_sender,
+                amount: call.amount,
+            })
+            .into_log_data(),
+        );
+
+        Ok(())
+    }
+
+    pub fn burn_blocked(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::burnBlockedCall,
+    ) -> Result<(), ERC20Error> {
+        self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
+
+        // Check if the address is blocked from transferring
+        // TODO: Implement TIP403Registry check
+        // For now, we'll skip the check and proceed with the burn
+
+        self._transfer(&call.from, &Address::ZERO, call.amount)?;
+
+        let total_supply = self.total_supply();
+        let new_supply = total_supply
+            .checked_sub(call.amount)
+            .ok_or(erc20_err!(InsufficientBalance))?;
+        self.set_total_supply(new_supply);
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::BurnBlocked(IERC20::BurnBlocked {
+                from: call.from,
+                amount: call.amount,
+            })
+            .into_log_data(),
+        );
+
+        Ok(())
+    }
+
+    // ERC20 functions
+    pub fn approve(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::approveCall,
+    ) -> Result<bool, ERC20Error> {
+        self.set_allowance(msg_sender, &call.spender, call.amount);
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::Approval(IERC20::Approval {
+                owner: *msg_sender,
+                spender: call.spender,
+                amount: call.amount,
+            })
+            .into_log_data(),
+        );
+
+        Ok(true)
+    }
+
+    pub fn transfer(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::transferCall,
+    ) -> Result<bool, ERC20Error> {
+        self.check_not_paused()?;
+        self.check_not_token_address(&call.to)?;
+        self.check_transfer_authorized(msg_sender, &call.to)?;
+        self._transfer(msg_sender, &call.to, call.amount)?;
+        Ok(true)
+    }
+
+    pub fn transfer_from(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::transferFromCall,
+    ) -> Result<bool, ERC20Error> {
+        self.check_not_paused()?;
+        self.check_not_token_address(&call.to)?;
+        self.check_transfer_authorized(&call.from, &call.to)?;
+
+        // Check and update allowance
+        let allowed = self.get_allowance(&call.from, msg_sender);
+        if call.amount > allowed {
+            return Err(erc20_err!(InsufficientAllowance));
+        }
+
+        if allowed != U256::MAX {
+            let new_allowance = allowed
+                .checked_sub(call.amount)
+                .ok_or(erc20_err!(InsufficientAllowance))?;
+            self.set_allowance(&call.from, msg_sender, new_allowance);
+        }
+
+        self._transfer(&call.from, &call.to, call.amount)?;
+        Ok(true)
+    }
+
+    pub fn permit(
+        &mut self,
+        _msg_sender: &Address,
+        call: IERC20::permitCall,
+    ) -> Result<(), ERC20Error> {
+        if U256::from(call.deadline)
+            < U256::from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            )
+        {
+            return Err(erc20_err!(Expired));
+        }
+
+        // Get and increment nonce
+        let nonce_slot = mapping_slot(&call.owner, slots::NONCES);
+        let nonce = self.storage.sload(self.token_id, nonce_slot);
+        self.storage
+            .sstore(self.token_id, nonce_slot, nonce + U256::from(1));
+
+        // Verify signature
+        let domain_separator = self.domain_separator();
+
+        // Manually encode the struct hash for Permit
+        let mut struct_data = Vec::new();
+        struct_data.extend_from_slice(
+            keccak256(b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)").as_slice(),
+        );
+        struct_data.extend_from_slice(call.owner.as_slice());
+        struct_data.extend_from_slice(call.spender.as_slice());
+        struct_data.extend_from_slice(&call.value.to_be_bytes::<32>());
+        struct_data.extend_from_slice(&nonce.to_be_bytes::<32>());
+        struct_data.extend_from_slice(&U256::from(call.deadline).to_be_bytes::<32>());
+        let struct_hash = keccak256(&struct_data);
+
+        let mut digest_data = Vec::new();
+        digest_data.push(0x19);
+        digest_data.push(0x01);
+        digest_data.extend_from_slice(domain_separator.as_slice());
+        digest_data.extend_from_slice(struct_hash.as_slice());
+        let _digest = keccak256(&digest_data);
+
+        // TODO: Implement ecrecover verification
+        // For now, we'll skip signature verification
+
+        self.set_allowance(&call.owner, &call.spender, call.value);
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::Approval(IERC20::Approval {
+                owner: call.owner,
+                spender: call.spender,
+                amount: call.value,
+            })
+            .into_log_data(),
+        );
+
+        Ok(())
+    }
+
+    // TIP20 extension functions
+    pub fn transfer_with_memo(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::transferWithMemoCall,
+    ) -> Result<(), ERC20Error> {
+        self.check_not_paused()?;
+        self.check_not_token_address(&call.to)?;
+        self.check_transfer_authorized(msg_sender, &call.to)?;
+
+        self._transfer(msg_sender, &call.to, call.amount)?;
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::TransferWithMemo(IERC20::TransferWithMemo {
+                from: *msg_sender,
+                to: call.to,
+                amount: call.amount,
+                memo: call.memo,
+            })
+            .into_log_data(),
+        );
+
+        Ok(())
+    }
+
+    // Role Management Functions (delegating to RolesAuthContract)
+    pub fn has_role(&mut self, call: IERC20::hasRoleCall) -> bool {
+        let mut roles = self.get_roles_contract();
+        roles.has_role(RolesAuth::hasRoleCall {
+            account: call.account,
+            role: call.role,
+        })
+    }
+
+    pub fn get_role_admin(&mut self, call: IERC20::getRoleAdminCall) -> B256 {
+        let mut roles = self.get_roles_contract();
+        roles.get_role_admin(RolesAuth::getRoleAdminCall { role: call.role })
+    }
+
+    pub fn grant_role(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::grantRoleCall,
+    ) -> Result<(), ERC20Error> {
+        let mut roles = self.get_roles_contract();
+        roles
+            .grant_role(
+                msg_sender,
+                RolesAuth::grantRoleCall {
+                    role: call.role,
+                    account: call.account,
+                },
+            )
+            .map_err(|_| erc20_err!(PolicyForbids))
+    }
+
+    pub fn revoke_role(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::revokeRoleCall,
+    ) -> Result<(), ERC20Error> {
+        let mut roles = self.get_roles_contract();
+        roles
+            .revoke_role(
+                msg_sender,
+                RolesAuth::revokeRoleCall {
+                    role: call.role,
+                    account: call.account,
+                },
+            )
+            .map_err(|_| erc20_err!(PolicyForbids))
+    }
+
+    pub fn renounce_role(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::renounceRoleCall,
+    ) -> Result<(), ERC20Error> {
+        let mut roles = self.get_roles_contract();
+        roles
+            .renounce_role(msg_sender, RolesAuth::renounceRoleCall { role: call.role })
+            .map_err(|_| erc20_err!(PolicyForbids))
+    }
+
+    pub fn set_role_admin(
+        &mut self,
+        msg_sender: &Address,
+        call: IERC20::setRoleAdminCall,
+    ) -> Result<(), ERC20Error> {
+        let mut roles = self.get_roles_contract();
+        roles
+            .set_role_admin(
+                msg_sender,
+                RolesAuth::setRoleAdminCall {
+                    role: call.role,
+                    adminRole: call.adminRole,
+                },
+            )
+            .map_err(|_| erc20_err!(PolicyForbids))
+    }
+}
+
+// Utility functions
+impl<'a, S: StorageProvider> ERC20Token<'a, S> {
+    pub fn new(token_id: u64, storage: &'a mut S) -> Self {
+        ERC20Token { token_id, storage }
+    }
+
+    /// Only called internally from the factory, which won't try to re-initialize a token.
+    pub fn initialize(
+        &mut self,
+        name: &str,
+        symbol: &str,
+        decimals: u8,
+        currency: &str,
+        admin: &Address,
+        chain_id: u64,
+    ) -> Result<(), ERC20Error> {
+        // EVM invariant that empty accounts do nothing, so must give some code.
+        self.storage.set_code(self.token_id, vec![0xef]);
+
+        self.write_string(U256::from(slots::NAME), name.to_string())?;
+        self.write_string(U256::from(slots::SYMBOL), symbol.to_string())?;
+        self.write_string(U256::from(slots::CURRENCY), currency.to_string())?;
+        self.storage.sstore(
+            self.token_id,
+            U256::from(slots::DECIMALS),
+            U256::from(decimals),
+        );
+
+        // Set default values
+        self.storage
+            .sstore(self.token_id, U256::from(slots::SUPPLY_CAP), U256::MAX);
+        self.storage.sstore(
+            self.token_id,
+            U256::from(slots::TRANSFER_POLICY_ID),
+            U256::ONE,
+        ); // Default "always-allow" policy
+
+        // Initialize roles system and grant admin role
+        let mut roles = self.get_roles_contract();
+        roles.initialize();
+        roles.grant_default_admin(admin);
+
+        // Calculate DOMAIN_SEPARATOR
+        let mut domain_data = Vec::new();
+        domain_data.extend_from_slice(
+            keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)").as_slice(),
+        );
+        domain_data.extend_from_slice(keccak256(name.as_bytes()).as_slice());
+        domain_data.extend_from_slice(keccak256(b"1").as_slice());
+        domain_data.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+        domain_data.extend_from_slice(self.get_token_address().as_slice());
+        let domain_separator = keccak256(&domain_data);
+        self.storage.sstore(
+            self.token_id,
+            U256::from(slots::DOMAIN_SEPARATOR),
+            U256::from_be_bytes(domain_separator.0),
+        );
+
+        Ok(())
+    }
+
+    #[inline]
+    fn get_balance(&mut self, account: &Address) -> U256 {
+        let slot = mapping_slot(account, slots::BALANCES);
+        self.storage.sload(self.token_id, slot)
+    }
+
+    #[inline]
+    fn set_balance(&mut self, account: &Address, amount: U256) {
+        let slot = mapping_slot(account, slots::BALANCES);
+        self.storage.sstore(self.token_id, slot, amount);
+    }
+
+    #[inline]
+    fn get_allowance(&mut self, owner: &Address, spender: &Address) -> U256 {
+        let slot = double_mapping_slot(owner, spender, slots::ALLOWANCES);
+        self.storage.sload(self.token_id, slot)
+    }
+
+    #[inline]
+    fn set_allowance(&mut self, owner: &Address, spender: &Address, amount: U256) {
+        let slot = double_mapping_slot(owner, spender, slots::ALLOWANCES);
+        self.storage.sstore(self.token_id, slot, amount);
+    }
+
+    #[inline]
+    fn set_total_supply(&mut self, amount: U256) {
+        self.storage
+            .sstore(self.token_id, U256::from(slots::TOTAL_SUPPLY), amount);
+    }
+
+    fn check_role(&mut self, account: &Address, role: B256) -> Result<(), ERC20Error> {
+        let mut roles = self.get_roles_contract();
+        roles
+            .check_role(account, role)
+            .map_err(|_| erc20_err!(PolicyForbids))
+    }
+
+    // Helper to get a RolesAuthContract instance
+    fn get_roles_contract(&mut self) -> RolesAuthContract<'_, S> {
+        RolesAuthContract::new(self.storage, self.token_id, 14, 15) // slots::ROLES would be 14, ROLE_ADMIN would be 15
+    }
+
+    fn check_not_paused(&mut self) -> Result<(), ERC20Error> {
+        if self.paused() {
+            return Err(erc20_err!(ContractPaused));
+        }
+        Ok(())
+    }
+
+    fn check_not_token_address(&self, to: &Address) -> Result<(), ERC20Error> {
+        // Don't allow sending to other precompiled tokens
+        if (u64::from_be_bytes(to.as_slice()[0..8].try_into().unwrap()) >> 24) == 0x20C00000000000 {
+            return Err(erc20_err!(InvalidRecipient));
+        }
+        Ok(())
+    }
+
+    fn check_transfer_authorized(
+        &mut self,
+        _from: &Address,
+        _to: &Address,
+    ) -> Result<(), ERC20Error> {
+        // TODO: Implement TIP403Registry checks
+        // For now, always allow transfers
+        Ok(())
+    }
+
+    fn get_token_address(&self) -> Address {
+        // Calculate the precompile address for this token
+        // Format: 0x20C0_0000_0000_0000_0000_0000_[token_id as u64]
+        let mut addr_bytes = [0u8; 20];
+        addr_bytes[0..3].copy_from_slice(&[0x20, 0xC0, 0x00]);
+        addr_bytes[12..20].copy_from_slice(&self.token_id.to_be_bytes());
+        Address::from(addr_bytes)
+    }
+
+    fn _transfer(&mut self, from: &Address, to: &Address, amount: U256) -> Result<(), ERC20Error> {
+        let from_balance = self.get_balance(from);
+        if amount > from_balance {
+            return Err(erc20_err!(InsufficientBalance));
+        }
+
+        let new_from_balance = from_balance
+            .checked_sub(amount)
+            .ok_or(erc20_err!(InsufficientBalance))?;
+        self.set_balance(from, new_from_balance);
+
+        if *to != Address::ZERO {
+            let to_balance = self.get_balance(to);
+            let new_to_balance = to_balance
+                .checked_add(amount)
+                .ok_or(erc20_err!(SupplyCapExceeded))?;
+            self.set_balance(to, new_to_balance);
+        }
+
+        self.storage.emit_event(
+            self.token_id,
+            ERC20Event::Transfer(IERC20::Transfer {
+                from: *from,
+                to: *to,
+                amount,
+            })
+            .into_log_data(),
+        );
+
+        Ok(())
+    }
+
+    #[inline]
+    fn read_string(&mut self, slot: U256) -> String {
+        let value = self.storage.sload(self.token_id, slot);
+        let bytes = value.to_be_bytes::<32>();
+        let len = bytes[31] as usize / 2; // Last byte stores length * 2 for short strings
+        if len > 31 {
+            panic!("String too long, we shouldn't have stored this in the first place.");
+        } else {
+            String::from_utf8_lossy(&bytes[..len]).to_string()
+        }
+    }
+
+    #[inline]
+    /// Write string to storage (simplified - assumes string fits in one slot)
+    fn write_string(&mut self, slot: U256, value: String) -> Result<(), ERC20Error> {
+        let bytes = value.as_bytes();
+        if bytes.len() > 31 {
+            return Err(erc20_err!(StringTooLong));
+        }
+        let mut storage_bytes = [0u8; 32];
+        storage_bytes[..bytes.len()].copy_from_slice(bytes);
+        storage_bytes[31] = (bytes.len() * 2) as u8; // Store length * 2 in last byte
+
+        self.storage
+            .sstore(self.token_id, slot, U256::from_be_bytes(storage_bytes));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use alloy::primitives::Address;
+
+    use super::*;
+    use crate::contracts::storage::hashmap::HashMapStorageProvider;
+
+    #[test]
+    fn test_mint_increases_balance_and_supply() {
+        let mut storage = HashMapStorageProvider::new();
+        let admin = Address::from([0u8; 20]);
+        let addr = Address::from([1u8; 20]);
+        let amount = U256::from(100);
+        let token_id = 1;
+        {
+            let mut token = ERC20Token::new(token_id, &mut storage);
+            // Initialize with admin
+            token
+                .initialize("Test", "TST", 18, "USD", &admin, 1)
+                .unwrap();
+
+            // Grant issuer role to admin
+            let mut roles = token.get_roles_contract();
+            roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+            token
+                .mint(&admin, IERC20::mintCall { to: addr, amount })
+                .unwrap();
+
+            assert_eq!(token.get_balance(&addr), amount);
+            assert_eq!(token.total_supply(), amount);
+        }
+        assert_eq!(storage.events[&token_id].len(), 2);
+        assert_eq!(
+            storage.events[&token_id][0],
+            ERC20Event::Transfer(IERC20::Transfer {
+                from: Address::ZERO,
+                to: addr,
+                amount
+            })
+            .into_log_data()
+        );
+        assert_eq!(
+            storage.events[&token_id][1],
+            ERC20Event::Mint(IERC20::Mint { to: addr, amount }).into_log_data()
+        );
+    }
+
+    #[test]
+    fn test_transfer_moves_balance() {
+        let mut storage = HashMapStorageProvider::new();
+        let admin = Address::from([0u8; 20]);
+        let from = Address::from([1u8; 20]);
+        let to = Address::from([2u8; 20]);
+        let amount = U256::from(100);
+        let token_id = 1;
+        {
+            let mut token = ERC20Token::new(token_id, &mut storage);
+            token
+                .initialize("Test", "TST", 18, "USD", &admin, 1)
+                .unwrap();
+            let mut roles = token.get_roles_contract();
+            roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+            token
+                .mint(&admin, IERC20::mintCall { to: from, amount })
+                .unwrap();
+            token
+                .transfer(&from, IERC20::transferCall { to, amount })
+                .unwrap();
+
+            assert_eq!(token.get_balance(&from), U256::ZERO);
+            assert_eq!(token.get_balance(&to), amount);
+            assert_eq!(token.total_supply(), amount); // Supply unchanged
+        }
+        assert_eq!(storage.events[&token_id].len(), 3);
+        assert_eq!(
+            storage.events[&token_id][0],
+            ERC20Event::Transfer(IERC20::Transfer {
+                from: Address::ZERO,
+                to: from,
+                amount
+            })
+            .into_log_data()
+        );
+        assert_eq!(
+            storage.events[&token_id][1],
+            ERC20Event::Mint(IERC20::Mint { to: from, amount }).into_log_data()
+        );
+        assert_eq!(
+            storage.events[&token_id][2],
+            ERC20Event::Transfer(IERC20::Transfer { from, to, amount }).into_log_data()
+        );
+    }
+
+    #[test]
+    fn test_transfer_insufficient_balance_fails() {
+        let mut storage = HashMapStorageProvider::new();
+        let admin = Address::from([0u8; 20]);
+        let mut token = ERC20Token::new(1, &mut storage);
+        token
+            .initialize("Test", "TST", 18, "USD", &admin, 1)
+            .unwrap();
+        let from = Address::from([1u8; 20]);
+        let to = Address::from([2u8; 20]);
+        let amount = U256::from(100);
+
+        let result = token.transfer(&from, IERC20::transferCall { to, amount });
+        assert!(matches!(result, Err(ERC20Error::InsufficientBalance(_))));
+    }
+}

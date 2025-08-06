@@ -1,0 +1,101 @@
+use alloy::sol;
+
+sol! {
+    #[derive(Debug, PartialEq, Eq)]
+    interface IERC20 {
+        // ERC20 Standard Functions
+        function name() external view returns (string);
+        function symbol() external view returns (string);
+        function decimals() external view returns (uint8);
+        function totalSupply() external view returns (uint256);
+        function balanceOf(address account) external view returns (uint256);
+        function transfer(address to, uint256 amount) external returns (bool);
+        function approve(address spender, uint256 amount) external returns (bool);
+        function allowance(address owner, address spender) external view returns (uint256);
+        function transferFrom(address from, address to, uint256 amount) external returns (bool);
+
+        // TIP20 Extensions
+        function currency() external view returns (string);
+        function supplyCap() external view returns (uint256);
+        function paused() external view returns (bool);
+        function transferPolicyId() external view returns (uint64);
+        function nonces(address owner) external view returns (uint256);
+        function salts(address owner, bytes4 salt) external view returns (bool);
+
+        // Token Management
+        function mint(address to, uint256 amount) external;
+        function burn(uint256 amount) external;
+        function burnBlocked(address from, uint256 amount) external;
+        function transferWithMemo(address to, uint256 amount, bytes memo) external;
+
+        // Admin Functions
+        function changeTransferPolicyId(uint64 newPolicyId) external;
+        function setSupplyCap(uint256 newSupplyCap) external;
+        function pause() external;
+        function unpause() external;
+
+        // Role Management Functions
+        function grantRole(bytes32 role, address account) external;
+        function revokeRole(bytes32 role, address account) external;
+        function renounceRole(bytes32 role) external;
+        function setRoleAdmin(bytes32 role, bytes32 adminRole) external;
+        function hasRole(address account, bytes32 role) external view returns (bool);
+        function getRoleAdmin(bytes32 role) external view returns (bytes32);
+
+        // EIP-712 Permit
+        function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
+
+        // Events
+        event Transfer(address indexed from, address indexed to, uint256 amount);
+        event Approval(address indexed owner, address indexed spender, uint256 amount);
+        event Mint(address indexed to, uint256 amount);
+        event Burn(address indexed from, uint256 amount);
+        event BurnBlocked(address indexed from, uint256 amount);
+        event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes memo);
+        event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
+        event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
+        event PauseStateUpdate(address indexed updater, bool isPaused);
+
+        // Errors
+        error InsufficientBalance();
+        error InsufficientAllowance();
+        error SupplyCapExceeded();
+        error InvalidSignature();
+        error InvalidPayload();
+        error InvalidNonce();
+        error StringTooLong();
+        error PolicyForbids();
+        error InvalidRecipient();
+        error Expired();
+        error SaltAlreadyUsed();
+        error ContractPaused();
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    interface IERC20Factory {
+        event TokenCreated(uint256 indexed tokenId, string name, string symbol, uint8 decimals, string currency, address admin);
+
+        function createToken(
+            string memory name,
+            string memory symbol,
+            uint8 decimals,
+            string memory currency,
+            address admin
+        ) external returns (uint256);
+
+        function tokenIdCounter() external view returns (uint256);
+    }
+}
+
+/// Macro to simplify ERC20 error creation, where we have custom errors with no arguments.
+#[macro_export]
+macro_rules! erc20_err {
+    ($err:ident) => {
+        $crate::contracts::types::ERC20Error::$err($crate::contracts::types::IERC20::$err {})
+    };
+}
+
+// Use the auto-generated error and event enums
+pub use IERC20::{IERC20Errors as ERC20Error, IERC20Events as ERC20Event};
+pub use IERC20Factory::IERC20FactoryEvents as ERC20FactoryEvent;
