@@ -166,6 +166,7 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
 ```bash
     reth node --http --http.addr 0.0.0.0 \
     --http.port 8545 --http.api all \
+    --datadir ./data \
     --dev --dev.block-time 1s \
     --chain genesis.json \
     --engine.disable-precompile-cache \

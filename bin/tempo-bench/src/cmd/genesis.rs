@@ -1,6 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, U256},
+    primitives::{Address, Bytes, U256},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_signer_local::coins_bip39::English;
@@ -62,7 +62,7 @@ impl GenesisArgs {
 
         println!("Generating {:?} accounts...", self.accounts);
 
-        let accounts: BTreeMap<Address, GenesisAccount> = (0..self.accounts)
+        let alloc: BTreeMap<Address, GenesisAccount> = (0..self.accounts)
             .into_par_iter()
             .tqdm()
             .map(|worker_id| -> eyre::Result<(Address, GenesisAccount)> {
@@ -82,8 +82,10 @@ impl GenesisArgs {
             })
             .collect::<eyre::Result<BTreeMap<Address, GenesisAccount>>>()?;
 
-        chain_spec.genesis.alloc = accounts;
+        chain_spec.genesis.alloc = alloc;
         chain_spec.genesis.gas_limit = u64::MAX;
+        chain_spec.genesis.nonce = 0x42;
+        chain_spec.genesis.extra_data = Bytes::from_static(b"tempo-genesis");
 
         let json = serde_json::to_string_pretty(&chain_spec.genesis)?;
         fs::write(self.output, json)?;
