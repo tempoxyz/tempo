@@ -23,7 +23,7 @@ pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: U256) -> U256 {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(&pad_to_32(key.as_ref()));
     buf[32..].copy_from_slice(&mapping_slot.to_le_bytes::<32>());
-    U256::from_be_bytes(keccak256(&buf).0)
+    U256::from_be_bytes(keccak256(buf).0)
 }
 
 /// Compute storage slot for a double mapping (mapping\[key1\]\[key2\])
@@ -36,7 +36,7 @@ pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(&pad_to_32(key2.as_ref()));
     buf[32..].copy_from_slice(&intermediate_slot.to_be_bytes::<32>());
-    U256::from_be_bytes(keccak256(&buf).0)
+    U256::from_be_bytes(keccak256(buf).0)
 }
 
 #[cfg(test)]
