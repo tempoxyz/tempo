@@ -14,23 +14,26 @@ use crate::{
 
 /// Storage layout constants for ERC20 tokens
 mod slots {
+    use crate::contracts::storage::slots::to_u256;
+    use alloy::primitives::U256;
+
     // Variables
-    pub const NAME: u64 = 0;
-    pub const SYMBOL: u64 = 1;
-    pub const DECIMALS: u64 = 2;
-    pub const TOTAL_SUPPLY: u64 = 3;
-    pub const CURRENCY: u64 = 4;
-    pub const DOMAIN_SEPARATOR: u64 = 5;
-    pub const TRANSFER_POLICY_ID: u64 = 6;
-    pub const SUPPLY_CAP: u64 = 7;
-    pub const PAUSED: u64 = 8;
+    pub const NAME: U256 = to_u256(0);
+    pub const SYMBOL: U256 = to_u256(1);
+    pub const DECIMALS: U256 = to_u256(2);
+    pub const TOTAL_SUPPLY: U256 = to_u256(3);
+    pub const CURRENCY: U256 = to_u256(4);
+    pub const DOMAIN_SEPARATOR: U256 = to_u256(5);
+    pub const TRANSFER_POLICY_ID: U256 = to_u256(6);
+    pub const SUPPLY_CAP: U256 = to_u256(7);
+    pub const PAUSED: U256 = to_u256(8);
     // Mappings
-    pub const BALANCES: u64 = 10;
-    pub const ALLOWANCES: u64 = 11;
-    pub const NONCES: u64 = 12;
-    pub const SALTS: u64 = 13;
-    pub const ROLES_BASE_SLOT: u64 = 14; // via RolesAuthContract
-    pub const ROLE_ADMIN_BASE_SLOT: u64 = 15; // via RolesAuthContract
+    pub const BALANCES: U256 = to_u256(10);
+    pub const ALLOWANCES: U256 = to_u256(11);
+    pub const NONCES: U256 = to_u256(12);
+    pub const SALTS: U256 = to_u256(13);
+    pub const ROLES_BASE_SLOT: U256 = to_u256(14); // via RolesAuthContract
+    pub const ROLE_ADMIN_BASE_SLOT: U256 = to_u256(15); // via RolesAuthContract
 }
 
 #[derive(Debug)]
@@ -50,48 +53,43 @@ static BURN_BLOCKED_ROLE: LazyLock<B256> =
 impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     // Metadata getters
     pub fn name(&mut self) -> String {
-        self.read_string(U256::from(slots::NAME))
+        self.read_string(slots::NAME)
     }
 
     pub fn symbol(&mut self) -> String {
-        self.read_string(U256::from(slots::SYMBOL))
+        self.read_string(slots::SYMBOL)
     }
 
     pub fn decimals(&mut self) -> u8 {
         self.storage
-            .sload(self.token_id, U256::from(slots::DECIMALS))
+            .sload(self.token_id, slots::DECIMALS)
             .to::<u8>()
     }
 
     pub fn currency(&mut self) -> String {
-        self.read_string(U256::from(slots::CURRENCY))
+        self.read_string(slots::CURRENCY)
     }
 
     pub fn total_supply(&mut self) -> U256 {
-        self.storage
-            .sload(self.token_id, U256::from(slots::TOTAL_SUPPLY))
+        self.storage.sload(self.token_id, slots::TOTAL_SUPPLY)
     }
 
     pub fn supply_cap(&mut self) -> U256 {
-        self.storage
-            .sload(self.token_id, U256::from(slots::SUPPLY_CAP))
+        self.storage.sload(self.token_id, slots::SUPPLY_CAP)
     }
 
     pub fn paused(&mut self) -> bool {
-        self.storage.sload(self.token_id, U256::from(slots::PAUSED)) != U256::ZERO
+        self.storage.sload(self.token_id, slots::PAUSED) != U256::ZERO
     }
 
     pub fn transfer_policy_id(&mut self) -> u64 {
         self.storage
-            .sload(self.token_id, U256::from(slots::TRANSFER_POLICY_ID))
+            .sload(self.token_id, slots::TRANSFER_POLICY_ID)
             .to::<u64>()
     }
 
     pub fn domain_separator(&mut self) -> B256 {
-        B256::from(
-            self.storage
-                .sload(self.token_id, U256::from(slots::DOMAIN_SEPARATOR)),
-        )
+        B256::from(self.storage.sload(self.token_id, slots::DOMAIN_SEPARATOR))
     }
 
     // View functions
@@ -122,7 +120,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
         self.storage.sstore(
             self.token_id,
-            U256::from(slots::TRANSFER_POLICY_ID),
+            slots::TRANSFER_POLICY_ID,
             U256::from(call.newPolicyId),
         );
 
@@ -146,11 +144,8 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         if call.newSupplyCap < self.total_supply() {
             return Err(erc20_err!(SupplyCapExceeded));
         }
-        self.storage.sstore(
-            self.token_id,
-            U256::from(slots::SUPPLY_CAP),
-            call.newSupplyCap,
-        );
+        self.storage
+            .sstore(self.token_id, slots::SUPPLY_CAP, call.newSupplyCap);
 
         self.storage.emit_event(
             self.token_id,
@@ -170,7 +165,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     ) -> Result<(), ERC20Error> {
         self.check_role(msg_sender, *PAUSE_ROLE)?;
         self.storage
-            .sstore(self.token_id, U256::from(slots::PAUSED), U256::from(1));
+            .sstore(self.token_id, slots::PAUSED, U256::from(1));
 
         self.storage.emit_event(
             self.token_id,
@@ -190,7 +185,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     ) -> Result<(), ERC20Error> {
         self.check_role(msg_sender, *UNPAUSE_ROLE)?;
         self.storage
-            .sstore(self.token_id, U256::from(slots::PAUSED), U256::ZERO);
+            .sstore(self.token_id, slots::PAUSED, U256::ZERO);
 
         self.storage.emit_event(
             self.token_id,
@@ -469,23 +464,17 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         // EVM invariant that empty accounts do nothing, so must give some code.
         self.storage.set_code(self.token_id, vec![0xef]);
 
-        self.write_string(U256::from(slots::NAME), name.to_string())?;
-        self.write_string(U256::from(slots::SYMBOL), symbol.to_string())?;
-        self.write_string(U256::from(slots::CURRENCY), currency.to_string())?;
-        self.storage.sstore(
-            self.token_id,
-            U256::from(slots::DECIMALS),
-            U256::from(decimals),
-        );
+        self.write_string(slots::NAME, name.to_string())?;
+        self.write_string(slots::SYMBOL, symbol.to_string())?;
+        self.write_string(slots::CURRENCY, currency.to_string())?;
+        self.storage
+            .sstore(self.token_id, slots::DECIMALS, U256::from(decimals));
 
         // Set default values
         self.storage
-            .sstore(self.token_id, U256::from(slots::SUPPLY_CAP), U256::MAX);
-        self.storage.sstore(
-            self.token_id,
-            U256::from(slots::TRANSFER_POLICY_ID),
-            U256::ONE,
-        ); // Default "always-allow" policy
+            .sstore(self.token_id, slots::SUPPLY_CAP, U256::MAX);
+        self.storage
+            .sstore(self.token_id, slots::TRANSFER_POLICY_ID, U256::ONE); // Default "always-allow" policy
 
         // Initialize roles system and grant admin role
         let mut roles = self.get_roles_contract();
@@ -504,7 +493,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         let domain_separator = keccak256(&domain_data);
         self.storage.sstore(
             self.token_id,
-            U256::from(slots::DOMAIN_SEPARATOR),
+            slots::DOMAIN_SEPARATOR,
             U256::from_be_bytes(domain_separator.0),
         );
 
@@ -548,7 +537,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     #[inline]
     fn set_total_supply(&mut self, amount: U256) {
         self.storage
-            .sstore(self.token_id, U256::from(slots::TOTAL_SUPPLY), amount);
+            .sstore(self.token_id, slots::TOTAL_SUPPLY, amount);
     }
 
     fn check_role(&mut self, account: &Address, role: B256) -> Result<(), ERC20Error> {

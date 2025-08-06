@@ -14,24 +14,27 @@ pub static UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 
 // Storage layout constants for roles
 pub mod slots {
-    pub const ROLES: u64 = 0;
-    pub const ROLE_ADMIN: u64 = 1;
+    use crate::contracts::storage::slots::to_u256;
+    use alloy::primitives::U256;
+    
+    pub const ROLES: U256 = to_u256(0);
+    pub const ROLE_ADMIN: U256 = to_u256(1);
 }
 
 /// Complete roles system that handles calldata parsing and event emission
 pub struct RolesAuthContract<'a, S: StorageProvider> {
     storage: &'a mut S,
     contract_id: u64,
-    roles_base_slot: u64,
-    role_admin_base_slot: u64,
+    roles_base_slot: U256,
+    role_admin_base_slot: U256,
 }
 
 impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     pub fn new(
         storage: &'a mut S,
         contract_id: u64,
-        roles_base_slot: u64,
-        role_admin_base_slot: u64,
+        roles_base_slot: U256,
+        role_admin_base_slot: U256,
     ) -> Self {
         Self {
             storage,
@@ -207,7 +210,7 @@ mod tests {
     #[test]
     fn test_role_contract_grant_and_check() {
         let mut storage = HashMapStorageProvider::new();
-        let mut roles = RolesAuthContract::new(&mut storage, 1, 0, 1);
+        let mut roles = RolesAuthContract::new(&mut storage, 1, U256::ZERO, U256::ONE);
 
         let admin = Address::from([1u8; 20]);
         let user = Address::from([2u8; 20]);
@@ -249,7 +252,7 @@ mod tests {
     #[test]
     fn test_role_admin_functions() {
         let mut storage = HashMapStorageProvider::new();
-        let mut roles = RolesAuthContract::new(&mut storage, 1, 0, 1);
+        let mut roles = RolesAuthContract::new(&mut storage, 1, U256::ZERO, U256::ONE);
 
         let admin = Address::from([1u8; 20]);
         let custom_role = B256::from(keccak256(b"CUSTOM_ROLE"));
@@ -278,7 +281,7 @@ mod tests {
     #[test]
     fn test_renounce_role() {
         let mut storage = HashMapStorageProvider::new();
-        let mut roles = RolesAuthContract::new(&mut storage, 1, 0, 1);
+        let mut roles = RolesAuthContract::new(&mut storage, 1, U256::ZERO, U256::ONE);
 
         let user = Address::from([1u8; 20]);
         let custom_role = B256::from(keccak256(b"CUSTOM_ROLE"));
@@ -298,7 +301,7 @@ mod tests {
     #[test]
     fn test_unauthorized_access() {
         let mut storage = HashMapStorageProvider::new();
-        let mut roles = RolesAuthContract::new(&mut storage, 1, 0, 1);
+        let mut roles = RolesAuthContract::new(&mut storage, 1, U256::ZERO, U256::ONE);
 
         let user = Address::from([1u8; 20]);
         let other = Address::from([2u8; 20]);

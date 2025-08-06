@@ -8,7 +8,9 @@ use crate::contracts::{
 };
 
 mod slots {
-    pub const TOKEN_ID_COUNTER: u64 = 0;
+    use alloy::primitives::U256;
+
+    pub const TOKEN_ID_COUNTER: U256 = U256::ZERO;
 }
 
 #[derive(Debug)]
@@ -28,11 +30,8 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
         call: createTokenCall,
     ) -> Result<U256, ERC20Error> {
         let token_id = self._token_id_counter();
-        self.storage.sstore(
-            u64::MAX,
-            U256::from(slots::TOKEN_ID_COUNTER),
-            token_id + U256::ONE,
-        ); // Increment.
+        self.storage
+            .sstore(u64::MAX, slots::TOKEN_ID_COUNTER, token_id + U256::ONE); // Increment.
 
         // TODO: Get chain_id from context
         let chain_id = 1u64;
@@ -66,7 +65,6 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
 
     #[inline]
     pub fn _token_id_counter(&mut self) -> U256 {
-        self.storage
-            .sload(u64::MAX, U256::from(slots::TOKEN_ID_COUNTER))
+        self.storage.sload(u64::MAX, slots::TOKEN_ID_COUNTER)
     }
 }

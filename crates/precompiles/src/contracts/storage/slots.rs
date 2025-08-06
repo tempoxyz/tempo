@@ -1,10 +1,16 @@
 use alloy::primitives::{U256, keccak256};
 
+pub const fn to_u256(x: u64) -> U256 {
+    let mut limbs = [0; 4];
+    limbs[0] = x;
+    U256::from_limbs(limbs)
+}
+
 /// Compute storage slot for a mapping
-pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: u64) -> U256 {
+pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: U256) -> U256 {
     let mut data = Vec::new();
     data.extend_from_slice(key.as_ref());
-    data.extend_from_slice(&mapping_slot.to_le_bytes());
+    data.extend_from_slice(&mapping_slot.to_le_bytes::<32>());
     U256::from_be_bytes(keccak256(&data).0)
 }
 
@@ -12,7 +18,7 @@ pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: u64) -> U256 {
 pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
     key1: T,
     key2: U,
-    base_slot: u64,
+    base_slot: U256,
 ) -> U256 {
     let intermediate_slot = mapping_slot(key1, base_slot);
     let mut data = Vec::new();
@@ -28,8 +34,8 @@ mod tests {
     #[test]
     fn test_mapping_slot_deterministic() {
         let key = U256::from(123).to_be_bytes::<32>();
-        let slot1 = mapping_slot(key, 0);
-        let slot2 = mapping_slot(key, 0);
+        let slot1 = mapping_slot(key, U256::ZERO);
+        let slot2 = mapping_slot(key, U256::ZERO);
 
         assert_eq!(slot1, slot2);
     }
@@ -39,8 +45,8 @@ mod tests {
         let key1 = U256::from(123).to_be_bytes::<32>();
         let key2 = U256::from(456).to_be_bytes::<32>();
 
-        let slot1 = mapping_slot(key1, 0);
-        let slot2 = mapping_slot(key2, 0);
+        let slot1 = mapping_slot(key1, U256::ZERO);
+        let slot2 = mapping_slot(key2, U256::ZERO);
 
         assert_ne!(slot1, slot2);
     }
