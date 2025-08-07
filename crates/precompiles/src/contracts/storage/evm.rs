@@ -5,16 +5,24 @@ use reth_evm::EvmInternals;
 use crate::contracts::storage::StorageProvider;
 
 pub struct EvmStorageProvider<'a> {
-    pub internals: EvmInternals<'a>,
+    internals: EvmInternals<'a>,
+    chain_id: u64,
 }
 
 impl<'a> EvmStorageProvider<'a> {
-    pub fn new(internals: EvmInternals<'a>) -> Self {
-        Self { internals }
+    pub fn new(internals: EvmInternals<'a>, chain_id: u64) -> Self {
+        Self {
+            internals,
+            chain_id,
+        }
     }
 }
 
 impl<'a> StorageProvider for EvmStorageProvider<'a> {
+    fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
     fn set_code(&mut self, address: Address, code: Vec<u8>) {
         self.internals
             .set_code(address, Bytecode::new_raw(code.into()));

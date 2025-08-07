@@ -4,16 +4,15 @@ use alloy::primitives::{Address, B256, IntoLogData, U256, keccak256};
 
 use crate::{
     contracts::{
-        IERC20, StorageProvider,
+        ITIP20, ITIP403Registry, StorageProvider, TIP403Registry,
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
-        types::{ERC20Error, ERC20Event},
+        types::{TIP20Error, TIP20Event},
         utils::token_id_to_address,
     },
-    erc20_err,
+    tip20_err,
 };
 
-/// Storage layout constants for ERC20 tokens
 mod slots {
     use crate::contracts::storage::slots::to_u256;
     use alloy::primitives::U256;
@@ -38,21 +37,18 @@ mod slots {
 }
 
 #[derive(Debug)]
-pub struct ERC20Token<'a, S: StorageProvider> {
+pub struct TIP20Token<'a, S: StorageProvider> {
     token_address: Address,
     storage: &'a mut S,
 }
 
-// ERC20-specific role constants
-static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"PAUSE_ROLE")));
-static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"UNPAUSE_ROLE")));
-static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"ISSUER_ROLE")));
-static BURN_BLOCKED_ROLE: LazyLock<B256> =
+pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"PAUSE_ROLE")));
+pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"UNPAUSE_ROLE")));
+pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"ISSUER_ROLE")));
+pub static BURN_BLOCKED_ROLE: LazyLock<B256> =
     LazyLock::new(|| B256::from(keccak256(b"BURN_BLOCKED_ROLE")));
 
-// Precompile functions
-impl<'a, S: StorageProvider> ERC20Token<'a, S> {
-    // Metadata getters
+impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     pub fn name(&mut self) -> String {
         self.read_string(slots::NAME)
     }
@@ -97,20 +93,20 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     }
 
     // View functions
-    pub fn balance_of(&mut self, call: IERC20::balanceOfCall) -> U256 {
+    pub fn balance_of(&mut self, call: ITIP20::balanceOfCall) -> U256 {
         self.get_balance(&call.account)
     }
 
-    pub fn allowance(&mut self, call: IERC20::allowanceCall) -> U256 {
+    pub fn allowance(&mut self, call: ITIP20::allowanceCall) -> U256 {
         self.get_allowance(&call.owner, &call.spender)
     }
 
-    pub fn nonces(&mut self, call: IERC20::noncesCall) -> U256 {
+    pub fn nonces(&mut self, call: ITIP20::noncesCall) -> U256 {
         let slot = mapping_slot(call.owner, slots::NONCES);
         self.storage.sload(self.token_address, slot)
     }
 
-    pub fn salts(&mut self, call: IERC20::saltsCall) -> bool {
+    pub fn salts(&mut self, call: ITIP20::saltsCall) -> bool {
         let slot = double_mapping_slot(call.owner, call.salt, slots::SALTS);
         self.storage.sload(self.token_address, slot) != U256::ZERO
     }
@@ -119,8 +115,8 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn change_transfer_policy_id(
         &mut self,
         msg_sender: &Address,
-        call: IERC20::changeTransferPolicyIdCall,
-    ) -> Result<(), ERC20Error> {
+        call: ITIP20::changeTransferPolicyIdCall,
+    ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
         self.storage.sstore(
             self.token_address,
@@ -130,7 +126,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::TransferPolicyUpdate(IERC20::TransferPolicyUpdate {
+            TIP20Event::TransferPolicyUpdate(ITIP20::TransferPolicyUpdate {
                 updater: *msg_sender,
                 newPolicyId: call.newPolicyId,
             })
@@ -142,18 +138,18 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn set_supply_cap(
         &mut self,
         msg_sender: &Address,
-        call: IERC20::setSupplyCapCall,
-    ) -> Result<(), ERC20Error> {
+        call: ITIP20::setSupplyCapCall,
+    ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
         if call.newSupplyCap < self.total_supply() {
-            return Err(erc20_err!(SupplyCapExceeded));
+            return Err(tip20_err!(SupplyCapExceeded));
         }
         self.storage
             .sstore(self.token_address, slots::SUPPLY_CAP, call.newSupplyCap);
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::SupplyCapUpdate(IERC20::SupplyCapUpdate {
+            TIP20Event::SupplyCapUpdate(ITIP20::SupplyCapUpdate {
                 updater: *msg_sender,
                 newSupplyCap: call.newSupplyCap,
             })
@@ -165,15 +161,15 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn pause(
         &mut self,
         msg_sender: &Address,
-        _call: IERC20::pauseCall,
-    ) -> Result<(), ERC20Error> {
+        _call: ITIP20::pauseCall,
+    ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *PAUSE_ROLE)?;
         self.storage
             .sstore(self.token_address, slots::PAUSED, U256::from(1));
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::PauseStateUpdate(IERC20::PauseStateUpdate {
+            TIP20Event::PauseStateUpdate(ITIP20::PauseStateUpdate {
                 updater: *msg_sender,
                 isPaused: true,
             })
@@ -185,15 +181,15 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn unpause(
         &mut self,
         msg_sender: &Address,
-        _call: IERC20::unpauseCall,
-    ) -> Result<(), ERC20Error> {
+        _call: ITIP20::unpauseCall,
+    ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *UNPAUSE_ROLE)?;
         self.storage
             .sstore(self.token_address, slots::PAUSED, U256::ZERO);
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::PauseStateUpdate(IERC20::PauseStateUpdate {
+            TIP20Event::PauseStateUpdate(ITIP20::PauseStateUpdate {
                 updater: *msg_sender,
                 isPaused: false,
             })
@@ -203,17 +199,17 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     }
 
     // Token operations
-    pub fn mint(&mut self, msg_sender: &Address, call: IERC20::mintCall) -> Result<(), ERC20Error> {
+    pub fn mint(&mut self, msg_sender: &Address, call: ITIP20::mintCall) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply();
 
         let new_supply = total_supply
             .checked_add(call.amount)
-            .ok_or(erc20_err!(SupplyCapExceeded))?;
+            .ok_or(tip20_err!(SupplyCapExceeded))?;
 
         let supply_cap = self.supply_cap();
         if new_supply > supply_cap {
-            return Err(erc20_err!(SupplyCapExceeded));
+            return Err(tip20_err!(SupplyCapExceeded));
         }
 
         self.set_total_supply(new_supply);
@@ -222,12 +218,12 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         let new_to_balance: alloy::primitives::Uint<256, 4> =
             to_balance
                 .checked_add(call.amount)
-                .ok_or(erc20_err!(SupplyCapExceeded))?;
+                .ok_or(tip20_err!(SupplyCapExceeded))?;
         self.set_balance(&call.to, new_to_balance);
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::Transfer(IERC20::Transfer {
+            TIP20Event::Transfer(ITIP20::Transfer {
                 from: Address::ZERO,
                 to: call.to,
                 amount: call.amount,
@@ -237,7 +233,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::Mint(IERC20::Mint {
+            TIP20Event::Mint(ITIP20::Mint {
                 to: call.to,
                 amount: call.amount,
             })
@@ -247,7 +243,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         Ok(())
     }
 
-    pub fn burn(&mut self, msg_sender: &Address, call: IERC20::burnCall) -> Result<(), ERC20Error> {
+    pub fn burn(&mut self, msg_sender: &Address, call: ITIP20::burnCall) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
         self._transfer(msg_sender, &Address::ZERO, call.amount)?;
@@ -255,12 +251,12 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         let total_supply = self.total_supply();
         let new_supply = total_supply
             .checked_sub(call.amount)
-            .ok_or(erc20_err!(InsufficientBalance))?;
+            .ok_or(tip20_err!(InsufficientBalance))?;
         self.set_total_supply(new_supply);
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::Burn(IERC20::Burn {
+            TIP20Event::Burn(ITIP20::Burn {
                 from: *msg_sender,
                 amount: call.amount,
             })
@@ -273,25 +269,32 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn burn_blocked(
         &mut self,
         msg_sender: &Address,
-        call: IERC20::burnBlockedCall,
-    ) -> Result<(), ERC20Error> {
+        call: ITIP20::burnBlockedCall,
+    ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
         // Check if the address is blocked from transferring
-        // TODO: Implement TIP403Registry check
-        // For now, we'll skip the check and proceed with the burn
+        let transfer_policy_id = self.transfer_policy_id();
+        let mut registry = TIP403Registry::new(self.storage);
+        if registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: transfer_policy_id,
+            user: call.from,
+        }) {
+            // Only allow burning from addresses that are blocked from transferring
+            return Err(tip20_err!(PolicyForbids));
+        }
 
         self._transfer(&call.from, &Address::ZERO, call.amount)?;
 
         let total_supply = self.total_supply();
         let new_supply = total_supply
             .checked_sub(call.amount)
-            .ok_or(erc20_err!(InsufficientBalance))?;
+            .ok_or(tip20_err!(InsufficientBalance))?;
         self.set_total_supply(new_supply);
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::BurnBlocked(IERC20::BurnBlocked {
+            TIP20Event::BurnBlocked(ITIP20::BurnBlocked {
                 from: call.from,
                 amount: call.amount,
             })
@@ -301,17 +304,17 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         Ok(())
     }
 
-    // ERC20 functions
+    // Standard token functions
     pub fn approve(
         &mut self,
         msg_sender: &Address,
-        call: IERC20::approveCall,
-    ) -> Result<bool, ERC20Error> {
+        call: ITIP20::approveCall,
+    ) -> Result<bool, TIP20Error> {
         self.set_allowance(msg_sender, &call.spender, call.amount);
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::Approval(IERC20::Approval {
+            TIP20Event::Approval(ITIP20::Approval {
                 owner: *msg_sender,
                 spender: call.spender,
                 amount: call.amount,
@@ -325,8 +328,8 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn transfer(
         &mut self,
         msg_sender: &Address,
-        call: IERC20::transferCall,
-    ) -> Result<bool, ERC20Error> {
+        call: ITIP20::transferCall,
+    ) -> Result<bool, TIP20Error> {
         self.check_not_paused()?;
         self.check_not_token_address(&call.to)?;
         self.check_transfer_authorized(msg_sender, &call.to)?;
@@ -337,8 +340,8 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn transfer_from(
         &mut self,
         msg_sender: &Address,
-        call: IERC20::transferFromCall,
-    ) -> Result<bool, ERC20Error> {
+        call: ITIP20::transferFromCall,
+    ) -> Result<bool, TIP20Error> {
         self.check_not_paused()?;
         self.check_not_token_address(&call.to)?;
         self.check_transfer_authorized(&call.from, &call.to)?;
@@ -346,13 +349,13 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         // Check and update allowance
         let allowed = self.get_allowance(&call.from, msg_sender);
         if call.amount > allowed {
-            return Err(erc20_err!(InsufficientAllowance));
+            return Err(tip20_err!(InsufficientAllowance));
         }
 
         if allowed != U256::MAX {
             let new_allowance = allowed
                 .checked_sub(call.amount)
-                .ok_or(erc20_err!(InsufficientAllowance))?;
+                .ok_or(tip20_err!(InsufficientAllowance))?;
             self.set_allowance(&call.from, msg_sender, new_allowance);
         }
 
@@ -363,8 +366,8 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn permit(
         &mut self,
         _msg_sender: &Address,
-        call: IERC20::permitCall,
-    ) -> Result<(), ERC20Error> {
+        call: ITIP20::permitCall,
+    ) -> Result<(), TIP20Error> {
         if U256::from(call.deadline)
             < U256::from(
                 std::time::SystemTime::now()
@@ -373,7 +376,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
                     .as_secs(),
             )
         {
-            return Err(erc20_err!(Expired));
+            return Err(tip20_err!(Expired));
         }
 
         // Get and increment nonce
@@ -411,7 +414,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::Approval(IERC20::Approval {
+            TIP20Event::Approval(ITIP20::Approval {
                 owner: call.owner,
                 spender: call.spender,
                 amount: call.value,
@@ -426,8 +429,8 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
     pub fn transfer_with_memo(
         &mut self,
         msg_sender: &Address,
-        call: IERC20::transferWithMemoCall,
-    ) -> Result<(), ERC20Error> {
+        call: ITIP20::transferWithMemoCall,
+    ) -> Result<(), TIP20Error> {
         self.check_not_paused()?;
         self.check_not_token_address(&call.to)?;
         self.check_transfer_authorized(msg_sender, &call.to)?;
@@ -436,7 +439,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::TransferWithMemo(IERC20::TransferWithMemo {
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
                 from: *msg_sender,
                 to: call.to,
                 amount: call.amount,
@@ -450,9 +453,9 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
 }
 
 // Utility functions
-impl<'a, S: StorageProvider> ERC20Token<'a, S> {
+impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     pub fn new(token_id: u64, storage: &'a mut S) -> Self {
-        ERC20Token {
+        Self {
             token_address: token_id_to_address(token_id),
             storage,
         }
@@ -466,8 +469,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         decimals: u8,
         currency: &str,
         admin: &Address,
-        chain_id: u64,
-    ) -> Result<(), ERC20Error> {
+    ) -> Result<(), TIP20Error> {
         // EVM invariant that empty accounts do nothing, so must give some code.
         self.storage.set_code(self.token_address, vec![0xef]);
 
@@ -495,7 +497,7 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
         );
         domain_data.extend_from_slice(keccak256(name.as_bytes()).as_slice());
         domain_data.extend_from_slice(keccak256(b"1").as_slice());
-        domain_data.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+        domain_data.extend_from_slice(&U256::from(self.storage.chain_id()).to_be_bytes::<32>());
         domain_data.extend_from_slice(self.token_address.as_slice());
         let domain_separator = keccak256(&domain_data);
         self.storage.sstore(
@@ -547,60 +549,78 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
             .sstore(self.token_address, slots::TOTAL_SUPPLY, amount);
     }
 
-    fn check_role(&mut self, account: &Address, role: B256) -> Result<(), ERC20Error> {
+    fn check_role(&mut self, account: &Address, role: B256) -> Result<(), TIP20Error> {
         let mut roles = self.get_roles_contract();
         roles
             .check_role(account, role)
-            .map_err(|_| erc20_err!(PolicyForbids))
+            .map_err(|_| tip20_err!(PolicyForbids))
     }
 
-    fn check_not_paused(&mut self) -> Result<(), ERC20Error> {
+    fn check_not_paused(&mut self) -> Result<(), TIP20Error> {
         if self.paused() {
-            return Err(erc20_err!(ContractPaused));
+            return Err(tip20_err!(ContractPaused));
         }
         Ok(())
     }
 
-    fn check_not_token_address(&self, to: &Address) -> Result<(), ERC20Error> {
+    fn check_not_token_address(&self, to: &Address) -> Result<(), TIP20Error> {
         // Don't allow sending to other precompiled tokens
         if (u64::from_be_bytes(to.as_slice()[0..8].try_into().unwrap()) >> 24) == 0x20C00000000000 {
-            return Err(erc20_err!(InvalidRecipient));
+            return Err(tip20_err!(InvalidRecipient));
         }
         Ok(())
     }
 
     fn check_transfer_authorized(
         &mut self,
-        _from: &Address,
-        _to: &Address,
-    ) -> Result<(), ERC20Error> {
-        // TODO: Implement TIP403Registry checks
-        // For now, always allow transfers
+        from: &Address,
+        to: &Address,
+    ) -> Result<(), TIP20Error> {
+        let transfer_policy_id = self.transfer_policy_id();
+        let mut registry = TIP403Registry::new(self.storage);
+
+        // Check if 'from' address is authorized
+        let from_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: transfer_policy_id,
+            user: *from,
+        });
+
+        // Check if 'to' address is authorized
+        let to_authorized_call = ITIP403Registry::isAuthorizedCall {
+            policyId: transfer_policy_id,
+            user: *to,
+        };
+        let to_authorized = registry.is_authorized(to_authorized_call);
+
+        if !from_authorized || !to_authorized {
+            return Err(tip20_err!(PolicyForbids));
+        }
+
         Ok(())
     }
 
-    fn _transfer(&mut self, from: &Address, to: &Address, amount: U256) -> Result<(), ERC20Error> {
+    fn _transfer(&mut self, from: &Address, to: &Address, amount: U256) -> Result<(), TIP20Error> {
         let from_balance = self.get_balance(from);
         if amount > from_balance {
-            return Err(erc20_err!(InsufficientBalance));
+            return Err(tip20_err!(InsufficientBalance));
         }
 
         let new_from_balance = from_balance
             .checked_sub(amount)
-            .ok_or(erc20_err!(InsufficientBalance))?;
+            .ok_or(tip20_err!(InsufficientBalance))?;
         self.set_balance(from, new_from_balance);
 
         if *to != Address::ZERO {
             let to_balance = self.get_balance(to);
             let new_to_balance = to_balance
                 .checked_add(amount)
-                .ok_or(erc20_err!(SupplyCapExceeded))?;
+                .ok_or(tip20_err!(SupplyCapExceeded))?;
             self.set_balance(to, new_to_balance);
         }
 
         self.storage.emit_event(
             self.token_address,
-            ERC20Event::Transfer(IERC20::Transfer {
+            TIP20Event::Transfer(ITIP20::Transfer {
                 from: *from,
                 to: *to,
                 amount,
@@ -625,10 +645,10 @@ impl<'a, S: StorageProvider> ERC20Token<'a, S> {
 
     #[inline]
     /// Write string to storage (simplified - assumes string fits in one slot)
-    fn write_string(&mut self, slot: U256, value: String) -> Result<(), ERC20Error> {
+    fn write_string(&mut self, slot: U256, value: String) -> Result<(), TIP20Error> {
         let bytes = value.as_bytes();
         if bytes.len() > 31 {
-            return Err(erc20_err!(StringTooLong));
+            return Err(tip20_err!(StringTooLong));
         }
         let mut storage_bytes = [0u8; 32];
         storage_bytes[..bytes.len()].copy_from_slice(bytes);
@@ -650,24 +670,22 @@ mod tests {
 
     #[test]
     fn test_mint_increases_balance_and_supply() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let addr = Address::from([1u8; 20]);
         let amount = U256::from(100);
         let token_id = 1;
         {
-            let mut token = ERC20Token::new(token_id, &mut storage);
+            let mut token = TIP20Token::new(token_id, &mut storage);
             // Initialize with admin
-            token
-                .initialize("Test", "TST", 18, "USD", &admin, 1)
-                .unwrap();
+            token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
 
             // Grant issuer role to admin
             let mut roles = token.get_roles_contract();
             roles.grant_role_internal(&admin, *ISSUER_ROLE);
 
             token
-                .mint(&admin, IERC20::mintCall { to: addr, amount })
+                .mint(&admin, ITIP20::mintCall { to: addr, amount })
                 .unwrap();
 
             assert_eq!(token.get_balance(&addr), amount);
@@ -676,7 +694,7 @@ mod tests {
         assert_eq!(storage.events[&token_id_to_address(token_id)].len(), 2);
         assert_eq!(
             storage.events[&token_id_to_address(token_id)][0],
-            ERC20Event::Transfer(IERC20::Transfer {
+            TIP20Event::Transfer(ITIP20::Transfer {
                 from: Address::ZERO,
                 to: addr,
                 amount
@@ -685,31 +703,29 @@ mod tests {
         );
         assert_eq!(
             storage.events[&token_id_to_address(token_id)][1],
-            ERC20Event::Mint(IERC20::Mint { to: addr, amount }).into_log_data()
+            TIP20Event::Mint(ITIP20::Mint { to: addr, amount }).into_log_data()
         );
     }
 
     #[test]
     fn test_transfer_moves_balance() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let from = Address::from([1u8; 20]);
         let to = Address::from([2u8; 20]);
         let amount = U256::from(100);
         let token_id = 1;
         {
-            let mut token = ERC20Token::new(token_id, &mut storage);
-            token
-                .initialize("Test", "TST", 18, "USD", &admin, 1)
-                .unwrap();
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
             let mut roles = token.get_roles_contract();
             roles.grant_role_internal(&admin, *ISSUER_ROLE);
 
             token
-                .mint(&admin, IERC20::mintCall { to: from, amount })
+                .mint(&admin, ITIP20::mintCall { to: from, amount })
                 .unwrap();
             token
-                .transfer(&from, IERC20::transferCall { to, amount })
+                .transfer(&from, ITIP20::transferCall { to, amount })
                 .unwrap();
 
             assert_eq!(token.get_balance(&from), U256::ZERO);
@@ -719,7 +735,7 @@ mod tests {
         assert_eq!(storage.events[&token_id_to_address(token_id)].len(), 3);
         assert_eq!(
             storage.events[&token_id_to_address(token_id)][0],
-            ERC20Event::Transfer(IERC20::Transfer {
+            TIP20Event::Transfer(ITIP20::Transfer {
                 from: Address::ZERO,
                 to: from,
                 amount
@@ -728,27 +744,25 @@ mod tests {
         );
         assert_eq!(
             storage.events[&token_id_to_address(token_id)][1],
-            ERC20Event::Mint(IERC20::Mint { to: from, amount }).into_log_data()
+            TIP20Event::Mint(ITIP20::Mint { to: from, amount }).into_log_data()
         );
         assert_eq!(
             storage.events[&token_id_to_address(token_id)][2],
-            ERC20Event::Transfer(IERC20::Transfer { from, to, amount }).into_log_data()
+            TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data()
         );
     }
 
     #[test]
     fn test_transfer_insufficient_balance_fails() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
-        let mut token = ERC20Token::new(1, &mut storage);
-        token
-            .initialize("Test", "TST", 18, "USD", &admin, 1)
-            .unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
         let from = Address::from([1u8; 20]);
         let to = Address::from([2u8; 20]);
         let amount = U256::from(100);
 
-        let result = token.transfer(&from, IERC20::transferCall { to, amount });
-        assert!(matches!(result, Err(ERC20Error::InsufficientBalance(_))));
+        let result = token.transfer(&from, ITIP20::transferCall { to, amount });
+        assert!(matches!(result, Err(TIP20Error::InsufficientBalance(_))));
     }
 }

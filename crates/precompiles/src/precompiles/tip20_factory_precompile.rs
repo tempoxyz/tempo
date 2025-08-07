@@ -1,0 +1,277 @@
+use crate::{dispatch_mutating_call, dispatch_view_call, precompiles::Precompile};
+use alloy::{primitives::Address, sol_types::SolCall};
+use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+
+use crate::contracts::{
+    storage::StorageProvider,
+    tip20_factory::TIP20Factory,
+    types::{ITIP20Factory, TIP20Error},
+};
+
+mod gas_costs {
+    pub const VIEW_FUNCTIONS: u64 = 100;
+    pub const STATE_CHANGING_FUNCTIONS: u64 = 1000;
+}
+
+#[rustfmt::skip]
+impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
+    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
+        let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
+
+        // View functions
+        dispatch_view_call!(self, selector, ITIP20Factory::tokenIdCounterCall, token_id_counter, gas_costs::VIEW_FUNCTIONS);
+
+        // State-changing functions
+        dispatch_mutating_call!(self, selector, ITIP20Factory::createTokenCall, create_token, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
+
+        // If no selector matched, return error
+        Err(PrecompileError::Other("Unknown function selector".to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::contracts::HashMapStorageProvider;
+    use alloy::{
+        primitives::{Bytes, U256},
+        sol_types::SolValue,
+    };
+
+    use super::*;
+
+    #[test]
+    fn test_function_selector_dispatch() {
+        let mut factory_storage = HashMapStorageProvider::new(1);
+        let mut factory = TIP20Factory::new(&mut factory_storage);
+        let sender = Address::from([1u8; 20]);
+
+        // Test invalid selector
+        let result = factory.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), &sender);
+        assert!(matches!(result, Err(PrecompileError::Other(_))));
+
+        // Test insufficient calldata
+        let result = factory.call(&Bytes::from([0x12, 0x34]), &sender);
+        assert!(matches!(result, Err(PrecompileError::Other(_))));
+    }
+
+    #[test]
+    fn test_create_token() {
+        let mut factory_storage = HashMapStorageProvider::new(1);
+        let mut factory = TIP20Factory::new(&mut factory_storage);
+        let sender = Address::from([1u8; 20]);
+
+        // Create token call
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 18,
+            currency: "USD".to_string(),
+            admin: sender,
+        };
+        let calldata = create_call.abi_encode();
+
+        // Execute create token
+        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
+        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+
+        // Decode the return value (should be token_id)
+        let token_id = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(token_id, U256::ZERO);
+    }
+
+    #[test]
+    fn test_token_id_counter() {
+        let mut factory_storage = HashMapStorageProvider::new(1);
+        let mut factory = TIP20Factory::new(&mut factory_storage);
+        let sender = Address::from([1u8; 20]);
+
+        // Get initial counter
+        let counter_call = ITIP20Factory::tokenIdCounterCall {};
+        let calldata = counter_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
+        assert_eq!(result.gas_used, gas_costs::VIEW_FUNCTIONS);
+        let initial_counter = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(initial_counter, U256::ZERO);
+
+        // Create first token
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "Token 1".to_string(),
+            symbol: "TOK1".to_string(),
+            decimals: 18,
+            currency: "USD".to_string(),
+            admin: sender,
+        };
+        let calldata = create_call.abi_encode();
+        factory.call(&Bytes::from(calldata), &sender).unwrap();
+
+        // Check counter increased
+        let counter_call = ITIP20Factory::tokenIdCounterCall {};
+        let calldata = counter_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
+        let new_counter = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(new_counter, U256::from(1));
+
+        // Create second token
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "Token 2".to_string(),
+            symbol: "TOK2".to_string(),
+            decimals: 6,
+            currency: "EUR".to_string(),
+            admin: sender,
+        };
+        let calldata = create_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
+        let token_id = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(token_id, U256::from(1));
+
+        // Check counter increased again
+        let counter_call = ITIP20Factory::tokenIdCounterCall {};
+        let calldata = counter_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
+        let final_counter = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(final_counter, U256::from(2));
+    }
+
+    #[test]
+    fn test_create_multiple_tokens_different_params() {
+        let mut factory_storage = HashMapStorageProvider::new(1);
+        let mut factory = TIP20Factory::new(&mut factory_storage);
+        let admin1 = Address::from([1u8; 20]);
+        let admin2 = Address::from([2u8; 20]);
+
+        // Create token with different decimal places
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "High Precision Token".to_string(),
+            symbol: "HPT".to_string(),
+            decimals: 24,
+            currency: "USD".to_string(),
+            admin: admin1,
+        };
+        let calldata = create_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &admin1).unwrap();
+        let token_id1 = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(token_id1, U256::ZERO);
+
+        // Create token with low decimal places
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "Low Precision Token".to_string(),
+            symbol: "LPT".to_string(),
+            decimals: 2,
+            currency: "EUR".to_string(),
+            admin: admin2,
+        };
+        let calldata = create_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &admin2).unwrap();
+        let token_id2 = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(token_id2, U256::from(1));
+
+        // Create token with different currency
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "Japanese Yen Token".to_string(),
+            symbol: "JYT".to_string(),
+            decimals: 0,
+            currency: "JPY".to_string(),
+            admin: admin1,
+        };
+        let calldata = create_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &admin1).unwrap();
+        let token_id3 = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(token_id3, U256::from(2));
+    }
+
+    #[test]
+    fn test_create_token_with_empty_currency() {
+        let mut factory_storage = HashMapStorageProvider::new(1);
+        let mut factory = TIP20Factory::new(&mut factory_storage);
+        let sender = Address::from([1u8; 20]);
+
+        // Create token with empty currency
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "No Currency Token".to_string(),
+            symbol: "NCT".to_string(),
+            decimals: 18,
+            currency: "".to_string(),
+            admin: sender,
+        };
+        let calldata = create_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
+        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        let token_id = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(token_id, U256::ZERO);
+    }
+
+    #[test]
+    fn test_create_token_with_various_names() {
+        let mut factory_storage = HashMapStorageProvider::new(1);
+        let mut factory = TIP20Factory::new(&mut factory_storage);
+        let sender = Address::from([1u8; 20]);
+
+        // Create token with longer but valid name and symbol
+        let name = "Decentralized Finance Token".to_string();
+        let symbol = "DEFI".to_string();
+
+        let create_call = ITIP20Factory::createTokenCall {
+            name: name.clone(),
+            symbol: symbol.clone(),
+            decimals: 18,
+            currency: "USD".to_string(),
+            admin: sender,
+        };
+        let calldata = create_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
+        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+
+        let token_id = U256::abi_decode(&result.bytes).unwrap();
+        assert_eq!(token_id, U256::ZERO);
+    }
+
+    #[test]
+    fn test_different_callers_can_create_tokens() {
+        let mut factory_storage = HashMapStorageProvider::new(1);
+        let mut factory = TIP20Factory::new(&mut factory_storage);
+        let caller1 = Address::from([1u8; 20]);
+        let caller2 = Address::from([2u8; 20]);
+        let caller3 = Address::from([3u8; 20]);
+
+        // First caller creates a token
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "Caller1 Token".to_string(),
+            symbol: "C1T".to_string(),
+            decimals: 18,
+            currency: "USD".to_string(),
+            admin: caller1,
+        };
+        let calldata = create_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &caller1).unwrap();
+        let token_id1 = U256::abi_decode(&result.bytes).unwrap();
+
+        // Second caller creates a token
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "Caller2 Token".to_string(),
+            symbol: "C2T".to_string(),
+            decimals: 6,
+            currency: "EUR".to_string(),
+            admin: caller2,
+        };
+        let calldata = create_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &caller2).unwrap();
+        let token_id2 = U256::abi_decode(&result.bytes).unwrap();
+
+        // Third caller creates a token with different admin
+        let create_call = ITIP20Factory::createTokenCall {
+            name: "Caller3 Token".to_string(),
+            symbol: "C3T".to_string(),
+            decimals: 12,
+            currency: "GBP".to_string(),
+            admin: caller1, // Different admin than caller
+        };
+        let calldata = create_call.abi_encode();
+        let result = factory.call(&Bytes::from(calldata), &caller3).unwrap();
+        let token_id3 = U256::abi_decode(&result.bytes).unwrap();
+
+        // Verify all tokens have sequential IDs
+        assert_eq!(token_id1, U256::ZERO);
+        assert_eq!(token_id2, U256::from(1));
+        assert_eq!(token_id3, U256::from(2));
+    }
+}

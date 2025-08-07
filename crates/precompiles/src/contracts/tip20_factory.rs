@@ -1,10 +1,9 @@
 use alloy::primitives::{Address, IntoLogData, U256};
 
 use crate::contracts::{
-    IERC20Factory::{createTokenCall, tokenIdCounterCall},
-    erc20::ERC20Token,
     storage::StorageProvider,
-    types::{ERC20Error, ERC20FactoryEvent, IERC20Factory},
+    tip20::TIP20Token,
+    types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
     utils::FACTORY_ADDRESS,
 };
 
@@ -15,12 +14,12 @@ mod slots {
 }
 
 #[derive(Debug)]
-pub struct ERC20Factory<'a, S: StorageProvider> {
+pub struct TIP20Factory<'a, S: StorageProvider> {
     storage: &'a mut S,
 }
 
 // Precompile functions
-impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
+impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self { storage }
     }
@@ -28,29 +27,25 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
     pub fn create_token(
         &mut self,
         _sender: &Address,
-        call: createTokenCall,
-    ) -> Result<U256, ERC20Error> {
-        let token_id = self._token_id_counter();
+        call: ITIP20Factory::createTokenCall,
+    ) -> Result<U256, TIP20Error> {
+        let token_id = self.token_id_counter();
         self.storage.sstore(
             FACTORY_ADDRESS,
             slots::TOKEN_ID_COUNTER,
             token_id + U256::ONE,
         ); // Increment.
 
-        // TODO: Get chain_id from context
-        let chain_id = 1u64;
-
-        ERC20Token::new(token_id.try_into().unwrap(), self.storage).initialize(
+        TIP20Token::new(token_id.try_into().unwrap(), self.storage).initialize(
             &call.name,
             &call.symbol,
             call.decimals,
             &call.currency,
             &call.admin,
-            chain_id,
         )?;
         self.storage.emit_event(
             FACTORY_ADDRESS,
-            ERC20FactoryEvent::TokenCreated(IERC20Factory::TokenCreated {
+            TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
                 tokenId: token_id,
                 name: call.name,
                 symbol: call.symbol,
@@ -63,12 +58,7 @@ impl<'a, S: StorageProvider> ERC20Factory<'a, S> {
         Ok(token_id)
     }
 
-    pub fn token_id_counter(&mut self, _call: tokenIdCounterCall) -> U256 {
-        self._token_id_counter()
-    }
-
-    #[inline]
-    pub fn _token_id_counter(&mut self) -> U256 {
+    pub fn token_id_counter(&mut self) -> U256 {
         self.storage.sload(FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)
     }
 }

@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_role_contract_grant_and_check() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let test_address = Address::from([
             0x20, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
         ]);
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_role_admin_functions() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let test_address = address!("0x20C0000000000000000000000000000000000001");
         let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
 
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_renounce_role() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let test_address = address!("0x20C0000000000000000000000000000000000001");
         let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
 
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_unauthorized_access() {
-        let mut storage = HashMapStorageProvider::new();
+        let mut storage = HashMapStorageProvider::new(1);
         let test_address = address!("0x20C0000000000000000000000000000000000001");
         let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
 
