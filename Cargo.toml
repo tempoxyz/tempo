@@ -137,6 +137,7 @@ tracing = "0.1"
 prost = "0.13"
 prost-build = "0.13"
 protox = "0.7"
+criterion = "0.7.0"
 
 [patch.crates-io]
 libp2p-dns = { git = "https://github.com/informalsystems/rust-libp2p.git", branch = "reth" }
