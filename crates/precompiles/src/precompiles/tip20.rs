@@ -7,9 +7,9 @@ use crate::{
     precompiles::{metadata, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
-use crate::{dispatch_mutating_call, dispatch_view_call, precompiles::Precompile};
+use crate::precompiles::Precompile;
 
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {

@@ -1,17 +1,10 @@
-use crate::precompiles::{MUTATE_FUNC_GAS, Precompile, VIEW_FUNC_GAS, metadata, mutate};
+use crate::precompiles::{Precompile, metadata, mutate};
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
-    storage::StorageProvider,
-    tip20_factory::TIP20Factory,
-    types::{ITIP20Factory, TIP20Error},
+    storage::StorageProvider, tip20_factory::TIP20Factory, types::ITIP20Factory,
 };
-
-mod gas_costs {
-    pub const VIEW_FUNCTIONS: u64 = 100;
-    pub const STATE_CHANGING_FUNCTIONS: u64 = 1000;
-}
 
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
@@ -34,7 +27,10 @@ impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::contracts::HashMapStorageProvider;
+    use crate::{
+        contracts::HashMapStorageProvider,
+        precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS},
+    };
     use alloy::{
         primitives::{Bytes, U256},
         sol_types::SolValue,
