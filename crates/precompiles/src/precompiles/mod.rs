@@ -10,7 +10,6 @@ use reth_evm::{
     precompiles::{DynPrecompile, PrecompilesMap},
 };
 
-mod dispatch;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
