@@ -38,6 +38,7 @@ impl<'a, S: StorageProvider> Precompile for TIP403Registry<'a, S> {
 #[cfg(test)]
 mod tests {
     use crate::contracts::HashMapStorageProvider;
+    use alloy::sol_types::SolValue;
 
     use super::*;
 
@@ -77,5 +78,357 @@ mod tests {
         let decoded: u64 =
             ITIP403Registry::createPolicyCall::abi_decode_returns(&output.bytes).unwrap();
         assert_eq!(decoded, 2); // First created policy ID
+    }
+
+    #[test]
+    fn test_policy_id_counter_initialization() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut precompile = TIP403Registry::new(&mut storage);
+        let sender = Address::from([1u8; 20]);
+
+        // Get initial counter
+        let counter_call = ITIP403Registry::policyIdCounterCall {};
+        let calldata = counter_call.abi_encode();
+        let result = precompile.call(&calldata, &sender).unwrap();
+        let counter = u64::abi_decode(&result.bytes).unwrap();
+        assert_eq!(counter, 2); // Counter starts at 2 (policies 0 and 1 are reserved)
+    }
+
+    #[test]
+    fn test_create_policy_with_accounts() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut precompile = TIP403Registry::new(&mut storage);
+        let admin = Address::from([1u8; 20]);
+        let account1 = Address::from([2u8; 20]);
+        let account2 = Address::from([3u8; 20]);
+
+        let accounts = vec![account1, account2];
+        let call = ITIP403Registry::createPolicyWithAccountsCall {
+            adminPolicyId: 1,
+            policyType: ITIP403Registry::PolicyType::WHITELIST,
+            accounts: accounts.clone(),
+        };
+        let calldata = call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+
+        let policy_id: u64 =
+            ITIP403Registry::createPolicyWithAccountsCall::abi_decode_returns(&result.bytes)
+                .unwrap();
+        assert_eq!(policy_id, 2);
+
+        // Check that accounts are authorized
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: account1,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(is_authorized);
+
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: account2,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(is_authorized);
+
+        // Check that other accounts are not authorized
+        let other_account = Address::from([4u8; 20]);
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: other_account,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(!is_authorized);
+    }
+
+    #[test]
+    fn test_blacklist_policy() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut precompile = TIP403Registry::new(&mut storage);
+        let admin = Address::from([1u8; 20]);
+        let blocked_account = Address::from([2u8; 20]);
+        let allowed_account = Address::from([3u8; 20]);
+
+        // Create blacklist policy
+        let call = ITIP403Registry::createPolicyCall {
+            adminPolicyId: 1,
+            policyType: ITIP403Registry::PolicyType::BLACKLIST,
+        };
+        let calldata = call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let policy_id: u64 =
+            ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+
+        // Initially, all accounts should be authorized (empty blacklist)
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: blocked_account,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(is_authorized);
+
+        // Add account to blacklist
+        let modify_call = ITIP403Registry::modifyPolicyBlacklistCall {
+            policyId: policy_id,
+            account: blocked_account,
+            restricted: true,
+        };
+        let calldata = modify_call.abi_encode();
+        precompile.call(&calldata, &admin).unwrap();
+
+        // Now blocked account should not be authorized
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: blocked_account,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(!is_authorized);
+
+        // Other accounts should still be authorized
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: allowed_account,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(is_authorized);
+
+        // Remove account from blacklist
+        let modify_call = ITIP403Registry::modifyPolicyBlacklistCall {
+            policyId: policy_id,
+            account: blocked_account,
+            restricted: false,
+        };
+        let calldata = modify_call.abi_encode();
+        precompile.call(&calldata, &admin).unwrap();
+
+        // Account should be authorized again
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: blocked_account,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(is_authorized);
+    }
+
+    #[test]
+    fn test_modify_policy_whitelist() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut precompile = TIP403Registry::new(&mut storage);
+        let admin = Address::from([1u8; 20]);
+        let account1 = Address::from([2u8; 20]);
+        let account2 = Address::from([3u8; 20]);
+
+        // Create whitelist policy
+        let call = ITIP403Registry::createPolicyCall {
+            adminPolicyId: 1,
+            policyType: ITIP403Registry::PolicyType::WHITELIST,
+        };
+        let calldata = call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let policy_id: u64 =
+            ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+
+        // Add multiple accounts to whitelist
+        let modify_call1 = ITIP403Registry::modifyPolicyWhitelistCall {
+            policyId: policy_id,
+            account: account1,
+            allowed: true,
+        };
+        let calldata = modify_call1.abi_encode();
+        precompile.call(&calldata, &admin).unwrap();
+
+        let modify_call2 = ITIP403Registry::modifyPolicyWhitelistCall {
+            policyId: policy_id,
+            account: account2,
+            allowed: true,
+        };
+        let calldata = modify_call2.abi_encode();
+        precompile.call(&calldata, &admin).unwrap();
+
+        // Both accounts should be authorized
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: account1,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(is_authorized);
+
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: account2,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(is_authorized);
+
+        // Remove one account from whitelist
+        let modify_call = ITIP403Registry::modifyPolicyWhitelistCall {
+            policyId: policy_id,
+            account: account1,
+            allowed: false,
+        };
+        let calldata = modify_call.abi_encode();
+        precompile.call(&calldata, &admin).unwrap();
+
+        // Account1 should not be authorized, account2 should still be
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: account1,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(!is_authorized);
+
+        let is_auth_call = ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: account2,
+        };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(is_authorized);
+    }
+
+    #[test]
+    fn test_set_policy_admin() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut precompile = TIP403Registry::new(&mut storage);
+        let admin = Address::from([1u8; 20]);
+
+        // Create a policy
+        let call = ITIP403Registry::createPolicyCall {
+            adminPolicyId: 1,
+            policyType: ITIP403Registry::PolicyType::WHITELIST,
+        };
+        let calldata = call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let policy_id: u64 =
+            ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+
+        // Get initial policy data
+        let policy_data_call = ITIP403Registry::policyDataCall {
+            policyId: policy_id,
+        };
+        let calldata = policy_data_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let policy_data =
+            ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
+        assert_eq!(policy_data.adminPolicyId, 1);
+
+        // Change policy admin
+        let new_admin_policy_id = 3;
+        let set_admin_call = ITIP403Registry::setPolicyAdminCall {
+            policyId: policy_id,
+            adminPolicyId: new_admin_policy_id,
+        };
+        let calldata = set_admin_call.abi_encode();
+        precompile.call(&calldata, &admin).unwrap();
+
+        // Verify policy admin was changed
+        let policy_data_call = ITIP403Registry::policyDataCall {
+            policyId: policy_id,
+        };
+        let calldata = policy_data_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let policy_data =
+            ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
+        assert_eq!(policy_data.adminPolicyId, new_admin_policy_id);
+    }
+
+    #[test]
+    fn test_special_policy_ids() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut precompile = TIP403Registry::new(&mut storage);
+        let user = Address::from([1u8; 20]);
+
+        // Test policy 0 (always deny)
+        let is_auth_call = ITIP403Registry::isAuthorizedCall { policyId: 0, user };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &Address::ZERO).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(!is_authorized);
+
+        // Test policy 1 (always allow)
+        let is_auth_call = ITIP403Registry::isAuthorizedCall { policyId: 1, user };
+        let calldata = is_auth_call.abi_encode();
+        let result = precompile.call(&calldata, &Address::ZERO).unwrap();
+        let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+        assert!(is_authorized);
+    }
+
+    #[test]
+    fn test_invalid_selector() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut precompile = TIP403Registry::new(&mut storage);
+        let sender = Address::from([1u8; 20]);
+
+        // Test with invalid selector
+        let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
+        let result = precompile.call(&invalid_data, &sender);
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(reth::revm::precompile::PrecompileError::Other(_))
+        ));
+
+        // Test with insufficient data
+        let short_data = vec![0x12, 0x34];
+        let result = precompile.call(&short_data, &sender);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_multiple_policies() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut precompile = TIP403Registry::new(&mut storage);
+        let admin = Address::from([1u8; 20]);
+
+        // Create multiple policies with different types
+        let whitelist_call = ITIP403Registry::createPolicyCall {
+            adminPolicyId: 1,
+            policyType: ITIP403Registry::PolicyType::WHITELIST,
+        };
+        let calldata = whitelist_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let whitelist_id: u64 =
+            ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+
+        let blacklist_call = ITIP403Registry::createPolicyCall {
+            adminPolicyId: 1,
+            policyType: ITIP403Registry::PolicyType::BLACKLIST,
+        };
+        let calldata = blacklist_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let blacklist_id: u64 =
+            ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+
+        // Verify IDs are sequential
+        assert_eq!(whitelist_id, 2);
+        assert_eq!(blacklist_id, 3);
+
+        // Verify counter has been updated
+        let counter_call = ITIP403Registry::policyIdCounterCall {};
+        let calldata = counter_call.abi_encode();
+        let result = precompile.call(&calldata, &admin).unwrap();
+        let counter = u64::abi_decode(&result.bytes).unwrap();
+        assert_eq!(counter, 4);
     }
 }
