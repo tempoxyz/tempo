@@ -15,7 +15,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "TTK", 18, "USD", &admin)
+            .initialize("TestToken", "T", 18, "USD", &admin)
             .unwrap();
 
         b.iter(|| {
@@ -28,7 +28,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "TTK", 18, "USD", &admin)
+            .initialize("TestToken", "T", 18, "USD", &admin)
             .unwrap();
 
         b.iter(|| {
@@ -41,7 +41,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "TTK", 18, "USD", &admin)
+            .initialize("TestToken", "T", 18, "USD", &admin)
             .unwrap();
 
         b.iter(|| {
@@ -54,7 +54,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "TTK", 18, "USD", &admin)
+            .initialize("TestToken", "T", 18, "USD", &admin)
             .unwrap();
 
         b.iter(|| {
@@ -68,7 +68,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "TTK", 18, "USD", &admin)
+            .initialize("TestToken", "T", 18, "USD", &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
@@ -89,98 +89,47 @@ fn tip20_metadata(c: &mut Criterion) {
 }
 
 fn tip20_view(c: &mut Criterion) {
-    c.bench_function("tip20_balance_of", |b| {
-        let admin = Address::from([0u8; 20]);
-        let user1 = Address::from([1u8; 20]);
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "TTK", 18, "USD", &admin)
-            .unwrap();
-        let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
-        token
-            .mint(
-                &admin,
-                ITIP20::mintCall {
-                    to: user1,
-                    amount: U256::from(1000),
-                },
-            )
-            .unwrap();
-
-        b.iter(|| {
-            black_box(token.balance_of(ITIP20::balanceOfCall { account: user1 }));
-        });
-    });
-
-    c.bench_function("tip20_allowance", |b| {
-        let admin = Address::from([0u8; 20]);
-        let user1 = Address::from([1u8; 20]);
-        let user2 = Address::from([2u8; 20]);
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "TTK", 18, "USD", &admin)
-            .unwrap();
-        let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
-        token
-            .mint(
-                &admin,
-                ITIP20::mintCall {
-                    to: user1,
-                    amount: U256::from(1000),
-                },
-            )
-            .unwrap();
-        token
-            .approve(
-                &user1,
-                ITIP20::approveCall {
-                    spender: user2,
-                    amount: U256::from(500),
-                },
-            )
-            .unwrap();
-
-        b.iter(|| {
-            black_box(token.allowance(ITIP20::allowanceCall {
-                owner: user1,
-                spender: user2,
-            }));
-        });
-    });
-
-    c.bench_function("tip20_nonces", |b| {
-        let admin = Address::from([0u8; 20]);
-        let user1 = Address::from([1u8; 20]);
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "TTK", 18, "USD", &admin)
-            .unwrap();
-
-        b.iter(|| {
-            black_box(token.nonces(ITIP20::noncesCall { owner: user1 }));
-        });
-    });
-
-    c.bench_function("tip20_salts", |b| {
-        let admin = Address::from([0u8; 20]);
-        let user1 = Address::from([1u8; 20]);
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "TTK", 18, "USD", &admin)
-            .unwrap();
-
-        b.iter(|| {
-            let salt = alloy::primitives::FixedBytes::<4>::from([1u8, 2u8, 3u8, 4u8]);
-            black_box(token.salts(ITIP20::saltsCall { owner: user1, salt }));
-        });
-    });
+    todo!()
 }
 
-criterion_group!(benches, tip20_metadata, tip20_view);
+fn tip20_mutate(c: &mut Criterion) {
+    todo!()
+}
+
+fn tip20_factory_metadata(c: &mut Criterion) {
+    todo!()
+}
+
+fn tip20_factory_view(c: &mut Criterion) {
+    todo!()
+}
+
+fn tip20_factory_mutate(c: &mut Criterion) {
+    todo!()
+}
+
+fn tip403_registry_metadata(c: &mut Criterion) {
+    todo!()
+}
+
+fn tip403_registry_view(c: &mut Criterion) {
+    todo!()
+}
+
+fn tip403_registry_mutate(c: &mut Criterion) {
+    todo!()
+}
+
+criterion_group!(
+    benches,
+    tip20_metadata,
+    tip20_view,
+    tip20_mutate,
+    tip20_factory_metadata,
+    tip20_factory_view,
+    tip20_factory_mutate,
+    tip403_registry_metadata,
+    tip403_registry_view,
+    tip403_registry_mutate
+);
 criterion_main!(benches);
