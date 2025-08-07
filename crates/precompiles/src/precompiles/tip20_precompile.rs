@@ -350,7 +350,7 @@ mod tests {
         use alloy::primitives::keccak256;
         let pause_role = alloy::primitives::B256::from(keccak256(b"PAUSE_ROLE"));
         let unpause_role = alloy::primitives::B256::from(keccak256(b"UNPAUSE_ROLE"));
-        
+
         token
             .get_roles_contract()
             .grant_role(
@@ -361,7 +361,7 @@ mod tests {
                 },
             )
             .unwrap();
-        
+
         token
             .get_roles_contract()
             .grant_role(
@@ -410,7 +410,7 @@ mod tests {
         // Grant ISSUER_ROLE to admin and burner
         use alloy::primitives::keccak256;
         let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
-        
+
         token
             .get_roles_contract()
             .grant_role(
@@ -421,7 +421,7 @@ mod tests {
                 },
             )
             .unwrap();
-        
+
         token
             .get_roles_contract()
             .grant_role(
@@ -475,7 +475,9 @@ mod tests {
         let caller = Address::from([1u8; 20]);
 
         // Initialize token
-        token.initialize("Test Token", "TEST", 18, "USD", &admin).unwrap();
+        token
+            .initialize("Test Token", "TEST", 18, "USD", &admin)
+            .unwrap();
 
         // Test name()
         let name_call = ITIP20::nameCall {};
@@ -559,7 +561,7 @@ mod tests {
         };
         let calldata = mint_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &admin);
-        
+
         // Should fail due to supply cap
         assert!(result.is_err());
     }
@@ -579,7 +581,7 @@ mod tests {
         // Grant a role to user1
         use alloy::primitives::keccak256;
         let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
-        
+
         let grant_call = IRolesAuth::grantRoleCall {
             role: issuer_role,
             account: user1,
@@ -733,9 +735,7 @@ mod tests {
         assert_eq!(token.transfer_policy_id(), new_policy_id);
 
         // Non-admin cannot change transfer policy ID
-        let change_policy_call = ITIP20::changeTransferPolicyIdCall {
-            newPolicyId: 100,
-        };
+        let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &non_admin);
         assert!(result.is_err());

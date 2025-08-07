@@ -209,7 +209,7 @@ mod tests {
         // Create token with longer but valid name and symbol
         let name = "Decentralized Finance Token".to_string();
         let symbol = "DEFI".to_string();
-        
+
         let create_call = ITIP20Factory::createTokenCall {
             name: name.clone(),
             symbol: symbol.clone(),
@@ -220,7 +220,7 @@ mod tests {
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
         assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
-        
+
         let token_id = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(token_id, U256::ZERO);
     }
