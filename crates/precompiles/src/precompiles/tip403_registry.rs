@@ -1,4 +1,7 @@
-use crate::{dispatch_mutating_call, dispatch_view_call, precompiles::Precompile};
+use crate::{
+    dispatch_mutating_call, dispatch_view_call,
+    precompiles::{MUTATE_FUNC_GAS, Precompile, VIEW_FUNC_GAS},
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 
@@ -19,16 +22,16 @@ impl<'a, S: StorageProvider> Precompile for TIP403Registry<'a, S> {
         let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
 
         // View functions
-        dispatch_view_call!(self, selector, ITIP403Registry::policyIdCounterCall, policy_id_counter, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP403Registry::policyDataCall, policy_data, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP403Registry::isAuthorizedCall, is_authorized, calldata, gas_costs::VIEW_FUNCTIONS);
+        dispatch_view_call!(self, selector, ITIP403Registry::policyIdCounterCall, policy_id_counter, VIEW_FUNC_GAS);
+        dispatch_view_call!(self, selector, ITIP403Registry::policyDataCall, policy_data, calldata, VIEW_FUNC_GAS);
+        dispatch_view_call!(self, selector, ITIP403Registry::isAuthorizedCall, is_authorized, calldata, VIEW_FUNC_GAS);
 
         // State-changing functions
-        dispatch_mutating_call!(self, selector, ITIP403Registry::createPolicyCall, create_policy, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError, returns);
-        dispatch_mutating_call!(self, selector, ITIP403Registry::createPolicyWithAccountsCall, create_policy_with_accounts, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError, returns);
-        dispatch_mutating_call!(self, selector, ITIP403Registry::setPolicyAdminCall, set_policy_admin, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError);
-        dispatch_mutating_call!(self, selector, ITIP403Registry::modifyPolicyWhitelistCall, modify_policy_whitelist, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError);
-        dispatch_mutating_call!(self, selector, ITIP403Registry::modifyPolicyBlacklistCall, modify_policy_blacklist, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError);
+        dispatch_mutating_call!(self, selector, ITIP403Registry::createPolicyCall, create_policy, calldata, msg_sender, MUTATE_FUNC_GAS, TIP403RegistryError, returns);
+        dispatch_mutating_call!(self, selector, ITIP403Registry::createPolicyWithAccountsCall, create_policy_with_accounts, calldata, msg_sender, MUTATE_FUNC_GAS, TIP403RegistryError, returns);
+        dispatch_mutating_call!(self, selector, ITIP403Registry::setPolicyAdminCall, set_policy_admin, calldata, msg_sender, MUTATE_FUNC_GAS, TIP403RegistryError);
+        dispatch_mutating_call!(self, selector, ITIP403Registry::modifyPolicyWhitelistCall, modify_policy_whitelist, calldata, msg_sender, MUTATE_FUNC_GAS, TIP403RegistryError);
+        dispatch_mutating_call!(self, selector, ITIP403Registry::modifyPolicyBlacklistCall, modify_policy_blacklist, calldata, msg_sender, MUTATE_FUNC_GAS, TIP403RegistryError);
 
         // If no selector matched, return error
         Err(PrecompileError::Other("Unknown function selector".to_string()))
