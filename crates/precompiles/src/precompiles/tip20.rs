@@ -14,6 +14,7 @@ mod gas_costs {
     pub const STATE_CHANGING_FUNCTIONS: u64 = 1000;
 }
 
+#[inline]
 fn metadata<T: alloy::sol_types::SolCall>(result: T::Return) -> PrecompileResult {
     Ok(PrecompileOutput::new(
         gas_costs::METADATA,
@@ -21,6 +22,7 @@ fn metadata<T: alloy::sol_types::SolCall>(result: T::Return) -> PrecompileResult
     ))
 }
 
+#[inline]
 fn view<T: alloy::sol_types::SolCall>(
     calldata: &[u8],
     f: impl FnOnce(T) -> T::Return,
@@ -33,6 +35,7 @@ fn view<T: alloy::sol_types::SolCall>(
     ))
 }
 
+#[inline]
 fn mutate<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
     calldata: &[u8],
     sender: &Address,
@@ -54,6 +57,7 @@ fn mutate<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
     }
 }
 
+#[inline]
 fn mutate_void<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
     calldata: &[u8],
     sender: &Address,
