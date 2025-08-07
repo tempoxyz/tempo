@@ -4,12 +4,10 @@ use crate::{
         tip20::TIP20Token,
         types::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
     },
-    precompiles::{metadata, mutate, mutate_void, view},
+    precompiles::{Precompile, metadata, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileResult};
-
-use crate::precompiles::Precompile;
 
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {

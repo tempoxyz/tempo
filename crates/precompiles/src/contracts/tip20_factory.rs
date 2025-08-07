@@ -1,10 +1,10 @@
 use alloy::primitives::{Address, IntoLogData, U256};
 
 use crate::contracts::{
+    TIP20_FACTORY_ADDRESS,
     storage::StorageProvider,
     tip20::TIP20Token,
     types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
-    utils::FACTORY_ADDRESS,
 };
 
 mod slots {
@@ -31,7 +31,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
     ) -> Result<U256, TIP20Error> {
         let token_id = self.token_id_counter();
         self.storage.sstore(
-            FACTORY_ADDRESS,
+            TIP20_FACTORY_ADDRESS,
             slots::TOKEN_ID_COUNTER,
             token_id + U256::ONE,
         ); // Increment.
@@ -44,7 +44,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
             &call.admin,
         )?;
         self.storage.emit_event(
-            FACTORY_ADDRESS,
+            TIP20_FACTORY_ADDRESS,
             TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
                 tokenId: token_id,
                 name: call.name,
@@ -59,6 +59,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
     }
 
     pub fn token_id_counter(&mut self) -> U256 {
-        self.storage.sload(FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)
+        self.storage
+            .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)
     }
 }

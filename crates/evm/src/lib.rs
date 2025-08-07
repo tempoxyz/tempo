@@ -11,7 +11,7 @@ use reth_evm::{
     Database, EthEvm, EthEvmFactory, EvmEnv, EvmFactory, eth::EthEvmContext,
     precompiles::PrecompilesMap,
 };
-use tempo_precompiles::extend_tempo_precompiles;
+use tempo_precompiles::precompiles::extend_tempo_precompiles;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]

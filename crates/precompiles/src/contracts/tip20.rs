@@ -7,8 +7,8 @@ use crate::{
         ITIP20, ITIP403Registry, StorageProvider, TIP403Registry,
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
+        token_id_to_address,
         types::{TIP20Error, TIP20Event},
-        utils::token_id_to_address,
     },
     tip20_err,
 };

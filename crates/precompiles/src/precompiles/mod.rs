@@ -1,13 +1,13 @@
 use alloy::primitives::Address;
 use reth::revm::{
+    Inspector,
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
     primitives::hardfork::SpecId,
-    Inspector,
 };
 use reth_evm::{
+    Database, EthEvm, Evm,
     eth::EthEvmContext,
     precompiles::{DynPrecompile, PrecompilesMap},
-    Database, EthEvm, Evm,
 };
 
 mod dispatch;
@@ -16,11 +16,8 @@ pub mod tip20_factory;
 pub mod tip403_registry;
 
 use crate::contracts::{
-    utils::{
-        address_is_token_address, address_to_token_id_unchecked, FACTORY_ADDRESS,
-        TIP403_REGISTRY_ADDRESS,
-    },
-    EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry,
+    EvmStorageProvider, TIP20_FACTORY_ADDRESS, TIP20Factory, TIP20Token, TIP403_REGISTRY_ADDRESS,
+    TIP403Registry, address_is_token_address, address_to_token_id_unchecked,
 };
 
 const METADATA_GAS: u64 = 50;
@@ -40,7 +37,7 @@ pub fn extend_tempo_precompiles<DB: Database, I: Inspector<EthEvmContext<DB>>>(
         precompiles.set_precompile_lookup(move |address: &Address| {
             if address_is_token_address(address) {
                 Some(TIP20Precompile::create(address, chain_id))
-            } else if *address == FACTORY_ADDRESS {
+            } else if *address == TIP20_FACTORY_ADDRESS {
                 Some(TIP20FactoryPrecompile::create(chain_id))
             } else if *address == TIP403_REGISTRY_ADDRESS {
                 Some(TIP403RegistryPrecompile::create(chain_id))
