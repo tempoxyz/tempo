@@ -7,9 +7,9 @@ use reth_evm::{
 };
 
 mod dispatch;
-pub mod tip20_factory_precompile;
-pub mod tip20_precompile;
-pub mod tip403_registry_precompile;
+pub mod tip20;
+pub mod tip20_factory;
+pub mod tip403_registry;
 
 use crate::contracts::{
     EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry,

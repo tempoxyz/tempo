@@ -14,50 +14,111 @@ mod gas_costs {
     pub const STATE_CHANGING_FUNCTIONS: u64 = 1000;
 }
 
+fn metadata<T: alloy::sol_types::SolCall>(result: T::Return) -> PrecompileResult {
+    Ok(PrecompileOutput::new(
+        gas_costs::METADATA,
+        T::abi_encode_returns(&result).into(),
+    ))
+}
+
+fn view<T: alloy::sol_types::SolCall>(
+    calldata: &[u8],
+    f: impl FnOnce(T) -> T::Return,
+) -> PrecompileResult {
+    let call = T::abi_decode(calldata)
+        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    Ok(PrecompileOutput::new(
+        gas_costs::VIEW_FUNCTIONS,
+        T::abi_encode_returns(&f(call)).into(),
+    ))
+}
+
+fn mutate<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
+    calldata: &[u8],
+    sender: &Address,
+    f: impl FnOnce(&Address, T) -> Result<T::Return, E>,
+) -> PrecompileResult {
+    let call = T::abi_decode(calldata)
+        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    match f(sender, call) {
+        Ok(result) => Ok(PrecompileOutput::new(
+            gas_costs::STATE_CHANGING_FUNCTIONS,
+            T::abi_encode_returns(&result).into(),
+        )),
+        Err(e) => Err(PrecompileError::Other(
+            E::abi_encode(&e)
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect(),
+        )),
+    }
+}
+
+fn mutate_void<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
+    calldata: &[u8],
+    sender: &Address,
+    f: impl FnOnce(&Address, T) -> Result<(), E>,
+) -> PrecompileResult {
+    let call = T::abi_decode(calldata)
+        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    match f(sender, call) {
+        Ok(()) => Ok(PrecompileOutput::new(
+            gas_costs::STATE_CHANGING_FUNCTIONS,
+            alloy_primitives::Bytes::new(),
+        )),
+        Err(e) => Err(PrecompileError::Other(
+            E::abi_encode(&e)
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect(),
+        )),
+    }
+}
+
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
+        let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?.try_into().unwrap();
 
-        // Metadata
-        dispatch_view_call!(self, selector, ITIP20::nameCall, name, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, ITIP20::symbolCall, symbol, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, ITIP20::decimalsCall, decimals, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, ITIP20::currencyCall, currency, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, ITIP20::totalSupplyCall, total_supply, gas_costs::METADATA);
+        match selector {
+            // Metadata
+            ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(self.name()),
+            ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(self.symbol()),
+            ITIP20::decimalsCall::SELECTOR => metadata::<ITIP20::decimalsCall>(self.decimals()),
+            ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(self.currency()),
+            ITIP20::totalSupplyCall::SELECTOR => metadata::<ITIP20::totalSupplyCall>(self.total_supply()),
 
-        // View functions
-        dispatch_view_call!(self, selector, ITIP20::balanceOfCall, balance_of, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP20::allowanceCall, allowance, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP20::noncesCall, nonces, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP20::saltsCall, salts, calldata, gas_costs::VIEW_FUNCTIONS);
+            // View functions
+            ITIP20::balanceOfCall::SELECTOR => view::<ITIP20::balanceOfCall>(calldata, |call| self.balance_of(call)),
+            ITIP20::allowanceCall::SELECTOR => view::<ITIP20::allowanceCall>(calldata, |call| self.allowance(call)),
+            ITIP20::noncesCall::SELECTOR => view::<ITIP20::noncesCall>(calldata, |call| self.nonces(call)),
+            ITIP20::saltsCall::SELECTOR => view::<ITIP20::saltsCall>(calldata, |call| self.salts(call)),
 
-        // State-changing functions (standard token)
-        dispatch_mutating_call!(self, selector, ITIP20::transferFromCall, transfer_from, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
-        dispatch_mutating_call!(self, selector, ITIP20::transferCall, transfer, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
-        dispatch_mutating_call!(self, selector, ITIP20::approveCall, approve, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
-        dispatch_mutating_call!(self, selector, ITIP20::permitCall, permit, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+            // State-changing functions 
+            ITIP20::transferFromCall::SELECTOR => mutate::<ITIP20::transferFromCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer_from(s, call)),
+            ITIP20::transferCall::SELECTOR => mutate::<ITIP20::transferCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer(s, call)),
+            ITIP20::approveCall::SELECTOR => mutate::<ITIP20::approveCall, TIP20Error>(calldata, msg_sender, |s, call| self.approve(s, call)),
+            ITIP20::permitCall::SELECTOR => mutate_void::<ITIP20::permitCall, TIP20Error>(calldata, msg_sender, |s, call| self.permit(s, call)),
+            ITIP20::changeTransferPolicyIdCall::SELECTOR => mutate_void::<ITIP20::changeTransferPolicyIdCall, TIP20Error>(calldata, msg_sender, |s, call| self.change_transfer_policy_id(s, call)),
+            ITIP20::setSupplyCapCall::SELECTOR => mutate_void::<ITIP20::setSupplyCapCall, TIP20Error>(calldata, msg_sender, |s, call| self.set_supply_cap(s, call)),
+            ITIP20::pauseCall::SELECTOR => mutate_void::<ITIP20::pauseCall, TIP20Error>(calldata, msg_sender, |s, call| self.pause(s, call)),
+            ITIP20::unpauseCall::SELECTOR => mutate_void::<ITIP20::unpauseCall, TIP20Error>(calldata, msg_sender, |s, call| self.unpause(s, call)),
+            ITIP20::mintCall::SELECTOR => mutate_void::<ITIP20::mintCall, TIP20Error>(calldata, msg_sender, |s, call| self.mint(s, call)),
+            ITIP20::burnCall::SELECTOR => mutate_void::<ITIP20::burnCall, TIP20Error>(calldata, msg_sender, |s, call| self.burn(s, call)),
+            ITIP20::burnBlockedCall::SELECTOR => mutate_void::<ITIP20::burnBlockedCall, TIP20Error>(calldata, msg_sender, |s, call| self.burn_blocked(s, call)),
+            ITIP20::transferWithMemoCall::SELECTOR => mutate_void::<ITIP20::transferWithMemoCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer_with_memo(s, call)),
 
-        // State-changing functions (tip20 specific)
-        dispatch_mutating_call!(self, selector, ITIP20::changeTransferPolicyIdCall, change_transfer_policy_id, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::setSupplyCapCall, set_supply_cap, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::pauseCall, pause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::unpauseCall, unpause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::mintCall, mint, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::burnCall, burn, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::burnBlockedCall, burn_blocked, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::transferWithMemoCall, transfer_with_memo, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+            // RolesAuth functions
+            IRolesAuth::hasRoleCall::SELECTOR => view::<IRolesAuth::hasRoleCall>(calldata, |call| self.get_roles_contract().has_role(call)),
+            IRolesAuth::getRoleAdminCall::SELECTOR => view::<IRolesAuth::getRoleAdminCall>(calldata, |call| self.get_roles_contract().get_role_admin(call)),
+            IRolesAuth::grantRoleCall::SELECTOR => mutate_void::<IRolesAuth::grantRoleCall, RolesAuthError>(calldata, msg_sender, |s, call| self.get_roles_contract().grant_role(s, call)),
+            IRolesAuth::revokeRoleCall::SELECTOR => mutate_void::<IRolesAuth::revokeRoleCall, RolesAuthError>(calldata, msg_sender, |s, call| self.get_roles_contract().revoke_role(s, call)),
+            IRolesAuth::renounceRoleCall::SELECTOR => mutate_void::<IRolesAuth::renounceRoleCall, RolesAuthError>(calldata, msg_sender, |s, call| self.get_roles_contract().renounce_role(s, call)),
+            IRolesAuth::setRoleAdminCall::SELECTOR => mutate_void::<IRolesAuth::setRoleAdminCall, RolesAuthError>(calldata, msg_sender, |s, call| self.get_roles_contract().set_role_admin(s, call)),
 
-        // RolesAuth functions
-        dispatch_view_call!(self.get_roles_contract(), selector, IRolesAuth::hasRoleCall, has_role, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self.get_roles_contract(), selector, IRolesAuth::getRoleAdminCall, get_role_admin, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::grantRoleCall, grant_role, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
-        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::revokeRoleCall, revoke_role, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
-        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::renounceRoleCall, renounce_role, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
-        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::setRoleAdminCall, set_role_admin, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
-
-        // If no selector matched, return error
-        Err(PrecompileError::Other("Unknown function selector".to_string()))
+            _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
+        }
+        
     }
 }
 
