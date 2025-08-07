@@ -2,8 +2,7 @@
 
 use crate::{app::State, context::MalachiteContext};
 use eyre::eyre;
-use malachitebft_app_channel::app::engine::host::Next;
-use malachitebft_app_channel::{AppMsg, Channels, NetworkMsg};
+use malachitebft_app_channel::{AppMsg, Channels, NetworkMsg, app::engine::host::Next};
 use malachitebft_core_types::{Height as _, Round, Validity};
 use tracing::{error, info};
 
