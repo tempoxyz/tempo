@@ -1,4 +1,4 @@
-use crate::precompiles::{Precompile, metadata, mutate};
+use crate::precompiles::{Precompile, mutate, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -15,7 +15,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
 
         match selector {
             ITIP20Factory::tokenIdCounterCall::SELECTOR => {
-                metadata::<ITIP20Factory::tokenIdCounterCall>(self.token_id_counter())
+                view::<ITIP20Factory::tokenIdCounterCall>(calldata, |_call| self.token_id_counter())
             },
             ITIP20Factory::createTokenCall::SELECTOR => {
                 mutate::<ITIP20Factory::createTokenCall, _>(calldata, msg_sender, |s, call| self.create_token(s, call))
