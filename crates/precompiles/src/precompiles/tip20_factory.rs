@@ -1,37 +1,36 @@
-use crate::{dispatch_mutating_call, dispatch_view_call, precompiles::Precompile};
+use crate::precompiles::{Precompile, metadata, mutate};
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
-    storage::StorageProvider,
-    tip20_factory::TIP20Factory,
-    types::{ITIP20Factory, TIP20Error},
+    storage::StorageProvider, tip20_factory::TIP20Factory, types::ITIP20Factory,
 };
-
-mod gas_costs {
-    pub const VIEW_FUNCTIONS: u64 = 100;
-    pub const STATE_CHANGING_FUNCTIONS: u64 = 1000;
-}
 
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
+        let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| { 
+            PrecompileError::Other("Invalid input: missing function selector".to_string()) 
+        })?.try_into().expect("TODO: handle error");
 
-        // View functions
-        dispatch_view_call!(self, selector, ITIP20Factory::tokenIdCounterCall, token_id_counter, gas_costs::VIEW_FUNCTIONS);
-
-        // State-changing functions
-        dispatch_mutating_call!(self, selector, ITIP20Factory::createTokenCall, create_token, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
-
-        // If no selector matched, return error
-        Err(PrecompileError::Other("Unknown function selector".to_string()))
+        match selector {
+            ITIP20Factory::tokenIdCounterCall::SELECTOR => {
+                metadata::<ITIP20Factory::tokenIdCounterCall>(self.token_id_counter())
+            },
+            ITIP20Factory::createTokenCall::SELECTOR => {
+                mutate::<ITIP20Factory::createTokenCall, _>(calldata, msg_sender, |s, call| self.create_token(s, call))
+            },
+            _ => Err(PrecompileError::Other("Unknown function selector".to_string())) 
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::contracts::HashMapStorageProvider;
+    use crate::{
+        contracts::HashMapStorageProvider,
+        precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS},
+    };
     use alloy::{
         primitives::{Bytes, U256},
         sol_types::SolValue,
@@ -72,7 +71,7 @@ mod tests {
 
         // Execute create token
         let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Decode the return value (should be token_id)
         let token_id = U256::abi_decode(&result.bytes).unwrap();
@@ -89,7 +88,7 @@ mod tests {
         let counter_call = ITIP20Factory::tokenIdCounterCall {};
         let calldata = counter_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, gas_costs::VIEW_FUNCTIONS);
+        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let initial_counter = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(initial_counter, U256::ZERO);
 
@@ -195,7 +194,7 @@ mod tests {
         };
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
         let token_id = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(token_id, U256::ZERO);
     }
@@ -219,7 +218,7 @@ mod tests {
         };
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         let token_id = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(token_id, U256::ZERO);

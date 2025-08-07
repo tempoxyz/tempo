@@ -1,69 +1,67 @@
-use crate::contracts::{
-    storage::StorageProvider,
-    tip20::TIP20Token,
-    types::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
+use crate::{
+    contracts::{
+        storage::StorageProvider,
+        tip20::TIP20Token,
+        types::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
+    },
+    precompiles::{Precompile, metadata, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
-
-use crate::{dispatch_mutating_call, dispatch_view_call, precompiles::Precompile};
-
-mod gas_costs {
-    pub const METADATA: u64 = 50;
-    pub const VIEW_FUNCTIONS: u64 = 100;
-    pub const STATE_CHANGING_FUNCTIONS: u64 = 1000;
-}
+use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
+        let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?.try_into().unwrap();
 
-        // Metadata
-        dispatch_view_call!(self, selector, ITIP20::nameCall, name, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, ITIP20::symbolCall, symbol, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, ITIP20::decimalsCall, decimals, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, ITIP20::currencyCall, currency, gas_costs::METADATA);
-        dispatch_view_call!(self, selector, ITIP20::totalSupplyCall, total_supply, gas_costs::METADATA);
+        match selector {
+            // Metadata
+            ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(self.name()),
+            ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(self.symbol()),
+            ITIP20::decimalsCall::SELECTOR => metadata::<ITIP20::decimalsCall>(self.decimals()),
+            ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(self.currency()),
+            ITIP20::totalSupplyCall::SELECTOR => metadata::<ITIP20::totalSupplyCall>(self.total_supply()),
 
-        // View functions
-        dispatch_view_call!(self, selector, ITIP20::balanceOfCall, balance_of, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP20::allowanceCall, allowance, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP20::noncesCall, nonces, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP20::saltsCall, salts, calldata, gas_costs::VIEW_FUNCTIONS);
+            // View functions
+            ITIP20::balanceOfCall::SELECTOR => view::<ITIP20::balanceOfCall>(calldata, |call| self.balance_of(call)),
+            ITIP20::allowanceCall::SELECTOR => view::<ITIP20::allowanceCall>(calldata, |call| self.allowance(call)),
+            ITIP20::noncesCall::SELECTOR => view::<ITIP20::noncesCall>(calldata, |call| self.nonces(call)),
+            ITIP20::saltsCall::SELECTOR => view::<ITIP20::saltsCall>(calldata, |call| self.salts(call)),
 
-        // State-changing functions (standard token)
-        dispatch_mutating_call!(self, selector, ITIP20::transferFromCall, transfer_from, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
-        dispatch_mutating_call!(self, selector, ITIP20::transferCall, transfer, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
-        dispatch_mutating_call!(self, selector, ITIP20::approveCall, approve, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error, returns);
-        dispatch_mutating_call!(self, selector, ITIP20::permitCall, permit, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+            // State changing functions 
+            ITIP20::transferFromCall::SELECTOR => mutate::<ITIP20::transferFromCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer_from(s, call)),
+            ITIP20::transferCall::SELECTOR => mutate::<ITIP20::transferCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer(s, call)),
+            ITIP20::approveCall::SELECTOR => mutate::<ITIP20::approveCall, TIP20Error>(calldata, msg_sender, |s, call| self.approve(s, call)),
+            ITIP20::permitCall::SELECTOR => mutate_void::<ITIP20::permitCall, TIP20Error>(calldata, msg_sender, |s, call| self.permit(s, call)),
+            ITIP20::changeTransferPolicyIdCall::SELECTOR => mutate_void::<ITIP20::changeTransferPolicyIdCall, TIP20Error>(calldata, msg_sender, |s, call| self.change_transfer_policy_id(s, call)),
+            ITIP20::setSupplyCapCall::SELECTOR => mutate_void::<ITIP20::setSupplyCapCall, TIP20Error>(calldata, msg_sender, |s, call| self.set_supply_cap(s, call)),
+            ITIP20::pauseCall::SELECTOR => mutate_void::<ITIP20::pauseCall, TIP20Error>(calldata, msg_sender, |s, call| self.pause(s, call)),
+            ITIP20::unpauseCall::SELECTOR => mutate_void::<ITIP20::unpauseCall, TIP20Error>(calldata, msg_sender, |s, call| self.unpause(s, call)),
+            ITIP20::mintCall::SELECTOR => mutate_void::<ITIP20::mintCall, _>(calldata, msg_sender, |s, call| self.mint(s, call)),
+            ITIP20::burnCall::SELECTOR => mutate_void::<ITIP20::burnCall, TIP20Error>(calldata, msg_sender, |s, call| self.burn(s, call)),
+            ITIP20::burnBlockedCall::SELECTOR => mutate_void::<ITIP20::burnBlockedCall, TIP20Error>(calldata, msg_sender, |s, call| self.burn_blocked(s, call)),
+            ITIP20::transferWithMemoCall::SELECTOR => mutate_void::<ITIP20::transferWithMemoCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer_with_memo(s, call)),
 
-        // State-changing functions (tip20 specific)
-        dispatch_mutating_call!(self, selector, ITIP20::changeTransferPolicyIdCall, change_transfer_policy_id, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::setSupplyCapCall, set_supply_cap, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::pauseCall, pause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::unpauseCall, unpause, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::mintCall, mint, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::burnCall, burn, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::burnBlockedCall, burn_blocked, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
-        dispatch_mutating_call!(self, selector, ITIP20::transferWithMemoCall, transfer_with_memo, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP20Error);
+            // RolesAuth functions
+            IRolesAuth::hasRoleCall::SELECTOR => view::<IRolesAuth::hasRoleCall>(calldata, |call| self.get_roles_contract().has_role(call)),
+            IRolesAuth::getRoleAdminCall::SELECTOR => view::<IRolesAuth::getRoleAdminCall>(calldata, |call| self.get_roles_contract().get_role_admin(call)),
+            IRolesAuth::grantRoleCall::SELECTOR => mutate_void::<IRolesAuth::grantRoleCall, RolesAuthError>(calldata, msg_sender, |s, call| self.get_roles_contract().grant_role(s, call)),
+            IRolesAuth::revokeRoleCall::SELECTOR => mutate_void::<IRolesAuth::revokeRoleCall, RolesAuthError>(calldata, msg_sender, |s, call| self.get_roles_contract().revoke_role(s, call)),
+            IRolesAuth::renounceRoleCall::SELECTOR => mutate_void::<IRolesAuth::renounceRoleCall, RolesAuthError>(calldata, msg_sender, |s, call| self.get_roles_contract().renounce_role(s, call)),
+            IRolesAuth::setRoleAdminCall::SELECTOR => mutate_void::<IRolesAuth::setRoleAdminCall, RolesAuthError>(calldata, msg_sender, |s, call| self.get_roles_contract().set_role_admin(s, call)),
 
-        // RolesAuth functions
-        dispatch_view_call!(self.get_roles_contract(), selector, IRolesAuth::hasRoleCall, has_role, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self.get_roles_contract(), selector, IRolesAuth::getRoleAdminCall, get_role_admin, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::grantRoleCall, grant_role, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
-        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::revokeRoleCall, revoke_role, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
-        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::renounceRoleCall, renounce_role, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
-        dispatch_mutating_call!(self.get_roles_contract(), selector, IRolesAuth::setRoleAdminCall, set_role_admin, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, RolesAuthError);
-
-        // If no selector matched, return error
-        Err(PrecompileError::Other("Unknown function selector".to_string()))
+            _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
+        }
+        
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::contracts::{HashMapStorageProvider, types::IRolesAuth};
+    use crate::{
+        contracts::{HashMapStorageProvider, types::IRolesAuth},
+        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS},
+    };
     use alloy::{primitives::U256, sol_types::SolValue};
     use alloy_primitives::Bytes;
 
@@ -125,7 +123,7 @@ mod tests {
         let calldata = balance_of_call.abi_encode();
 
         let result = token.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, gas_costs::VIEW_FUNCTIONS);
+        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
 
         // Verify we get the correct balance
         let decoded = U256::abi_decode(&result.bytes).unwrap();
@@ -171,7 +169,7 @@ mod tests {
 
         // Execute mint
         let result = token.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify balance was updated in storage
         let final_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient });
@@ -235,7 +233,7 @@ mod tests {
 
         // Execute transfer
         let result = token.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Decode the return value (should be true)
         let success = bool::abi_decode(&result.bytes).unwrap();
@@ -300,7 +298,7 @@ mod tests {
         };
         let calldata = approve_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &owner).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
         let success = bool::abi_decode(&result.bytes).unwrap();
         assert!(success);
 
@@ -316,7 +314,7 @@ mod tests {
         };
         let calldata = transfer_from_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &spender).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
         let success = bool::abi_decode(&result.bytes).unwrap();
         assert!(success);
 
@@ -380,7 +378,7 @@ mod tests {
         let pause_call = ITIP20::pauseCall {};
         let calldata = pause_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &pauser).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify token is paused
         assert!(token.paused());
@@ -389,7 +387,7 @@ mod tests {
         let unpause_call = ITIP20::unpauseCall {};
         let calldata = unpause_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &unpauser).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify token is unpaused
         assert!(!token.paused());
@@ -457,7 +455,7 @@ mod tests {
         };
         let calldata = burn_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &burner).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify balances and total supply after burn
         assert_eq!(
@@ -483,7 +481,7 @@ mod tests {
         let name_call = ITIP20::nameCall {};
         let calldata = name_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &caller).unwrap();
-        assert_eq!(result.gas_used, gas_costs::METADATA);
+        assert_eq!(result.gas_used, METADATA_GAS);
         let name = String::abi_decode(&result.bytes).unwrap();
         assert_eq!(name, "Test Token");
 
@@ -491,7 +489,7 @@ mod tests {
         let symbol_call = ITIP20::symbolCall {};
         let calldata = symbol_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &caller).unwrap();
-        assert_eq!(result.gas_used, gas_costs::METADATA);
+        assert_eq!(result.gas_used, METADATA_GAS);
         let symbol = String::abi_decode(&result.bytes).unwrap();
         assert_eq!(symbol, "TEST");
 
@@ -499,7 +497,7 @@ mod tests {
         let decimals_call = ITIP20::decimalsCall {};
         let calldata = decimals_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &caller).unwrap();
-        assert_eq!(result.gas_used, gas_costs::METADATA);
+        assert_eq!(result.gas_used, METADATA_GAS);
         let decimals = ITIP20::decimalsCall::abi_decode_returns(&result.bytes).unwrap();
         assert_eq!(decimals, 18);
 
@@ -507,7 +505,7 @@ mod tests {
         let currency_call = ITIP20::currencyCall {};
         let calldata = currency_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &caller).unwrap();
-        assert_eq!(result.gas_used, gas_costs::METADATA);
+        assert_eq!(result.gas_used, METADATA_GAS);
         let currency = String::abi_decode(&result.bytes).unwrap();
         assert_eq!(currency, "USD");
 
@@ -515,7 +513,7 @@ mod tests {
         let total_supply_call = ITIP20::totalSupplyCall {};
         let calldata = total_supply_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &caller).unwrap();
-        assert_eq!(result.gas_used, gas_costs::METADATA);
+        assert_eq!(result.gas_used, METADATA_GAS);
         let total_supply = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(total_supply, U256::ZERO);
     }
@@ -552,7 +550,7 @@ mod tests {
         };
         let calldata = set_cap_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &admin).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Try to mint more than supply cap
         let mint_call = ITIP20::mintCall {
@@ -588,7 +586,7 @@ mod tests {
         };
         let calldata = grant_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &admin).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Check that user1 has the role
         let has_role_call = IRolesAuth::hasRoleCall {
@@ -597,7 +595,7 @@ mod tests {
         };
         let calldata = has_role_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &admin).unwrap();
-        assert_eq!(result.gas_used, gas_costs::VIEW_FUNCTIONS);
+        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let has_role = bool::abi_decode(&result.bytes).unwrap();
         assert!(has_role);
 
@@ -622,7 +620,7 @@ mod tests {
 
         // Test authorized mint (should succeed)
         let result = token.call(&Bytes::from(calldata), &user1).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
     }
 
     #[test]
@@ -671,7 +669,7 @@ mod tests {
         };
         let calldata = transfer_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify balances
         assert_eq!(
@@ -698,7 +696,7 @@ mod tests {
         let nonces_call = ITIP20::noncesCall { owner: user };
         let calldata = nonces_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &admin).unwrap();
-        assert_eq!(result.gas_used, gas_costs::VIEW_FUNCTIONS);
+        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let nonce = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(nonce, U256::ZERO);
 
@@ -707,7 +705,7 @@ mod tests {
         let salts_call = ITIP20::saltsCall { owner: user, salt };
         let calldata = salts_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &admin).unwrap();
-        assert_eq!(result.gas_used, gas_costs::VIEW_FUNCTIONS);
+        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let is_used = bool::abi_decode(&result.bytes).unwrap();
         assert!(!is_used);
     }
@@ -729,7 +727,7 @@ mod tests {
         };
         let calldata = change_policy_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &admin).unwrap();
-        assert_eq!(result.gas_used, gas_costs::STATE_CHANGING_FUNCTIONS);
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify policy ID was changed
         assert_eq!(token.transfer_policy_id(), new_policy_id);

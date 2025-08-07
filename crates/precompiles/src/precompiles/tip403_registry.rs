@@ -1,6 +1,6 @@
-use crate::{dispatch_mutating_call, dispatch_view_call, precompiles::Precompile};
+use crate::precompiles::{Precompile, metadata, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
     storage::StorageProvider,
@@ -8,30 +8,65 @@ use crate::contracts::{
     types::{ITIP403Registry, TIP403RegistryError},
 };
 
-mod gas_costs {
-    pub const VIEW_FUNCTIONS: u64 = 100;
-    pub const STATE_CHANGING_FUNCTIONS: u64 = 1000;
-}
-
-#[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP403Registry<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
+        let selector: [u8; 4] = calldata
+            .get(..4)
+            .ok_or_else(|| {
+                PrecompileError::Other("Invalid input: missing function selector".to_string())
+            })?
+            .try_into()
+            .unwrap();
 
-        // View functions
-        dispatch_view_call!(self, selector, ITIP403Registry::policyIdCounterCall, policy_id_counter, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP403Registry::policyDataCall, policy_data, calldata, gas_costs::VIEW_FUNCTIONS);
-        dispatch_view_call!(self, selector, ITIP403Registry::isAuthorizedCall, is_authorized, calldata, gas_costs::VIEW_FUNCTIONS);
-
-        // State-changing functions
-        dispatch_mutating_call!(self, selector, ITIP403Registry::createPolicyCall, create_policy, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError, returns);
-        dispatch_mutating_call!(self, selector, ITIP403Registry::createPolicyWithAccountsCall, create_policy_with_accounts, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError, returns);
-        dispatch_mutating_call!(self, selector, ITIP403Registry::setPolicyAdminCall, set_policy_admin, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError);
-        dispatch_mutating_call!(self, selector, ITIP403Registry::modifyPolicyWhitelistCall, modify_policy_whitelist, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError);
-        dispatch_mutating_call!(self, selector, ITIP403Registry::modifyPolicyBlacklistCall, modify_policy_blacklist, calldata, msg_sender, gas_costs::STATE_CHANGING_FUNCTIONS, TIP403RegistryError);
-
-        // If no selector matched, return error
-        Err(PrecompileError::Other("Unknown function selector".to_string()))
+        match selector {
+            ITIP403Registry::policyIdCounterCall::SELECTOR => {
+                metadata::<ITIP403Registry::policyIdCounterCall>(self.policy_id_counter())
+            }
+            ITIP403Registry::policyDataCall::SELECTOR => {
+                view::<ITIP403Registry::policyDataCall>(calldata, |call| self.policy_data(call))
+            }
+            ITIP403Registry::isAuthorizedCall::SELECTOR => {
+                view::<ITIP403Registry::isAuthorizedCall>(calldata, |call| self.is_authorized(call))
+            }
+            ITIP403Registry::createPolicyCall::SELECTOR => {
+                mutate::<ITIP403Registry::createPolicyCall, TIP403RegistryError>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.create_policy(s, call),
+                )
+            }
+            ITIP403Registry::createPolicyWithAccountsCall::SELECTOR => {
+                mutate::<ITIP403Registry::createPolicyWithAccountsCall, TIP403RegistryError>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.create_policy_with_accounts(s, call),
+                )
+            }
+            ITIP403Registry::setPolicyAdminCall::SELECTOR => {
+                mutate_void::<ITIP403Registry::setPolicyAdminCall, TIP403RegistryError>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.set_policy_admin(s, call),
+                )
+            }
+            ITIP403Registry::modifyPolicyWhitelistCall::SELECTOR => {
+                mutate_void::<ITIP403Registry::modifyPolicyWhitelistCall, TIP403RegistryError>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.modify_policy_whitelist(s, call),
+                )
+            }
+            ITIP403Registry::modifyPolicyBlacklistCall::SELECTOR => {
+                mutate_void::<ITIP403Registry::modifyPolicyBlacklistCall, TIP403RegistryError>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.modify_policy_blacklist(s, call),
+                )
+            }
+            _ => Err(PrecompileError::Other(
+                "Unknown function selector".to_string(),
+            )),
+        }
     }
 }
 

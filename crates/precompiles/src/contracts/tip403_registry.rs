@@ -2,10 +2,9 @@ use alloy::primitives::{Address, IntoLogData, U256};
 
 use crate::{
     contracts::{
-        ITIP403Registry, StorageProvider,
+        ITIP403Registry, StorageProvider, TIP403_REGISTRY_ADDRESS,
         storage::slots::{double_mapping_slot, mapping_slot},
         types::{TIP403RegistryError, TIP403RegistryEvent},
-        utils::TIP403_REGISTRY_ADDRESS,
     },
     tip403_err,
 };
