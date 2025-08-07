@@ -27,9 +27,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
             ITIP20Factory::createTokenCall::SELECTOR => {
                 mutate::<ITIP20Factory::createTokenCall, _>(calldata, msg_sender, |s, call| self.create_token(s, call))
             },
-            _ => {
-                Err(PrecompileError::Other("Unknown function selector".to_string()))
-            }
+            _ => Err(PrecompileError::Other("Unknown function selector".to_string())) 
         }
     }
 }

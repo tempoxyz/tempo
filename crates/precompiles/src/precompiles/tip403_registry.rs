@@ -40,9 +40,8 @@ impl<'a, S: StorageProvider> Precompile for TIP403Registry<'a, S> {
             ITIP403Registry::modifyPolicyBlacklistCall::SELECTOR => {
                 mutate_void::<ITIP403Registry::modifyPolicyBlacklistCall, TIP403RegistryError>(calldata, msg_sender, |s, call| self.modify_policy_blacklist(s, call))
             },
-            _ => {
-                Err(PrecompileError::Other("Unknown function selector".to_string()))
-            }
+            _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
+            
         }
     }
 }
