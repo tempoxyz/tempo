@@ -354,7 +354,7 @@ checksum = "b590caa6b6d8bc10e6e7a7696c59b1e550e89f27f50d1ee13071150d3a3e3f66"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
- "http 1.3.1",
+ "http",
  "serde",
  "serde_json",
  "thiserror 2.0.12",
@@ -460,7 +460,7 @@ dependencies = [
  "either",
  "futures",
  "futures-utils-wasm",
- "http 1.3.1",
+ "http",
  "lru 0.13.0",
  "parking_lot",
  "pin-project",
@@ -884,7 +884,7 @@ dependencies = [
  "alloy-pubsub",
  "alloy-transport",
  "futures",
- "http 1.3.1",
+ "http",
  "rustls",
  "serde_json",
  "tokio",
@@ -1503,11 +1503,12 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "attohttpc"
-version = "0.24.1"
+version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d9a9bf8b79a749ee0b911b91b671cc2b6c670bdbc7e3dfd537576ddc94bb2a2"
+checksum = "16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9"
 dependencies = [
- "http 0.2.12",
+ "base64 0.22.1",
+ "http",
  "log",
  "url",
 ]
@@ -2547,7 +2548,7 @@ dependencies = [
  "eyre",
  "fastrand",
  "hex",
- "http 1.3.1",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -3721,7 +3722,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "gloo-utils",
- "http 1.3.1",
+ "http",
  "js-sys",
  "pin-project",
  "serde",
@@ -3789,7 +3790,7 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http 1.3.1",
+ "http",
  "indexmap 2.10.0",
  "slab",
  "tokio",
@@ -3960,17 +3961,6 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.2.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "601cbb57e577e2f5ef5be8e7b83f0f63994f25aa94d673e54a92d5c516d101f1"
-dependencies = [
- "bytes",
- "fnv",
- "itoa",
-]
-
-[[package]]
-name = "http"
 version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4a85d31aea989eead29a3aaf9e1115a180df8282431156e533de47660892565"
@@ -3987,7 +3977,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1efedce1fb8e6913f23e0c92de8e62cd5b772a67e7b3946df930a62566c93184"
 dependencies = [
  "bytes",
- "http 1.3.1",
+ "http",
 ]
 
 [[package]]
@@ -3998,7 +3988,7 @@ checksum = "b021d93e26becf5dc7e1b75b1bed1fd93124b374ceb73f43d4d4eafec896a64a"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.3.1",
+ "http",
  "http-body",
  "pin-project-lite",
 ]
@@ -4053,7 +4043,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "h2",
- "http 1.3.1",
+ "http",
  "http-body",
  "httparse",
  "httpdate",
@@ -4070,7 +4060,7 @@ version = "0.27.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3c93eb611681b207e1fe55d5a71ecf91572ec8a6705cdb6857f7d8d5242cf58"
 dependencies = [
- "http 1.3.1",
+ "http",
  "hyper",
  "hyper-util",
  "log",
@@ -4094,7 +4084,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
- "http 1.3.1",
+ "http",
  "http-body",
  "hyper",
  "ipnet",
@@ -4409,20 +4399,20 @@ dependencies = [
 
 [[package]]
 name = "igd-next"
-version = "0.15.1"
+version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76b0d7d4541def58a37bf8efc559683f21edce7c82f0d866c93ac21f7e098f93"
+checksum = "516893339c97f6011282d5825ac94fc1c7aad5cad26bdc2d0cee068c0bf97f97"
 dependencies = [
  "async-trait",
  "attohttpc",
  "bytes",
  "futures",
- "http 1.3.1",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-util",
  "log",
- "rand 0.8.5",
+ "rand 0.9.2",
  "tokio",
  "url",
  "xmltree",
@@ -4518,8 +4508,8 @@ checksum = "f4c7245a08504955605670dbf141fceab975f15ca21570696aebe9d2e71576bd"
 
 [[package]]
 name = "informalsystems-malachitebft-app"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "async-trait",
  "derive-where",
@@ -4544,8 +4534,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-app-channel"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "bytes",
  "derive-where",
@@ -4560,16 +4550,16 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-codec"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "bytes",
 ]
 
 [[package]]
 name = "informalsystems-malachitebft-config"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "bytesize",
  "config",
@@ -4581,8 +4571,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-core-consensus"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "async-recursion",
  "derive-where",
@@ -4598,8 +4588,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-core-driver"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "derive-where",
  "informalsystems-malachitebft-core-state-machine",
@@ -4610,8 +4600,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-core-state-machine"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "derive-where",
  "displaydoc",
@@ -4620,19 +4610,20 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-core-types"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "bytes",
  "derive-where",
+ "informalsystems-malachitebft-peer",
  "serde",
  "thiserror 2.0.12",
 ]
 
 [[package]]
 name = "informalsystems-malachitebft-core-votekeeper"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "derive-where",
  "informalsystems-malachitebft-core-types",
@@ -4641,8 +4632,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-discovery"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "either",
  "informalsystems-malachitebft-metrics",
@@ -4655,8 +4646,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-engine"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -4681,8 +4672,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-metrics"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "informalsystems-malachitebft-core-state-machine",
  "prometheus-client",
@@ -4690,8 +4681,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-network"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "bytes",
  "either",
@@ -4702,6 +4693,7 @@ dependencies = [
  "informalsystems-malachitebft-peer",
  "informalsystems-malachitebft-sync",
  "libp2p",
+ "libp2p-gossipsub",
  "libp2p-scatter",
  "seahash",
  "serde",
@@ -4711,8 +4703,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-peer"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "bs58",
  "multihash",
@@ -4721,8 +4713,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-proto"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "prost",
  "prost-types",
@@ -4731,8 +4723,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-signing-ed25519"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "base64 0.22.1",
  "ed25519-consensus",
@@ -4744,8 +4736,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-sync"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4765,8 +4757,8 @@ dependencies = [
 
 [[package]]
 name = "informalsystems-malachitebft-wal"
-version = "0.3.0-pre"
-source = "git+https://github.com/informalsystems/malachite?branch=no-dns#b26b0f203a8731df87e346087f0793c77200b5d3"
+version = "0.6.0-pre"
+source = "git+https://github.com/informalsystems/malachite#0c5a67ffc24b15e2db9d367f4952b350d7fc5415"
 dependencies = [
  "advisory-lock",
  "bytes",
@@ -4989,7 +4981,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "gloo-net",
- "http 1.3.1",
+ "http",
  "jsonrpsee-core",
  "pin-project",
  "rustls",
@@ -5014,7 +5006,7 @@ dependencies = [
  "bytes",
  "futures-timer",
  "futures-util",
- "http 1.3.1",
+ "http",
  "http-body",
  "http-body-util",
  "jsonrpsee-types",
@@ -5075,7 +5067,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d38b0bcf407ac68d241f90e2d46041e6a06988f97fe1721fb80b91c42584fae6"
 dependencies = [
  "futures-util",
- "http 1.3.1",
+ "http",
  "http-body",
  "http-body-util",
  "hyper",
@@ -5101,7 +5093,7 @@ version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66df7256371c45621b3b7d2fb23aea923d577616b9c0e9c0b950a6ea5c2be0ca"
 dependencies = [
- "http 1.3.1",
+ "http",
  "serde",
  "serde_json",
  "thiserror 2.0.12",
@@ -5125,7 +5117,7 @@ version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2da2694c9ff271a9d3ebfe520f6b36820e85133a51be77a3cb549fd615095261"
 dependencies = [
- "http 1.3.1",
+ "http",
  "jsonrpsee-client-transport",
  "jsonrpsee-core",
  "jsonrpsee-types",
@@ -5254,9 +5246,9 @@ dependencies = [
 
 [[package]]
 name = "libp2p"
-version = "0.55.0"
+version = "0.56.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b72dc443ddd0254cb49a794ed6b6728400ee446a0f7ab4a07d0209ee98de20e9"
+checksum = "ce71348bf5838e46449ae240631117b487073d5f347c06d434caddcb91dceb5a"
 dependencies = [
  "bytes",
  "either",
@@ -5265,7 +5257,7 @@ dependencies = [
  "getrandom 0.2.16",
  "libp2p-allow-block-list",
  "libp2p-connection-limits",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-dns",
  "libp2p-gossipsub",
  "libp2p-identify",
@@ -5283,55 +5275,30 @@ dependencies = [
  "libp2p-yamux",
  "multiaddr",
  "pin-project",
- "rw-stream-sink 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rw-stream-sink",
  "thiserror 2.0.12",
 ]
 
 [[package]]
 name = "libp2p-allow-block-list"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38944b7cb981cc93f2f0fb411ff82d0e983bd226fbcc8d559639a3a73236568b"
+checksum = "d16ccf824ee859ca83df301e1c0205270206223fd4b1f2e512a693e1912a8f4a"
 dependencies = [
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
 ]
 
 [[package]]
 name = "libp2p-connection-limits"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efe9323175a17caa8a2ed4feaf8a548eeef5e0b72d03840a0eab4bcb0210ce1c"
+checksum = "a18b8b607cf3bfa2f8c57db9c7d8569a315d5cc0a282e6bfd5ebfc0a9840b2a0"
 dependencies = [
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
-]
-
-[[package]]
-name = "libp2p-core"
-version = "0.43.0"
-source = "git+https://github.com/informalsystems/rust-libp2p.git?branch=reth#198d930795f1b27dc98a4e5da59d59ff12c4701c"
-dependencies = [
- "either",
- "fnv",
- "futures",
- "futures-timer",
- "libp2p-identity",
- "multiaddr",
- "multihash",
- "multistream-select 0.13.0 (git+https://github.com/informalsystems/rust-libp2p.git?branch=reth)",
- "once_cell",
- "parking_lot",
- "pin-project",
- "quick-protobuf",
- "rand 0.8.5",
- "rw-stream-sink 0.4.0 (git+https://github.com/informalsystems/rust-libp2p.git?branch=reth)",
- "thiserror 2.0.12",
- "tracing",
- "unsigned-varint 0.8.0",
- "web-time",
 ]
 
 [[package]]
@@ -5347,12 +5314,12 @@ dependencies = [
  "libp2p-identity",
  "multiaddr",
  "multihash",
- "multistream-select 0.13.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "multistream-select",
  "parking_lot",
  "pin-project",
  "quick-protobuf",
  "rand 0.8.5",
- "rw-stream-sink 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rw-stream-sink",
  "thiserror 2.0.12",
  "tracing",
  "unsigned-varint 0.8.0",
@@ -5361,13 +5328,14 @@ dependencies = [
 
 [[package]]
 name = "libp2p-dns"
-version = "0.43.0"
-source = "git+https://github.com/informalsystems/rust-libp2p.git?branch=reth#198d930795f1b27dc98a4e5da59d59ff12c4701c"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b770c1c8476736ca98c578cba4b505104ff8e842c2876b528925f9766379f9a"
 dependencies = [
  "async-trait",
  "futures",
  "hickory-resolver",
- "libp2p-core 0.43.0",
+ "libp2p-core",
  "libp2p-identity",
  "parking_lot",
  "smallvec",
@@ -5376,9 +5344,9 @@ dependencies = [
 
 [[package]]
 name = "libp2p-gossipsub"
-version = "0.48.0"
+version = "0.49.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d558548fa3b5a8e9b66392f785921e363c57c05dcadfda4db0d41ae82d313e4a"
+checksum = "c7f58e37d8d6848e5c4c9e3c35c6f61133235bff2960c9c00a663b0849301221"
 dependencies = [
  "async-channel",
  "asynchronous-codec",
@@ -5392,7 +5360,7 @@ dependencies = [
  "getrandom 0.2.16",
  "hashlink",
  "hex_fmt",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
  "prometheus-client",
@@ -5408,16 +5376,16 @@ dependencies = [
 
 [[package]]
 name = "libp2p-identify"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8c06862544f02d05d62780ff590cc25a75f5c2b9df38ec7a370dcae8bb873cf"
+checksum = "8ab792a8b68fdef443a62155b01970c81c3aadab5e659621b063ef252a8e65e8"
 dependencies = [
  "asynchronous-codec",
  "either",
  "futures",
  "futures-bounded",
  "futures-timer",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
  "quick-protobuf",
@@ -5452,9 +5420,9 @@ dependencies = [
 
 [[package]]
 name = "libp2p-kad"
-version = "0.47.0"
+version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bab0466a27ebe955bcbc27328fae5429c5b48c915fd6174931414149802ec23"
+checksum = "13d3fd632a5872ec804d37e7413ceea20588f69d027a0fa3c46f82574f4dee60"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -5463,7 +5431,7 @@ dependencies = [
  "futures",
  "futures-bounded",
  "futures-timer",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
  "quick-protobuf",
@@ -5480,14 +5448,14 @@ dependencies = [
 
 [[package]]
 name = "libp2p-mdns"
-version = "0.47.0"
+version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11d0ba095e1175d797540e16b62e7576846b883cb5046d4159086837b36846cc"
+checksum = "c66872d0f1ffcded2788683f76931be1c52e27f343edb93bc6d0bcd8887be443"
 dependencies = [
  "futures",
  "hickory-proto",
  "if-watch",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
  "rand 0.8.5",
@@ -5499,12 +5467,12 @@ dependencies = [
 
 [[package]]
 name = "libp2p-metrics"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ce58c64292e87af624fcb86465e7dd8342e46a388d71e8fec0ab37ee789630a"
+checksum = "805a555148522cb3414493a5153451910cb1a146c53ffbf4385708349baf62b7"
 dependencies = [
  "futures",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-gossipsub",
  "libp2p-identify",
  "libp2p-identity",
@@ -5525,7 +5493,7 @@ dependencies = [
  "asynchronous-codec",
  "bytes",
  "futures",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "multiaddr",
  "multihash",
@@ -5541,13 +5509,13 @@ dependencies = [
 
 [[package]]
 name = "libp2p-ping"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b2529993ff22deb2504c0130a58b60fb77f036be555053922db1a0490b5798b"
+checksum = "74bb7fcdfd9fead4144a3859da0b49576f171a8c8c7c0bfc7c541921d25e60d3"
 dependencies = [
  "futures",
  "futures-timer",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
  "rand 0.8.5",
@@ -5557,14 +5525,14 @@ dependencies = [
 
 [[package]]
 name = "libp2p-quic"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41432a159b00424a0abaa2c80d786cddff81055ac24aa127e0cf375f7858d880"
+checksum = "8dc448b2de9f4745784e3751fe8bc6c473d01b8317edd5ababcb0dec803d843f"
 dependencies = [
  "futures",
  "futures-timer",
  "if-watch",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-tls",
  "quinn",
@@ -5579,15 +5547,15 @@ dependencies = [
 
 [[package]]
 name = "libp2p-request-response"
-version = "0.28.0"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "548fe44a80ff275d400f1b26b090d441d83ef73efabbeb6415f4ce37e5aed865"
+checksum = "a9f1cca83488b90102abac7b67d5c36fc65bc02ed47620228af7ed002e6a1478"
 dependencies = [
  "async-trait",
  "cbor4ii",
  "futures",
  "futures-bounded",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
  "rand 0.8.5",
@@ -5598,9 +5566,9 @@ dependencies = [
 
 [[package]]
 name = "libp2p-scatter"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b7c553a4d46a0559528486d4f22a79276d84c6f69216b861cc7a1aa7cf2415b"
+checksum = "ea402c419f99e6013d5b12f97c5a1a1abe4aca285844b01b0ed96deab11f0b6e"
 dependencies = [
  "bytes",
  "fnv",
@@ -5613,20 +5581,19 @@ dependencies = [
 
 [[package]]
 name = "libp2p-swarm"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "803399b4b6f68adb85e63ab573ac568154b193e9a640f03e0f2890eabbcb37f8"
+checksum = "6aa762e5215919a34e31c35d4b18bf2e18566ecab7f8a3d39535f4a3068f8b62"
 dependencies = [
  "either",
  "fnv",
  "futures",
  "futures-timer",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm-derive",
  "lru 0.12.5",
- "multistream-select 0.13.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "once_cell",
+ "multistream-select",
  "rand 0.8.5",
  "smallvec",
  "tokio",
@@ -5636,27 +5603,26 @@ dependencies = [
 
 [[package]]
 name = "libp2p-swarm-derive"
-version = "0.35.0"
+version = "0.35.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "206e0aa0ebe004d778d79fb0966aa0de996c19894e2c0605ba2f8524dd4443d8"
+checksum = "dd297cf53f0cb3dee4d2620bb319ae47ef27c702684309f682bdb7e55a18ae9c"
 dependencies = [
  "heck",
- "proc-macro2",
  "quote",
  "syn 2.0.104",
 ]
 
 [[package]]
 name = "libp2p-tcp"
-version = "0.43.0"
+version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65346fb4d36035b23fec4e7be4c320436ba53537ce9b6be1d1db1f70c905cad0"
+checksum = "65b4e030c52c46c8d01559b2b8ca9b7c4185f10576016853129ca1fe5cd1a644"
 dependencies = [
  "futures",
  "futures-timer",
  "if-watch",
  "libc",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "socket2 0.5.10",
  "tokio",
  "tracing",
@@ -5670,7 +5636,7 @@ checksum = "96ff65a82e35375cbc31ebb99cacbbf28cb6c4fefe26bf13756ddcf708d40080"
 dependencies = [
  "futures",
  "futures-rustls",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-identity",
  "rcgen",
  "ring",
@@ -5683,14 +5649,14 @@ dependencies = [
 
 [[package]]
 name = "libp2p-upnp"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d457b9ecceb66e7199f049926fad447f1f17f040e8d29d690c086b4cab8ed14a"
+checksum = "4757e65fe69399c1a243bbb90ec1ae5a2114b907467bf09f3575e899815bb8d3"
 dependencies = [
  "futures",
  "futures-timer",
  "igd-next",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "libp2p-swarm",
  "tokio",
  "tracing",
@@ -5704,7 +5670,7 @@ checksum = "f15df094914eb4af272acf9adaa9e287baa269943f32ea348ba29cfb9bfc60d8"
 dependencies = [
  "either",
  "futures",
- "libp2p-core 0.43.1",
+ "libp2p-core",
  "thiserror 2.0.12",
  "tracing",
  "yamux 0.12.1",
@@ -6258,19 +6224,6 @@ dependencies = [
  "pin-project",
  "smallvec",
  "unsigned-varint 0.7.2",
-]
-
-[[package]]
-name = "multistream-select"
-version = "0.13.0"
-source = "git+https://github.com/informalsystems/rust-libp2p.git?branch=reth#198d930795f1b27dc98a4e5da59d59ff12c4701c"
-dependencies = [
- "bytes",
- "futures",
- "pin-project",
- "smallvec",
- "tracing",
- "unsigned-varint 0.8.0",
 ]
 
 [[package]]
@@ -7096,9 +7049,9 @@ dependencies = [
 
 [[package]]
 name = "prometheus-client"
-version = "0.22.3"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "504ee9ff529add891127c4827eb481bd69dc0ebc72e9a682e187db4caa60c3ca"
+checksum = "cf41c1a7c32ed72abe5082fb19505b969095c12da9f5732a4bc9878757fd087c"
 dependencies = [
  "dtoa",
  "itoa",
@@ -7673,7 +7626,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
- "http 1.3.1",
+ "http",
  "http-body",
  "http-body-util",
  "hyper",
@@ -9295,7 +9248,7 @@ version = "1.6.0"
 source = "git+https://github.com/0xKitsune/reth?rev=b7a3f06e699aeec46a5df2cfbe1daf710f72ca68#b7a3f06e699aeec46a5df2cfbe1daf710f72ca68"
 dependencies = [
  "eyre",
- "http 1.3.1",
+ "http",
  "jsonrpsee-server",
  "metrics",
  "metrics-exporter-prometheus",
@@ -9625,7 +9578,7 @@ dependencies = [
  "async-trait",
  "derive_more",
  "futures",
- "http 1.3.1",
+ "http",
  "http-body",
  "hyper",
  "itertools 0.14.0",
@@ -9708,7 +9661,7 @@ source = "git+https://github.com/0xKitsune/reth?rev=b7a3f06e699aeec46a5df2cfbe1d
 dependencies = [
  "alloy-network",
  "alloy-provider",
- "http 1.3.1",
+ "http",
  "jsonrpsee",
  "metrics",
  "pin-project",
@@ -9882,7 +9835,7 @@ version = "1.6.0"
 source = "git+https://github.com/0xKitsune/reth?rev=b7a3f06e699aeec46a5df2cfbe1daf710f72ca68#b7a3f06e699aeec46a5df2cfbe1daf710f72ca68"
 dependencies = [
  "alloy-rpc-types-engine",
- "http 1.3.1",
+ "http",
  "jsonrpsee-http-client",
  "pin-project",
  "tower",
@@ -10894,16 +10847,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rw-stream-sink"
-version = "0.4.0"
-source = "git+https://github.com/informalsystems/rust-libp2p.git?branch=reth#198d930795f1b27dc98a4e5da59d59ff12c4701c"
-dependencies = [
- "futures",
- "pin-project",
- "static_assertions",
-]
-
-[[package]]
 name = "ryu"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11436,7 +11379,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures",
- "http 1.3.1",
+ "http",
  "httparse",
  "log",
  "rand 0.8.5",
@@ -12143,7 +12086,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http 1.3.1",
+ "http",
  "http-body",
  "http-body-util",
  "http-range-header",
@@ -12358,7 +12301,7 @@ checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
 dependencies = [
  "bytes",
  "data-encoding",
- "http 1.3.1",
+ "http",
  "httparse",
  "log",
  "rand 0.9.2",
@@ -13879,3 +13822,8 @@ source = "git+https://github.com/alloy-rs/alloy?rev=08fa016ed950b6e65f810fc9cdef
 name = "alloy-transport-ws"
 version = "1.0.12"
 source = "git+https://github.com/alloy-rs/alloy?rev=08fa016ed950b6e65f810fc9cdef7cf38fbc63f6#08fa016ed950b6e65f810fc9cdef7cf38fbc63f6"
+
+[[patch.unused]]
+name = "libp2p-dns"
+version = "0.43.0"
+source = "git+https://github.com/informalsystems/rust-libp2p.git?branch=reth#198d930795f1b27dc98a4e5da59d59ff12c4701c"

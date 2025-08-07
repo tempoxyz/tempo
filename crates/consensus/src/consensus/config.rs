@@ -83,6 +83,7 @@ impl NodeConfig {
         Self {
             moniker,
             consensus: MalachiteConsensusConfig {
+                queue_capacity: Default::default(),
                 value_payload: ValuePayload::ProposalAndParts,
                 timeouts: TimeoutConfig::default(),
                 p2p: P2pConfig {
