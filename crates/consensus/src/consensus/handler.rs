@@ -188,10 +188,7 @@ pub async fn run_consensus_handler(
                         // Restart the current height
                         let current = state.current_height()?;
                         if reply
-                            .send(Next::Restart(
-                                current,
-                                state.get_validator_set(current),
-                            ))
+                            .send(Next::Restart(current, state.get_validator_set(current)))
                             .is_err()
                         {
                             error!("Failed to send RestartHeight reply");
