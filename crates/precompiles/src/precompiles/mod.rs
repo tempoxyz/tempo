@@ -1,5 +1,9 @@
 use alloy::primitives::Address;
-use reth::revm::{Inspector, precompile::PrecompileResult, primitives::hardfork::SpecId};
+use reth::revm::{
+    Inspector,
+    precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
+    primitives::hardfork::SpecId,
+};
 use reth_evm::{
     Database, EthEvm, Evm,
     eth::EthEvmContext,
@@ -18,6 +22,10 @@ use crate::contracts::{
         address_to_token_id_unchecked,
     },
 };
+
+const METADATA_GAS: u64 = 50;
+const VIEW_FUNC_GAS: u64 = 100;
+const MUTATE_FUNC_GAS: u64 = 1000;
 
 pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult;
@@ -76,5 +84,70 @@ impl TIP403RegistryPrecompile {
             TIP403Registry::new(&mut EvmStorageProvider::new(input.internals, chain_id))
                 .call(input.data, &input.caller)
         })
+    }
+}
+
+#[inline]
+fn metadata<T: alloy::sol_types::SolCall>(result: T::Return) -> PrecompileResult {
+    Ok(PrecompileOutput::new(
+        METADATA_GAS,
+        T::abi_encode_returns(&result).into(),
+    ))
+}
+
+#[inline]
+fn view<T: alloy::sol_types::SolCall>(
+    calldata: &[u8],
+    f: impl FnOnce(T) -> T::Return,
+) -> PrecompileResult {
+    let call = T::abi_decode(calldata)
+        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    Ok(PrecompileOutput::new(
+        VIEW_FUNC_GAS,
+        T::abi_encode_returns(&f(call)).into(),
+    ))
+}
+
+#[inline]
+fn mutate<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
+    calldata: &[u8],
+    sender: &Address,
+    f: impl FnOnce(&Address, T) -> Result<T::Return, E>,
+) -> PrecompileResult {
+    let call = T::abi_decode(calldata)
+        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    match f(sender, call) {
+        Ok(result) => Ok(PrecompileOutput::new(
+            MUTATE_FUNC_GAS,
+            T::abi_encode_returns(&result).into(),
+        )),
+        Err(e) => Err(PrecompileError::Other(
+            E::abi_encode(&e)
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect(),
+        )),
+    }
+}
+
+#[inline]
+fn mutate_void<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
+    calldata: &[u8],
+    sender: &Address,
+    f: impl FnOnce(&Address, T) -> Result<(), E>,
+) -> PrecompileResult {
+    let call = T::abi_decode(calldata)
+        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    match f(sender, call) {
+        Ok(()) => Ok(PrecompileOutput::new(
+            MUTATE_FUNC_GAS,
+            alloy_primitives::Bytes::new(),
+        )),
+        Err(e) => Err(PrecompileError::Other(
+            E::abi_encode(&e)
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect(),
+        )),
     }
 }

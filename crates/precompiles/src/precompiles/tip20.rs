@@ -1,83 +1,15 @@
-use crate::contracts::{
-    storage::StorageProvider,
-    tip20::TIP20Token,
-    types::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
+use crate::{
+    contracts::{
+        storage::StorageProvider,
+        tip20::TIP20Token,
+        types::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
+    },
+    precompiles::{metadata, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 
 use crate::{dispatch_mutating_call, dispatch_view_call, precompiles::Precompile};
-
-mod gas_costs {
-    pub const METADATA: u64 = 50;
-    pub const VIEW_FUNCTIONS: u64 = 100;
-    pub const STATE_CHANGING_FUNCTIONS: u64 = 1000;
-}
-
-#[inline]
-fn metadata<T: alloy::sol_types::SolCall>(result: T::Return) -> PrecompileResult {
-    Ok(PrecompileOutput::new(
-        gas_costs::METADATA,
-        T::abi_encode_returns(&result).into(),
-    ))
-}
-
-#[inline]
-fn view<T: alloy::sol_types::SolCall>(
-    calldata: &[u8],
-    f: impl FnOnce(T) -> T::Return,
-) -> PrecompileResult {
-    let call = T::abi_decode(calldata)
-        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
-    Ok(PrecompileOutput::new(
-        gas_costs::VIEW_FUNCTIONS,
-        T::abi_encode_returns(&f(call)).into(),
-    ))
-}
-
-#[inline]
-fn mutate<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
-    calldata: &[u8],
-    sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<T::Return, E>,
-) -> PrecompileResult {
-    let call = T::abi_decode(calldata)
-        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
-    match f(sender, call) {
-        Ok(result) => Ok(PrecompileOutput::new(
-            gas_costs::STATE_CHANGING_FUNCTIONS,
-            T::abi_encode_returns(&result).into(),
-        )),
-        Err(e) => Err(PrecompileError::Other(
-            E::abi_encode(&e)
-                .iter()
-                .map(|b| format!("{:02x}", b))
-                .collect(),
-        )),
-    }
-}
-
-#[inline]
-fn mutate_void<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
-    calldata: &[u8],
-    sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<(), E>,
-) -> PrecompileResult {
-    let call = T::abi_decode(calldata)
-        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
-    match f(sender, call) {
-        Ok(()) => Ok(PrecompileOutput::new(
-            gas_costs::STATE_CHANGING_FUNCTIONS,
-            alloy_primitives::Bytes::new(),
-        )),
-        Err(e) => Err(PrecompileError::Other(
-            E::abi_encode(&e)
-                .iter()
-                .map(|b| format!("{:02x}", b))
-                .collect(),
-        )),
-    }
-}
 
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
