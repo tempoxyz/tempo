@@ -1,9 +1,6 @@
-use crate::{
-    dispatch_mutating_call, dispatch_view_call,
-    precompiles::{MUTATE_FUNC_GAS, Precompile, VIEW_FUNC_GAS},
-};
+use crate::precompiles::{MUTATE_FUNC_GAS, Precompile, VIEW_FUNC_GAS, metadata, mutate};
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
     storage::StorageProvider,
@@ -19,16 +16,21 @@ mod gas_costs {
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        let selector = calldata.get(..4).ok_or_else(|| { PrecompileError::Other("Invalid input: missing function selector".to_string()) })?;
+        let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| { 
+            PrecompileError::Other("Invalid input: missing function selector".to_string()) 
+        })?.try_into().expect("TODO: handle error");
 
-        // View functions
-        dispatch_view_call!(self, selector, ITIP20Factory::tokenIdCounterCall, token_id_counter, VIEW_FUNC_GAS);
-
-        // State-changing functions
-        dispatch_mutating_call!(self, selector, ITIP20Factory::createTokenCall, create_token, calldata, msg_sender, MUTATE_FUNC_GAS, TIP20Error, returns);
-
-        // If no selector matched, return error
-        Err(PrecompileError::Other("Unknown function selector".to_string()))
+        match selector {
+            ITIP20Factory::tokenIdCounterCall::SELECTOR => {
+                metadata::<ITIP20Factory::tokenIdCounterCall>(self.token_id_counter())
+            },
+            ITIP20Factory::createTokenCall::SELECTOR => {
+                mutate::<ITIP20Factory::createTokenCall, _>(calldata, msg_sender, |s, call| self.create_token(s, call))
+            },
+            _ => {
+                Err(PrecompileError::Other("Unknown function selector".to_string()))
+            }
+        }
     }
 }
 

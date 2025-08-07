@@ -30,7 +30,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::noncesCall::SELECTOR => view::<ITIP20::noncesCall>(calldata, |call| self.nonces(call)),
             ITIP20::saltsCall::SELECTOR => view::<ITIP20::saltsCall>(calldata, |call| self.salts(call)),
 
-            // State-changing functions 
+            // State changing functions 
             ITIP20::transferFromCall::SELECTOR => mutate::<ITIP20::transferFromCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer_from(s, call)),
             ITIP20::transferCall::SELECTOR => mutate::<ITIP20::transferCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer(s, call)),
             ITIP20::approveCall::SELECTOR => mutate::<ITIP20::approveCall, TIP20Error>(calldata, msg_sender, |s, call| self.approve(s, call)),
@@ -39,7 +39,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::setSupplyCapCall::SELECTOR => mutate_void::<ITIP20::setSupplyCapCall, TIP20Error>(calldata, msg_sender, |s, call| self.set_supply_cap(s, call)),
             ITIP20::pauseCall::SELECTOR => mutate_void::<ITIP20::pauseCall, TIP20Error>(calldata, msg_sender, |s, call| self.pause(s, call)),
             ITIP20::unpauseCall::SELECTOR => mutate_void::<ITIP20::unpauseCall, TIP20Error>(calldata, msg_sender, |s, call| self.unpause(s, call)),
-            ITIP20::mintCall::SELECTOR => mutate_void::<ITIP20::mintCall, TIP20Error>(calldata, msg_sender, |s, call| self.mint(s, call)),
+            ITIP20::mintCall::SELECTOR => mutate_void::<ITIP20::mintCall, _>(calldata, msg_sender, |s, call| self.mint(s, call)),
             ITIP20::burnCall::SELECTOR => mutate_void::<ITIP20::burnCall, TIP20Error>(calldata, msg_sender, |s, call| self.burn(s, call)),
             ITIP20::burnBlockedCall::SELECTOR => mutate_void::<ITIP20::burnBlockedCall, TIP20Error>(calldata, msg_sender, |s, call| self.burn_blocked(s, call)),
             ITIP20::transferWithMemoCall::SELECTOR => mutate_void::<ITIP20::transferWithMemoCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer_with_memo(s, call)),
