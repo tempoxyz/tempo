@@ -1,12 +1,10 @@
 use alloy::primitives::{Address, U256};
 use criterion::{Criterion, criterion_group, criterion_main};
-use std::{hint::black_box, sync::Arc};
+use std::hint::black_box;
 use tempo_precompiles::contracts::{
     storage::hashmap::HashMapStorageProvider,
     tip20::{ISSUER_ROLE, TIP20Token},
-    tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry,
-    types::{ITIP20, ITIP20Factory, ITIP403Registry},
+    types::ITIP20,
 };
 
 fn tip20_metadata(c: &mut Criterion) {
@@ -88,35 +86,35 @@ fn tip20_metadata(c: &mut Criterion) {
     });
 }
 
-fn tip20_view(c: &mut Criterion) {
+fn tip20_view(_c: &mut Criterion) {
     todo!()
 }
 
-fn tip20_mutate(c: &mut Criterion) {
+fn tip20_mutate(_c: &mut Criterion) {
     todo!()
 }
 
-fn tip20_factory_metadata(c: &mut Criterion) {
+fn tip20_factory_metadata(_c: &mut Criterion) {
     todo!()
 }
 
-fn tip20_factory_view(c: &mut Criterion) {
+fn tip20_factory_view(_c: &mut Criterion) {
     todo!()
 }
 
-fn tip20_factory_mutate(c: &mut Criterion) {
+fn tip20_factory_mutate(_c: &mut Criterion) {
     todo!()
 }
 
-fn tip403_registry_metadata(c: &mut Criterion) {
+fn tip403_registry_metadata(_c: &mut Criterion) {
     todo!()
 }
 
-fn tip403_registry_view(c: &mut Criterion) {
+fn tip403_registry_view(_c: &mut Criterion) {
     todo!()
 }
 
-fn tip403_registry_mutate(c: &mut Criterion) {
+fn tip403_registry_mutate(_c: &mut Criterion) {
     todo!()
 }
 
