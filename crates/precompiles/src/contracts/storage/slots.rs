@@ -19,6 +19,7 @@ pub const fn pad_to_32(x: &[u8]) -> [u8; 32] {
 }
 
 /// Compute storage slot for a mapping
+#[inline]
 pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: U256) -> U256 {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(&pad_to_32(key.as_ref()));
@@ -27,6 +28,7 @@ pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: U256) -> U256 {
 }
 
 /// Compute storage slot for a double mapping (mapping\[key1\]\[key2\])
+#[inline]
 pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
     key1: T,
     key2: U,
