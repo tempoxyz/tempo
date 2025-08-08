@@ -1,10 +1,10 @@
 //! Consensus message handler that bridges Malachite consensus to the Reth application
 
 use crate::{app::State, context::MalachiteContext};
+use alloy_rpc_types_engine::ExecutionData;
 use eyre::eyre;
 use malachitebft_app_channel::{AppMsg, Channels, NetworkMsg, app::engine::host::Next};
 use malachitebft_core_types::{Height as _, Round, Validity};
-use alloy_rpc_types_engine::ExecutionData;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_builder::{NodeTypes, PayloadTypes};
 use tracing::{error, info};
@@ -19,10 +19,10 @@ pub async fn run_consensus_handler<N: NodeTypes>(
 ) -> eyre::Result<()>
 where
     N::Payload: PayloadTypes<
-        PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-        ExecutionData = ExecutionData,
-        BuiltPayload = EthBuiltPayload,
-    >,
+            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+            ExecutionData = ExecutionData,
+            BuiltPayload = EthBuiltPayload,
+        >,
 {
     info!("Starting consensus handler loop");
     while let Some(msg) = channels.consensus.recv().await {
