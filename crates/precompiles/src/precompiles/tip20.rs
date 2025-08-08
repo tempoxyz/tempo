@@ -60,7 +60,8 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
 mod tests {
     use crate::{
         contracts::{HashMapStorageProvider, types::IRolesAuth},
-        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS},
+        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
+        tip20_err,
     };
     use alloy::{primitives::U256, sol_types::SolValue};
     use alloy_primitives::Bytes;
@@ -561,7 +562,7 @@ mod tests {
         let result = token.call(&Bytes::from(calldata), &admin);
 
         // Should fail due to supply cap
-        assert!(result.is_err());
+        expect_precompile_error(&result, tip20_err!(SupplyCapExceeded));
     }
 
     #[test]
@@ -616,7 +617,7 @@ mod tests {
         };
         let calldata = mint_call.abi_encode();
         let result = token.call(&Bytes::from(calldata.clone()), &unauthorized);
-        assert!(result.is_err());
+        expect_precompile_error(&result, tip20_err!(PolicyForbids));
 
         // Test authorized mint (should succeed)
         let result = token.call(&Bytes::from(calldata), &user1).unwrap();
@@ -736,6 +737,6 @@ mod tests {
         let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &non_admin);
-        assert!(result.is_err());
+        expect_precompile_error(&result, tip20_err!(PolicyForbids));
     }
 }

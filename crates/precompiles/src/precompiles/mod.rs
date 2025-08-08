@@ -1,4 +1,8 @@
-use alloy::primitives::Address;
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
+use alloy_primitives::Bytes;
 use reth::revm::{
     Inspector,
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
@@ -96,7 +100,7 @@ impl TIP4217RegistryPrecompile {
 }
 
 #[inline]
-fn metadata<T: alloy::sol_types::SolCall>(result: T::Return) -> PrecompileResult {
+fn metadata<T: SolCall>(result: T::Return) -> PrecompileResult {
     Ok(PrecompileOutput::new(
         METADATA_GAS,
         T::abi_encode_returns(&result).into(),
@@ -104,10 +108,7 @@ fn metadata<T: alloy::sol_types::SolCall>(result: T::Return) -> PrecompileResult
 }
 
 #[inline]
-fn view<T: alloy::sol_types::SolCall>(
-    calldata: &[u8],
-    f: impl FnOnce(T) -> T::Return,
-) -> PrecompileResult {
+fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> T::Return) -> PrecompileResult {
     let call = T::abi_decode(calldata)
         .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
     Ok(PrecompileOutput::new(
@@ -117,7 +118,7 @@ fn view<T: alloy::sol_types::SolCall>(
 }
 
 #[inline]
-fn mutate<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
+fn mutate<T: SolCall, E: SolInterface>(
     calldata: &[u8],
     sender: &Address,
     f: impl FnOnce(&Address, T) -> Result<T::Return, E>,
@@ -139,7 +140,7 @@ fn mutate<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
 }
 
 #[inline]
-fn mutate_void<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
+fn mutate_void<T: SolCall, E: SolInterface>(
     calldata: &[u8],
     sender: &Address,
     f: impl FnOnce(&Address, T) -> Result<(), E>,
@@ -147,15 +148,30 @@ fn mutate_void<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
     let call = T::abi_decode(calldata)
         .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
     match f(sender, call) {
-        Ok(()) => Ok(PrecompileOutput::new(
-            MUTATE_FUNC_GAS,
-            alloy_primitives::Bytes::new(),
-        )),
+        Ok(()) => Ok(PrecompileOutput::new(MUTATE_FUNC_GAS, Bytes::new())),
         Err(e) => Err(PrecompileError::Other(
             E::abi_encode(&e)
                 .iter()
                 .map(|b| format!("{b:02x}"))
                 .collect(),
         )),
+    }
+}
+
+#[cfg(test)]
+pub fn expect_precompile_error<E>(result: &PrecompileResult, expected_error: E)
+where
+    E: SolInterface + PartialEq + Debug,
+{
+    match result {
+        Err(PrecompileError::Other(hex_string)) => {
+            let bytes =
+                hex::decode(hex_string).expect("invalid hex string in PrecompileError::Other");
+            let decoded: E = E::abi_decode(&bytes)
+                .expect("failed to decode precompile error as expected interface error");
+            assert_eq!(decoded, expected_error);
+        }
+        Ok(_) => panic!("expected error, got Ok result"),
+        Err(other) => panic!("expected encoded interface error, got: {:?}", other),
     }
 }

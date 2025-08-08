@@ -1,13 +1,12 @@
 use std::sync::LazyLock;
 
-use alloy::primitives::{Address, B256, IntoLogData, U256, keccak256};
-use alloy::primitives::Signature as EthSignature;
+use alloy::primitives::{Address, B256, IntoLogData, Signature as EthSignature, U256, keccak256};
 use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
 
 use crate::{
     contracts::{
         ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry,
-        TIP4217Registry,
+        TIP4217Registry, address_is_token_address,
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
         token_id_to_address,
@@ -584,7 +583,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn check_not_token_address(&self, to: &Address) -> Result<(), TIP20Error> {
         // Don't allow sending to other precompiled tokens
-        if (u64::from_be_bytes(to.as_slice()[0..8].try_into().unwrap()) >> 24) == 0x20C00000000000 {
+        if address_is_token_address(to) {
             return Err(tip20_err!(InvalidRecipient));
         }
         Ok(())
