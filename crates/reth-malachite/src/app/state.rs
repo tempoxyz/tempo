@@ -29,7 +29,7 @@ use crate::{
     utils::seed_from_address,
 };
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
+use alloy_rpc_types_engine::{ExecutionData, ForkchoiceState, PayloadStatusEnum};
 use bytes::Bytes;
 use eyre::Result;
 use malachitebft_app_channel::app::{
@@ -41,10 +41,11 @@ use malachitebft_core_types::{
 };
 use rand::{SeedableRng, rngs::StdRng};
 use reth_engine_primitives::BeaconConsensusEngineHandle;
-use reth_node_builder::{NodeTypes, PayloadTypes};
+use reth_ethereum_engine_primitives::EthBuiltPayload;
+use reth_node_builder::{FullNodeTypes, NodeTypes, PayloadTypes};
 use reth_node_ethereum::EthereumNode;
 use reth_payload_builder::{PayloadBuilderHandle, PayloadStore};
-use reth_payload_primitives::{EngineApiMessageVersion, PayloadKind};
+use reth_payload_primitives::{BuiltPayload, EngineApiMessageVersion, PayloadKind};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -84,7 +85,14 @@ impl Clone for ThreadSafeRng {
 }
 
 // Manual Clone implementation for State since PayloadStore doesn't implement Clone
-impl Clone for State {
+impl<N: NodeTypes> Clone for State<N>
+where
+    N::Payload: PayloadTypes<
+            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+            ExecutionData = ExecutionData,
+            BuiltPayload = EthBuiltPayload,
+        >,
+{
     fn clone(&self) -> Self {
         Self {
             ctx: self.ctx.clone(),
@@ -129,7 +137,7 @@ impl Clone for State {
 /// - **State Management**: `current_height()`, `current_round()`, `get_validator_set()`
 /// - **Storage Access**: `store_synced_proposal()`, `get_proposal_for_restreaming()`
 /// - **Peer Management**: `add_peer()`, `remove_peer()`, `get_peers()`
-pub struct State {
+pub struct State<N: NodeTypes = EthereumNode> {
     // Immutable fields (no synchronization needed)
     pub ctx: MalachiteContext,
     pub config: Config,
@@ -137,8 +145,8 @@ pub struct State {
     pub address: Address,
     store: Store, // Already thread-safe
     pub signing_provider: Ed25519Provider,
-    pub engine_handle: BeaconConsensusEngineHandle<<EthereumNode as NodeTypes>::Payload>,
-    pub payload_store: Arc<PayloadStore<<EthereumNode as NodeTypes>::Payload>>,
+    pub engine_handle: BeaconConsensusEngineHandle<N::Payload>,
+    pub payload_store: Arc<PayloadStore<N::Payload>>,
 
     // Mutable fields wrapped in RwLock for concurrent read/write access
     current_height: Arc<RwLock<Height>>,
@@ -152,7 +160,14 @@ pub struct State {
     rng: ThreadSafeRng,
 }
 
-impl State {
+impl<N: NodeTypes> State<N>
+where
+    N::Payload: PayloadTypes<
+            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+            ExecutionData = ExecutionData,
+            BuiltPayload = EthBuiltPayload,
+        >,
+{
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         ctx: MalachiteContext,
@@ -160,8 +175,8 @@ impl State {
         genesis: Genesis,
         address: Address,
         store: Store,
-        engine_handle: BeaconConsensusEngineHandle<<EthereumNode as NodeTypes>::Payload>,
-        payload_builder_handle: PayloadBuilderHandle<<EthereumNode as NodeTypes>::Payload>,
+        engine_handle: BeaconConsensusEngineHandle<N::Payload>,
+        payload_builder_handle: PayloadBuilderHandle<N::Payload>,
         signing_provider: Option<Ed25519Provider>,
     ) -> Self {
         let payload_store = Arc::new(PayloadStore::new(payload_builder_handle));
@@ -196,11 +211,12 @@ impl State {
         genesis: Genesis,
         address: Address,
         provider: Arc<P>,
-        engine_handle: BeaconConsensusEngineHandle<<EthereumNode as NodeTypes>::Payload>,
-        payload_builder_handle: PayloadBuilderHandle<<EthereumNode as NodeTypes>::Payload>,
+        engine_handle: BeaconConsensusEngineHandle<N::Payload>,
+        payload_builder_handle: PayloadBuilderHandle<N::Payload>,
         signing_provider: Option<Ed25519Provider>,
     ) -> Result<Self>
     where
+        N: FullNodeTypes,
         P: reth_provider::DatabaseProviderFactory + Clone + Unpin + Send + Sync + 'static,
         <P as reth_provider::DatabaseProviderFactory>::Provider: Send + Sync,
         <P as reth_provider::DatabaseProviderFactory>::ProviderRW: Send,

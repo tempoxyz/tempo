@@ -40,7 +40,7 @@ use tempo_evm::TempoEvmFactory;
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TempoNode {
-    args: TempoArgs,
+    pub args: TempoArgs,
 }
 
 impl TempoNode {
@@ -139,7 +139,6 @@ where
     }
 }
 
-// TODO: update to use TempoEvmFactory
 impl<N, EthB, PVB, EB, EVB> NodeAddOns<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
 where
     N: FullNodeComponents<
@@ -271,7 +270,8 @@ where
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
         let evm_config =
-            EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), TempoEvmFactory::default());
+            EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), TempoEvmFactory::default())
+                .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
         Ok(evm_config)
     }
 }
