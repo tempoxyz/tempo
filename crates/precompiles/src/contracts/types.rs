@@ -84,12 +84,11 @@ sol! {
 
     #[derive(Debug, PartialEq, Eq)]
     interface ITIP20Factory {
-        event TokenCreated(uint256 indexed tokenId, string name, string symbol, uint8 decimals, string currency, address admin);
+        event TokenCreated(uint256 indexed tokenId, string name, string symbol, string currency, address admin);
 
         function createToken(
             string memory name,
             string memory symbol,
-            uint8 decimals,
             string memory currency,
             address admin
         ) external returns (uint256);
@@ -127,6 +126,11 @@ sol! {
         error Unauthorized();
         error IncompatiblePolicyType();
         error SelfOwnedPolicyMustBeWhitelist();
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    interface ITIP4217Registry {
+        function getCurrencyDecimals(string currency) external view returns (uint8);
     }
 }
 
