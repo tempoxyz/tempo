@@ -5,28 +5,34 @@ use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
 use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadBuilderAttributes};
 use reth_ethereum_primitives::EthPrimitives;
-use reth_evm::eth::spec::EthExecutorSpec;
+use reth_evm::{
+    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes, eth::spec::EthExecutorSpec,
+    revm::context::TxEnv,
+};
 use reth_network::{NetworkHandle, types::BasicNetworkPrimitives};
 use reth_node_api::{
     AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadTypes,
 };
 use reth_node_builder::{
-    BuilderContext,
+    BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
     },
     rpc::{
-        BasicEngineApiBuilder, BasicEngineValidatorBuilder, EthApiBuilder, PayloadValidatorBuilder,
-        RpcAddOns,
+        BasicEngineApiBuilder, BasicEngineValidatorBuilder, EngineApiBuilder, EngineValidatorAddOn,
+        EngineValidatorBuilder, EthApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
     },
 };
 use reth_node_ethereum::{
-    EthEngineTypes, EthEvmConfig, EthereumEngineValidator, EthereumEthApiBuilder,
-    EthereumPayloadBuilder,
+    EthEngineTypes, EthEvmConfig, EthereumConsensusBuilder, EthereumEngineValidator,
+    EthereumEngineValidatorBuilder, EthereumEthApiBuilder, EthereumExecutorBuilder,
+    EthereumNetworkBuilder, EthereumPayloadBuilder, EthereumPoolBuilder,
 };
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
+use reth_rpc_eth_api::FromEvmError;
+use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing::info;
 use reth_trie_db::MerklePatriciaTrie;
 
@@ -212,7 +218,7 @@ where
 //     }
 // }
 
-impl<N, EthB, PVB, EB, EVB> RethRpcAddOns<N> for EthereumAddOns<N, EthB, PVB, EB, EVB>
+impl<N, EthB, PVB, EB, EVB> RethRpcAddOns<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
 where
     N: FullNodeComponents<
             Types: NodeTypes<
@@ -236,7 +242,7 @@ where
     }
 }
 
-impl<N, EthB, PVB, EB, EVB> EngineValidatorAddOn<N> for EthereumAddOns<N, EthB, PVB, EB, EVB>
+impl<N, EthB, PVB, EB, EVB> EngineValidatorAddOn<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
 where
     N: FullNodeComponents<
             Types: NodeTypes<
@@ -260,7 +266,7 @@ where
     }
 }
 
-impl<N> Node<N> for EthereumNode
+impl<N> Node<N> for TempoNode
 where
     N: FullNodeTypes<Types = Self>,
 {
@@ -274,30 +280,30 @@ where
     >;
 
     type AddOns =
-        EthereumAddOns<NodeAdapter<N>, EthereumEthApiBuilder, EthereumEngineValidatorBuilder>;
+        TempoAddOns<NodeAdapter<N>, EthereumEthApiBuilder, EthereumEngineValidatorBuilder>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components()
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        EthereumAddOns::default()
+        TempoAddOns::default()
     }
 }
 
-impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for EthereumNode {
-    type RpcBlock = alloy_rpc_types_eth::Block;
-
-    fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> reth_ethereum_primitives::Block {
-        rpc_block.into_consensus().convert_transactions()
-    }
-
-    fn local_payload_attributes_builder(
-        chain_spec: &Self::ChainSpec,
-    ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes> {
-        LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
-    }
-}
+// impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
+//     type RpcBlock = alloy_rpc_types_eth::Block;
+//
+//     fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> reth_ethereum_primitives::Block {
+//         rpc_block.into_consensus().convert_transactions()
+//     }
+//
+//     fn local_payload_attributes_builder(
+//         chain_spec: &Self::ChainSpec,
+//     ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes> {
+//         LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
+//     }
+// }
 
 /// A regular ethereum evm and executor builder.
 #[derive(Debug, Default, Clone, Copy)]
@@ -324,110 +330,7 @@ where
     }
 }
 
-/// A basic ethereum transaction pool.
-///
-/// This contains various settings that can be configured and take precedence over the node's
-/// config.
-#[derive(Debug, Default, Clone, Copy)]
-#[non_exhaustive]
-pub struct EthereumPoolBuilder {
-    // TODO add options for txpool args
-}
-
-impl<Types, Node> PoolBuilder<Node> for EthereumPoolBuilder
-where
-    Types: NodeTypes<
-            ChainSpec: EthereumHardforks,
-            Primitives: NodePrimitives<SignedTx = TransactionSigned>,
-        >,
-    Node: FullNodeTypes<Types = Types>,
-{
-    type Pool = EthTransactionPool<Node::Provider, DiskFileBlobStore>;
-
-    async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
-        let pool_config = ctx.pool_config();
-
-        let blob_cache_size = if let Some(blob_cache_size) = pool_config.blob_cache_size {
-            Some(blob_cache_size)
-        } else {
-            // get the current blob params for the current timestamp, fallback to default Cancun
-            // params
-            let current_timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)?
-                .as_secs();
-            let blob_params = ctx
-                .chain_spec()
-                .blob_params_at_timestamp(current_timestamp)
-                .unwrap_or_else(BlobParams::cancun);
-
-            // Derive the blob cache size from the target blob count, to auto scale it by
-            // multiplying it with the slot count for 2 epochs: 384 for pectra
-            Some((blob_params.target_blob_count * EPOCH_SLOTS * 2) as u32)
-        };
-
-        let blob_store =
-            reth_node_builder::components::create_blob_store_with_cache(ctx, blob_cache_size)?;
-
-        let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
-            .with_head_timestamp(ctx.head().timestamp)
-            .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
-            .kzg_settings(ctx.kzg_settings()?)
-            .with_local_transactions_config(pool_config.local_transactions_config.clone())
-            .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
-            .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
-            .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
-            .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
-            .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
-
-        if validator.validator().eip4844() {
-            // initializing the KZG settings can be expensive, this should be done upfront so that
-            // it doesn't impact the first block or the first gossiped blob transaction, so we
-            // initialize this in the background
-            let kzg_settings = validator.validator().kzg_settings().clone();
-            ctx.task_executor().spawn_blocking(async move {
-                let _ = kzg_settings.get();
-                debug!(target: "reth::cli", "Initialized KZG settings");
-            });
-        }
-
-        let transaction_pool = TxPoolBuilder::new(ctx)
-            .with_validator(validator)
-            .build_and_spawn_maintenance_task(blob_store, pool_config)?;
-
-        info!(target: "reth::cli", "Transaction pool initialized");
-        debug!(target: "reth::cli", "Spawned txpool maintenance task");
-
-        Ok(transaction_pool)
-    }
-}
-
-/// A basic ethereum payload service.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EthereumNetworkBuilder {
-    // TODO add closure to modify network
-}
-
-impl<Node, Pool> NetworkBuilder<Node, Pool> for EthereumNetworkBuilder
-where
-    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: Hardforks>>,
-    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>>
-        + Unpin
-        + 'static,
-{
-    type Network =
-        NetworkHandle<BasicNetworkPrimitives<PrimitivesTy<Node::Types>, PoolPooledTx<Pool>>>;
-
-    async fn build_network(
-        self,
-        ctx: &BuilderContext<Node>,
-        pool: Pool,
-    ) -> eyre::Result<Self::Network> {
-        let network = ctx.network_builder().await?;
-        let handle = ctx.start_network(network, pool);
-        info!(target: "reth::cli", enode=%handle.local_node_record(), "P2P networking initialized");
-        Ok(handle)
-    }
-}
+// TODO: TempoPoolBuilder
 
 /// A basic ethereum consensus builder.
 #[derive(Debug, Default, Clone, Copy)]
