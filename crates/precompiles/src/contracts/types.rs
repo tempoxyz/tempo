@@ -80,6 +80,7 @@ sol! {
         error Expired();
         error SaltAlreadyUsed();
         error ContractPaused();
+        error InvalidCurrency();
     }
 
     #[derive(Debug, PartialEq, Eq)]

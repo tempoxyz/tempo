@@ -476,6 +476,11 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.write_string(slots::SYMBOL, symbol.to_string())?;
         self.write_string(slots::CURRENCY, currency.to_string())?;
 
+        // Validate currency via TIP4217 registry
+        if self.decimals() == 0 {
+            return Err(tip20_err!(InvalidCurrency));
+        }
+
         // Set default values
         self.storage
             .sstore(self.token_address, slots::SUPPLY_CAP, U256::MAX);
