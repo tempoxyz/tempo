@@ -13,7 +13,7 @@
 //! Configuration can be provided via command-line arguments or configuration files.
 
 use clap::Parser;
-use reth::{args::RessArgs, chainspec::EthereumChainSpecParser};
+use reth::{args::RessArgs, chainspec::EthereumChainSpecParser, ress::install_ress_subprotocol};
 use reth_malachite::{
     app::{Config, Genesis, State, ValidatorInfo},
     cli::{Cli, MalachiteArgs, MalachiteChainSpecParser},
@@ -47,17 +47,17 @@ fn main() {
                 .launch_with_debug_capabilities()
                 .await?;
 
-            // // Install ress subprotocol.
-            // if ress_args.enabled {
-            //     install_ress_subprotocol(
-            //         ress_args,
-            //         node.provider,
-            //         node.evm_config,
-            //         node.network,
-            //         node.task_executor,
-            //         node.add_ons_handle.engine_events.new_listener(),
-            //     )?;
-            // }
+            // Install ress subprotocol.
+            if ress_args.enabled {
+                install_ress_subprotocol(
+                    ress_args,
+                    node.provider,
+                    node.evm_config,
+                    node.network,
+                    node.task_executor,
+                    node.add_ons_handle.engine_events.new_listener(),
+                )?;
+            }
 
             node_exit_future.await
         })
