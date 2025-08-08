@@ -2,7 +2,6 @@ use crate::args::TempoArgs;
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadBuilderAttributes};
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
@@ -77,7 +76,7 @@ impl TempoNode {
             .executor(EthereumExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
-            .consensus(TempoConsensusBuilder::default())
+            .consensus(MalachiteConsensusBuilder)
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
@@ -139,6 +138,7 @@ where
     }
 }
 
+// TODO: update to use TempoEvmFactory
 impl<N, EthB, PVB, EB, EVB> NodeAddOns<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
 where
     N: FullNodeComponents<
@@ -224,7 +224,7 @@ where
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
         EthereumExecutorBuilder,
-        TempoConsensusBuilder,
+        MalachiteConsensusBuilder,
     >;
 
     type AddOns =
@@ -269,6 +269,7 @@ where
     type EVM = EthEvmConfig<Types::ChainSpec>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
+        // TODO: update to use tmepo precompiles
         let evm_config = EthEvmConfig::new(ctx.chain_spec())
             .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
         Ok(evm_config)

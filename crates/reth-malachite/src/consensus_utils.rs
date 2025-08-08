@@ -1,23 +1,36 @@
-use reth_chainspec::ChainSpec;
+use reth_chainspec::{ChainSpec, EthereumHardforks, Hardforks};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
+use reth_ethereum_primitives::EthPrimitives;
+use reth_evm::eth::spec::EthExecutorSpec;
 use reth_execution_types::BlockExecutionResult;
 use reth_node_builder::{Block, BuilderContext, FullNodeTypes, components::ConsensusBuilder};
 use reth_primitives::{SealedBlock, SealedHeader};
 use std::sync::Arc;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub struct MalachiteConsensus {
-    chain_spec: Arc<ChainSpec>,
+pub struct MalachiteConsensus<C = ChainSpec> {
+    chain_spec: Arc<C>,
 }
 
-impl MalachiteConsensus {
-    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
+impl<C> MalachiteConsensus<C> {
+    pub fn new(chain_spec: Arc<C>) -> Self {
         Self { chain_spec }
     }
 }
 
-impl<H> HeaderValidator<H> for MalachiteConsensus {
+impl Default for MalachiteConsensus<ChainSpec> {
+    fn default() -> Self {
+        Self {
+            chain_spec: Arc::new(ChainSpec::default()),
+        }
+    }
+}
+
+impl<H, C> HeaderValidator<H> for MalachiteConsensus<C>
+where
+    C: std::fmt::Debug + Send + Sync,
+{
     fn validate_header(&self, _header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         // For now, return Ok - implement validation logic here
         Ok(())
@@ -33,9 +46,10 @@ impl<H> HeaderValidator<H> for MalachiteConsensus {
     }
 }
 
-impl<B> Consensus<B> for MalachiteConsensus
+impl<B, C> Consensus<B> for MalachiteConsensus<C>
 where
     B: Block,
+    C: std::fmt::Debug + Send + Sync,
 {
     type Error = ConsensusError;
 
@@ -52,9 +66,10 @@ where
     }
 }
 
-impl<N> FullConsensus<N> for MalachiteConsensus
+impl<N, C> FullConsensus<N> for MalachiteConsensus<C>
 where
     N: reth_primitives_traits::NodePrimitives,
+    C: std::fmt::Debug + Send + Sync,
 {
     fn validate_block_post_execution(
         &self,
@@ -65,14 +80,20 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MalachiteConsensusBuilder;
 
 impl<Node> ConsensusBuilder<Node> for MalachiteConsensusBuilder
 where
-    Node: FullNodeTypes<Types: reth_node_builder::NodeTypes<ChainSpec = ChainSpec>>,
+    Node: FullNodeTypes<
+        Types: reth_node_builder::NodeTypes<
+            ChainSpec: Hardforks + EthereumHardforks + EthExecutorSpec,
+            Primitives = EthPrimitives,
+        >,
+    >,
 {
-    type Consensus = Arc<MalachiteConsensus>;
+    type Consensus =
+        Arc<MalachiteConsensus<<Node::Types as reth_node_builder::NodeTypes>::ChainSpec>>;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
         Ok(Arc::new(MalachiteConsensus::new(ctx.chain_spec())))
@@ -82,11 +103,5 @@ where
 impl MalachiteConsensusBuilder {
     pub fn new() -> Self {
         Self
-    }
-}
-
-impl Default for MalachiteConsensusBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
