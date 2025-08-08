@@ -2,14 +2,8 @@ use crate::contracts::types::ITIP4217Registry;
 
 const KNOWN_DECIMALS: &[(&str, u8)] = &[("USD", 6)];
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TIP4217Registry {}
-
-impl Default for TIP4217Registry {
-    fn default() -> Self {
-        Self {}
-    }
-}
 
 impl TIP4217Registry {
     pub fn get_currency_decimals(&mut self, call: ITIP4217Registry::getCurrencyDecimalsCall) -> u8 {
