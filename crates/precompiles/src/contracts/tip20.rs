@@ -386,38 +386,42 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         let nonce_slot = mapping_slot(call.owner, slots::NONCES);
         let nonce = self.storage.sload(self.token_address, nonce_slot);
 
-        // Verify signature
-        let domain_separator = self.domain_separator();
+        // Recover address from signature
+        let recovered_addr = {
+            let struct_hash = {
+                let mut struct_data = Vec::new();
+                struct_data.extend_from_slice(
+                keccak256(b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)").as_slice());
+                struct_data.extend_from_slice(call.owner.as_slice());
+                struct_data.extend_from_slice(call.spender.as_slice());
+                struct_data.extend_from_slice(&call.value.to_be_bytes::<32>());
+                struct_data.extend_from_slice(&nonce.to_be_bytes::<32>());
+                struct_data.extend_from_slice(&U256::from(call.deadline).to_be_bytes::<32>());
+                keccak256(&struct_data)
+            };
 
-        // Manually encode the struct hash for Permit
-        let mut struct_data = Vec::new();
-        struct_data.extend_from_slice(
-            keccak256(b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)").as_slice(),
-        );
-        struct_data.extend_from_slice(call.owner.as_slice());
-        struct_data.extend_from_slice(call.spender.as_slice());
-        struct_data.extend_from_slice(&call.value.to_be_bytes::<32>());
-        struct_data.extend_from_slice(&nonce.to_be_bytes::<32>());
-        struct_data.extend_from_slice(&U256::from(call.deadline).to_be_bytes::<32>());
-        let struct_hash = keccak256(&struct_data);
+            let digest = {
+                let mut digest_data = Vec::new();
+                digest_data.push(0x19);
+                digest_data.push(0x01);
+                digest_data.extend_from_slice(self.domain_separator().as_slice());
+                digest_data.extend_from_slice(struct_hash.as_slice());
+                keccak256(&digest_data)
+            };
 
-        let mut digest_data = Vec::new();
-        digest_data.push(0x19);
-        digest_data.push(0x01);
-        digest_data.extend_from_slice(domain_separator.as_slice());
-        digest_data.extend_from_slice(struct_hash.as_slice());
-        let digest = keccak256(&digest_data);
+            let v_norm = if call.v >= 27 { call.v - 27 } else { call.v };
+            if v_norm > 1 {
+                return Err(tip20_err!(InvalidSignature));
+            }
 
-        // Build Alloy signature and recover signer using alloy-consensus helper
-        let v_norm = if call.v >= 27 { call.v - 27 } else { call.v };
-        if v_norm > 1 {
-            return Err(tip20_err!(InvalidSignature));
-        }
-        let odd_y_parity = v_norm == 1;
-        let sig = EthSignature::from_scalars_and_parity(call.r, call.s, odd_y_parity);
-        let recovered_addr = eth_secp256k1::recover_signer(&sig, digest)
-            .map_err(|_| tip20_err!(InvalidSignature))?;
+            eth_secp256k1::recover_signer(
+                &EthSignature::from_scalars_and_parity(call.r, call.s, v_norm == 1),
+                digest,
+            )
+            .map_err(|_| tip20_err!(InvalidSignature))?
+        };
 
+        // Verify recovered address matches owner
         if recovered_addr != call.owner {
             return Err(tip20_err!(InvalidSignature));
         }
