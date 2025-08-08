@@ -406,7 +406,8 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 // nonce (32 bytes)
                 struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
                 // deadline (32 bytes)
-                struct_data[136..168].copy_from_slice(&U256::from(call.deadline).to_be_bytes::<32>());
+                struct_data[136..168]
+                    .copy_from_slice(&U256::from(call.deadline).to_be_bytes::<32>());
                 keccak256(&struct_data)
             };
 
@@ -695,11 +696,153 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-
-    use alloy::primitives::Address;
+    use alloy::primitives::{Address, U256, keccak256};
+    use alloy_signer::{Signer, SignerSync};
+    use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
     use crate::contracts::storage::hashmap::HashMapStorageProvider;
+
+    #[test]
+    fn test_permit_sets_allowance_and_increments_nonce() {
+        // Setup token
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::from([0u8; 20]);
+        let token_id = 1u64;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        // Owner keypair
+        let signer = PrivateKeySigner::random();
+        let owner = signer.address();
+
+        // Permit params
+        let spender = Address::from([2u8; 20]);
+        let value = U256::from(12345u64);
+        let deadline_u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 600;
+        let deadline = U256::from(deadline_u64);
+
+        // Build EIP-712 struct hash
+        let nonce_slot =
+            crate::contracts::storage::slots::mapping_slot(owner, super::slots::NONCES);
+        let nonce = token.storage.sload(token.token_address, nonce_slot);
+
+        let mut struct_data = [0u8; 168];
+        struct_data[0..32].copy_from_slice(super::PERMIT_TYPEHASH.as_slice());
+        struct_data[32..52].copy_from_slice(owner.as_slice());
+        struct_data[52..72].copy_from_slice(spender.as_slice());
+        struct_data[72..104].copy_from_slice(&value.to_be_bytes::<32>());
+        struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
+        struct_data[136..168].copy_from_slice(&deadline.to_be_bytes::<32>());
+        let struct_hash = keccak256(&struct_data);
+
+        // Build digest per EIP-191
+        let domain = token.domain_separator();
+        let mut digest_data = [0u8; 66];
+        digest_data[0] = 0x19;
+        digest_data[1] = 0x01;
+        digest_data[2..34].copy_from_slice(domain.as_slice());
+        digest_data[34..66].copy_from_slice(struct_hash.as_slice());
+        let digest = keccak256(&digest_data);
+
+        // Sign prehash digest
+        let signature = signer.sign_hash_sync(&digest).unwrap();
+        let r = signature.r();
+        let s = signature.s();
+        let v: u8 = if signature.v() { 28 } else { 27 };
+
+        // Call permit
+        token
+            .permit(
+                &admin,
+                ITIP20::permitCall {
+                    owner,
+                    spender,
+                    value,
+                    deadline,
+                    v,
+                    r: r.into(),
+                    s: s.into(),
+                },
+            )
+            .unwrap();
+
+        // Effects: allowance set and nonce incremented
+        assert_eq!(token.get_allowance(&owner, &spender), value);
+        let nonce_after = token.storage.sload(token.token_address, nonce_slot);
+        assert_eq!(nonce_after, U256::ONE);
+    }
+
+    #[test]
+    fn test_permit_rejects_invalid_signature() {
+        // Setup token
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::from([0u8; 20]);
+        let token_id = 2u64;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        // Owner keypair
+        let signer = PrivateKeySigner::random();
+        let owner = signer.address();
+
+        // Params
+        let spender = Address::from([3u8; 20]);
+        let value = U256::from(777u64);
+        let deadline_u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 600;
+        let deadline = U256::from(deadline_u64);
+
+        // Build digest
+        let nonce_slot =
+            crate::contracts::storage::slots::mapping_slot(owner, super::slots::NONCES);
+        let nonce = token.storage.sload(token.token_address, nonce_slot);
+
+        let mut struct_data = [0u8; 168];
+        struct_data[0..32].copy_from_slice(super::PERMIT_TYPEHASH.as_slice());
+        struct_data[32..52].copy_from_slice(owner.as_slice());
+        struct_data[52..72].copy_from_slice(spender.as_slice());
+        struct_data[72..104].copy_from_slice(&value.to_be_bytes::<32>());
+        struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
+        struct_data[136..168].copy_from_slice(&deadline.to_be_bytes::<32>());
+        let struct_hash = keccak256(&struct_data);
+
+        let domain = token.domain_separator();
+        let mut digest_data = [0u8; 66];
+        digest_data[0] = 0x19;
+        digest_data[1] = 0x01;
+        digest_data[2..34].copy_from_slice(domain.as_slice());
+        digest_data[34..66].copy_from_slice(struct_hash.as_slice());
+        let digest = keccak256(&digest_data);
+
+        // Sign then tamper with value (invalidates signature)
+        let signature = signer.sign_hash_sync(&digest).unwrap();
+        let r = signature.r();
+        let s = signature.s();
+        let v: u8 = if signature.v() { 28 } else { 27 };
+
+        let bad_value = value + U256::from(1u64);
+        let result = token.permit(
+            &admin,
+            ITIP20::permitCall {
+                owner,
+                spender,
+                value: bad_value,
+                deadline,
+                v,
+                r: r.into(),
+                s: s.into(),
+            },
+        );
+        assert!(matches!(result, Err(TIP20Error::InvalidSignature(_))));
+    }
 
     #[test]
     fn test_mint_increases_balance_and_supply() {
