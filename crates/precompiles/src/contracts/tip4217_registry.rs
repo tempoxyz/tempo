@@ -26,3 +26,26 @@ impl TIP4217Registry {
         0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_known_currency_usd_returns_6() {
+        let mut reg = TIP4217Registry::default();
+        let dec = reg.get_currency_decimals(ITIP4217Registry::getCurrencyDecimalsCall {
+            currency: "USD".to_string(),
+        });
+        assert_eq!(dec, 6);
+    }
+
+    #[test]
+    fn test_unknown_currency_returns_0() {
+        let mut reg = TIP4217Registry::default();
+        let dec = reg.get_currency_decimals(ITIP4217Registry::getCurrencyDecimalsCall {
+            currency: "EUR".to_string(),
+        });
+        assert_eq!(dec, 0);
+    }
+}
