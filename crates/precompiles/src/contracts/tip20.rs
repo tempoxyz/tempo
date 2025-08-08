@@ -408,7 +408,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 // deadline (32 bytes)
                 struct_data[136..168]
                     .copy_from_slice(&U256::from(call.deadline).to_be_bytes::<32>());
-                keccak256(&struct_data)
+                keccak256(struct_data)
             };
 
             let digest = {
@@ -418,7 +418,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 digest_data[1] = 0x01;
                 digest_data[2..34].copy_from_slice(self.domain_separator().as_slice());
                 digest_data[34..66].copy_from_slice(struct_hash.as_slice());
-                keccak256(&digest_data)
+                keccak256(digest_data)
             };
 
             let v_norm = if call.v >= 27 { call.v - 27 } else { call.v };
@@ -697,7 +697,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 #[cfg(test)]
 mod tests {
     use alloy::primitives::{Address, U256, keccak256};
-    use alloy_signer::{Signer, SignerSync};
+    use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
@@ -738,7 +738,7 @@ mod tests {
         struct_data[72..104].copy_from_slice(&value.to_be_bytes::<32>());
         struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
         struct_data[136..168].copy_from_slice(&deadline.to_be_bytes::<32>());
-        let struct_hash = keccak256(&struct_data);
+        let struct_hash = keccak256(struct_data);
 
         // Build digest per EIP-191
         let domain = token.domain_separator();
@@ -747,7 +747,7 @@ mod tests {
         digest_data[1] = 0x01;
         digest_data[2..34].copy_from_slice(domain.as_slice());
         digest_data[34..66].copy_from_slice(struct_hash.as_slice());
-        let digest = keccak256(&digest_data);
+        let digest = keccak256(digest_data);
 
         // Sign prehash digest
         let signature = signer.sign_hash_sync(&digest).unwrap();
@@ -812,7 +812,7 @@ mod tests {
         struct_data[72..104].copy_from_slice(&value.to_be_bytes::<32>());
         struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
         struct_data[136..168].copy_from_slice(&deadline.to_be_bytes::<32>());
-        let struct_hash = keccak256(&struct_data);
+        let struct_hash = keccak256(struct_data);
 
         let domain = token.domain_separator();
         let mut digest_data = [0u8; 66];
@@ -820,7 +820,7 @@ mod tests {
         digest_data[1] = 0x01;
         digest_data[2..34].copy_from_slice(domain.as_slice());
         digest_data[34..66].copy_from_slice(struct_hash.as_slice());
-        let digest = keccak256(&digest_data);
+        let digest = keccak256(digest_data);
 
         // Sign then tamper with value (invalidates signature)
         let signature = signer.sign_hash_sync(&digest).unwrap();
