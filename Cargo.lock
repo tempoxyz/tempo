@@ -12056,6 +12056,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-node"
+version = "0.1.0"
+dependencies = [
+ "alloy-eips",
+ "alloy-network",
+ "alloy-rpc-types-engine",
+ "alloy-rpc-types-eth",
+ "eyre",
+ "reth-chainspec",
+ "reth-engine-local",
+ "reth-engine-primitives",
+ "reth-ethereum-consensus",
+ "reth-ethereum-engine-primitives",
+ "reth-ethereum-primitives",
+ "reth-evm",
+ "reth-network",
+ "reth-node-api",
+ "reth-node-builder",
+ "reth-node-ethereum",
+ "reth-payload-primitives",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-rpc",
+ "reth-rpc-api",
+ "reth-rpc-builder",
+ "reth-rpc-eth-api",
+ "reth-rpc-eth-types",
+ "reth-rpc-server-types",
+ "reth-tracing",
+ "reth-transaction-pool",
+ "reth-trie-db",
+]
+
+[[package]]
 name = "tempo-precompiles"
 version = "0.1.0"
 dependencies = [

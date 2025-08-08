@@ -10,6 +10,7 @@ members = [
   "crates/consensus",
   "crates/evm",
   "crates/precompiles",
+  "crates/node",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -109,6 +110,18 @@ reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adf
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-tasks" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-tracing" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-trie-db" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-node-api" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-rpc" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-rpc-api" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-rpc-eth-types" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-rpc-server-types" }
+reth-network = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-network" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-transaction-pool" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-engine-local" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-ethereum-consensus" }
+alloy-network = { version = "1.0.12" }
+alloy-rpc-types-eth = { version = "1.0.12" }
+revm = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "revm", features = ["std"] }
 alloy = { version = "1.0.12", default-features = false }
 alloy-consensus = { version = "1.0.12", features = ["serde-bincode-compat"] }
 alloy-eips = { version = "1.0.12", features = ["serde"] }
