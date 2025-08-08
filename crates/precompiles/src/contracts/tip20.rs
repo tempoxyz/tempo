@@ -4,7 +4,7 @@ use alloy::primitives::{Address, B256, IntoLogData, U256, keccak256};
 
 use crate::{
     contracts::{
-        ITIP20, ITIP403Registry, StorageProvider, TIP403Registry,
+        ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry, TIP4217Registry,
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
         token_id_to_address,
@@ -58,9 +58,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     pub fn decimals(&mut self) -> u8 {
-        self.storage
-            .sload(self.token_address, slots::DECIMALS)
-            .to::<u8>()
+        let currency = self.currency();
+        let mut registry = TIP4217Registry::new(self.storage);
+        registry.get_currency_decimals(ITIP4217Registry::getCurrencyDecimalsCall { currency })
     }
 
     pub fn currency(&mut self) -> String {
@@ -466,7 +466,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         &mut self,
         name: &str,
         symbol: &str,
-        decimals: u8,
         currency: &str,
         admin: &Address,
     ) -> Result<(), TIP20Error> {
@@ -476,8 +475,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.write_string(slots::NAME, name.to_string())?;
         self.write_string(slots::SYMBOL, symbol.to_string())?;
         self.write_string(slots::CURRENCY, currency.to_string())?;
-        self.storage
-            .sstore(self.token_address, slots::DECIMALS, U256::from(decimals));
 
         // Set default values
         self.storage
@@ -678,7 +675,7 @@ mod tests {
         {
             let mut token = TIP20Token::new(token_id, &mut storage);
             // Initialize with admin
-            token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+            token.initialize("Test", "TST", "USD", &admin).unwrap();
 
             // Grant issuer role to admin
             let mut roles = token.get_roles_contract();
@@ -717,7 +714,7 @@ mod tests {
         let token_id = 1;
         {
             let mut token = TIP20Token::new(token_id, &mut storage);
-            token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+            token.initialize("Test", "TST", "USD", &admin).unwrap();
             let mut roles = token.get_roles_contract();
             roles.grant_role_internal(&admin, *ISSUER_ROLE);
 
@@ -757,7 +754,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
         let from = Address::from([1u8; 20]);
         let to = Address::from([2u8; 20]);
         let amount = U256::from(100);

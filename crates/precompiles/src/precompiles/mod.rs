@@ -13,10 +13,12 @@ use reth_evm::{
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
+pub mod tip4217_registry;
 
 use crate::contracts::{
     EvmStorageProvider, TIP20_FACTORY_ADDRESS, TIP20Factory, TIP20Token, TIP403_REGISTRY_ADDRESS,
-    TIP403Registry, address_is_token_address, address_to_token_id_unchecked,
+    TIP403Registry, TIP4217_REGISTRY_ADDRESS, TIP4217Registry, address_is_token_address,
+    address_to_token_id_unchecked,
 };
 
 const METADATA_GAS: u64 = 50;
@@ -40,6 +42,8 @@ pub fn extend_tempo_precompiles<DB: Database, I: Inspector<EthEvmContext<DB>>>(
                 Some(TIP20FactoryPrecompile::create(chain_id))
             } else if *address == TIP403_REGISTRY_ADDRESS {
                 Some(TIP403RegistryPrecompile::create(chain_id))
+            } else if *address == TIP4217_REGISTRY_ADDRESS {
+                Some(TIP4217RegistryPrecompile::create(chain_id))
             } else {
                 None
             }
@@ -78,6 +82,17 @@ impl TIP403RegistryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         DynPrecompile::new(move |input| {
             TIP403Registry::new(&mut EvmStorageProvider::new(input.internals, chain_id))
+                .call(input.data, &input.caller)
+        })
+    }
+}
+
+pub struct TIP4217RegistryPrecompile;
+
+impl TIP4217RegistryPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        DynPrecompile::new(move |input| {
+            TIP4217Registry::new(&mut EvmStorageProvider::new(input.internals, chain_id))
                 .call(input.data, &input.caller)
         })
     }
