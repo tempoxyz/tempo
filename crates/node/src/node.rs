@@ -54,7 +54,7 @@ impl TempoNode {
         EthereumPoolBuilder,
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
-        EthereumExecutorBuilder,
+        TempoExecutorBuilder,
         MalachiteConsensusBuilder,
     >
     where
@@ -73,7 +73,7 @@ impl TempoNode {
         ComponentsBuilder::default()
             .node_types::<Node>()
             .pool(EthereumPoolBuilder::default())
-            .executor(EthereumExecutorBuilder::default())
+            .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
             .consensus(MalachiteConsensusBuilder)
@@ -223,7 +223,7 @@ where
         EthereumPoolBuilder,
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
-        EthereumExecutorBuilder,
+        TempoExecutorBuilder,
         MalachiteConsensusBuilder,
     >;
 
