@@ -61,6 +61,7 @@ mod tests {
     use crate::{
         contracts::{HashMapStorageProvider, types::IRolesAuth},
         precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS},
+        tip20_err,
     };
     use alloy::{primitives::U256, sol_types::SolValue};
     use alloy_primitives::Bytes;
@@ -736,6 +737,6 @@ mod tests {
         let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &non_admin);
-        assert!(result.is_err());
+        crate::precompiles::expect_precompile_error(&result, tip20_err!(PolicyForbids));
     }
 }

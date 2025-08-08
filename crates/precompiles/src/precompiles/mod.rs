@@ -159,3 +159,21 @@ fn mutate_void<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
         )),
     }
 }
+
+#[cfg(test)]
+pub fn expect_precompile_error<E>(result: &PrecompileResult, expected_error: E)
+where
+    E: alloy::sol_types::SolInterface + PartialEq + core::fmt::Debug,
+{
+    match result {
+        Err(PrecompileError::Other(hex_string)) => {
+            let bytes = alloy_primitives::hex::decode(hex_string)
+                .expect("invalid hex string in PrecompileError::Other");
+            let decoded: E = E::abi_decode(&bytes)
+                .expect("failed to decode precompile error as expected interface error");
+            assert_eq!(decoded, expected_error);
+        }
+        Ok(_) => panic!("expected error, got Ok result"),
+        Err(other) => panic!("expected encoded interface error, got: {:?}", other),
+    }
+}
