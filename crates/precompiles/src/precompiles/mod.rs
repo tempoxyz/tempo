@@ -43,7 +43,7 @@ pub fn extend_tempo_precompiles<DB: Database, I: Inspector<EthEvmContext<DB>>>(
             } else if *address == TIP403_REGISTRY_ADDRESS {
                 Some(TIP403RegistryPrecompile::create(chain_id))
             } else if *address == TIP4217_REGISTRY_ADDRESS {
-                Some(TIP4217RegistryPrecompile::create(chain_id))
+                Some(TIP4217RegistryPrecompile::create())
             } else {
                 None
             }
@@ -90,8 +90,8 @@ impl TIP403RegistryPrecompile {
 pub struct TIP4217RegistryPrecompile;
 
 impl TIP4217RegistryPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
-        DynPrecompile::new(move |input| TIP4217Registry::new().call(input.data, &input.caller))
+    pub fn create() -> DynPrecompile {
+        DynPrecompile::new(move |input| TIP4217Registry::default().call(input.data, &input.caller))
     }
 }
 
@@ -132,7 +132,7 @@ fn mutate<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
         Err(e) => Err(PrecompileError::Other(
             E::abi_encode(&e)
                 .iter()
-                .map(|b| format!("{:02x}", b))
+                .map(|b| format!("{b:02x}"))
                 .collect(),
         )),
     }
@@ -154,7 +154,7 @@ fn mutate_void<T: alloy::sol_types::SolCall, E: alloy::sol_types::SolInterface>(
         Err(e) => Err(PrecompileError::Other(
             E::abi_encode(&e)
                 .iter()
-                .map(|b| format!("{:02x}", b))
+                .map(|b| format!("{b:02x}"))
                 .collect(),
         )),
     }

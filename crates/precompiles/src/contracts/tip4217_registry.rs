@@ -1,17 +1,17 @@
-use alloy::primitives::U256;
-
-use crate::contracts::{StorageProvider, TIP4217_REGISTRY_ADDRESS, types::ITIP4217Registry};
+use crate::contracts::types::ITIP4217Registry;
 
 const KNOWN_DECIMALS: &[(&str, u8)] = &[("USD", 6)];
 
 #[derive(Debug)]
 pub struct TIP4217Registry {}
 
-impl TIP4217Registry {
-    pub fn new() -> Self {
+impl Default for TIP4217Registry {
+    fn default() -> Self {
         Self {}
     }
+}
 
+impl TIP4217Registry {
     pub fn get_currency_decimals(&mut self, call: ITIP4217Registry::getCurrencyDecimalsCall) -> u8 {
         // If it's a known currency, return the decimals
         // On perf: linear scan is faster than a hashmap lookup for small sets generally.

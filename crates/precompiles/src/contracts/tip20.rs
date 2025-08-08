@@ -58,9 +58,11 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     pub fn decimals(&mut self) -> u8 {
-        TIP4217Registry::new().get_currency_decimals(ITIP4217Registry::getCurrencyDecimalsCall {
-            currency: self.currency(),
-        })
+        TIP4217Registry::default().get_currency_decimals(
+            ITIP4217Registry::getCurrencyDecimalsCall {
+                currency: self.currency(),
+            },
+        )
     }
 
     pub fn currency(&mut self) -> String {
