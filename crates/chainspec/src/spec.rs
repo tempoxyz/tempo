@@ -9,7 +9,7 @@ use std::sync::{Arc, LazyLock};
 pub struct TempoChainSpecParser;
 
 /// Chains supported by Tempo. First value should be used as the default.
-pub const SUPPORTED_CHAINS: &[&str] = &["adagio"];
+pub const SUPPORTED_CHAINS: &[&str] = &["presto"];
 
 /// Clap value parser for [`ChainSpec`]s.
 ///
@@ -17,7 +17,7 @@ pub const SUPPORTED_CHAINS: &[&str] = &["adagio"];
 /// to a json file, or a json formatted string in-memory. The json needs to be a Genesis struct.
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>, eyre::Error> {
     Ok(match s {
-        "adagio" => ADAGIO.clone(),
+        "presto" => PRESTO.clone(),
         _ => Arc::new(parse_genesis(s)?.into()),
     })
 }
@@ -32,8 +32,8 @@ impl ChainSpecParser for TempoChainSpecParser {
     }
 }
 
-pub static ADAGIO: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
-    let _genesis: Genesis = serde_json::from_str(include_str!("../res/genesis/adagio.json"))
+pub static PRESTO: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
+    let _genesis: Genesis = serde_json::from_str(include_str!("../res/genesis/presto.json"))
         .expect("Can't deserialize Adagio genesis json");
     let _hardforks: ChainHardforks = EthereumHardfork::mainnet().into();
     let mut spec = ChainSpec {

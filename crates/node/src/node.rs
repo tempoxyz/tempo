@@ -1,5 +1,4 @@
-use std::{default::Default, sync::Arc};
-
+use crate::args::TempoArgs;
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
@@ -34,13 +33,21 @@ use reth_rpc_builder::Identity;
 use reth_rpc_eth_api::FromEvmError;
 use reth_rpc_eth_types::EthApiError;
 use reth_trie_db::MerklePatriciaTrie;
+use std::{default::Default, sync::Arc};
 
 /// Type configuration for a regular Ethereum node.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoNode;
+pub struct TempoNode {
+    args: TempoArgs,
+}
 
 impl TempoNode {
+    /// Create new instance of a Tempo node
+    pub fn new(args: TempoArgs) -> Self {
+        Self { args }
+    }
+
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
     pub fn components<Node>() -> ComponentsBuilder<
         Node,
