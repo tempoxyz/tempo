@@ -392,34 +392,13 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // Recover address from signature
         let recovered_addr = {
-            let struct_hash = {
-                // 32 (typehash) + 20 (owner) + 20 (spender) + 32 (value) + 32 (nonce) + 32 (deadline) = 168
-                let mut struct_data = [0u8; 168];
-                // typehash
-                struct_data[0..32].copy_from_slice(PERMIT_TYPEHASH.as_slice());
-                // owner (20 bytes)
-                struct_data[32..52].copy_from_slice(call.owner.as_slice());
-                // spender (20 bytes)
-                struct_data[52..72].copy_from_slice(call.spender.as_slice());
-                // value (32 bytes)
-                struct_data[72..104].copy_from_slice(&call.value.to_be_bytes::<32>());
-                // nonce (32 bytes)
-                struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
-                // deadline (32 bytes)
-                struct_data[136..168]
-                    .copy_from_slice(&U256::from(call.deadline).to_be_bytes::<32>());
-                keccak256(struct_data)
-            };
-
-            let digest = {
-                // 0x19, 0x01, domain_separator (32), struct_hash (32) = 66
-                let mut digest_data = [0u8; 66];
-                digest_data[0] = 0x19;
-                digest_data[1] = 0x01;
-                digest_data[2..34].copy_from_slice(self.domain_separator().as_slice());
-                digest_data[34..66].copy_from_slice(struct_hash.as_slice());
-                keccak256(digest_data)
-            };
+            let digest = self.compute_permit_digest(
+                &call.owner,
+                &call.spender,
+                call.value,
+                nonce,
+                U256::from(call.deadline),
+            );
 
             let v_norm = if call.v >= 27 { call.v - 27 } else { call.v };
             if v_norm > 1 {
@@ -691,6 +670,43 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.storage
             .sstore(self.token_address, slot, U256::from_be_bytes(storage_bytes));
         Ok(())
+    }
+
+    #[inline]
+    fn compute_permit_digest(
+        &mut self,
+        owner: &Address,
+        spender: &Address,
+        value: U256,
+        nonce: U256,
+        deadline: U256,
+    ) -> B256 {
+        // Build EIP-712 struct hash for Permit
+        let struct_hash = {
+            // 32 (typehash) + 20 (owner) + 20 (spender) + 32 (value) + 32 (nonce) + 32 (deadline) = 168
+            let mut struct_data = [0u8; 168];
+            // typehash
+            struct_data[0..32].copy_from_slice(PERMIT_TYPEHASH.as_slice());
+            // owner (20 bytes)
+            struct_data[32..52].copy_from_slice(owner.as_slice());
+            // spender (20 bytes)
+            struct_data[52..72].copy_from_slice(spender.as_slice());
+            // value (32 bytes)
+            struct_data[72..104].copy_from_slice(&value.to_be_bytes::<32>());
+            // nonce (32 bytes)
+            struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
+            // deadline (32 bytes)
+            struct_data[136..168].copy_from_slice(&deadline.to_be_bytes::<32>());
+            keccak256(struct_data)
+        };
+
+        // EIP-191 digest: 0x19 0x01 || domainSeparator || structHash
+        let mut digest_data = [0u8; 66];
+        digest_data[0] = 0x19;
+        digest_data[1] = 0x01;
+        digest_data[2..34].copy_from_slice(self.domain_separator().as_slice());
+        digest_data[34..66].copy_from_slice(struct_hash.as_slice());
+        keccak256(digest_data)
     }
 }
 
