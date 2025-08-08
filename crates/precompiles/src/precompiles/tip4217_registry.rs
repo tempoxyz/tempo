@@ -1,4 +1,4 @@
-use crate::precompiles::{metadata, Precompile};
+use crate::precompiles::{view, Precompile};
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -13,16 +13,10 @@ impl<'a, S: StorageProvider> Precompile for TIP4217Registry<'a, S> {
             .unwrap();
 
         match selector {
-            ITIP4217Registry::getCurrencyDecimalsCall::SELECTOR => {
-                // pure view
-                let call = ITIP4217Registry::getCurrencyDecimalsCall::abi_decode(calldata)
-                    .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
-                let result = self.get_currency_decimals(call);
-                Ok(reth::revm::precompile::PrecompileOutput::new(
-                    super::VIEW_FUNC_GAS,
-                    ITIP4217Registry::getCurrencyDecimalsCall::abi_encode_returns(&result).into(),
-                ))
-            }
+            ITIP4217Registry::getCurrencyDecimalsCall::SELECTOR => view::<ITIP4217Registry::getCurrencyDecimalsCall>(
+                calldata,
+                |call| self.get_currency_decimals(call),
+            ),
             _ => Err(PrecompileError::Other("Unknown function selector".to_string())),
         }
     }
