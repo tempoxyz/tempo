@@ -92,7 +92,7 @@ mod tests {
         let initial_counter = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(initial_counter, U256::ZERO);
 
-        // Create first token
+        // Create first token (USD supported)
         let create_call = ITIP20Factory::createTokenCall {
             name: "Token 1".to_string(),
             symbol: "TOK1".to_string(),
@@ -110,7 +110,7 @@ mod tests {
         let new_counter = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(new_counter, U256::from(1));
 
-        // Create second token
+        // Create second token with unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Token 2".to_string(),
             symbol: "TOK2".to_string(),
@@ -119,9 +119,8 @@ mod tests {
             admin: sender,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
-        let token_id = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id, U256::from(1));
+        let result = factory.call(&Bytes::from(calldata), &sender);
+        assert!(result.is_err());
 
         // Check counter increased again
         let counter_call = ITIP20Factory::tokenIdCounterCall {};
@@ -151,7 +150,7 @@ mod tests {
         let token_id1 = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(token_id1, U256::ZERO);
 
-        // Create token with low decimal places
+        // Create token with unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Low Precision Token".to_string(),
             symbol: "LPT".to_string(),
@@ -160,11 +159,10 @@ mod tests {
             admin: admin2,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &admin2).unwrap();
-        let token_id2 = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id2, U256::from(1));
+        let result = factory.call(&Bytes::from(calldata), &admin2);
+        assert!(result.is_err());
 
-        // Create token with different currency
+        // Create token with different unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Japanese Yen Token".to_string(),
             symbol: "JYT".to_string(),
@@ -173,9 +171,8 @@ mod tests {
             admin: admin1,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &admin1).unwrap();
-        let token_id3 = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id3, U256::from(2));
+        let result = factory.call(&Bytes::from(calldata), &admin1);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -184,7 +181,7 @@ mod tests {
         let mut factory = TIP20Factory::new(&mut factory_storage);
         let sender = Address::from([1u8; 20]);
 
-        // Create token with empty currency
+        // Create token with empty currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "No Currency Token".to_string(),
             symbol: "NCT".to_string(),
@@ -193,10 +190,8 @@ mod tests {
             admin: sender,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
-        let token_id = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id, U256::ZERO);
+        let result = factory.call(&Bytes::from(calldata), &sender);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -244,7 +239,7 @@ mod tests {
         let result = factory.call(&Bytes::from(calldata), &caller1).unwrap();
         let token_id1 = U256::abi_decode(&result.bytes).unwrap();
 
-        // Second caller creates a token
+        // Second caller creates a token with unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Caller2 Token".to_string(),
             symbol: "C2T".to_string(),
@@ -253,10 +248,10 @@ mod tests {
             admin: caller2,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &caller2).unwrap();
-        let token_id2 = U256::abi_decode(&result.bytes).unwrap();
+        let result = factory.call(&Bytes::from(calldata), &caller2);
+        assert!(result.is_err());
 
-        // Third caller creates a token with different admin
+        // Third caller creates a token with different admin and unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Caller3 Token".to_string(),
             symbol: "C3T".to_string(),
@@ -265,12 +260,10 @@ mod tests {
             admin: caller1, // Different admin than caller
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &caller3).unwrap();
-        let token_id3 = U256::abi_decode(&result.bytes).unwrap();
+        let result = factory.call(&Bytes::from(calldata), &caller3);
+        assert!(result.is_err());
 
-        // Verify all tokens have sequential IDs
+        // Verify only first token was created
         assert_eq!(token_id1, U256::ZERO);
-        assert_eq!(token_id2, U256::from(1));
-        assert_eq!(token_id3, U256::from(2));
     }
 }

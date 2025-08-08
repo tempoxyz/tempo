@@ -499,7 +499,7 @@ mod tests {
         let result = token.call(&Bytes::from(calldata), &caller).unwrap();
         assert_eq!(result.gas_used, METADATA_GAS);
         let decimals = ITIP20::decimalsCall::abi_decode_returns(&result.bytes).unwrap();
-        assert_eq!(decimals, 18);
+        assert_eq!(decimals, 6);
 
         // Test currency()
         let currency_call = ITIP20::currencyCall {};

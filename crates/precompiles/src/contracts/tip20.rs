@@ -20,7 +20,6 @@ mod slots {
     // Variables
     pub const NAME: U256 = to_u256(0);
     pub const SYMBOL: U256 = to_u256(1);
-    pub const DECIMALS: U256 = to_u256(2);
     pub const TOTAL_SUPPLY: U256 = to_u256(3);
     pub const CURRENCY: U256 = to_u256(4);
     pub const DOMAIN_SEPARATOR: U256 = to_u256(5);
