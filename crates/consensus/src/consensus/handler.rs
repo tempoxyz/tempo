@@ -4,6 +4,7 @@ use crate::{app::State, context::MalachiteContext};
 use eyre::eyre;
 use malachitebft_app_channel::{AppMsg, Channels, ConsensusMsg, NetworkMsg};
 use malachitebft_core_types::{Height as _, Round, Validity};
+use tempo_telemetry_util::error_field;
 use tracing::{error, info};
 
 /// Run the consensus message handler loop
@@ -103,7 +104,7 @@ pub async fn run_consensus_handler(
                                 }
                             }
                             Err(e) => {
-                                error!(%e, "Failed to build value");
+                                error!(error = error_field(&e), "Failed to build value");
                                 // The channel will be closed on drop
                             }
                         }
@@ -229,7 +230,7 @@ pub async fn run_consensus_handler(
                                 .store_synced_proposal(proposed_value.clone(), block)
                                 .await
                             {
-                                error!(%e, "Failed to store synced proposal");
+                                error!(error = error_field(&e), "Failed to store synced proposal");
                             }
 
                             if reply.send(Some(proposed_value)).is_err() {
@@ -243,7 +244,7 @@ pub async fn run_consensus_handler(
                             }
                         }
                         Err(e) => {
-                            error!(%e, "Failed to validate synced value");
+                            error!(error = error_field(&e), "Failed to validate synced value");
                             if reply.send(None).is_err() {
                                 error!("Failed to send ProcessSyncedValue reply");
                             }
@@ -329,7 +330,10 @@ pub async fn run_consensus_handler(
                                 );
                             }
                             Err(e) => {
-                                error!("Failed to retrieve block for restreaming: {}", e);
+                                error!(
+                                    error = error_field(&e),
+                                    "Failed to retrieve block for restreaming",
+                                );
                             }
                         }
                     }
@@ -337,7 +341,10 @@ pub async fn run_consensus_handler(
                         info!("Proposal not found for restreaming");
                     }
                     Err(e) => {
-                        error!(%e, "Failed to get proposal for restreaming");
+                        error!(
+                            error = error_field(&e),
+                            "Failed to get proposal for restreaming"
+                        );
                     }
                 }
             }

@@ -11905,6 +11905,7 @@ dependencies = [
  "sha3",
  "tempfile",
  "tempo-evm",
+ "tempo-telemetry-util",
  "thiserror 2.0.12",
  "tokio",
  "toml",
