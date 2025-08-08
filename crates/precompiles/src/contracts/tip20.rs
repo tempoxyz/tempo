@@ -1,6 +1,8 @@
 use std::sync::LazyLock;
 
 use alloy::primitives::{Address, B256, IntoLogData, U256, keccak256};
+use alloy::primitives::Signature as EthSignature;
+use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
 
 use crate::{
     contracts::{
@@ -381,11 +383,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             return Err(tip20_err!(Expired));
         }
 
-        // Get and increment nonce
+        // Get current nonce (increment after successful verification)
         let nonce_slot = mapping_slot(call.owner, slots::NONCES);
         let nonce = self.storage.sload(self.token_address, nonce_slot);
-        self.storage
-            .sstore(self.token_address, nonce_slot, nonce + U256::from(1));
 
         // Verify signature
         let domain_separator = self.domain_separator();
@@ -407,10 +407,25 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         digest_data.push(0x01);
         digest_data.extend_from_slice(domain_separator.as_slice());
         digest_data.extend_from_slice(struct_hash.as_slice());
-        let _digest = keccak256(&digest_data);
+        let digest = keccak256(&digest_data);
 
-        // TODO: Implement ecrecover verification
-        // For now, we'll skip signature verification
+        // Build Alloy signature and recover signer using alloy-consensus helper
+        let v_norm = if call.v >= 27 { call.v - 27 } else { call.v };
+        if v_norm > 1 {
+            return Err(tip20_err!(InvalidSignature));
+        }
+        let odd_y_parity = v_norm == 1;
+        let sig = EthSignature::from_scalars_and_parity(call.r, call.s, odd_y_parity);
+        let recovered_addr = eth_secp256k1::recover_signer(&sig, digest)
+            .map_err(|_| tip20_err!(InvalidSignature))?;
+
+        if recovered_addr != call.owner {
+            return Err(tip20_err!(InvalidSignature));
+        }
+
+        // Increment nonce after successful verification
+        self.storage
+            .sstore(self.token_address, nonce_slot, nonce + U256::from(1));
 
         self.set_allowance(&call.owner, &call.spender, call.value);
 
