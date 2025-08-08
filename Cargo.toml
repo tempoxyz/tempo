@@ -7,11 +7,11 @@ rust-version = "1.88"
 members = [
   "bin/tempo",
   "bin/tempo-bench/crescendo",
-  "crates/consensus",
-  "crates/evm",
-  "crates/precompiles",
-  "crates/node",
   "crates/chainspec",
+  "crates/evm",
+  "crates/node",
+  "crates/precompiles",
+  "crates/reth-malachite",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -72,9 +72,11 @@ lto = "fat"
 codegen-units = 1
 
 [workspace.dependencies]
-reth-malachite = { path = "crates/reth-malachite" }
+tempo-node = { path = "crates/node" }
+tempo-chainspec = { path = "crates/chainspec" }
 tempo-evm = { path = "crates/evm" }
 tempo-precompiles = { path = "crates/precompiles" }
+reth-malachite = { path = "crates/reth-malachite" }
 reth = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-chainspec" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-cli" }

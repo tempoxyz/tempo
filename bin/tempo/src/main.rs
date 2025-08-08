@@ -24,6 +24,7 @@ use reth_malachite::{
 };
 use reth_node_builder::NodeHandle;
 use std::{fs, sync::Arc};
+use tempo_chainspec::spec::TempoChainSpecParser;
 use tracing::info;
 
 fn main() {
@@ -35,7 +36,7 @@ fn main() {
     }
 
     if let Err(err) =
-        Cli::<EthereumChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
+        Cli::<TempoChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
             info!(target: "reth::cli", "Launching node");
             let NodeHandle {
                 node,
