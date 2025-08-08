@@ -12,22 +12,19 @@
 //!
 //! Configuration can be provided via command-line arguments or configuration files.
 
+use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use clap::Parser;
-use reth::{
-    args::RessArgs,
-    chainspec::{EthChainSpec, EthereumChainSpecParser},
-    ress::install_ress_subprotocol,
-};
+use reth::{chainspec::EthChainSpec, ress::install_ress_subprotocol};
+use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_malachite::{
     app::{Config, Genesis, State, ValidatorInfo},
-    cli::{Cli, MalachiteArgs, MalachiteChainSpecParser},
-    consensus::{EngineConfig, MalachiteNode, start_consensus_engine},
+    cli::{Cli, MalachiteArgs},
+    consensus::{EngineConfig, start_consensus_engine},
     context::MalachiteContext,
-    store::tables::Tables,
     types::Address,
 };
 use reth_node_builder::{
-    FullNode, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeHandle, rpc::RethRpcAddOns,
+    FullNode, FullNodeComponents, FullNodeTypes, NodeHandle, rpc::RethRpcAddOns,
 };
 use reth_provider::DatabaseProviderFactory;
 use std::{fs, sync::Arc};
@@ -271,9 +268,10 @@ async fn spawn_malachite<N, A>(
     args: MalachiteArgs,
 ) -> eyre::Result<reth_malachite::consensus::AppHandle>
 where
-    N: FullNodeComponents<Types = EthereumNode>,
+    N: FullNodeComponents,
+    N::Types: FullNodeTypes,
     A: RethRpcAddOns<N>,
-    <<N as FullNodeTypes>::Provider as DatabaseProviderFactory>::ProviderRW: Send,
+    <<N::Types as FullNodeTypes>::Provider as DatabaseProviderFactory>::ProviderRW: Send,
 {
     // Create the context
     let ctx = MalachiteContext::default();
