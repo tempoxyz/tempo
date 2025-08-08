@@ -1,20 +1,33 @@
 use std::{default::Default, marker::PhantomData, sync::Arc, time::SystemTime};
 
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
-use reth_chainspec::{ChainSpec, EthereumHardforks, Hardforks};
+use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
+use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadBuilderAttributes};
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::eth::spec::EthExecutorSpec;
+use reth_network::{NetworkHandle, types::BasicNetworkPrimitives};
 use reth_node_api::{
-    EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes, PayloadTypes,
+    AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
+    PayloadTypes,
 };
 use reth_node_builder::{
-    components::{BasicPayloadServiceBuilder, ComponentsBuilder},
-    rpc::{BasicEngineApiBuilder, BasicEngineValidatorBuilder, EthApiBuilder, RpcAddOns},
+    BuilderContext,
+    components::{
+        BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
+    },
+    rpc::{
+        BasicEngineApiBuilder, BasicEngineValidatorBuilder, EthApiBuilder, PayloadValidatorBuilder,
+        RpcAddOns,
+    },
 };
-use reth_node_ethereum::{EthEngineTypes, EthereumEthApiBuilder, EthereumPayloadBuilder};
+use reth_node_ethereum::{
+    EthEngineTypes, EthEvmConfig, EthereumEngineValidator, EthereumEthApiBuilder,
+    EthereumPayloadBuilder,
+};
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
+use reth_tracing::tracing::info;
 use reth_trie_db::MerklePatriciaTrie;
 
 /// Type configuration for a regular Ethereum node.
@@ -23,14 +36,14 @@ use reth_trie_db::MerklePatriciaTrie;
 pub struct TempoNode;
 
 impl TempoNode {
-    /// Returns a [`ComponentsBuilder`] configured for a regular Ethereum node.
+    /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
     pub fn components<Node>() -> ComponentsBuilder<
         Node,
         EthereumPoolBuilder,
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
         EthereumExecutorBuilder,
-        EthereumConsensusBuilder,
+        TempoConsensusBuilder,
     >
     where
         Node: FullNodeTypes<
@@ -51,7 +64,7 @@ impl TempoNode {
             .executor(EthereumExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
-            .consensus(EthereumConsensusBuilder::default())
+            .consensus(TempoConsensusBuilder::default())
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
@@ -289,9 +302,9 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for EthereumNode {
 /// A regular ethereum evm and executor builder.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct EthereumExecutorBuilder;
+pub struct TempoExecutorBuilder;
 
-impl<Types, Node> ExecutorBuilder<Node> for EthereumExecutorBuilder
+impl<Types, Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
     Types: NodeTypes<
             ChainSpec: Hardforks + EthExecutorSpec + EthereumHardforks,
@@ -302,9 +315,12 @@ where
     type EVM = EthEvmConfig<Types::ChainSpec>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = EthEvmConfig::new(ctx.chain_spec())
-            .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
-        Ok(evm_config)
+        // TODO: build tempo executor builder
+        todo!();
+
+        // let evm_config = EthEvmConfig::new(ctx.chain_spec())
+        //     .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
+        // Ok(evm_config)
     }
 }
 
@@ -415,11 +431,11 @@ where
 
 /// A basic ethereum consensus builder.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct EthereumConsensusBuilder {
+pub struct TempoConsensusBuilder {
     // TODO add closure to modify consensus
 }
 
-impl<Node> ConsensusBuilder<Node> for EthereumConsensusBuilder
+impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
 where
     Node: FullNodeTypes<
         Types: NodeTypes<ChainSpec: EthChainSpec + EthereumHardforks, Primitives = EthPrimitives>,
@@ -435,14 +451,14 @@ where
 /// Builder for [`EthereumEngineValidator`].
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct EthereumEngineValidatorBuilder;
+pub struct TempoEngineValidatorBuilder;
 
-impl<Node, Types> PayloadValidatorBuilder<Node> for EthereumEngineValidatorBuilder
+impl<Node, Types> PayloadValidatorBuilder<Node> for TempoEngineValidatorBuilder
 where
     Types: NodeTypes<
             ChainSpec: Hardforks + EthereumHardforks + Clone + 'static,
             Payload: EngineTypes<ExecutionData = ExecutionData>
-                         + PayloadTypes<PayloadAttributes = EthPayloadAttributes>,
+                         + PayloadTypes<PayloadAttributes = PayloadAttributes>,
             Primitives = EthPrimitives,
         >,
     Node: FullNodeComponents<Types = Types>,
