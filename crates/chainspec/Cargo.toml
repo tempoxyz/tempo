@@ -1,0 +1,14 @@
+[package]
+name = "tempo-chainspec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "TODO:"
+
+# [lints]
+# workspace = true
+
+[dependencies]
+reth-cli.workspace = true
+reth-chainspec.workspace = true
+eyre.workspace = true

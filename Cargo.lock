@@ -11914,6 +11914,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-chainspec"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "reth-chainspec",
+ "reth-cli",
+]
+
+[[package]]
 name = "tempo-consensus"
 version = "0.1.0"
 dependencies = [

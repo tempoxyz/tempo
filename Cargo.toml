@@ -11,6 +11,7 @@ members = [
   "crates/evm",
   "crates/precompiles",
   "crates/node",
+  "crates/chainspec",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -121,7 +122,9 @@ reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "4db6ad
 reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-ethereum-consensus" }
 alloy-network = { version = "1.0.12" }
 alloy-rpc-types-eth = { version = "1.0.12" }
-revm = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "revm", features = ["std"] }
+revm = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "revm", features = [
+  "std",
+] }
 alloy = { version = "1.0.12", default-features = false }
 alloy-consensus = { version = "1.0.12", features = ["serde-bincode-compat"] }
 alloy-eips = { version = "1.0.12", features = ["serde"] }
