@@ -25,7 +25,7 @@ use reth_malachite::{
 use reth_node_builder::NodeHandle;
 use std::{fs, sync::Arc};
 use tempo_chainspec::spec::TempoChainSpecParser;
-use tempo_node::node::TempoNode;
+use tempo_node::{args::TempoArgs, node::TempoNode};
 use tracing::info;
 
 fn main() {
@@ -37,7 +37,7 @@ fn main() {
     }
 
     if let Err(err) =
-        Cli::<TempoChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
+        Cli::<TempoChainSpecParser, TempoArgs>::parse().run(async move |builder, tempo_args| {
             info!(target: "reth::cli", "Launching node");
             let NodeHandle {
                 node,
@@ -48,9 +48,9 @@ fn main() {
                 .await?;
 
             // Install ress subprotocol.
-            if ress_args.enabled {
+            if tempo_args.ress_args.enabled {
                 install_ress_subprotocol(
-                    ress_args,
+                    tempo_args.ress_args,
                     node.provider,
                     node.evm_config,
                     node.network,
@@ -72,6 +72,9 @@ fn main() {
 //
 //     Cli::<MalachiteChainSpecParser, MalachiteArgs>::parse().run(
 //         |builder, args: MalachiteArgs| async move {
+//
+//         // NOTE: something context here
+//
 //             // Create the context
 //             let ctx = MalachiteContext::default();
 //
@@ -83,6 +86,9 @@ fn main() {
 //                 Config::new()
 //             };
 //
+//
+//              // NOTE: this is doing something with genesis or building some new validator info?
+//
 //             // Load genesis from file if provided, otherwise use default
 //             let mut genesis = if args.genesis.is_some() && args.genesis_file().exists() {
 //                 tracing::info!("Loading genesis from: {:?}", args.genesis_file());
@@ -93,6 +99,8 @@ fn main() {
 //                 let validator_info = ValidatorInfo::new(validator_address, 1000, vec![0; 32]);
 //                 Genesis::new(args.chain_id()).with_validators(vec![validator_info])
 //             };
+//
+//              // NOTE: this is probably just going to be part of the consensus builder
 //
 //             // Load validator key to derive node address if provided
 //             let (address, _validator_pubkey, validator_privkey) = if args.validator_key.is_some()
@@ -112,6 +120,11 @@ fn main() {
 //                 tracing::warn!("No validator key provided, node will run in non-validator mode");
 //                 (Address::new([0; 20]), None, None)
 //             };
+//
+//      NOTE:: this also creating some table for consensus. again probably part of the consensus
+//      builder
+//
+//
 //             // Launch the Reth node first to get the engine handle
 //             let NodeHandle {
 //                 node,
@@ -130,6 +143,9 @@ fn main() {
 //                 })
 //                 .launch()
 //                 .await?;
+//
+//              NOTE: something about getting all the handles
+//
 //
 //             // Get the beacon engine handle
 //             let app_handle = node.add_ons_handle.beacon_engine_handle.clone();
@@ -190,6 +206,10 @@ fn main() {
 //             let config_file_path = args.config_file();
 //             tracing::info!("Checking for Malachite config at: {:?}", config_file_path);
 //
+//
+//
+//              // NOTE: something about engine config
+//
 //             let engine_config = if config_file_path.exists() {
 //                 tracing::info!("Loading Malachite config from: {:?}", config_file_path);
 //                 // Load from config file
@@ -210,8 +230,13 @@ fn main() {
 //                 home_dir
 //             );
 //
+//
+//              // NOTE: this shoudl be a part of the consensus builder
+//
 //             // Start the Malachite consensus engine
 //             let app_handle = start_consensus_engine(state, engine_config, home_dir).await?;
+//
+//              // NOTE: now waiting for everything
 //
 //             // Wait for the node to exit
 //             tokio::select! {

@@ -12,6 +12,7 @@ reth-ethereum-engine-primitives.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true
+reth-node-core.workspace = true
 reth-tracing.workspace = true
 reth-provider.workspace = true
 reth-transaction-pool.workspace = true
@@ -36,3 +37,4 @@ alloy-network.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 eyre.workspace = true
+clap.workspace = true
