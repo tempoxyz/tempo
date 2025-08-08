@@ -9,7 +9,9 @@ members = [
   "bin/tempo-bench/crescendo",
   "crates/consensus",
   "crates/evm",
-  "crates/precompiles"
+  "crates/precompiles",
+  "crates/consensus",
+  "crates/telemetry-util"
 ]
 
 # Resolver 3 is available with edition 2024
@@ -73,6 +75,8 @@ codegen-units = 1
 tempo-consensus = { path = "crates/consensus" }
 tempo-evm = { path = "crates/evm" }
 tempo-precompiles = { path = "crates/precompiles" }
+tempo-telemetry-util = { path = "crates/telemetry-util" }
+
 reth = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-chainspec" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-cli" }
