@@ -42,10 +42,9 @@ use malachitebft_core_types::{
 use rand::{SeedableRng, rngs::StdRng};
 use reth_engine_primitives::BeaconConsensusEngineHandle;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_builder::{FullNodeTypes, NodeTypes, PayloadTypes};
-use reth_node_ethereum::EthereumNode;
+use reth_node_builder::{NodeTypes, PayloadTypes};
 use reth_payload_builder::{PayloadBuilderHandle, PayloadStore};
-use reth_payload_primitives::{BuiltPayload, EngineApiMessageVersion, PayloadKind};
+use reth_payload_primitives::{EngineApiMessageVersion, PayloadKind};
 use reth_provider::DatabaseProviderFactory;
 use serde::{Deserialize, Serialize};
 use std::{

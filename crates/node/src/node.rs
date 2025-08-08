@@ -8,7 +8,7 @@ use reth_evm::{
     ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes, eth::spec::EthExecutorSpec,
     revm::context::TxEnv,
 };
-use reth_malachite::{MalachiteConsensus, MalachiteConsensusBuilder};
+use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
     AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -16,7 +16,7 @@ use reth_node_api::{
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
     components::{
-        BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
+        BasicPayloadServiceBuilder, ComponentsBuilder, ExecutorBuilder,
     },
     rpc::{
         BasicEngineApiBuilder, BasicEngineValidatorBuilder, EngineApiBuilder, EngineValidatorAddOn,
@@ -25,7 +25,7 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::{
     EthEngineTypes, EthEvmConfig, EthereumEngineValidator, EthereumEngineValidatorBuilder,
-    EthereumEthApiBuilder, EthereumExecutorBuilder, EthereumNetworkBuilder, EthereumPayloadBuilder,
+    EthereumEthApiBuilder, EthereumNetworkBuilder, EthereumPayloadBuilder,
     EthereumPoolBuilder,
 };
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
