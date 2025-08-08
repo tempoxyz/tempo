@@ -34,6 +34,7 @@ use reth_rpc_eth_api::FromEvmError;
 use reth_rpc_eth_types::EthApiError;
 use reth_trie_db::MerklePatriciaTrie;
 use std::{default::Default, sync::Arc};
+use tempo_evm::TempoEvmFactory;
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
@@ -266,12 +267,11 @@ where
         >,
     Node: FullNodeTypes<Types = Types>,
 {
-    type EVM = EthEvmConfig<Types::ChainSpec>;
+    type EVM = EthEvmConfig<Types::ChainSpec, TempoEvmFactory>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        // TODO: update to use tmepo precompiles
-        let evm_config = EthEvmConfig::new(ctx.chain_spec())
-            .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
+        let evm_config =
+            EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), TempoEvmFactory::default());
         Ok(evm_config)
     }
 }
