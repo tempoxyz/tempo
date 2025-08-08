@@ -161,7 +161,7 @@ fn mutate_void<T: SolCall, E: SolInterface>(
 #[cfg(test)]
 pub fn expect_precompile_error<E>(result: &PrecompileResult, expected_error: E)
 where
-    E: SolInterface + PartialEq + Debug,
+    E: SolInterface + PartialEq + std::fmt::Debug,
 {
     match result {
         Err(PrecompileError::Other(hex_string)) => {
