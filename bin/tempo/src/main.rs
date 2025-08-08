@@ -15,7 +15,7 @@
 use clap::Parser;
 use reth::{args::RessArgs, chainspec::EthereumChainSpecParser};
 use reth_malachite::{
-    app::{Config, Genesis, State, ValidatorInfo, node::TempoNode},
+    app::{Config, Genesis, State, ValidatorInfo},
     cli::{Cli, MalachiteArgs, MalachiteChainSpecParser},
     consensus::{EngineConfig, start_consensus_engine},
     context::MalachiteContext,
@@ -25,6 +25,7 @@ use reth_malachite::{
 use reth_node_builder::NodeHandle;
 use std::{fs, sync::Arc};
 use tempo_chainspec::spec::TempoChainSpecParser;
+use tempo_node::node::TempoNode;
 use tracing::info;
 
 fn main() {

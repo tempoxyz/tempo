@@ -10,6 +10,7 @@ default-run = "tempo"
 # workspace = true
 
 [dependencies]
+tempo-node.workspace = true
 tempo-chainspec.workspace = true
 reth-malachite.workspace = true
 reth.workspace = true

@@ -11908,6 +11908,7 @@ dependencies = [
  "sha3",
  "tempfile",
  "tempo-chainspec",
+ "tempo-node",
  "thiserror 2.0.12",
  "tokio",
  "toml",
