@@ -172,6 +172,6 @@ where
             assert_eq!(decoded, expected_error);
         }
         Ok(_) => panic!("expected error, got Ok result"),
-        Err(other) => panic!("expected encoded interface error, got: {:?}", other),
+        Err(other) => panic!("expected encoded interface error, got: {other:?}"),
     }
 }
