@@ -562,7 +562,7 @@ mod tests {
         let result = token.call(&Bytes::from(calldata), &admin);
 
         // Should fail due to supply cap
-        assert!(result.is_err());
+        expect_precompile_error(&result, tip20_err!(SupplyCapExceeded));
     }
 
     #[test]
@@ -617,7 +617,7 @@ mod tests {
         };
         let calldata = mint_call.abi_encode();
         let result = token.call(&Bytes::from(calldata.clone()), &unauthorized);
-        assert!(result.is_err());
+        expect_precompile_error(&result, tip20_err!(PolicyForbids));
 
         // Test authorized mint (should succeed)
         let result = token.call(&Bytes::from(calldata), &user1).unwrap();
