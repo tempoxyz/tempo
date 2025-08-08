@@ -13,7 +13,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", 18, "USD", &admin)
+            .initialize("TestToken", "T", "USD", &admin)
             .unwrap();
 
         b.iter(|| {
@@ -26,7 +26,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", 18, "USD", &admin)
+            .initialize("TestToken", "T", "USD", &admin)
             .unwrap();
 
         b.iter(|| {
@@ -39,7 +39,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", 18, "USD", &admin)
+            .initialize("TestToken", "T", "USD", &admin)
             .unwrap();
 
         b.iter(|| {
@@ -52,7 +52,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", 18, "USD", &admin)
+            .initialize("TestToken", "T", "USD", &admin)
             .unwrap();
 
         b.iter(|| {
@@ -66,7 +66,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", 18, "USD", &admin)
+            .initialize("TestToken", "T", "USD", &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
