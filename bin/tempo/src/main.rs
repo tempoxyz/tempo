@@ -43,7 +43,7 @@ fn main() {
                 node,
                 node_exit_future,
             } = builder
-                .node(TempoNode::default())
+                .node(TempoNode::new(tempo_args.clone()))
                 .launch_with_debug_capabilities()
                 .await?;
 
