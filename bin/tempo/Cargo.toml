@@ -10,7 +10,7 @@ default-run = "tempo"
 # workspace = true
 
 [dependencies]
-tempo-consensus.workspace = true
+reth-malachite.workspace = true
 reth.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true

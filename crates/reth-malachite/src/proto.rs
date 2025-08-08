@@ -2,4 +2,4 @@
 
 #![allow(missing_docs)]
 
-include!(concat!(env!("OUT_DIR"), "/tempo.rs"));
+include!(concat!(env!("OUT_DIR"), "/reth_malachite.rs"));
