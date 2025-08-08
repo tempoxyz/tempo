@@ -2,8 +2,7 @@ use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
-use alloy_primitives::{Bytes, hex};
-use core::fmt::Debug;
+use alloy_primitives::Bytes;
 use reth::revm::{
     Inspector,
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
