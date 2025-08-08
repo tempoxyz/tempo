@@ -60,7 +60,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
 mod tests {
     use crate::{
         contracts::{HashMapStorageProvider, types::IRolesAuth},
-        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS},
+        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
         tip20_err,
     };
     use alloy::{primitives::U256, sol_types::SolValue};
@@ -737,6 +737,6 @@ mod tests {
         let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &non_admin);
-        crate::precompiles::expect_precompile_error(&result, tip20_err!(PolicyForbids));
+        expect_precompile_error(&result, tip20_err!(PolicyForbids));
     }
 }
