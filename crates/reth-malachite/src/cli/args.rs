@@ -8,7 +8,7 @@ use clap::Args;
 use std::path::PathBuf;
 
 /// Malachite-specific CLI arguments
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Debug, Clone, Default, Args, PartialEq, Eq)]
 #[command(next_help_heading = "Malachite")]
 pub struct MalachiteArgs {
     /// Path to Malachite home directory containing config and data

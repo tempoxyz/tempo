@@ -46,6 +46,7 @@ use reth_node_builder::{FullNodeTypes, NodeTypes, PayloadTypes};
 use reth_node_ethereum::EthereumNode;
 use reth_payload_builder::{PayloadBuilderHandle, PayloadStore};
 use reth_payload_primitives::{BuiltPayload, EngineApiMessageVersion, PayloadKind};
+use reth_provider::DatabaseProviderFactory;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -137,7 +138,7 @@ where
 /// - **State Management**: `current_height()`, `current_round()`, `get_validator_set()`
 /// - **Storage Access**: `store_synced_proposal()`, `get_proposal_for_restreaming()`
 /// - **Peer Management**: `add_peer()`, `remove_peer()`, `get_peers()`
-pub struct State<N: NodeTypes = EthereumNode> {
+pub struct State<N: NodeTypes> {
     // Immutable fields (no synchronization needed)
     pub ctx: MalachiteContext,
     pub config: Config,
@@ -216,10 +217,9 @@ where
         signing_provider: Option<Ed25519Provider>,
     ) -> Result<Self>
     where
-        N: FullNodeTypes,
-        P: reth_provider::DatabaseProviderFactory + Clone + Unpin + Send + Sync + 'static,
-        <P as reth_provider::DatabaseProviderFactory>::Provider: Send + Sync,
-        <P as reth_provider::DatabaseProviderFactory>::ProviderRW: Send,
+        P: DatabaseProviderFactory + Clone + Unpin + Send + Sync + 'static,
+        <P as DatabaseProviderFactory>::Provider: Send + Sync,
+        <P as DatabaseProviderFactory>::ProviderRW: Send,
     {
         // Create and verify the store
         let store = Store::new(provider);

@@ -53,6 +53,9 @@ pub mod node;
 use crate::app::State;
 use eyre::Result;
 use malachitebft_app::node::Node;
+use alloy_rpc_types_engine::ExecutionData;
+use reth_ethereum_engine_primitives::EthBuiltPayload;
+use reth_node_builder::{NodeTypes, PayloadTypes};
 use std::{net::SocketAddr, path::PathBuf};
 use tracing::info;
 
@@ -73,11 +76,18 @@ pub use node::{ConsensusHandle, MalachiteNode};
 ///
 /// # Returns
 /// A handle to the running consensus engine with app handler task
-pub async fn start_consensus_engine(
-    app_state: State,
+pub async fn start_consensus_engine<N: NodeTypes>(
+    app_state: State<N>,
     config: EngineConfig,
     home_dir: PathBuf,
-) -> Result<AppHandle> {
+) -> Result<AppHandle>
+where
+    N::Payload: PayloadTypes<
+        PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+        ExecutionData = ExecutionData,
+        BuiltPayload = EthBuiltPayload,
+    >,
+{
     info!(
         "Starting Malachite consensus engine for chain {}",
         config.network.chain_id

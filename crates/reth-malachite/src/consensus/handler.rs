@@ -4,16 +4,26 @@ use crate::{app::State, context::MalachiteContext};
 use eyre::eyre;
 use malachitebft_app_channel::{AppMsg, Channels, ConsensusMsg, NetworkMsg};
 use malachitebft_core_types::{Height as _, Round, Validity};
+use alloy_rpc_types_engine::ExecutionData;
+use reth_ethereum_engine_primitives::EthBuiltPayload;
+use reth_node_builder::{NodeTypes, PayloadTypes};
 use tracing::{error, info};
 
 /// Run the consensus message handler loop
 ///
 /// This function receives messages from the Malachite consensus engine and
 /// delegates them to the appropriate methods on the application state.
-pub async fn run_consensus_handler(
-    state: &State,
+pub async fn run_consensus_handler<N: NodeTypes>(
+    state: &State<N>,
     channels: &mut Channels<MalachiteContext>,
-) -> eyre::Result<()> {
+) -> eyre::Result<()>
+where
+    N::Payload: PayloadTypes<
+        PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+        ExecutionData = ExecutionData,
+        BuiltPayload = EthBuiltPayload,
+    >,
+{
     info!("Starting consensus handler loop");
     while let Some(msg) = channels.consensus.recv().await {
         info!(

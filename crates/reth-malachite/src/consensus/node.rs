@@ -7,6 +7,7 @@ use crate::{
     provider::{Ed25519Provider, PrivateKey, PublicKey},
     types::Address,
 };
+use alloy_rpc_types_engine::ExecutionData;
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use malachitebft_app::{
@@ -14,6 +15,8 @@ use malachitebft_app::{
     node::{EngineHandle, Node, NodeHandle},
     types::Keypair,
 };
+use reth_ethereum_engine_primitives::EthBuiltPayload;
+use reth_node_builder::{NodeTypes, PayloadTypes};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -41,7 +44,14 @@ pub struct TendermintPrivKey {
 
 /// Implementation of Malachite's Node trait for reth-malachite
 #[derive(Clone)]
-pub struct MalachiteNode {
+pub struct MalachiteNode<N: NodeTypes>
+where
+    N::Payload: PayloadTypes<
+            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+            ExecutionData = ExecutionData,
+            BuiltPayload = EthBuiltPayload,
+        >,
+{
     /// Engine configuration
     pub config: EngineConfig,
     /// Path to the home directory
@@ -49,12 +59,19 @@ pub struct MalachiteNode {
     /// Path to the private key file
     pub private_key_file: PathBuf,
     /// Application state
-    pub app_state: State,
+    pub app_state: State<N>,
 }
 
-impl MalachiteNode {
+impl<N: NodeTypes> MalachiteNode<N>
+where
+    N::Payload: PayloadTypes<
+            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+            ExecutionData = ExecutionData,
+            BuiltPayload = EthBuiltPayload,
+        >,
+{
     /// Create a new node implementation
-    pub fn new(config: EngineConfig, home_dir: PathBuf, app_state: State) -> Self {
+    pub fn new(config: EngineConfig, home_dir: PathBuf, app_state: State<N>) -> Self {
         let private_key_file = home_dir.join("config").join("priv_validator_key.json");
 
         Self {
@@ -90,7 +107,14 @@ impl NodeHandle<MalachiteContext> for ConsensusHandle {
 }
 
 #[async_trait]
-impl Node for MalachiteNode {
+impl<N: NodeTypes> Node for MalachiteNode<N>
+where
+    N::Payload: PayloadTypes<
+            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+            ExecutionData = ExecutionData,
+            BuiltPayload = EthBuiltPayload,
+        >,
+{
     type Context = MalachiteContext;
     type Config = Config;
     type Genesis = Genesis;
