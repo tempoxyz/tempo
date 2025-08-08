@@ -91,10 +91,7 @@ pub struct TIP4217RegistryPrecompile;
 
 impl TIP4217RegistryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        DynPrecompile::new(move |input| {
-            TIP4217Registry::new(&mut EvmStorageProvider::new(input.internals, chain_id))
-                .call(input.data, &input.caller)
-        })
+        DynPrecompile::new(move |input| TIP4217Registry::new().call(input.data, &input.caller))
     }
 }
 

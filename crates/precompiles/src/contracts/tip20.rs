@@ -4,7 +4,8 @@ use alloy::primitives::{Address, B256, IntoLogData, U256, keccak256};
 
 use crate::{
     contracts::{
-        ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry, TIP4217Registry,
+        ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry,
+        TIP4217Registry,
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
         token_id_to_address,
@@ -57,9 +58,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     pub fn decimals(&mut self) -> u8 {
-        let currency = self.currency();
-        let mut registry = TIP4217Registry::new(self.storage);
-        registry.get_currency_decimals(ITIP4217Registry::getCurrencyDecimalsCall { currency })
+        TIP4217Registry::new().get_currency_decimals(ITIP4217Registry::getCurrencyDecimalsCall {
+            currency: self.currency(),
+        })
     }
 
     pub fn currency(&mut self) -> String {

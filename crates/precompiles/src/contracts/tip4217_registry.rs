@@ -5,13 +5,11 @@ use crate::contracts::{StorageProvider, TIP4217_REGISTRY_ADDRESS, types::ITIP421
 const KNOWN_DECIMALS: &[(&str, u8)] = &[("USD", 6)];
 
 #[derive(Debug)]
-pub struct TIP4217Registry<'a, S: StorageProvider> {
-    storage: &'a mut S,
-}
+pub struct TIP4217Registry {}
 
-impl<'a, S: StorageProvider> TIP4217Registry<'a, S> {
-    pub fn new(storage: &'a mut S) -> Self {
-        Self { storage }
+impl TIP4217Registry {
+    pub fn new() -> Self {
+        Self {}
     }
 
     pub fn get_currency_decimals(&mut self, call: ITIP4217Registry::getCurrencyDecimalsCall) -> u8 {
