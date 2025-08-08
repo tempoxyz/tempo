@@ -11920,6 +11920,7 @@ dependencies = [
  "eyre",
  "reth-chainspec",
  "reth-cli",
+ "serde_json",
 ]
 
 [[package]]
