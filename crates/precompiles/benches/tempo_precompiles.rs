@@ -12,9 +12,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "T", 18, "USD", &admin)
-            .unwrap();
+        token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
             black_box(token.name());
@@ -25,9 +23,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "T", 18, "USD", &admin)
-            .unwrap();
+        token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
             black_box(token.symbol());
@@ -38,9 +34,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "T", 18, "USD", &admin)
-            .unwrap();
+        token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
             black_box(token.decimals());
@@ -51,9 +45,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "T", 18, "USD", &admin)
-            .unwrap();
+        token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
             black_box(token.currency());
@@ -65,9 +57,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let user = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "T", 18, "USD", &admin)
-            .unwrap();
+        token.initialize("TestToken", "T", "USD", &admin).unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
         token

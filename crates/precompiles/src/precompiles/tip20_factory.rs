@@ -9,8 +9,8 @@ use crate::contracts::{
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| { 
-            PrecompileError::Other("Invalid input: missing function selector".to_string()) 
+        let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| {
+            PrecompileError::Other("Invalid input: missing function selector".to_string())
         })?.try_into().expect("TODO: handle error");
 
         match selector {
@@ -20,7 +20,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
             ITIP20Factory::createTokenCall::SELECTOR => {
                 mutate::<ITIP20Factory::createTokenCall, _>(calldata, msg_sender, |s, call| self.create_token(s, call))
             },
-            _ => Err(PrecompileError::Other("Unknown function selector".to_string())) 
+            _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
         }
     }
 }
@@ -29,7 +29,8 @@ impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
 mod tests {
     use crate::{
         contracts::HashMapStorageProvider,
-        precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS},
+        precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
+        tip20_err,
     };
     use alloy::{
         primitives::{Bytes, U256},
@@ -63,7 +64,7 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
-            decimals: 18,
+
             currency: "USD".to_string(),
             admin: sender,
         };
@@ -92,11 +93,11 @@ mod tests {
         let initial_counter = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(initial_counter, U256::ZERO);
 
-        // Create first token
+        // Create first token (USD supported)
         let create_call = ITIP20Factory::createTokenCall {
             name: "Token 1".to_string(),
             symbol: "TOK1".to_string(),
-            decimals: 18,
+
             currency: "USD".to_string(),
             admin: sender,
         };
@@ -110,18 +111,17 @@ mod tests {
         let new_counter = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(new_counter, U256::from(1));
 
-        // Create second token
+        // Create second token with unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Token 2".to_string(),
             symbol: "TOK2".to_string(),
-            decimals: 6,
+
             currency: "EUR".to_string(),
             admin: sender,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
-        let token_id = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id, U256::from(1));
+        let result = factory.call(&Bytes::from(calldata), &sender);
+        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
 
         // Check counter increased again
         let counter_call = ITIP20Factory::tokenIdCounterCall {};
@@ -142,7 +142,7 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "High Precision Token".to_string(),
             symbol: "HPT".to_string(),
-            decimals: 24,
+
             currency: "USD".to_string(),
             admin: admin1,
         };
@@ -151,31 +151,29 @@ mod tests {
         let token_id1 = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(token_id1, U256::ZERO);
 
-        // Create token with low decimal places
+        // Create token with unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Low Precision Token".to_string(),
             symbol: "LPT".to_string(),
-            decimals: 2,
+
             currency: "EUR".to_string(),
             admin: admin2,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &admin2).unwrap();
-        let token_id2 = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id2, U256::from(1));
+        let result = factory.call(&Bytes::from(calldata), &admin2);
+        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
 
-        // Create token with different currency
+        // Create token with different unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Japanese Yen Token".to_string(),
             symbol: "JYT".to_string(),
-            decimals: 0,
+
             currency: "JPY".to_string(),
             admin: admin1,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &admin1).unwrap();
-        let token_id3 = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id3, U256::from(2));
+        let result = factory.call(&Bytes::from(calldata), &admin1);
+        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
     }
 
     #[test]
@@ -184,19 +182,17 @@ mod tests {
         let mut factory = TIP20Factory::new(&mut factory_storage);
         let sender = Address::from([1u8; 20]);
 
-        // Create token with empty currency
+        // Create token with empty currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "No Currency Token".to_string(),
             symbol: "NCT".to_string(),
-            decimals: 18,
+
             currency: "".to_string(),
             admin: sender,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
-        let token_id = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id, U256::ZERO);
+        let result = factory.call(&Bytes::from(calldata), &sender);
+        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
     }
 
     #[test]
@@ -212,7 +208,7 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: name.clone(),
             symbol: symbol.clone(),
-            decimals: 18,
+
             currency: "USD".to_string(),
             admin: sender,
         };
@@ -236,7 +232,7 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Caller1 Token".to_string(),
             symbol: "C1T".to_string(),
-            decimals: 18,
+
             currency: "USD".to_string(),
             admin: caller1,
         };
@@ -244,33 +240,31 @@ mod tests {
         let result = factory.call(&Bytes::from(calldata), &caller1).unwrap();
         let token_id1 = U256::abi_decode(&result.bytes).unwrap();
 
-        // Second caller creates a token
+        // Second caller creates a token with unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Caller2 Token".to_string(),
             symbol: "C2T".to_string(),
-            decimals: 6,
+
             currency: "EUR".to_string(),
             admin: caller2,
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &caller2).unwrap();
-        let token_id2 = U256::abi_decode(&result.bytes).unwrap();
+        let result = factory.call(&Bytes::from(calldata), &caller2);
+        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
 
-        // Third caller creates a token with different admin
+        // Third caller creates a token with different admin and unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
             name: "Caller3 Token".to_string(),
             symbol: "C3T".to_string(),
-            decimals: 12,
+
             currency: "GBP".to_string(),
             admin: caller1, // Different admin than caller
         };
         let calldata = create_call.abi_encode();
-        let result = factory.call(&Bytes::from(calldata), &caller3).unwrap();
-        let token_id3 = U256::abi_decode(&result.bytes).unwrap();
+        let result = factory.call(&Bytes::from(calldata), &caller3);
+        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
 
-        // Verify all tokens have sequential IDs
+        // Verify only first token was created
         assert_eq!(token_id1, U256::ZERO);
-        assert_eq!(token_id2, U256::from(1));
-        assert_eq!(token_id3, U256::from(2));
     }
 }

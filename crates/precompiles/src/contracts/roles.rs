@@ -8,9 +8,8 @@ use crate::contracts::{
     types::{IRolesAuth, RolesAuthError, RolesAuthEvent},
 };
 
-// TODO: make this const
-pub static DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
-pub static UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
+pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
+pub const UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 
 pub struct RolesAuthContract<'a, S: StorageProvider> {
     storage: &'a mut S,

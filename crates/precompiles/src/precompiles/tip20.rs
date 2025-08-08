@@ -28,7 +28,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::noncesCall::SELECTOR => view::<ITIP20::noncesCall>(calldata, |call| self.nonces(call)),
             ITIP20::saltsCall::SELECTOR => view::<ITIP20::saltsCall>(calldata, |call| self.salts(call)),
 
-            // State changing functions 
+            // State changing functions
             ITIP20::transferFromCall::SELECTOR => mutate::<ITIP20::transferFromCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer_from(s, call)),
             ITIP20::transferCall::SELECTOR => mutate::<ITIP20::transferCall, TIP20Error>(calldata, msg_sender, |s, call| self.transfer(s, call)),
             ITIP20::approveCall::SELECTOR => mutate::<ITIP20::approveCall, TIP20Error>(calldata, msg_sender, |s, call| self.approve(s, call)),
@@ -52,7 +52,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
 
             _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
         }
-        
+
     }
 }
 
@@ -60,7 +60,8 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
 mod tests {
     use crate::{
         contracts::{HashMapStorageProvider, types::IRolesAuth},
-        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS},
+        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
+        tip20_err,
     };
     use alloy::{primitives::U256, sol_types::SolValue};
     use alloy_primitives::Bytes;
@@ -90,7 +91,7 @@ mod tests {
         let account = Address::from([2u8; 20]);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
@@ -140,7 +141,7 @@ mod tests {
         let mint_amount = U256::from(500);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to sender
         use alloy::primitives::keccak256;
@@ -187,7 +188,7 @@ mod tests {
         let initial_sender_balance = U256::from(1000);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
@@ -264,7 +265,7 @@ mod tests {
         let initial_owner_balance = U256::from(1000);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
@@ -342,7 +343,7 @@ mod tests {
         let unpauser = Address::from([2u8; 20]);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant PAUSE_ROLE to pauser and UNPAUSE_ROLE to unpauser
         use alloy::primitives::keccak256;
@@ -403,7 +404,7 @@ mod tests {
         let burn_amount = U256::from(300);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to admin and burner
         use alloy::primitives::keccak256;
@@ -474,7 +475,7 @@ mod tests {
 
         // Initialize token
         token
-            .initialize("Test Token", "TEST", 18, "USD", &admin)
+            .initialize("Test Token", "TEST", "USD", &admin)
             .unwrap();
 
         // Test name()
@@ -499,7 +500,7 @@ mod tests {
         let result = token.call(&Bytes::from(calldata), &caller).unwrap();
         assert_eq!(result.gas_used, METADATA_GAS);
         let decimals = ITIP20::decimalsCall::abi_decode_returns(&result.bytes).unwrap();
-        assert_eq!(decimals, 18);
+        assert_eq!(decimals, 6);
 
         // Test currency()
         let currency_call = ITIP20::currencyCall {};
@@ -528,7 +529,7 @@ mod tests {
         let mint_amount = U256::from(1001);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
@@ -561,7 +562,7 @@ mod tests {
         let result = token.call(&Bytes::from(calldata), &admin);
 
         // Should fail due to supply cap
-        assert!(result.is_err());
+        expect_precompile_error(&result, tip20_err!(SupplyCapExceeded));
     }
 
     #[test]
@@ -574,7 +575,7 @@ mod tests {
         let unauthorized = Address::from([3u8; 20]);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant a role to user1
         use alloy::primitives::keccak256;
@@ -616,7 +617,7 @@ mod tests {
         };
         let calldata = mint_call.abi_encode();
         let result = token.call(&Bytes::from(calldata.clone()), &unauthorized);
-        assert!(result.is_err());
+        expect_precompile_error(&result, tip20_err!(PolicyForbids));
 
         // Test authorized mint (should succeed)
         let result = token.call(&Bytes::from(calldata), &user1).unwrap();
@@ -634,7 +635,7 @@ mod tests {
         let initial_balance = U256::from(500);
 
         // Initialize and setup
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         use alloy::primitives::keccak256;
         let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
@@ -690,7 +691,7 @@ mod tests {
         let user = Address::from([1u8; 20]);
 
         // Initialize token
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Test nonces (should start at 0)
         let nonces_call = ITIP20::noncesCall { owner: user };
@@ -719,7 +720,7 @@ mod tests {
         let new_policy_id = 42u64;
 
         // Initialize token
-        token.initialize("Test", "TST", 18, "USD", &admin).unwrap();
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Admin can change transfer policy ID
         let change_policy_call = ITIP20::changeTransferPolicyIdCall {
@@ -736,6 +737,6 @@ mod tests {
         let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &non_admin);
-        assert!(result.is_err());
+        expect_precompile_error(&result, tip20_err!(PolicyForbids));
     }
 }

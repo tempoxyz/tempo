@@ -39,7 +39,6 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
         TIP20Token::new(token_id.try_into().unwrap(), self.storage).initialize(
             &call.name,
             &call.symbol,
-            call.decimals,
             &call.currency,
             &call.admin,
         )?;
@@ -49,7 +48,6 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
                 tokenId: token_id,
                 name: call.name,
                 symbol: call.symbol,
-                decimals: call.decimals,
                 currency: call.currency,
                 admin: call.admin,
             })
