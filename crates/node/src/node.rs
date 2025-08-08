@@ -9,6 +9,7 @@ use reth_evm::{
     ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes, eth::spec::EthExecutorSpec,
     revm::context::TxEnv,
 };
+use reth_malachite::{MalachiteConsensus, MalachiteConsensusBuilder};
 use reth_node_api::{
     AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -55,7 +56,7 @@ impl TempoNode {
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
         EthereumExecutorBuilder,
-        TempoConsensusBuilder,
+        MalachiteConsensusBuilder,
     >
     where
         Node: FullNodeTypes<
@@ -275,26 +276,6 @@ where
 }
 
 // TODO: TempoPoolBuilder
-
-/// A basic ethereum consensus builder.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct TempoConsensusBuilder {
-    // TODO add closure to modify consensus
-}
-
-impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
-where
-    Node: FullNodeTypes<
-        Types: NodeTypes<ChainSpec: EthChainSpec + EthereumHardforks, Primitives = EthPrimitives>,
-    >,
-{
-    type Consensus = Arc<EthBeaconConsensus<<Node::Types as NodeTypes>::ChainSpec>>;
-
-    // TODO: update consesnsus to malachite
-    async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(Arc::new(EthBeaconConsensus::new(ctx.chain_spec())))
-    }
-}
 
 /// Builder for [`EthereumEngineValidator`].
 #[derive(Debug, Default, Clone)]
