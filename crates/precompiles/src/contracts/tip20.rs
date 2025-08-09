@@ -132,6 +132,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // Admin functions
+    #[inline]
     pub fn change_transfer_policy_id(
         &mut self,
         msg_sender: &Address,
@@ -155,6 +156,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    #[inline]
     pub fn set_supply_cap(
         &mut self,
         msg_sender: &Address,
@@ -178,6 +180,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    #[inline]
     pub fn pause(
         &mut self,
         msg_sender: &Address,
@@ -198,6 +201,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    #[inline]
     pub fn unpause(
         &mut self,
         msg_sender: &Address,
@@ -219,6 +223,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // Token operations
+    #[inline]
     pub fn mint(&mut self, msg_sender: &Address, call: ITIP20::mintCall) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply();
@@ -263,6 +268,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    #[inline]
     pub fn burn(&mut self, msg_sender: &Address, call: ITIP20::burnCall) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
@@ -286,6 +292,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    #[inline]
     pub fn burn_blocked(
         &mut self,
         msg_sender: &Address,
@@ -325,6 +332,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // Standard token functions
+    #[inline]
     pub fn approve(
         &mut self,
         msg_sender: &Address,
@@ -345,6 +353,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(true)
     }
 
+    #[inline]
     pub fn transfer(
         &mut self,
         msg_sender: &Address,
@@ -357,6 +366,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(true)
     }
 
+    #[inline]
     pub fn transfer_from(
         &mut self,
         msg_sender: &Address,
@@ -383,6 +393,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(true)
     }
 
+    #[inline]
     pub fn permit(
         &mut self,
         _msg_sender: &Address,
@@ -450,6 +461,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // TIP20 extension functions
+    #[inline]
     pub fn transfer_with_memo(
         &mut self,
         msg_sender: &Address,
@@ -478,6 +490,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
 // Utility functions
 impl<'a, S: StorageProvider> TIP20Token<'a, S> {
+    #[inline]
     pub fn new(token_id: u64, storage: &'a mut S) -> Self {
         Self {
             token_address: token_id_to_address(token_id),
@@ -486,6 +499,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     /// Only called internally from the factory, which won't try to re-initialize a token.
+    #[inline]
     pub fn initialize(
         &mut self,
         name: &str,
@@ -536,6 +550,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // Helper to get a RolesAuthContract instance
+    #[inline]
     pub fn get_roles_contract(&mut self) -> RolesAuthContract<'_, S> {
         RolesAuthContract::new(
             self.storage,
@@ -575,6 +590,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .sstore(self.token_address, slots::TOTAL_SUPPLY, amount);
     }
 
+    #[inline]
     fn check_role(&mut self, account: &Address, role: B256) -> Result<(), TIP20Error> {
         let mut roles = self.get_roles_contract();
         roles
@@ -582,6 +598,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .map_err(|_| tip20_err!(PolicyForbids))
     }
 
+    #[inline]
     fn check_not_paused(&mut self) -> Result<(), TIP20Error> {
         if self.paused() {
             return Err(tip20_err!(ContractPaused));
@@ -589,6 +606,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    #[inline]
     fn check_not_token_address(&self, to: &Address) -> Result<(), TIP20Error> {
         // Don't allow sending to other precompiled tokens
         if address_is_token_address(to) {
@@ -597,6 +615,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    #[inline]
     fn check_transfer_authorized(
         &mut self,
         from: &Address,
@@ -625,6 +644,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    #[inline]
     fn _transfer(&mut self, from: &Address, to: &Address, amount: U256) -> Result<(), TIP20Error> {
         let from_balance = self.get_balance(from);
         if amount > from_balance {
