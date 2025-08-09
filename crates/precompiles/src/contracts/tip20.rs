@@ -54,14 +54,17 @@ pub static PERMIT_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
 });
 
 impl<'a, S: StorageProvider> TIP20Token<'a, S> {
+    #[inline]
     pub fn name(&mut self) -> String {
         self.read_string(slots::NAME)
     }
 
+    #[inline]
     pub fn symbol(&mut self) -> String {
         self.read_string(slots::SYMBOL)
     }
 
+    #[inline]
     pub fn decimals(&mut self) -> u8 {
         TIP4217Registry::default().get_currency_decimals(
             ITIP4217Registry::getCurrencyDecimalsCall {
@@ -70,28 +73,34 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         )
     }
 
+    #[inline]
     pub fn currency(&mut self) -> String {
         self.read_string(slots::CURRENCY)
     }
 
+    #[inline]
     pub fn total_supply(&mut self) -> U256 {
         self.storage.sload(self.token_address, slots::TOTAL_SUPPLY)
     }
 
+    #[inline]
     pub fn supply_cap(&mut self) -> U256 {
         self.storage.sload(self.token_address, slots::SUPPLY_CAP)
     }
 
+    #[inline]
     pub fn paused(&mut self) -> bool {
         self.storage.sload(self.token_address, slots::PAUSED) != U256::ZERO
     }
 
+    #[inline]
     pub fn transfer_policy_id(&mut self) -> u64 {
         self.storage
             .sload(self.token_address, slots::TRANSFER_POLICY_ID)
             .to::<u64>()
     }
 
+    #[inline]
     pub fn domain_separator(&mut self) -> B256 {
         B256::from(
             self.storage
@@ -100,19 +109,23 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // View functions
+    #[inline]
     pub fn balance_of(&mut self, call: ITIP20::balanceOfCall) -> U256 {
         self.get_balance(&call.account)
     }
 
+    #[inline]
     pub fn allowance(&mut self, call: ITIP20::allowanceCall) -> U256 {
         self.get_allowance(&call.owner, &call.spender)
     }
 
+    #[inline]
     pub fn nonces(&mut self, call: ITIP20::noncesCall) -> U256 {
         let slot = mapping_slot(call.owner, slots::NONCES);
         self.storage.sload(self.token_address, slot)
     }
 
+    #[inline]
     pub fn salts(&mut self, call: ITIP20::saltsCall) -> bool {
         let slot = double_mapping_slot(call.owner, call.salt, slots::SALTS);
         self.storage.sload(self.token_address, slot) != U256::ZERO
