@@ -51,6 +51,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
 };
+use tempo_telemetry_util::error_field;
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, info, warn};
 
@@ -542,7 +543,7 @@ where
         let (value, block) = match assemble_value_from_parts(parts) {
             Ok(result) => result,
             Err(e) => {
-                error!("Failed to assemble proposal: {}", e);
+                error!(error = error_field(&e), "Failed to assemble proposal");
                 return Ok(None);
             }
         };
@@ -787,7 +788,11 @@ where
         match self.store.get_decided_value(height).await {
             Ok(value) => value,
             Err(e) => {
-                tracing::error!("Failed to get decided value at height {}: {}", height, e);
+                tracing::error!(
+                    error = error_field(&e),
+                    "Failed to get decided value at height {}",
+                    height
+                );
                 None
             }
         }
@@ -1319,7 +1324,7 @@ pub fn encode_block(block: &reth_primitives::Block) -> Bytes {
     match bincode::serialize(&block_repr) {
         Ok(bytes) => Bytes::from(bytes),
         Err(e) => {
-            tracing::error!("Failed to encode block: {}", e);
+            tracing::error!(error = error_field(&e), "Failed to encode block");
             Bytes::new()
         }
     }
@@ -1400,7 +1405,7 @@ pub fn decode_block(bytes: Bytes) -> Option<reth_primitives::Block> {
             Some(reth_primitives::Block::from_repr(block_repr))
         }
         Err(e) => {
-            tracing::error!("Failed to decode block: {}", e);
+            tracing::error!(error = error_field(&e), "Failed to decode block");
             None
         }
     }

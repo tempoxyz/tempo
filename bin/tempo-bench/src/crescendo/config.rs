@@ -1,8 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::OnceLock};
 
-use serde::{Deserialize, Serialize};
-
-use crate::utils::merge_toml_values;
+use crate::crescendo::utils::merge_toml_values;
 
 /// Global configuration instance for the application.
 static CONFIG_INSTANCE: OnceLock<Config> = OnceLock::new();
@@ -29,7 +28,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_file(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(path: &PathBuf) -> eyre::Result<Self> {
         let config_str = std::fs::read_to_string(path)?;
         let mut config_value: toml::Value = toml::from_str(&config_str)?;
 

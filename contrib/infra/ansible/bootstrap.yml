@@ -3,3 +3,8 @@
   tags: bootstrap
   roles:
   - role: bootstrap
+  - role: hurricanehrndz.rustup
+    vars:
+      rustup_user: "{{ ansible_user }}"
+      rustup_cargo_crates: ["samply"]
+      rustup_default_version: "nightly"

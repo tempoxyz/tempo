@@ -6,6 +6,7 @@ roles:
   # Tailscale VPN setup
   - name: artis3n.tailscale
     version: "v5.0.1"
+  - name: hurricanehrndz.rustup
 
 collections:
   # Grafana collection for monitoring setup

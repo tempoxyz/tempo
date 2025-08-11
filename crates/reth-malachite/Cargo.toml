@@ -10,6 +10,8 @@ description = "TODO:"
 
 [dependencies]
 tempo-evm.workspace = true
+tempo-telemetry-util.workspace = true
+
 reth.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true

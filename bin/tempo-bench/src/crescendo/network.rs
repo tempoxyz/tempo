@@ -10,7 +10,7 @@ use hyper_util::{
 };
 use thousands::Separable;
 
-use crate::{config, network_stats::NETWORK_STATS, tx_queue::TX_QUEUE};
+use crate::crescendo::{config, network_stats::NETWORK_STATS, tx_queue::TX_QUEUE};
 
 pub async fn network_worker(worker_id: usize) {
     let config = &config::get().network_worker;

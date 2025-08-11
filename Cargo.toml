@@ -6,12 +6,13 @@ rust-version = "1.88"
 [workspace]
 members = [
   "bin/tempo",
-  "bin/tempo-bench/crescendo",
+  "bin/tempo-bench",
   "crates/chainspec",
   "crates/evm",
   "crates/node",
   "crates/precompiles",
   "crates/reth-malachite",
+  "crates/telemetry-util",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -73,10 +74,11 @@ codegen-units = 1
 
 [workspace.dependencies]
 tempo-node = { path = "crates/node" }
+reth-malachite = { path = "crates/reth-malachite" }
 tempo-chainspec = { path = "crates/chainspec" }
 tempo-evm = { path = "crates/evm" }
 tempo-precompiles = { path = "crates/precompiles" }
-reth-malachite = { path = "crates/reth-malachite" }
+tempo-telemetry-util = { path = "crates/telemetry-util" }
 reth = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-chainspec" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-cli" }
@@ -134,19 +136,19 @@ alloy-genesis = "1.0.12"
 alloy-primitives = "1.2.0"
 alloy-rpc-types-engine = "1.0.12"
 alloy-trie = "0.9.0"
-malachitebft-app = { git = "https://github.com/informalsystems/malachite", version = "0.6.0-pre", package = "informalsystems-malachitebft-app" }
-malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite", version = "0.6.0-pre", package = "informalsystems-malachitebft-app-channel" }
-malachitebft-codec = { git = "https://github.com/informalsystems/malachite", version = "0.6.0-pre", package = "informalsystems-malachitebft-codec" }
-malachitebft-core-consensus = { git = "https://github.com/informalsystems/malachite", version = "0.6.0-pre", package = "informalsystems-malachitebft-core-consensus" }
-malachitebft-core-types = { git = "https://github.com/informalsystems/malachite", version = "0.6.0-pre", package = "informalsystems-malachitebft-core-types", features = [
+malachitebft-app = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app" }
+malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app-channel" }
+malachitebft-codec = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-codec" }
+malachitebft-core-consensus = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-core-consensus" }
+malachitebft-core-types = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-core-types", features = [
   "serde",
 ] }
-malachitebft-signing-ed25519 = { git = "https://github.com/informalsystems/malachite", version = "0.6.0-pre", package = "informalsystems-malachitebft-signing-ed25519", features = [
+malachitebft-signing-ed25519 = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-signing-ed25519", features = [
   "serde",
   "rand",
 ] }
-malachitebft-sync = { git = "https://github.com/informalsystems/malachite", version = "0.6.0-pre", package = "informalsystems-malachitebft-sync" }
-malachitebft-proto = { git = "https://github.com/informalsystems/malachite", version = "0.6.0-pre", package = "informalsystems-malachitebft-proto" }
+malachitebft-sync = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-sync" }
+malachitebft-proto = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-proto" }
 anyhow = "1.0.98"
 async-trait = "0.1"
 base64 = "0.22"

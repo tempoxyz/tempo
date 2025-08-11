@@ -19,6 +19,7 @@ use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_builder::{NodeTypes, PayloadTypes};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tempo_telemetry_util::error_field;
 
 /// Tendermint-compatible private validator key file format
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,7 +255,7 @@ where
         if let Err(e) =
             super::handler::run_consensus_handler(&app_state, &mut handle.channels).await
         {
-            tracing::error!(%e, "Consensus handler error");
+            tracing::error!(error = error_field(&e), "Consensus handler error");
         }
 
         Ok(())

@@ -1,4 +1,4 @@
-use crate::precompiles::{Precompile, metadata, mutate, mutate_void, view};
+use crate::precompiles::{Precompile, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -20,7 +20,9 @@ impl<'a, S: StorageProvider> Precompile for TIP403Registry<'a, S> {
 
         match selector {
             ITIP403Registry::policyIdCounterCall::SELECTOR => {
-                metadata::<ITIP403Registry::policyIdCounterCall>(self.policy_id_counter())
+                view::<ITIP403Registry::policyIdCounterCall>(calldata, |_call| {
+                    self.policy_id_counter()
+                })
             }
             ITIP403Registry::policyDataCall::SELECTOR => {
                 view::<ITIP403Registry::policyDataCall>(calldata, |call| self.policy_data(call))

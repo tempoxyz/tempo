@@ -57,6 +57,7 @@ use malachitebft_app::node::Node;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_builder::{NodeTypes, PayloadTypes};
 use std::{net::SocketAddr, path::PathBuf};
+use tempo_telemetry_util::error_field;
 use tracing::info;
 
 pub use config::{EngineConfig, NetworkConfig, NodeConfig, WalConfig};
@@ -105,7 +106,9 @@ where
     let app_handle = tokio::spawn(async move {
         info!("Starting consensus handler loop");
         if let Err(e) = handler::run_consensus_handler(&app_state, &mut handle.channels).await {
-            tracing::error!(%e, "Consensus handler error");
+            {
+                tracing::error!(error = error_field(&e), "Consensus handler error");
+            }
         }
         info!("Consensus handler loop ended");
     });

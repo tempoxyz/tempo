@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use rayon::prelude::*;
 use thousands::Separable;
 
-use crate::{config, tx_queue::TX_QUEUE};
+use crate::crescendo::{config, tx_queue::TX_QUEUE};
 
 static NONCE_MAP: LazyLock<DashMap<u32, u64>> = LazyLock::new(|| {
     let map = DashMap::with_capacity(config::get().tx_gen_worker.num_accounts as usize);
