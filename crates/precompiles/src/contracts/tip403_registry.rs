@@ -62,6 +62,11 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         }
     }
 
+    pub fn is_authorized(&mut self, call: ITIP403Registry::isAuthorizedCall) -> bool {
+        self.is_authorized_internal(call.policyId, &call.user)
+    }
+
+    // State-changing functions
     pub fn create_policy(
         &mut self,
         msg_sender: &Address,
