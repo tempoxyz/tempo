@@ -14,7 +14,7 @@ env:
 jobs:
   e2e-test:
     name: e2e test
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 45
 
     steps:

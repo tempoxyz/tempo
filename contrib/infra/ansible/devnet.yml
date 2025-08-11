@@ -1,21 +1,21 @@
 - name: Bootstrap system
-  hosts: devnet-1
+  hosts: all
   tags: bootstrap
   roles:
   - role: bootstrap
 
 - name: Set up devnet
-  hosts: devnet-1
+  hosts: all
   tags: devnet
   roles:
   - role: tempo
 - name: Set up loadbalancer
-  hosts: devnet-1
+  hosts: all
   tags: loadbalancer
   roles:
   - role: caddy
 - name: Set up Grafana Alloy
-  hosts: devnet-1
+  hosts: all
   become: true
   tasks:
     - name: Install Alloy

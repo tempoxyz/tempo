@@ -1,6 +1,6 @@
 use alloy::primitives::{Address, U256};
 use alloy_primitives::FixedBytes;
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use tempo_precompiles::contracts::{
     storage::hashmap::HashMapStorageProvider,
@@ -315,7 +315,9 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 adminPolicyId: 1,
                 policyType: ITIP403Registry::PolicyType::WHITELIST,
             });
-            let result = black_box(&mut registry).create_policy(&admin, call).unwrap();
+            let result = black_box(&mut registry)
+                .create_policy(&admin, call)
+                .unwrap();
             black_box(result);
         });
     });
@@ -334,7 +336,9 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 policyType: ITIP403Registry::PolicyType::WHITELIST,
                 accounts: accounts.clone(),
             });
-            let result = black_box(&mut registry).create_policy_with_accounts(&admin, call).unwrap();
+            let result = black_box(&mut registry)
+                .create_policy_with_accounts(&admin, call)
+                .unwrap();
             black_box(result);
         });
     });
@@ -358,7 +362,9 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 policyId: policy_id,
                 adminPolicyId: 1,
             });
-            let result = black_box(&mut registry).set_policy_admin(&admin, call).unwrap();
+            let result = black_box(&mut registry)
+                .set_policy_admin(&admin, call)
+                .unwrap();
             black_box(result);
         });
     });
@@ -384,7 +390,9 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 account: user,
                 allowed: true,
             });
-            let result = black_box(&mut registry).modify_policy_whitelist(&admin, call).unwrap();
+            let result = black_box(&mut registry)
+                .modify_policy_whitelist(&admin, call)
+                .unwrap();
             black_box(result);
         });
     });
@@ -410,7 +418,9 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 account: user,
                 restricted: true,
             });
-            let result = black_box(&mut registry).modify_policy_blacklist(&admin, call).unwrap();
+            let result = black_box(&mut registry)
+                .modify_policy_blacklist(&admin, call)
+                .unwrap();
             black_box(result);
         });
     });
