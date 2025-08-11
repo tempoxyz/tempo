@@ -1,5 +1,5 @@
 [package]
-name = "tempo-consensus"
+name = "tempo-evm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ description = "TODO:"
 # workspace = true
 
 [dependencies]
-tempo-evm.workspace = true
+tempo-precompiles.workspace = true
 reth.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true

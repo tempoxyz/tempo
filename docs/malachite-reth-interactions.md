@@ -12,7 +12,7 @@ graph TB
             MP2[Validator 2]
             MP3[Validator N]
         end
-        
+
         subgraph "Ethereum P2P"
             EP1[ETH Peer 1]
             EP2[ETH Peer 2]
@@ -62,7 +62,7 @@ graph TB
     MP1 <-.-> PSS
     MP2 <-.-> PSS
     MP3 <-.-> PSS
-    
+
     EP1 <-.-> NET
     EP2 <-.-> NET
     EP3 <-.-> NET
@@ -95,11 +95,13 @@ graph TB
 ## Overview
 
 The architecture follows a Tendermint-like pattern with ABCI-style separation:
+
 - **Malachite** acts as the consensus engine (similar to Tendermint Core)
 - **Reth** acts as the application/state machine (similar to the ABCI app)
 - Communication happens through the **Engine API** (analogous to ABCI but using Ethereum's Engine API specification)
 
 In this architecture:
+
 - Consensus (Malachite) is responsible for block ordering and achieving agreement on the canonical chain
 - The application (Reth) is responsible for transaction selection, ordering within blocks, execution, and maintaining state
 - The Engine API provides the interface between consensus and execution layers
@@ -109,11 +111,13 @@ In this architecture:
 ### Key Components
 
 1. **BeaconConsensusEngineHandle** (`engine_handle`)
+
    - Primary communication channel to Reth's execution engine
    - Handles Engine API methods: `new_payload`, `fork_choice_updated`
    - Manages block validation and chain state updates
 
 2. **PayloadBuilderHandle** (wrapped in `PayloadStore`)
+
    - Manages block building operations
    - Coordinates with mempool for transaction inclusion
    - Provides built payloads for consensus proposals
@@ -158,6 +162,7 @@ sequenceDiagram
 ```
 
 **Key Steps**:
+
 1. Get parent block information to ensure monotonic timestamp increase
 2. Prepare payload attributes with fee recipient and required post-merge fields
 3. Call `fork_choice_updated` with attributes to trigger Reth's payload building
@@ -184,6 +189,7 @@ sequenceDiagram
 ```
 
 **Key Steps**:
+
 1. Find the proposal matching the decided value_id from undecided proposals
 2. Store the decision certificate with the value for persistence
 3. Validate the block through `new_payload` to ensure execution correctness
@@ -210,6 +216,7 @@ sequenceDiagram
 ```
 
 **Key Steps**:
+
 1. Convert synced block to execution payload format
 2. Call `new_payload` to validate the block against Reth's execution rules
 3. Return validation result based on payload status
@@ -238,11 +245,13 @@ sequenceDiagram
 ```
 
 **Streaming Pattern**:
+
 - **Init**: Contains metadata (height, round, proposer, block hash)
 - **Data**: Multiple chunks containing the serialized block (32KB each)
 - **Fin**: Final message with signature for integrity verification
 
 **Key Points**:
+
 - Large blocks are split into manageable chunks for network efficiency
 - Receivers accumulate parts and reassemble when complete
 - Signature verification ensures proposal integrity
@@ -253,6 +262,7 @@ sequenceDiagram
 ### Engine API Messages
 
 1. **ForkchoiceState**
+
    ```rust
    ForkchoiceState {
        head_block_hash: B256,      // Current chain head
@@ -262,6 +272,7 @@ sequenceDiagram
    ```
 
 2. **PayloadAttributes**
+
    ```rust
    PayloadAttributes {
        timestamp: u64,                    // Block timestamp
@@ -316,6 +327,7 @@ The Store provides a clean abstraction for consensus data persistence:
 The Store provides persistence for consensus-specific data, separate from Reth's blockchain database:
 
 **Key Responsibilities**:
+
 - **Decided Values**: Store finalized blocks with their commit certificates
 - **Undecided Proposals**: Cache proposals during consensus rounds
 - **Block Data**: Store full block data indexed by hash
@@ -326,6 +338,7 @@ The Store uses Reth's database infrastructure but maintains separate tables for 
 ### Storage Organization
 
 The Store manages:
+
 - **Decided values**: Finalized blocks with their commit certificates
 - **Built proposals**: Locally created block proposals for restreaming
 - **Synced proposals**: Proposals received from other validators
@@ -364,28 +377,30 @@ This clean separation allows the consensus engine to remain agnostic about execu
 
 The integration configures Reth with custom components:
 
-- **RethNode**: Custom node type that uses Malachite consensus instead of default PoS/PoW
+- **TempoNode**: Custom node type that uses Malachite consensus instead of default PoS/PoW & Tempo EVM.
 - **MalachiteConsensusBuilder**: Replaces standard consensus validation (blocks are validated through Malachite)
 - **Standard Reth Components**: Reuses transaction pool, networking, and execution components
 
 This modular approach allows replacing just the consensus layer while keeping all other Reth functionality intact.
 
-
 ## Key Design Decisions
 
 ### Instant Finality
+
 Malachite provides instant finality, unlike Ethereum's probabilistic finality. When a block is decided:
+
 - It's immediately final (no reorgs possible)
 - Fork choice update sets head = safe = finalized
 - Simplifies state management and client behavior
 
 ### Separation of Concerns
+
 - **Consensus (Malachite)**: Block ordering, validator management, Byzantine fault tolerance
 - **Execution (Reth)**: Transaction execution, state management, block building
 - **Clean Interface**: Engine API provides standard separation between layers
 
 ### Storage Architecture
+
 - **Reth Database**: Blockchain state, transactions, receipts
 - **Consensus Store**: Certificates, proposals, validator sets
 - **No Overlap**: Each layer manages its own data
-

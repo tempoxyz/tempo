@@ -2,7 +2,7 @@
 
 use crate::{app::State, context::MalachiteContext};
 use eyre::eyre;
-use malachitebft_app_channel::{AppMsg, Channels, ConsensusMsg, NetworkMsg};
+use malachitebft_app_channel::{AppMsg, Channels, NetworkMsg, app::engine::host::Next};
 use malachitebft_core_types::{Height as _, Round, Validity};
 use tracing::{error, info};
 
@@ -173,7 +173,7 @@ pub async fn run_consensus_handler(
                         state.set_current_height(next_height)?;
 
                         if reply
-                            .send(ConsensusMsg::StartHeight(
+                            .send(Next::Start(
                                 next_height,
                                 state.get_validator_set(next_height),
                             ))
@@ -187,10 +187,7 @@ pub async fn run_consensus_handler(
                         // Restart the current height
                         let current = state.current_height()?;
                         if reply
-                            .send(ConsensusMsg::RestartHeight(
-                                current,
-                                state.get_validator_set(current),
-                            ))
+                            .send(Next::Restart(current, state.get_validator_set(current)))
                             .is_err()
                         {
                             error!("Failed to send RestartHeight reply");
