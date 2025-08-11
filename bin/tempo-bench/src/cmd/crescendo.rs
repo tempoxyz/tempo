@@ -26,10 +26,7 @@ impl CrescendoArgs {
         }
 
         println!("[~] Loading config from {}...", config_path.display());
-        config::init(
-            Config::from_file(&config_path)
-                .map_err(|e| eyre::eyre!("Failed to load config file: {:?}", e))?,
-        );
+        config::init(Config::from_file(&config_path)?);
 
         if let Err(err) =
             utils::increase_nofile_limit(config::get().network_worker.total_connections * 10)

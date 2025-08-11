@@ -28,7 +28,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_file(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(path: &PathBuf) -> eyre::Result<Self> {
         let config_str = std::fs::read_to_string(path)?;
         let mut config_value: toml::Value = toml::from_str(&config_str)?;
 
