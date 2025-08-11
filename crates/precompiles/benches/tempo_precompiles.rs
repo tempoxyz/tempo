@@ -362,10 +362,10 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 policyId: policy_id,
                 adminPolicyId: 1,
             });
-            let result = black_box(&mut registry)
+            black_box(&mut registry)
                 .set_policy_admin(&admin, call)
                 .unwrap();
-            black_box(result);
+            black_box(());
         });
     });
 
@@ -390,10 +390,10 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 account: user,
                 allowed: true,
             });
-            let result = black_box(&mut registry)
+            black_box(&mut registry)
                 .modify_policy_whitelist(&admin, call)
                 .unwrap();
-            black_box(result);
+            black_box(());
         });
     });
 
@@ -418,10 +418,10 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 account: user,
                 restricted: true,
             });
-            let result = black_box(&mut registry)
+            black_box(&mut registry)
                 .modify_policy_blacklist(&admin, call)
                 .unwrap();
-            black_box(result);
+            black_box(());
         });
     });
 }
