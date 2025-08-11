@@ -18,7 +18,7 @@ cargo install --path bin/tempo --profile maxperf
 Usage: tempo-bench <COMMAND>
 
 Commands:
-  crescendo         Run Crescendo benchmarking
+  run-max-tps       Run maximum TPS throughput benchmarking
   generate-genesis  Generate genesis allocation file for testing
   help              Print this message or the help of the given subcommand(s)
 
@@ -57,12 +57,12 @@ tempo-bench generate-genesis --accounts 25000 --output test-genesis.json
 tempo-bench generate-genesis --balance 0xD3C21BCECCEDA1000000
 ```
 
-### `crescendo`
+### `run-max-tps`
 
 High throughput tx load testing
 
 ```
-Usage: tempo-bench crescendo --config <CONFIG>
+Usage: tempo-bench run-max-tps --config <CONFIG>
 
 Options:
   -c, --config <CONFIG>  Path to the configuration file
@@ -73,16 +73,16 @@ Options:
 
 ```bash
 # Run with default balanced configuration
-tempo-bench crescendo --config configs/default.toml
+tempo-bench run-max-tps --config configs/default.toml
 
 # Run with aggressive high-throughput settings
-tempo-bench crescendo --config configs/aggressive.toml
+tempo-bench run-max-tps --config configs/aggressive.toml
 
 # Run with maximum stress test settings
-tempo-bench crescendo --config configs/max.toml
+tempo-bench run-max-tps --config configs/max.toml
 ```
 
-Crescendo uses TOML configuration files located in `crescendo/configs/`. You can either run with a preconfigured TOML or create your own.
+The TPS benchmarker uses TOML configuration files located in `crescendo/configs/`. You can either run with a preconfigured TOML or create your own.
 
 - `default.toml` - Balanced settings for general benchmarking
 - `aggressive.toml` - High-performance settings for maximum throughput
@@ -197,10 +197,10 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
     --max-tx-reqs 1000000
 ```
 
-### 3. Run crescendo
+### 3. Run max TPS benchmark
 
 ```bash
-tempo-bench crescendo --config configs/default.toml
+tempo-bench run-max-tps --config configs/default.toml
 ```
 
 For the most accurate results, make sure to clear the datadir after each run.

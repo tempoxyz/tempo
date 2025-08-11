@@ -1,4 +1,4 @@
-use crate::cmd::{CrescendoArgs, GenesisArgs};
+use crate::cmd::{GenesisArgs, TPSArgs};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
@@ -11,6 +11,6 @@ pub struct TempoBench {
 
 #[derive(Subcommand, Debug)]
 pub enum TempoBenchSubcommand {
-    Crescendo(CrescendoArgs),
+    RunMaxTPS(TPSArgs),
     GenerateGenesis(GenesisArgs),
 }

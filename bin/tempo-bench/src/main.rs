@@ -16,7 +16,7 @@ async fn main() -> eyre::Result<()> {
     let args = TempoBench::parse();
 
     match args.cmd {
-        TempoBenchSubcommand::Crescendo(cmd) => cmd.run().await,
+        TempoBenchSubcommand::RunMaxTPS(cmd) => cmd.run().await,
         TempoBenchSubcommand::GenerateGenesis(cmd) => cmd.run().await,
     }
 }

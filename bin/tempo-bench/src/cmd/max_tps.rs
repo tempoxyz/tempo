@@ -6,15 +6,15 @@ use crate::crescendo::{
 use clap::Parser;
 use std::{future::pending, path::PathBuf, thread, time::Duration};
 
-/// Run Crescendo benchmarking
+/// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
-pub struct CrescendoArgs {
+pub struct TPSArgs {
     /// Path to the configuration file
     #[arg(short, long)]
     pub config: PathBuf,
 }
 
-impl CrescendoArgs {
+impl TPSArgs {
     pub async fn run(self) -> eyre::Result<()> {
         println!("[~] Loading config from {}...", self.config.display());
         config::init(Config::from_file(&self.config)?);
