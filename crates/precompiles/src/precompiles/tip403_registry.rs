@@ -1,4 +1,4 @@
-use crate::precompiles::{Precompile, metadata, mutate, mutate_void, view};
+use crate::precompiles::{Precompile, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileResult};
 

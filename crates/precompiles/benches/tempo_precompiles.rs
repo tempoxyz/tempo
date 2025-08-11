@@ -212,7 +212,6 @@ fn tip20_mutate(_c: &mut Criterion) {
     todo!()
 }
 
-
 fn tip20_factory_view(c: &mut Criterion) {
     c.bench_function("tip20_factory_token_id_counter", |b| {
         let mut storage = HashMapStorageProvider::new(1);
@@ -230,7 +229,7 @@ fn tip20_factory_mutate(c: &mut Criterion) {
         let sender = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut factory = TIP20Factory::new(&mut storage);
-        
+
         let create_call = ITIP20Factory::createTokenCall {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
@@ -244,7 +243,6 @@ fn tip20_factory_mutate(c: &mut Criterion) {
         });
     });
 }
-
 
 fn tip403_registry_view(c: &mut Criterion) {
     c.bench_function("tip403_registry_policy_id_counter", |b| {
@@ -261,17 +259,21 @@ fn tip403_registry_view(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
-        let policy_id = registry.create_policy(
-            &admin,
-            ITIP403Registry::createPolicyCall {
-                adminPolicyId: 1,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-            },
-        ).unwrap();
+        let policy_id = registry
+            .create_policy(
+                &admin,
+                ITIP403Registry::createPolicyCall {
+                    adminPolicyId: 1,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )
+            .unwrap();
 
         b.iter(|| {
             let r = black_box(&mut registry);
-            r.policy_data(ITIP403Registry::policyDataCall { policyId: policy_id });
+            r.policy_data(ITIP403Registry::policyDataCall {
+                policyId: policy_id,
+            });
         });
     });
 
@@ -280,17 +282,22 @@ fn tip403_registry_view(c: &mut Criterion) {
         let user = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
-        let policy_id = registry.create_policy(
-            &admin,
-            ITIP403Registry::createPolicyCall {
-                adminPolicyId: 1,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-            },
-        ).unwrap();
+        let policy_id = registry
+            .create_policy(
+                &admin,
+                ITIP403Registry::createPolicyCall {
+                    adminPolicyId: 1,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )
+            .unwrap();
 
         b.iter(|| {
             let r = black_box(&mut registry);
-            r.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: policy_id, user });
+            r.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: policy_id,
+                user,
+            });
         });
     });
 }
@@ -309,7 +316,8 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                     adminPolicyId: 1,
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
                 },
-            ).unwrap();
+            )
+            .unwrap();
         });
     });
 
@@ -330,7 +338,8 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
                     accounts: accounts.clone(),
                 },
-            ).unwrap();
+            )
+            .unwrap();
         });
     });
 
@@ -338,13 +347,15 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
-        let policy_id = registry.create_policy(
-            &admin,
-            ITIP403Registry::createPolicyCall {
-                adminPolicyId: 1,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-            },
-        ).unwrap();
+        let policy_id = registry
+            .create_policy(
+                &admin,
+                ITIP403Registry::createPolicyCall {
+                    adminPolicyId: 1,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )
+            .unwrap();
 
         b.iter(|| {
             let r = black_box(&mut registry);
@@ -354,7 +365,8 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                     policyId: policy_id,
                     adminPolicyId: 1,
                 },
-            ).unwrap();
+            )
+            .unwrap();
         });
     });
 
@@ -363,13 +375,15 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         let user = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
-        let policy_id = registry.create_policy(
-            &admin,
-            ITIP403Registry::createPolicyCall {
-                adminPolicyId: 1,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-            },
-        ).unwrap();
+        let policy_id = registry
+            .create_policy(
+                &admin,
+                ITIP403Registry::createPolicyCall {
+                    adminPolicyId: 1,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )
+            .unwrap();
 
         b.iter(|| {
             let r = black_box(&mut registry);
@@ -380,7 +394,8 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                     account: user,
                     allowed: true,
                 },
-            ).unwrap();
+            )
+            .unwrap();
         });
     });
 
@@ -389,13 +404,15 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         let user = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
-        let policy_id = registry.create_policy(
-            &admin,
-            ITIP403Registry::createPolicyCall {
-                adminPolicyId: 1,
-                policyType: ITIP403Registry::PolicyType::BLACKLIST,
-            },
-        ).unwrap();
+        let policy_id = registry
+            .create_policy(
+                &admin,
+                ITIP403Registry::createPolicyCall {
+                    adminPolicyId: 1,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )
+            .unwrap();
 
         b.iter(|| {
             let r = black_box(&mut registry);
@@ -406,7 +423,8 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                     account: user,
                     restricted: true,
                 },
-            ).unwrap();
+            )
+            .unwrap();
         });
     });
 }
