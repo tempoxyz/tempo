@@ -37,17 +37,21 @@ impl CrescendoArgs {
             println!("[!] Failed to increase file descriptor limit: {err}.");
         }
 
-        let mut core_ids = core_affinity::get_core_ids().unwrap();
+        let mut core_ids =
+            core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
         println!("[*] Detected {} effective cores.", core_ids.len());
 
         // Initialize Rayon with explicit thread count.
         rayon::ThreadPoolBuilder::new()
             .num_threads(core_ids.len())
-            .build_global()
-            .unwrap();
+            .build_global()?;
 
         // Pin the tokio runtime to a core (if enabled).
-        utils::maybe_pin_thread(core_ids.pop().unwrap());
+        utils::maybe_pin_thread(
+            core_ids
+                .pop()
+                .ok_or_else(|| eyre::eyre!("No core available for main runtime"))?,
+        );
 
         // Given our desired breakdown of workers, translate this into actual numbers of workers to spawn.
         let (workers, worker_counts) = workers::assign_workers(
@@ -91,7 +95,7 @@ impl CrescendoArgs {
                         let rt = tokio::runtime::Builder::new_current_thread()
                             .enable_all()
                             .build()
-                            .unwrap();
+                            .expect("Failed to build tokio runtime");
 
                         rt.block_on(async {
                             for i in 0..connections_per_network_worker {
