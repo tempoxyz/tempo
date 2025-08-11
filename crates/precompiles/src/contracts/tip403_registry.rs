@@ -35,6 +35,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
     }
 
     // View functions
+    #[inline]
     pub fn policy_id_counter(&mut self) -> u64 {
         let counter_val = self
             .storage
@@ -51,6 +52,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         counter_val.to::<u64>()
     }
 
+    #[inline]
     pub fn policy_data(
         &mut self,
         call: ITIP403Registry::policyDataCall,
@@ -62,11 +64,13 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         }
     }
 
+    #[inline]
     pub fn is_authorized(&mut self, call: ITIP403Registry::isAuthorizedCall) -> bool {
         self.is_authorized_internal(call.policyId, &call.user)
     }
 
     // State-changing functions
+    #[inline]
     pub fn create_policy(
         &mut self,
         msg_sender: &Address,
@@ -114,6 +118,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         Ok(new_policy_id)
     }
 
+    #[inline]
     pub fn create_policy_with_accounts(
         &mut self,
         msg_sender: &Address,
@@ -207,6 +212,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         Ok(new_policy_id)
     }
 
+    #[inline]
     pub fn set_policy_admin(
         &mut self,
         msg_sender: &Address,
@@ -241,6 +247,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         Ok(())
     }
 
+    #[inline]
     pub fn modify_policy_whitelist(
         &mut self,
         msg_sender: &Address,
@@ -274,6 +281,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         Ok(())
     }
 
+    #[inline]
     pub fn modify_policy_blacklist(
         &mut self,
         msg_sender: &Address,
@@ -308,6 +316,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
     }
 
     // Internal helper functions
+    #[inline]
     fn get_policy_data(&mut self, policy_id: u64) -> PolicyData {
         let slot = mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA);
         let value = self.storage.sload(TIP403_REGISTRY_ADDRESS, slot);
@@ -322,6 +331,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         }
     }
 
+    #[inline]
     fn set_policy_data(&mut self, policy_id: u64, data: &PolicyData) {
         let slot = mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA);
 
@@ -331,6 +341,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         self.storage.sstore(TIP403_REGISTRY_ADDRESS, slot, value);
     }
 
+    #[inline]
     fn set_policy_set(&mut self, policy_id: u64, account: &Address, value: bool) {
         let slot = double_mapping_slot(policy_id.to_be_bytes(), account, slots::POLICY_SET);
         self.storage.sstore(
@@ -340,6 +351,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         );
     }
 
+    #[inline]
     fn is_authorized_internal(&mut self, policy_id: u64, user: &Address) -> bool {
         // Special case for always-allow and always-reject policies
         if policy_id < 2 {
