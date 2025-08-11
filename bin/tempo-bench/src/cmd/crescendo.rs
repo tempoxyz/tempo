@@ -16,17 +16,8 @@ pub struct CrescendoArgs {
 
 impl CrescendoArgs {
     pub async fn run(self) -> eyre::Result<()> {
-        let config_path = self.config;
-
-        if !config_path.exists() {
-            return Err(eyre::eyre!(
-                "Config file not found: {}",
-                config_path.display()
-            ));
-        }
-
-        println!("[~] Loading config from {}...", config_path.display());
-        config::init(Config::from_file(&config_path)?);
+        println!("[~] Loading config from {}...", self.config.display());
+        config::init(Config::from_file(&self.config)?);
 
         if let Err(err) =
             utils::increase_nofile_limit(config::get().network_worker.total_connections * 10)
