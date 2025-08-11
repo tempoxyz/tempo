@@ -82,7 +82,7 @@ tempo-bench run-max-tps --config configs/aggressive.toml
 tempo-bench run-max-tps --config configs/max.toml
 ```
 
-The TPS benchmarker uses TOML configuration files located in `crescendo/configs/`. You can either run with a preconfigured TOML or create your own.
+The TPS benchmarker uses TOML configuration files located in `configs/`. You can either run with a preconfigured TOML or create your own.
 
 - `default.toml` - Balanced settings for general benchmarking
 - `aggressive.toml` - High-performance settings for maximum throughput
@@ -139,7 +139,7 @@ network_worker_percentage = 0.9       # 90% of cores for network I/O
 #### Example Output
 
 ```
-[~] Loading config from crescendo/configs/default.toml...
+[~] Loading config from configs/default.toml...
 [*] Detected 8 effective cores.
 [+] Spawning 7 workers:
 - TxGen: 1 (core 0)
