@@ -10,6 +10,7 @@ use reth_db_api::{
 };
 use reth_provider::{DBProvider, DatabaseProviderFactory};
 use std::sync::Arc;
+use tempo_telemetry_util::error_field;
 use thiserror::Error;
 use tracing::{debug, error, trace};
 
@@ -77,18 +78,18 @@ where
                         Ok(Some((key, _))) => Some(key.into()),
                         Ok(None) => None,
                         Err(e) => {
-                            error!("Failed to read max height: {:?}", e);
+                            error!(error = error_field(&e), "Failed to read max height");
                             None
                         }
                     },
                     Err(e) => {
-                        error!("Failed to open cursor: {:?}", e);
+                        error!(error = error_field(&e), "Failed to open cursor");
                         None
                     }
                 }
             }
             Err(e) => {
-                error!("Failed to get provider: {:?}", e);
+                error!(error = error_field(&e), "Failed to get provider");
                 None
             }
         }
@@ -104,18 +105,18 @@ where
                         Ok(Some((key, _))) => Some(key.into()),
                         Ok(None) => None,
                         Err(e) => {
-                            error!("Failed to read min height: {:?}", e);
+                            error!(error = error_field(&e), "Failed to read min height");
                             None
                         }
                     },
                     Err(e) => {
-                        error!("Failed to open cursor: {:?}", e);
+                        error!(error = error_field(&e), "Failed to open cursor");
                         None
                     }
                 }
             }
             Err(e) => {
-                error!("Failed to get provider: {:?}", e);
+                error!(error = error_field(&e), "Failed to get provider");
                 None
             }
         }

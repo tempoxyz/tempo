@@ -6,13 +6,12 @@
 //!
 //! # Components
 //!
-//! - [`RethNode`]: Node type configuration with Malachite consensus
+//! - [`TempoNode`]: Node type configuration with Malachite consensus & Tempo EVM
 //! - [`MalachitePayloadServiceBuilder`]: Custom payload builder for Malachite
 //!
 //! The configuration uses standard Ethereum components for most functionality
 //! (transaction pool, networking, execution) but replaces the consensus layer
 //! with Malachite.
-
 use crate::consensus_utils::MalachiteConsensusBuilder;
 use reth::{
     payload::{PayloadBuilderHandle, PayloadServiceCommand},
@@ -21,22 +20,30 @@ use reth::{
 use reth_chainspec::ChainSpec;
 use reth_node_builder::{
     BuilderContext, ConfigureEvm, FullNodeTypes, Node, NodeComponentsBuilder, NodeTypes,
-    components::{BasicPayloadServiceBuilder, ComponentsBuilder, PayloadServiceBuilder},
+    PayloadBuilderConfig,
+    components::{
+        BasicPayloadServiceBuilder, ComponentsBuilder, ExecutorBuilder, PayloadServiceBuilder,
+    },
 };
-use reth_node_ethereum::node::{
-    EthereumAddOns, EthereumEngineValidatorBuilder, EthereumEthApiBuilder, EthereumNetworkBuilder,
-    EthereumPoolBuilder,
+use reth_node_ethereum::{
+    EthEvmConfig,
+    node::{
+        EthereumAddOns, EthereumEngineValidatorBuilder, EthereumEthApiBuilder,
+        EthereumNetworkBuilder, EthereumPoolBuilder,
+    },
 };
 use reth_trie_db::MerklePatriciaTrie;
+
+use tempo_evm::TempoEvmFactory;
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 
-/// Type configuration for a regular Reth node.
+/// Type configuration for a Tempo reth node.
 #[derive(Debug, Clone, Default)]
-pub struct RethNode {}
+pub struct TempoNode {}
 
-impl RethNode {
-    /// Create a new RethNode
+impl TempoNode {
+    /// Create a new TempNode
     pub fn new() -> Self {
         Self {}
     }
@@ -48,7 +55,7 @@ pub struct MalachitePayloadServiceBuilder;
 
 impl<Node, Pool, Evm> PayloadServiceBuilder<Node, Pool, Evm> for MalachitePayloadServiceBuilder
 where
-    Node: FullNodeTypes<Types = RethNode>,
+    Node: FullNodeTypes<Types = TempoNode>,
     Pool: TransactionPool,
     Evm: ConfigureEvm,
 {
@@ -81,7 +88,7 @@ where
     }
 }
 
-impl NodeTypes for RethNode {
+impl NodeTypes for TempoNode {
     type Primitives = reth_ethereum_primitives::EthPrimitives;
     type ChainSpec = ChainSpec;
     type StateCommitment = MerklePatriciaTrie;
@@ -89,7 +96,7 @@ impl NodeTypes for RethNode {
     type Payload = reth_node_ethereum::EthEngineTypes;
 }
 
-impl<N> Node<N> for RethNode
+impl<N> Node<N> for TempoNode
 where
     N: FullNodeTypes<Types = Self>,
 {
@@ -98,7 +105,7 @@ where
         EthereumPoolBuilder,
         BasicPayloadServiceBuilder<reth_node_ethereum::EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
-        reth_node_ethereum::EthereumExecutorBuilder,
+        TempoExecutorBuilder,
         MalachiteConsensusBuilder,
     >;
 
@@ -115,7 +122,7 @@ where
         ComponentsBuilder::default()
             .node_types::<N>()
             .pool(EthereumPoolBuilder::default())
-            .executor(reth_node_ethereum::EthereumExecutorBuilder::default())
+            .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
             .consensus(MalachiteConsensusBuilder::new())
@@ -123,5 +130,23 @@ where
 
     fn add_ons(&self) -> Self::AddOns {
         EthereumAddOns::default()
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+#[non_exhaustive]
+pub struct TempoExecutorBuilder;
+
+impl<N: FullNodeTypes<Types = TempoNode>> ExecutorBuilder<N> for TempoExecutorBuilder {
+    type EVM = EthEvmConfig<ChainSpec, TempoEvmFactory>;
+
+    async fn build_evm(self, ctx: &BuilderContext<N>) -> eyre::Result<Self::EVM> {
+        Ok(
+            EthEvmConfig::new_with_evm_factory(
+                ctx.chain_spec().clone(),
+                TempoEvmFactory::default(),
+            )
+            .with_extra_data(ctx.payload_builder_config().extra_data_bytes()),
+        )
     }
 }

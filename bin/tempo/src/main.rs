@@ -16,7 +16,7 @@ use clap::Parser;
 use reth_node_builder::NodeHandle;
 use std::{fs, sync::Arc};
 use tempo_consensus::{
-    app::{Config, Genesis, State, ValidatorInfo, node::RethNode},
+    app::{Config, Genesis, State, ValidatorInfo, node::TempoNode},
     cli::{Cli, MalachiteArgs, MalachiteChainSpecParser},
     consensus::{EngineConfig, start_consensus_engine},
     context::MalachiteContext,
@@ -70,12 +70,11 @@ fn main() -> eyre::Result<()> {
                 (Address::new([0; 20]), None, None)
             };
             // Launch the Reth node first to get the engine handle
-            let reth_node = RethNode::new();
             let NodeHandle {
                 node,
                 node_exit_future,
             } = builder
-                .node(reth_node)
+                .node(TempoNode::default())
                 .apply(|mut ctx| {
                     // Access the database before launch to create tables
                     let db = ctx.db_mut();
