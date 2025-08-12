@@ -13,7 +13,7 @@
 //! Configuration can be provided via command-line arguments or configuration files.
 
 use clap::Parser;
-use reth::{chainspec::EthChainSpec, ress::install_ress_subprotocol};
+use reth::chainspec::EthChainSpec;
 use reth_malachite::{
     app::{Config, Genesis, State, ValidatorInfo},
     cli::{Cli, MalachiteArgs},
@@ -33,6 +33,11 @@ use tracing::info;
 
 fn main() {
     reth_cli_util::sigsegv_handler::install();
+
+    // Enable backtraces unless a RUST_BACKTRACE value has already been explicitly provided.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
+    }
 
     if let Err(err) =
         Cli::<TempoChainSpecParser, TempoArgs>::parse().run(async move |builder, args| {
