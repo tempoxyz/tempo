@@ -7,7 +7,7 @@ use eyre::{WrapErr, bail, eyre};
 use malachitebft_app_channel::{AppMsg, Channels, NetworkMsg, Reply, app::engine::host::Next};
 use malachitebft_core_consensus::LocallyProposedValue;
 use malachitebft_core_types::{Context, Height as _, Round, Validity};
-use tempo_telemetry_util::error_field;
+use tempo_telemetry_util::{display_duration, error_field};
 use tracing::{error, info, instrument};
 
 /// Run the consensus message handler loop
@@ -326,6 +326,7 @@ pub async fn run_consensus_handler(
     fields(
         %height,
         %round,
+        timeout = %display_duration(timeout),
     ),
     ret
     // FIXME: Return the full error; this sucks because in tracing, but there is currently no way

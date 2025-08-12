@@ -1,5 +1,42 @@
 //! Utitilies to make working with tracing and telemetry easier.
 
+/// Formats a [`std::time::Duration`] using the [`std::fmt::Display`].
+///
+/// # Example
+///
+/// ```
+/// use tempo_telemetry_util::display_duration;
+///
+/// let timeout = std::time::Duration::from_millis(1500);
+/// tracing::warn!(
+///     timeout = display_duration(timeout),
+///     "computation did not finish in the prescribed time",
+/// );
+/// ```
+pub fn display_duration(duration: std::time::Duration) -> DisplayDuration {
+    DisplayDuration(duration)
+}
+
+pub struct DisplayDuration(std::time::Duration);
+impl std::fmt::Display for DisplayDuration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use jiff::{
+            SignedDuration,
+            fmt::{
+                StdFmtWrite,
+                friendly::{Designator, SpanPrinter},
+            },
+        };
+        static PRINTER: SpanPrinter = SpanPrinter::new().designator(Designator::Short);
+        match SignedDuration::try_from(self.0) {
+            Ok(duration) => PRINTER
+                .print_duration(&duration, StdFmtWrite(f))
+                .map_err(|_| std::fmt::Error),
+            Err(_) => write!(f, "<duration greater than {:#}>", SignedDuration::MAX),
+        }
+    }
+}
+
 /// Emit an error as a tracing event with its full source chain intact.
 ///
 /// This utility provides a streamlined way to emit errors as tracing event fields
