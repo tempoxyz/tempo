@@ -26,7 +26,7 @@ use reth_node_builder::{
     rpc::RethRpcAddOns,
 };
 use reth_provider::DatabaseProviderFactory;
-use std::{fs, sync::Arc};
+use std::{fs, future, sync::Arc};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_node::{args::TempoArgs, node::TempoNode};
 use tracing::info;
@@ -50,13 +50,19 @@ fn main() {
                 .launch_with_debug_capabilities()
                 .await?;
 
-            let malachite_handle = spawn_malachite(node.clone(), args.malachite_args).await?;
+            let malachite_handle = if node.config.dev.dev {
+                tokio::spawn(async move { future::pending::<()>().await })
+            } else {
+                spawn_malachite(node.clone(), args.malachite_args)
+                    .await?
+                    .app
+            };
 
             tokio::select! {
                 _ = node_exit_future => {
                     tracing::info!("Reth node exited");
                 }
-                _ = malachite_handle.app => {
+                _ = malachite_handle => {
                     tracing::info!("Consensus engine exited");
                 }
                 _ = tokio::signal::ctrl_c() => {

@@ -1,5 +1,5 @@
 use alloy_genesis::Genesis;
-use reth_chainspec::{Chain, ChainHardforks, ChainSpec, EthereumHardfork};
+use reth_chainspec::{Chain, ChainHardforks, ChainSpec, DEV, EthereumHardfork};
 use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use std::sync::{Arc, LazyLock};
 
@@ -17,6 +17,7 @@ pub const SUPPORTED_CHAINS: &[&str] = &["adagio"];
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>> {
     Ok(match s {
         "adagio" => ADAGIO.clone(),
+        "dev" => DEV.clone(),
         _ => Arc::new(parse_genesis(s)?.into()),
     })
 }
