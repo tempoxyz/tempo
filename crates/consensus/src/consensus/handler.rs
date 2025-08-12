@@ -1,11 +1,14 @@
 //! Consensus message handler that bridges Malachite consensus to the Reth application
 
+use std::time::Duration;
+
 use crate::{app::State, context::MalachiteContext};
-use eyre::eyre;
-use malachitebft_app_channel::{AppMsg, Channels, NetworkMsg, app::engine::host::Next};
-use malachitebft_core_types::{Height as _, Round, Validity};
+use eyre::{WrapErr, bail, eyre};
+use malachitebft_app_channel::{AppMsg, Channels, NetworkMsg, Reply, app::engine::host::Next};
+use malachitebft_core_consensus::LocallyProposedValue;
+use malachitebft_core_types::{Context, Height as _, Round, Validity};
 use tempo_telemetry_util::error_field;
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 
 /// Run the consensus message handler loop
 ///
@@ -74,43 +77,9 @@ pub async fn run_consensus_handler(
             AppMsg::GetValue {
                 height,
                 round,
-                timeout: _,
+                timeout,
                 reply,
-            } => {
-                info!(%height, %round, "Consensus requesting value to propose");
-
-                // Check if we've already built a value for this height/round
-                match state.get_previously_built_value(height, round).await? {
-                    Some(proposal) => {
-                        info!("Reusing previously built value");
-                        if reply.send(proposal).is_err() {
-                            error!("Failed to send GetValue reply");
-                        }
-                    }
-                    None => {
-                        // Build a new value
-                        match state.propose_value(height, round).await {
-                            Ok((proposal, block)) => {
-                                if reply.send(proposal.clone()).is_err() {
-                                    error!("Failed to send GetValue reply");
-                                }
-
-                                // Stream the proposal parts to peers
-                                for part in state.stream_proposal(proposal, block, Round::Nil) {
-                                    channels
-                                        .network
-                                        .send(NetworkMsg::PublishProposalPart(part))
-                                        .await?;
-                                }
-                            }
-                            Err(e) => {
-                                error!(error = error_field(&e), "Failed to build value");
-                                // The channel will be closed on drop
-                            }
-                        }
-                    }
-                }
-            }
+            } => handle_get_value(state, channels, height, round, timeout, reply).await?,
 
             // Vote extension handling (not used for now)
             AppMsg::ExtendVote { reply, .. } => {
@@ -350,4 +319,77 @@ pub async fn run_consensus_handler(
 
     // Channel closed, consensus has stopped
     Err(eyre!("Consensus channel closed unexpectedly"))
+}
+
+#[instrument(
+    skip_all,
+    fields(
+        %height,
+        %round,
+    ),
+    ret
+    // FIXME: Return the full error; this sucks because in tracing, but there is currently no way
+    // to have errors emitted in instrument attributes that use dyn Stderr: Value
+    err(Debug),
+)]
+async fn handle_get_value(
+    state: &State,
+    channels: &mut Channels<MalachiteContext>,
+    height: <MalachiteContext as Context>::Height,
+    round: Round,
+    timeout: Duration,
+    reply: Reply<LocallyProposedValue<MalachiteContext>>,
+) -> eyre::Result<()> {
+    let (proposal, block) =
+        match tokio::time::timeout(timeout, get_or_propose_block(state, height, round)).await {
+            Ok(ret) => ret.wrap_err("failed to construct a proposal")?,
+            Err(elapsed) => {
+                return Err(elapsed)
+                    .wrap_err("exceeded the timeout window to construct a proposal permitted");
+            }
+        };
+    if reply.send(proposal.clone()).is_err() {
+        bail!("failed to send proposal to consensus layer; channel was already dropped");
+    }
+
+    // FIXME: this likely should always propagate the proposal, not only in the case of newly
+    // constructed proposals.
+    if let Some(block) = block {
+        for part in state.stream_proposal(proposal, block, Round::Nil) {
+            channels
+                .network
+                .send(NetworkMsg::PublishProposalPart(part))
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Utility to get a new proposal.
+///
+/// Mainly used to to apply a timeout to the procedure.
+// FIXME: Returns `Option<Block>` only on a fully new proposal to be in line with
+// the previous implementation. But very likely this is wrong a block should always be returned.
+async fn get_or_propose_block(
+    state: &State,
+    height: <MalachiteContext as Context>::Height,
+    round: Round,
+) -> eyre::Result<(
+    LocallyProposedValue<MalachiteContext>,
+    Option<reth_primitives::Block>,
+)> {
+    match state.get_previously_built_value(height, round).await {
+        Some(proposal) => {
+            info!(value_id = %proposal.value.id(), "reusing previously built proposal");
+            Ok((proposal, None))
+        }
+        None => {
+            let (proposal, block) = state
+                .propose_value(height, round)
+                .await
+                .wrap_err("failed to propose new value")?;
+            info!(value_id = %proposal.value.id(), "constructed new proposal");
+            Ok((proposal, Some(block)))
+        }
+    }
 }
