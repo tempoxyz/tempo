@@ -56,13 +56,14 @@ fn main() {
                 .launch_with_debug_capabilities()
                 .await?;
 
-            let malachite_handle = if node.config.dev.dev {
-                tokio::spawn(async move { future::pending::<()>().await })
-            } else {
-                spawn_malachite(node.clone(), args.malachite_args)
-                    .await?
-                    .app
-            };
+            let malachite_handle =
+                if node.config.dev.dev || args.malachite_args.consensus_config.is_none() {
+                    tokio::spawn(async move { future::pending::<()>().await })
+                } else {
+                    spawn_malachite(node.clone(), args.malachite_args)
+                        .await?
+                        .app
+                };
 
             tokio::select! {
                 _ = node_exit_future => {
