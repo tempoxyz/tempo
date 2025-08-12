@@ -19,7 +19,7 @@ impl<C> MalachiteConsensus<C> {
     }
 }
 
-impl Default for MalachiteConsensus<ChainSpec> {
+impl Default for MalachiteConsensus {
     fn default() -> Self {
         Self {
             chain_spec: Arc::new(ChainSpec::default()),
@@ -96,14 +96,6 @@ where
         Arc<MalachiteConsensus<<Node::Types as reth_node_builder::NodeTypes>::ChainSpec>>;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        // TODO: load config
-
-        // TODO: load genesis
-
-        // TODO: load validator key
-
-        // TODO: db mut
-
         Ok(Arc::new(MalachiteConsensus::new(ctx.chain_spec())))
     }
 }
