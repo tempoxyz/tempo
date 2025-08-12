@@ -54,17 +54,14 @@ pub static PERMIT_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
 });
 
 impl<'a, S: StorageProvider> TIP20Token<'a, S> {
-    #[inline]
     pub fn name(&mut self) -> String {
         self.read_string(slots::NAME)
     }
 
-    #[inline]
     pub fn symbol(&mut self) -> String {
         self.read_string(slots::SYMBOL)
     }
 
-    #[inline]
     pub fn decimals(&mut self) -> u8 {
         TIP4217Registry::default().get_currency_decimals(
             ITIP4217Registry::getCurrencyDecimalsCall {
@@ -73,34 +70,28 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         )
     }
 
-    #[inline]
     pub fn currency(&mut self) -> String {
         self.read_string(slots::CURRENCY)
     }
 
-    #[inline]
     pub fn total_supply(&mut self) -> U256 {
         self.storage.sload(self.token_address, slots::TOTAL_SUPPLY)
     }
 
-    #[inline]
     pub fn supply_cap(&mut self) -> U256 {
         self.storage.sload(self.token_address, slots::SUPPLY_CAP)
     }
 
-    #[inline]
     pub fn paused(&mut self) -> bool {
         self.storage.sload(self.token_address, slots::PAUSED) != U256::ZERO
     }
 
-    #[inline]
     pub fn transfer_policy_id(&mut self) -> u64 {
         self.storage
             .sload(self.token_address, slots::TRANSFER_POLICY_ID)
             .to::<u64>()
     }
 
-    #[inline]
     pub fn domain_separator(&mut self) -> B256 {
         B256::from(
             self.storage
@@ -109,30 +100,25 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // View functions
-    #[inline]
     pub fn balance_of(&mut self, call: ITIP20::balanceOfCall) -> U256 {
         self.get_balance(&call.account)
     }
 
-    #[inline]
     pub fn allowance(&mut self, call: ITIP20::allowanceCall) -> U256 {
         self.get_allowance(&call.owner, &call.spender)
     }
 
-    #[inline]
     pub fn nonces(&mut self, call: ITIP20::noncesCall) -> U256 {
         let slot = mapping_slot(call.owner, slots::NONCES);
         self.storage.sload(self.token_address, slot)
     }
 
-    #[inline]
     pub fn salts(&mut self, call: ITIP20::saltsCall) -> bool {
         let slot = double_mapping_slot(call.owner, call.salt, slots::SALTS);
         self.storage.sload(self.token_address, slot) != U256::ZERO
     }
 
     // Admin functions
-    #[inline]
     pub fn change_transfer_policy_id(
         &mut self,
         msg_sender: &Address,
@@ -156,7 +142,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     pub fn set_supply_cap(
         &mut self,
         msg_sender: &Address,
@@ -180,7 +165,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     pub fn pause(
         &mut self,
         msg_sender: &Address,
@@ -201,7 +185,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     pub fn unpause(
         &mut self,
         msg_sender: &Address,
@@ -223,7 +206,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // Token operations
-    #[inline]
     pub fn mint(&mut self, msg_sender: &Address, call: ITIP20::mintCall) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply();
@@ -268,7 +250,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     pub fn burn(&mut self, msg_sender: &Address, call: ITIP20::burnCall) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
@@ -292,7 +273,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     pub fn burn_blocked(
         &mut self,
         msg_sender: &Address,
@@ -332,7 +312,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // Standard token functions
-    #[inline]
     pub fn approve(
         &mut self,
         msg_sender: &Address,
@@ -353,7 +332,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(true)
     }
 
-    #[inline]
     pub fn transfer(
         &mut self,
         msg_sender: &Address,
@@ -366,7 +344,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(true)
     }
 
-    #[inline]
     pub fn transfer_from(
         &mut self,
         msg_sender: &Address,
@@ -393,7 +370,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(true)
     }
 
-    #[inline]
     pub fn permit(
         &mut self,
         _msg_sender: &Address,
@@ -461,7 +437,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // TIP20 extension functions
-    #[inline]
     pub fn transfer_with_memo(
         &mut self,
         msg_sender: &Address,
@@ -490,7 +465,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
 // Utility functions
 impl<'a, S: StorageProvider> TIP20Token<'a, S> {
-    #[inline]
     pub fn new(token_id: u64, storage: &'a mut S) -> Self {
         Self {
             token_address: token_id_to_address(token_id),
@@ -499,7 +473,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     /// Only called internally from the factory, which won't try to re-initialize a token.
-    #[inline]
     pub fn initialize(
         &mut self,
         name: &str,
@@ -550,7 +523,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // Helper to get a RolesAuthContract instance
-    #[inline]
     pub fn get_roles_contract(&mut self) -> RolesAuthContract<'_, S> {
         RolesAuthContract::new(
             self.storage,
@@ -560,37 +532,31 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         )
     }
 
-    #[inline]
     fn get_balance(&mut self, account: &Address) -> U256 {
         let slot = mapping_slot(account, slots::BALANCES);
         self.storage.sload(self.token_address, slot)
     }
 
-    #[inline]
     fn set_balance(&mut self, account: &Address, amount: U256) {
         let slot = mapping_slot(account, slots::BALANCES);
         self.storage.sstore(self.token_address, slot, amount);
     }
 
-    #[inline]
     fn get_allowance(&mut self, owner: &Address, spender: &Address) -> U256 {
         let slot = double_mapping_slot(owner, spender, slots::ALLOWANCES);
         self.storage.sload(self.token_address, slot)
     }
 
-    #[inline]
     fn set_allowance(&mut self, owner: &Address, spender: &Address, amount: U256) {
         let slot = double_mapping_slot(owner, spender, slots::ALLOWANCES);
         self.storage.sstore(self.token_address, slot, amount);
     }
 
-    #[inline]
     fn set_total_supply(&mut self, amount: U256) {
         self.storage
             .sstore(self.token_address, slots::TOTAL_SUPPLY, amount);
     }
 
-    #[inline]
     fn check_role(&mut self, account: &Address, role: B256) -> Result<(), TIP20Error> {
         let mut roles = self.get_roles_contract();
         roles
@@ -598,7 +564,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .map_err(|_| tip20_err!(PolicyForbids))
     }
 
-    #[inline]
     fn check_not_paused(&mut self) -> Result<(), TIP20Error> {
         if self.paused() {
             return Err(tip20_err!(ContractPaused));
@@ -606,7 +571,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     fn check_not_token_address(&self, to: &Address) -> Result<(), TIP20Error> {
         // Don't allow sending to other precompiled tokens
         if address_is_token_address(to) {
@@ -615,7 +579,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     fn check_transfer_authorized(
         &mut self,
         from: &Address,
@@ -644,7 +607,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     fn _transfer(&mut self, from: &Address, to: &Address, amount: U256) -> Result<(), TIP20Error> {
         let from_balance = self.get_balance(from);
         if amount > from_balance {
@@ -677,7 +639,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     fn read_string(&mut self, slot: U256) -> String {
         let value = self.storage.sload(self.token_address, slot);
         let bytes = value.to_be_bytes::<32>();
@@ -689,7 +650,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         }
     }
 
-    #[inline]
     /// Write string to storage (simplified - assumes string fits in one slot)
     fn write_string(&mut self, slot: U256, value: String) -> Result<(), TIP20Error> {
         let bytes = value.as_bytes();
@@ -705,7 +665,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     fn compute_permit_digest(
         &mut self,
         owner: &Address,

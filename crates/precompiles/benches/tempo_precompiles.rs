@@ -16,8 +16,7 @@ fn tip20_metadata(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.name();
+            black_box(token.name());
         });
     });
 
@@ -28,8 +27,7 @@ fn tip20_metadata(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.symbol();
+            black_box(token.symbol());
         });
     });
 
@@ -40,8 +38,7 @@ fn tip20_metadata(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.decimals();
+            black_box(token.decimals());
         });
     });
 
@@ -52,8 +49,7 @@ fn tip20_metadata(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.currency();
+            black_box(token.currency());
         });
     });
 
@@ -76,8 +72,7 @@ fn tip20_metadata(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.total_supply();
+            black_box(token.total_supply());
         });
     });
 }
@@ -102,8 +97,7 @@ fn tip20_view(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.balance_of(ITIP20::balanceOfCall { account: user });
+            black_box(token.balance_of(ITIP20::balanceOfCall { account: user }));
         });
     });
 
@@ -125,8 +119,7 @@ fn tip20_view(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.allowance(ITIP20::allowanceCall { owner, spender });
+            black_box(token.allowance(ITIP20::allowanceCall { owner, spender }));
         });
     });
 
@@ -138,8 +131,7 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.nonces(ITIP20::noncesCall { owner });
+            black_box(token.nonces(ITIP20::noncesCall { owner }));
         });
     });
 
@@ -152,8 +144,7 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.salts(ITIP20::saltsCall { owner, salt });
+            black_box(token.salts(ITIP20::saltsCall { owner, salt }));
         });
     });
 
@@ -164,8 +155,7 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.supply_cap();
+            black_box(token.supply_cap());
         });
     });
 
@@ -176,8 +166,7 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.paused();
+            black_box(token.paused());
         });
     });
 
@@ -188,8 +177,7 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.transfer_policy_id();
+            black_box(token.transfer_policy_id());
         });
     });
 
@@ -200,8 +188,7 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.domain_separator();
+            black_box(token.domain_separator());
         });
     });
 }
@@ -218,9 +205,8 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(100);
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.mint(&admin, ITIP20::mintCall { to: user, amount })
-                .unwrap();
+            black_box(token.mint(&admin, ITIP20::mintCall { to: user, amount })
+                .unwrap());
         });
     });
 
@@ -244,8 +230,7 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(100);
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.burn(&admin, ITIP20::burnCall { amount }).unwrap();
+            black_box(token.burn(&admin, ITIP20::burnCall { amount }).unwrap());
         });
     });
 
@@ -259,9 +244,8 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(500);
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.approve(&owner, ITIP20::approveCall { spender, amount })
-                .unwrap();
+            black_box(token.approve(&owner, ITIP20::approveCall { spender, amount })
+                .unwrap());
         });
     });
 
@@ -287,9 +271,8 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(100);
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.transfer(&from, ITIP20::transferCall { to, amount })
-                .unwrap();
+            black_box(token.transfer(&from, ITIP20::transferCall { to, amount })
+                .unwrap());
         });
     });
 
@@ -326,8 +309,7 @@ fn tip20_mutate(c: &mut Criterion) {
         let amount = U256::from(100);
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.transfer_from(
+            black_box(token.transfer_from(
                 &spender,
                 ITIP20::transferFromCall {
                     from: owner,
@@ -362,9 +344,8 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(100);
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.transfer_with_memo(&from, ITIP20::transferWithMemoCall { to, amount, memo })
-                .unwrap();
+            black_box(token.transfer_with_memo(&from, ITIP20::transferWithMemoCall { to, amount, memo })
+                .unwrap());
         });
     });
 
@@ -378,8 +359,7 @@ fn tip20_mutate(c: &mut Criterion) {
         roles.grant_role_internal(&admin, *PAUSE_ROLE);
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.pause(&admin, ITIP20::pauseCall {}).unwrap();
+            black_box(token.pause(&admin, ITIP20::pauseCall {}).unwrap());
         });
     });
 
@@ -393,8 +373,7 @@ fn tip20_mutate(c: &mut Criterion) {
         roles.grant_role_internal(&admin, *UNPAUSE_ROLE);
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.unpause(&admin, ITIP20::unpauseCall {}).unwrap();
+            black_box(token.unpause(&admin, ITIP20::unpauseCall {}).unwrap());
         });
     });
 
@@ -406,8 +385,7 @@ fn tip20_mutate(c: &mut Criterion) {
         let counter = U256::from(10000);
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.set_supply_cap(
+            black_box(token.set_supply_cap(
                 &admin,
                 ITIP20::setSupplyCapCall {
                     newSupplyCap: counter,
@@ -425,8 +403,7 @@ fn tip20_mutate(c: &mut Criterion) {
         let policy_id = 2;
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.change_transfer_policy_id(
+            black_box(token.change_transfer_policy_id(
                 &admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: policy_id,
