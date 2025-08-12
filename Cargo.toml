@@ -35,13 +35,6 @@ resolver = "3"
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 
-# Speed up tests.
-[profile.dev.package]
-proptest.opt-level = 3
-rand_chacha.opt-level = 3
-rand_xorshift.opt-level = 3
-unarray.opt-level = 3
-
 # Meant for testing - all optimizations, but with debug assertions and overflow checks.
 [profile.hivetests]
 inherits = "test"
@@ -171,6 +164,3 @@ prost = "0.13"
 prost-build = "0.13"
 protox = "0.7"
 criterion = "0.7.0"
-
-[patch.crates-io]
-libp2p-dns = { git = "https://github.com/informalsystems/rust-libp2p.git", branch = "reth" }

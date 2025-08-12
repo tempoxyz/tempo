@@ -808,7 +808,7 @@ where
         &self,
         height: Height,
         round: Round,
-    ) -> Result<Option<LocallyProposedValue<MalachiteContext>>> {
+    ) -> Option<LocallyProposedValue<MalachiteContext>> {
         info!(
             "Requested previously built value for height {} round {}",
             height, round
@@ -821,17 +821,13 @@ where
                 // Find a proposal that was built by us
                 for proposal in proposals {
                     if proposal.proposer == BasePeerAddress(self.address) {
-                        return Ok(Some(LocallyProposedValue::new(
-                            height,
-                            round,
-                            proposal.value,
-                        )));
+                        return Some(LocallyProposedValue::new(height, round, proposal.value));
                     }
                 }
             }
         }
 
-        Ok(None)
+        None
     }
 
     // ===== Store Access API =====
