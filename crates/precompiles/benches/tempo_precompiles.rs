@@ -18,8 +18,9 @@ fn tip20_metadata(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.name();
+            let token = black_box(&mut token);
+            let result = token.name();
+            black_box(result);
         });
     });
 
@@ -30,8 +31,9 @@ fn tip20_metadata(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.symbol();
+            let token = black_box(&mut token);
+            let result = token.symbol();
+            black_box(result);
         });
     });
 
@@ -42,8 +44,9 @@ fn tip20_metadata(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.decimals();
+            let token = black_box(&mut token);
+            let result = token.decimals();
+            black_box(result);
         });
     });
 
@@ -54,8 +57,9 @@ fn tip20_metadata(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.currency();
+            let token = black_box(&mut token);
+            let result = token.currency();
+            black_box(result);
         });
     });
 
@@ -78,8 +82,9 @@ fn tip20_metadata(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
-            let t = black_box(&mut token);
-            t.total_supply();
+            let token = black_box(&mut token);
+            let result = token.total_supply();
+            black_box(result);
         });
     });
 }
@@ -104,7 +109,10 @@ fn tip20_view(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
-            black_box(token.balance_of(ITIP20::balanceOfCall { account: user }));
+            let token = black_box(&mut token);
+            let call = black_box(ITIP20::balanceOfCall { account: user });
+            let result = token.balance_of(call);
+            black_box(result);
         });
     });
 
@@ -126,7 +134,10 @@ fn tip20_view(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
-            black_box(token.allowance(ITIP20::allowanceCall { owner, spender }));
+            let token = black_box(&mut token);
+            let call = black_box(ITIP20::allowanceCall { owner, spender });
+            let result = token.allowance(call);
+            black_box(result);
         });
     });
 
@@ -138,7 +149,10 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            black_box(token.nonces(ITIP20::noncesCall { owner }));
+            let token = black_box(&mut token);
+            let call = black_box(ITIP20::noncesCall { owner });
+            let result = token.nonces(call);
+            black_box(result);
         });
     });
 
@@ -151,7 +165,10 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            black_box(token.salts(ITIP20::saltsCall { owner, salt }));
+            let token = black_box(&mut token);
+            let call = black_box(ITIP20::saltsCall { owner, salt });
+            let result = token.salts(call);
+            black_box(result);
         });
     });
 
@@ -162,7 +179,9 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            black_box(token.supply_cap());
+            let token = black_box(&mut token);
+            let result = token.supply_cap();
+            black_box(result);
         });
     });
 
@@ -173,7 +192,9 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            black_box(token.paused());
+            let token = black_box(&mut token);
+            let result = token.paused();
+            black_box(result);
         });
     });
 
@@ -184,7 +205,9 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            black_box(token.transfer_policy_id());
+            let token = black_box(&mut token);
+            let result = token.transfer_policy_id();
+            black_box(result);
         });
     });
 
@@ -195,7 +218,9 @@ fn tip20_view(c: &mut Criterion) {
         token.initialize("TestToken", "T", "USD", &admin).unwrap();
 
         b.iter(|| {
-            black_box(token.domain_separator());
+            let token = black_box(&mut token);
+            let result = token.domain_separator();
+            black_box(result);
         });
     });
 }
@@ -212,8 +237,10 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(100);
         b.iter(|| {
-            black_box(token.mint(&admin, ITIP20::mintCall { to: user, amount })
-                .unwrap());
+            let token = black_box(&mut token);
+            let admin = black_box(&admin);
+            let call = black_box(ITIP20::mintCall { to: user, amount });
+            token.mint(admin, call).unwrap();
         });
     });
 
@@ -237,7 +264,10 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(100);
         b.iter(|| {
-            black_box(token.burn(&admin, ITIP20::burnCall { amount }).unwrap());
+            let token = black_box(&mut token);
+            let admin = black_box(&admin);
+            let call = black_box(ITIP20::burnCall { amount });
+            token.burn(admin, call).unwrap();
         });
     });
 
@@ -251,8 +281,11 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(500);
         b.iter(|| {
-            black_box(token.approve(&owner, ITIP20::approveCall { spender, amount })
-                .unwrap());
+            let token = black_box(&mut token);
+            let owner = black_box(&owner);
+            let call = black_box(ITIP20::approveCall { spender, amount });
+            let result = token.approve(owner, call).unwrap();
+            black_box(result);
         });
     });
 
@@ -278,8 +311,11 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(100);
         b.iter(|| {
-            black_box(token.transfer(&from, ITIP20::transferCall { to, amount })
-                .unwrap());
+            let token = black_box(&mut token);
+            let from = black_box(&from);
+            let call = black_box(ITIP20::transferCall { to, amount });
+            let result = token.transfer(from, call).unwrap();
+            black_box(result);
         });
     });
 
@@ -316,15 +352,15 @@ fn tip20_mutate(c: &mut Criterion) {
         let amount = U256::from(100);
 
         b.iter(|| {
-            black_box(token.transfer_from(
-                &spender,
-                ITIP20::transferFromCall {
-                    from: owner,
-                    to: recipient,
-                    amount,
-                },
-            )
-            .unwrap();
+            let token = black_box(&mut token);
+            let spender = black_box(&spender);
+            let call = black_box(ITIP20::transferFromCall {
+                from: owner,
+                to: recipient,
+                amount,
+            });
+            let result = token.transfer_from(spender, call).unwrap();
+            black_box(result);
         });
     });
 
@@ -351,8 +387,10 @@ fn tip20_mutate(c: &mut Criterion) {
 
         let amount = U256::from(100);
         b.iter(|| {
-            black_box(token.transfer_with_memo(&from, ITIP20::transferWithMemoCall { to, amount, memo })
-                .unwrap());
+            let token = black_box(&mut token);
+            let from = black_box(&from);
+            let call = black_box(ITIP20::transferWithMemoCall { to, amount, memo });
+            token.transfer_with_memo(from, call).unwrap();
         });
     });
 
@@ -366,7 +404,10 @@ fn tip20_mutate(c: &mut Criterion) {
         roles.grant_role_internal(&admin, *PAUSE_ROLE);
 
         b.iter(|| {
-            black_box(token.pause(&admin, ITIP20::pauseCall {}).unwrap());
+            let token = black_box(&mut token);
+            let admin = black_box(&admin);
+            let call = black_box(ITIP20::pauseCall {});
+            token.pause(admin, call).unwrap();
         });
     });
 
@@ -380,7 +421,11 @@ fn tip20_mutate(c: &mut Criterion) {
         roles.grant_role_internal(&admin, *UNPAUSE_ROLE);
 
         b.iter(|| {
-            black_box(token.unpause(&admin, ITIP20::unpauseCall {}).unwrap());
+            let token = black_box(&mut token);
+            let admin = black_box(&admin);
+            let call = black_box(ITIP20::unpauseCall {});
+            let result = token.unpause(admin, call).unwrap();
+            black_box(result);
         });
     });
 
@@ -392,13 +437,13 @@ fn tip20_mutate(c: &mut Criterion) {
         let counter = U256::from(10000);
 
         b.iter(|| {
-            black_box(token.set_supply_cap(
-                &admin,
-                ITIP20::setSupplyCapCall {
-                    newSupplyCap: counter,
-                },
-            )
-            .unwrap();
+            let token = black_box(&mut token);
+            let admin = black_box(&admin);
+            let call = black_box(ITIP20::setSupplyCapCall {
+                newSupplyCap: counter,
+            });
+            let result = token.set_supply_cap(admin, call).unwrap();
+            black_box(result);
         });
     });
 
@@ -410,13 +455,13 @@ fn tip20_mutate(c: &mut Criterion) {
         let policy_id = 2;
 
         b.iter(|| {
-            black_box(token.change_transfer_policy_id(
-                &admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )
-            .unwrap();
+            let token = black_box(&mut token);
+            let admin = black_box(&admin);
+            let call = black_box(ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: policy_id,
+            });
+            let result = token.change_transfer_policy_id(admin, call).unwrap();
+            black_box(result);
         });
     });
 }
@@ -427,8 +472,9 @@ fn tip20_factory_view(c: &mut Criterion) {
         let mut factory = TIP20Factory::new(&mut storage);
 
         b.iter(|| {
-            let f = black_box(&mut factory);
-            f.token_id_counter();
+            let factory = black_box(&mut factory);
+            let result = factory.token_id_counter();
+            black_box(result);
         });
     });
 }
@@ -447,8 +493,11 @@ fn tip20_factory_mutate(c: &mut Criterion) {
         };
 
         b.iter(|| {
-            let f = black_box(&mut factory);
-            f.create_token(&sender, create_call.clone()).unwrap();
+            let factory = black_box(&mut factory);
+            let sender = black_box(&sender);
+            let call = black_box(create_call.clone());
+            let result = factory.create_token(sender, call).unwrap();
+            black_box(result);
         });
     });
 }
@@ -459,7 +508,8 @@ fn tip403_registry_view(c: &mut Criterion) {
         let mut registry = TIP403Registry::new(&mut storage);
 
         b.iter(|| {
-            let result = black_box(&mut registry).policy_id_counter();
+            let registry = black_box(&mut registry);
+            let result = registry.policy_id_counter();
             black_box(result);
         });
     });
@@ -479,10 +529,11 @@ fn tip403_registry_view(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
+            let registry = black_box(&mut registry);
             let call = black_box(ITIP403Registry::policyDataCall {
                 policyId: policy_id,
             });
-            let result = black_box(&mut registry).policy_data(call);
+            let result = registry.policy_data(call);
             black_box(result);
         });
     });
@@ -503,11 +554,12 @@ fn tip403_registry_view(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
+            let registry = black_box(&mut registry);
             let call = black_box(ITIP403Registry::isAuthorizedCall {
                 policyId: policy_id,
                 user,
             });
-            let result = black_box(&mut registry).is_authorized(call);
+            let result = registry.is_authorized(call);
             black_box(result);
         });
     });
@@ -520,13 +572,13 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         let mut registry = TIP403Registry::new(&mut storage);
 
         b.iter(|| {
+            let registry = black_box(&mut registry);
+            let admin = black_box(&admin);
             let call = black_box(ITIP403Registry::createPolicyCall {
                 adminPolicyId: 1,
                 policyType: ITIP403Registry::PolicyType::WHITELIST,
             });
-            let result = black_box(&mut registry)
-                .create_policy(&admin, call)
-                .unwrap();
+            let result = registry.create_policy(admin, call).unwrap();
             black_box(result);
         });
     });
@@ -540,14 +592,14 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         let mut registry = TIP403Registry::new(&mut storage);
 
         b.iter(|| {
+            let registry = black_box(&mut registry);
+            let admin = black_box(&admin);
             let call = black_box(ITIP403Registry::createPolicyWithAccountsCall {
                 adminPolicyId: 1,
                 policyType: ITIP403Registry::PolicyType::WHITELIST,
                 accounts: accounts.clone(),
             });
-            let result = black_box(&mut registry)
-                .create_policy_with_accounts(&admin, call)
-                .unwrap();
+            let result = registry.create_policy_with_accounts(admin, call).unwrap();
             black_box(result);
         });
     });
@@ -567,14 +619,14 @@ fn tip403_registry_mutate(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
+            let registry = black_box(&mut registry);
+            let admin = black_box(&admin);
             let call = black_box(ITIP403Registry::setPolicyAdminCall {
                 policyId: policy_id,
                 adminPolicyId: 1,
             });
-            black_box(&mut registry)
-                .set_policy_admin(&admin, call)
-                .unwrap();
-            black_box(());
+            let result = registry.set_policy_admin(admin, call).unwrap();
+            black_box(result);
         });
     });
 
@@ -594,15 +646,15 @@ fn tip403_registry_mutate(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
+            let registry = black_box(&mut registry);
+            let admin = black_box(&admin);
             let call = black_box(ITIP403Registry::modifyPolicyWhitelistCall {
                 policyId: policy_id,
                 account: user,
                 allowed: true,
             });
-            black_box(&mut registry)
-                .modify_policy_whitelist(&admin, call)
-                .unwrap();
-            black_box(());
+            let result = registry.modify_policy_whitelist(admin, call).unwrap();
+            black_box(result);
         });
     });
 
@@ -622,15 +674,15 @@ fn tip403_registry_mutate(c: &mut Criterion) {
             .unwrap();
 
         b.iter(|| {
+            let registry = black_box(&mut registry);
+            let admin = black_box(&admin);
             let call = black_box(ITIP403Registry::modifyPolicyBlacklistCall {
                 policyId: policy_id,
                 account: user,
                 restricted: true,
             });
-            black_box(&mut registry)
-                .modify_policy_blacklist(&admin, call)
-                .unwrap();
-            black_box(());
+            let result = registry.modify_policy_blacklist(admin, call).unwrap();
+            black_box(result);
         });
     });
 }
