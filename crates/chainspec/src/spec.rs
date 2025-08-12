@@ -15,7 +15,7 @@ pub const SUPPORTED_CHAINS: &[&str] = &["adagio"];
 ///
 /// The value parser matches either a known chain, the path
 /// to a json file, or a json formatted string in-memory. The json needs to be a Genesis struct.
-pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>, eyre::Error> {
+pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>> {
     Ok(match s {
         "adagio" => ADAGIO.clone(),
         _ => Arc::new(parse_genesis(s)?.into()),

@@ -45,11 +45,8 @@ fn main() {
                 .launch_with_debug_capabilities()
                 .await?;
 
-            // Spawn malachite consensus engine
-            // // TODO: malachite args
             let malachite_handle = spawn_malachite(node.clone(), args.malachite_args).await?;
 
-            // Wait for either the node or consensus engine to exit
             tokio::select! {
                 _ = node_exit_future => {
                     tracing::info!("Reth node exited");
