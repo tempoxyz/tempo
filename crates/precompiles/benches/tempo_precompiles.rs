@@ -425,7 +425,6 @@ fn tip20_mutate(c: &mut Criterion) {
             let admin = black_box(&admin);
             let call = black_box(ITIP20::unpauseCall {});
             token.unpause(admin, call).unwrap();
-            black_box(());
         });
     });
 
@@ -443,7 +442,6 @@ fn tip20_mutate(c: &mut Criterion) {
                 newSupplyCap: counter,
             });
             token.set_supply_cap(admin, call).unwrap();
-            black_box(());
         });
     });
 
@@ -461,7 +459,6 @@ fn tip20_mutate(c: &mut Criterion) {
                 newPolicyId: policy_id,
             });
             token.change_transfer_policy_id(admin, call).unwrap();
-            black_box(());
         });
     });
 }
@@ -626,7 +623,6 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 adminPolicyId: 1,
             });
             registry.set_policy_admin(admin, call).unwrap();
-            black_box(());
         });
     });
 
@@ -654,7 +650,6 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 allowed: true,
             });
             registry.modify_policy_whitelist(admin, call).unwrap();
-            black_box(());
         });
     });
 
@@ -682,7 +677,6 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 restricted: true,
             });
             registry.modify_policy_blacklist(admin, call).unwrap();
-            black_box(());
         });
     });
 }
