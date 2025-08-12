@@ -424,8 +424,8 @@ fn tip20_mutate(c: &mut Criterion) {
             let token = black_box(&mut token);
             let admin = black_box(&admin);
             let call = black_box(ITIP20::unpauseCall {});
-            let result = token.unpause(admin, call).unwrap();
-            black_box(result);
+            token.unpause(admin, call).unwrap();
+            black_box(());
         });
     });
 
@@ -442,8 +442,8 @@ fn tip20_mutate(c: &mut Criterion) {
             let call = black_box(ITIP20::setSupplyCapCall {
                 newSupplyCap: counter,
             });
-            let result = token.set_supply_cap(admin, call).unwrap();
-            black_box(result);
+            token.set_supply_cap(admin, call).unwrap();
+            black_box(());
         });
     });
 
@@ -460,8 +460,8 @@ fn tip20_mutate(c: &mut Criterion) {
             let call = black_box(ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: policy_id,
             });
-            let result = token.change_transfer_policy_id(admin, call).unwrap();
-            black_box(result);
+            token.change_transfer_policy_id(admin, call).unwrap();
+            black_box(());
         });
     });
 }
@@ -625,8 +625,8 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 policyId: policy_id,
                 adminPolicyId: 1,
             });
-            let result = registry.set_policy_admin(admin, call).unwrap();
-            black_box(result);
+            registry.set_policy_admin(admin, call).unwrap();
+            black_box(());
         });
     });
 
@@ -653,8 +653,8 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 account: user,
                 allowed: true,
             });
-            let result = registry.modify_policy_whitelist(admin, call).unwrap();
-            black_box(result);
+            registry.modify_policy_whitelist(admin, call).unwrap();
+            black_box(());
         });
     });
 
@@ -681,8 +681,8 @@ fn tip403_registry_mutate(c: &mut Criterion) {
                 account: user,
                 restricted: true,
             });
-            let result = registry.modify_policy_blacklist(admin, call).unwrap();
-            black_box(result);
+            registry.modify_policy_blacklist(admin, call).unwrap();
+            black_box(());
         });
     });
 }
