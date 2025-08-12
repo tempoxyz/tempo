@@ -100,6 +100,12 @@ where
     }
 }
 
+impl Default for MalachiteConsensusBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MalachiteConsensusBuilder {
     pub fn new() -> Self {
         Self
