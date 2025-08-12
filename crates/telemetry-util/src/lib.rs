@@ -9,7 +9,7 @@
 ///
 /// let timeout = std::time::Duration::from_millis(1500);
 /// tracing::warn!(
-///     timeout = display_duration(timeout),
+///     timeout = %display_duration(timeout),
 ///     "computation did not finish in the prescribed time",
 /// );
 /// ```
