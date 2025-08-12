@@ -34,11 +34,6 @@ use tracing::info;
 fn main() {
     reth_cli_util::sigsegv_handler::install();
 
-    // Enable backtraces unless a RUST_BACKTRACE value has already been explicitly provided.
-    if std::env::var_os("RUST_BACKTRACE").is_none() {
-        unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
-    }
-
     if let Err(err) =
         Cli::<TempoChainSpecParser, TempoArgs>::parse().run(async move |builder, args| {
             info!(target: "reth::cli", "Launching node");
@@ -53,18 +48,6 @@ fn main() {
             // Spawn malachite consensus engine
             // // TODO: malachite args
             let malachite_handle = spawn_malachite(node.clone(), args.malachite_args).await?;
-
-            // Install ress subprotocol.
-            if args.ress_args.enabled {
-                install_ress_subprotocol(
-                    args.ress_args,
-                    node.provider,
-                    node.evm_config,
-                    node.network,
-                    node.task_executor,
-                    node.add_ons_handle.engine_events.new_listener(),
-                )?;
-            }
 
             // Wait for either the node or consensus engine to exit
             tokio::select! {
