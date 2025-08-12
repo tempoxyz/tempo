@@ -343,14 +343,21 @@ where
     // to have errors emitted in instrument attributes that use dyn Stderr: Value
     err(Debug),
 )]
-async fn handle_get_value(
-    state: &State,
+async fn handle_get_value<N: NodeTypes>(
+    state: &State<N>,
     channels: &mut Channels<MalachiteContext>,
     height: <MalachiteContext as Context>::Height,
     round: Round,
     timeout: Duration,
     reply: Reply<LocallyProposedValue<MalachiteContext>>,
-) -> eyre::Result<()> {
+) -> eyre::Result<()>
+where
+    N::Payload: PayloadTypes<
+            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+            ExecutionData = ExecutionData,
+            BuiltPayload = EthBuiltPayload,
+        >,
+{
     let (proposal, block) =
         match tokio::time::timeout(timeout, get_or_propose_block(state, height, round)).await {
             Ok(ret) => ret.wrap_err("failed to construct a proposal")?,
@@ -381,14 +388,21 @@ async fn handle_get_value(
 /// Mainly used to to apply a timeout to the procedure.
 // FIXME: Returns `Option<Block>` only on a fully new proposal to be in line with
 // the previous implementation. But very likely this is wrong a block should always be returned.
-async fn get_or_propose_block(
-    state: &State,
+async fn get_or_propose_block<N: NodeTypes>(
+    state: &State<N>,
     height: <MalachiteContext as Context>::Height,
     round: Round,
 ) -> eyre::Result<(
     LocallyProposedValue<MalachiteContext>,
     Option<reth_primitives::Block>,
-)> {
+)>
+where
+    N::Payload: PayloadTypes<
+            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+            ExecutionData = ExecutionData,
+            BuiltPayload = EthBuiltPayload,
+        >,
+{
     match state.get_previously_built_value(height, round).await {
         Some(proposal) => {
             info!(value_id = %proposal.value.id(), "reusing previously built proposal");
