@@ -1,0 +1,5 @@
+[devnet-2]
+lon-node-1 ansible_user=ubuntu
+lon-node-2 ansible_user=ubuntu
+lon-node-3 ansible_user=ubuntu
+lon-node-4 ansible_user=ubuntu

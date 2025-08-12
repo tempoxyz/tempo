@@ -532,31 +532,26 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         )
     }
 
-    #[inline]
     fn get_balance(&mut self, account: &Address) -> U256 {
         let slot = mapping_slot(account, slots::BALANCES);
         self.storage.sload(self.token_address, slot)
     }
 
-    #[inline]
     fn set_balance(&mut self, account: &Address, amount: U256) {
         let slot = mapping_slot(account, slots::BALANCES);
         self.storage.sstore(self.token_address, slot, amount);
     }
 
-    #[inline]
     fn get_allowance(&mut self, owner: &Address, spender: &Address) -> U256 {
         let slot = double_mapping_slot(owner, spender, slots::ALLOWANCES);
         self.storage.sload(self.token_address, slot)
     }
 
-    #[inline]
     fn set_allowance(&mut self, owner: &Address, spender: &Address, amount: U256) {
         let slot = double_mapping_slot(owner, spender, slots::ALLOWANCES);
         self.storage.sstore(self.token_address, slot, amount);
     }
 
-    #[inline]
     fn set_total_supply(&mut self, amount: U256) {
         self.storage
             .sstore(self.token_address, slots::TOTAL_SUPPLY, amount);
@@ -644,7 +639,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     fn read_string(&mut self, slot: U256) -> String {
         let value = self.storage.sload(self.token_address, slot);
         let bytes = value.to_be_bytes::<32>();
@@ -656,7 +650,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         }
     }
 
-    #[inline]
     /// Write string to storage (simplified - assumes string fits in one slot)
     fn write_string(&mut self, slot: U256, value: String) -> Result<(), TIP20Error> {
         let bytes = value.as_bytes();
@@ -672,7 +665,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    #[inline]
     fn compute_permit_digest(
         &mut self,
         owner: &Address,

@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use ratelimit::Ratelimiter;
 use thousands::Separable;
 
-use crate::config;
+use crate::crescendo::config;
 
 pub struct TxQueue {
     // TODO: RwLock? Natively concurrent deque?
