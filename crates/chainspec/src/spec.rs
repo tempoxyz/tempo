@@ -5,7 +5,6 @@ use std::sync::{Arc, LazyLock};
 
 /// Tempo chain specification parser.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct TempoChainSpecParser;
 
 /// Chains supported by Tempo. First value should be used as the default.
