@@ -1,64 +1,94 @@
-# Benchmarking Ethereum networks with `crescendo`
+# `tempo-bench`
 
-The binary contained in this directory, `crescendo`, is a high-performance tool for load testing Ethereum-compatible networks. It generates and sends large volumes of ERC-20 token transfer transactions to benchmark network throughput and identify performance bottlenecks.
+`tempo-bench` is benchmarking suite for Tempo node components.
 
 ## Installation
 
-Install Reth
+Install `tempo` and `tempo-bench`
 
 ```bash
-git clone https://github.com/paradigmxyz/reth
-cd reth
-cargo install --path bin/reth --profile maxperf
+cargo install --path bin/tempo-bench --profile maxperf
+cargo install --path bin/tempo --profile maxperf
+
 ```
 
-Install `crescendo`
+### Overview
+
+```
+Usage: tempo-bench <COMMAND>
+
+Commands:
+  run-max-tps       Run maximum TPS throughput benchmarking
+  generate-genesis  Generate genesis allocation file for testing
+  help              Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+## Commands
+
+### `generate-genesis`
+
+Generate pre-funded test accounts for benchmarking:
+
+```
+Usage: tempo-bench generate-genesis [OPTIONS]
+
+Options:
+  -a, --accounts <ACCOUNTS>  Number of accounts to generate [default: 50000]
+  -o, --output <OUTPUT>      Output file path [default: genesis.json]
+  -m, --mnemonic <MNEMONIC>  Mnemonic to use for account generation [default: "test test test test test test test test test test test junk"]
+  -b, --balance <BALANCE>    Balance for each account (in hex) [default: 0xD3C21BCECCEDA1000000]
+  -h, --help                 Print help
+```
+
+**Examples:**
 
 ```bash
-cd bin/tempo-bench
-cargo install --path crescendo --profile maxperf
+# Generate 50,000 accounts with default settings
+tempo-bench generate-genesis
+
+# Generate 25,000 accounts with custom output file
+tempo-bench generate-genesis --accounts 25000 --output test-genesis.json
+
+# Generate accounts with custom balance (1M ETH in hex)
+tempo-bench generate-genesis --balance 0xD3C21BCECCEDA1000000
 ```
 
-## Generate test accounts
+### `run-max-tps`
 
-Before running benchmarks, generate pre-funded accounts for the `genesis.json`
+High throughput tx load testing
+
+```
+Usage: tempo-bench run-max-tps --config <CONFIG>
+
+Options:
+  -c, --config <CONFIG>  Path to the configuration file
+  -h, --help             Print help
+```
+
+**Examples:**
 
 ```bash
-cargo run --bin generate-genesis-alloc
+# Run with default balanced configuration
+tempo-bench run-max-tps --config configs/default.toml
+
+# Run with aggressive high-throughput settings
+tempo-bench run-max-tps --config configs/aggressive.toml
+
+# Run with maximum stress test settings
+tempo-bench run-max-tps --config configs/max.toml
 ```
 
-This creates `genesis.json` with 50_000 accounts, each funded with 1_000_000 ETH.
-
-## Running the Benchmarks
-
-Start `reth` with optimized settings
-
-```bash
-just start-reth
-```
-
-For the most accurate results, make sure to clear the datadir after each run.
-
-```bash
-# Linux (default: $XDG_DATA_HOME/reth/ or $HOME/.local/share/reth/)
-rm -rf $HOME/.local/share/reth/
-
-# macOS (default: $HOME/Library/Application Support/reth/)
-rm -rf "$HOME/Library/Application Support/reth/"
-
-# Windows (default: %APPDATA%/reth/)
-rmdir /s "%APPDATA%\reth"
-```
-
-## Configuration
-
-Crescendo uses TOML configuration files located in `crescendo/configs/`. You can either run with a preconfigured TOML or create your own.
+The TPS benchmarker uses TOML configuration files located in `configs/`. You can either run with a preconfigured TOML or create your own.
 
 - `default.toml` - Balanced settings for general benchmarking
 - `aggressive.toml` - High-performance settings for maximum throughput
 - `max.toml` - Extreme settings for stress testing
 
-### Network settings
+#### Network settings
 
 ```toml
 [network_worker]
@@ -69,7 +99,7 @@ error_sleep_ms = 100                  # Sleep duration after network errors
 tx_queue_empty_sleep_ms = 25          # Sleep when transaction queue is empty
 ```
 
-### Transaction generation
+#### Transaction generation
 
 ```toml
 [tx_gen_worker]
@@ -84,7 +114,7 @@ max_transfer_amount = 10              # Maximum token transfer amount
 batch_size = 1_000                    # Txs to generate before pushing to queue
 ```
 
-### Rate limiting
+#### Rate limiting
 
 ```toml
 [rate_limiting]
@@ -97,7 +127,7 @@ ratelimit_thresholds = [
 ]
 ```
 
-### Worker allocation
+#### Worker allocation
 
 ```toml
 [workers]
@@ -106,18 +136,10 @@ tx_gen_worker_percentage = 0.1        # 10% of cores for transaction generation
 network_worker_percentage = 0.9       # 90% of cores for network I/O
 ```
 
-## Running the Benchmarks
-
-Start crescendo with your chosen configuration:
-
-```bash
-crescendo <path_to_config> --chain <path_to_genesis.json>
-```
-
-### Example Output
+#### Example Output
 
 ```
-[~] Loading config from crescendo/configs/default.toml...
+[~] Loading config from configs/default.toml...
 [*] Detected 8 effective cores.
 [+] Spawning 7 workers:
 - TxGen: 1 (core 0)
@@ -130,3 +152,66 @@ crescendo <path_to_config> --chain <path_to_genesis.json>
 ```
 
 The benchmark will continuously output performance metrics including transaction generation rates, network throughput, queue lengths, and response times. As the total transaction count increases, the rate limiter will automatically scale up according to your configured thresholds.
+
+## Quick Start
+
+### 1. Generate genesis.json
+
+```bash
+tempo-bench generate-genesis --accounts 50000 --output genesis.json
+```
+
+### 2. Start the Node
+
+```bash
+    reth node \
+    --http \
+    --http.addr 0.0.0.0 \
+    --http.port 8545 \
+    --http.api all \
+    --datadir ./data \
+    --dev \
+    --dev.block-time 1s \
+    --chain genesis.json \
+    --engine.disable-precompile-cache \
+    --builder.gaslimit 3000000000 \
+    --builder.max-tasks 8 \
+    --builder.deadline 1 \
+    --txpool.pending-max-count 10000000000000 \
+    --txpool.basefee-max-count 10000000000000 \
+    --txpool.queued-max-count 10000000000000 \
+    --txpool.pending-max-size 10000 \
+    --txpool.basefee-max-size 10000 \
+    --txpool.queued-max-size 10000 \
+    --txpool.max-new-pending-txs-notifications 10000000 \
+    --txpool.max-account-slots 500000 \
+    --txpool.max-pending-txns 10000000000000 \
+    --txpool.max-new-txns 10000000000000 \
+    --txpool.disable-transactions-backup \
+    --txpool.additional-validation-tasks 8 \
+    --txpool.minimal-protocol-fee 0 \
+    --txpool.minimum-priority-fee 0 \
+    --rpc.max-connections 429496729 \
+    --rpc.max-request-size 1000000 \
+    --rpc.max-response-size 1000000 \
+    --max-tx-reqs 1000000
+```
+
+### 3. Run max TPS benchmark
+
+```bash
+tempo-bench run-max-tps --config configs/default.toml
+```
+
+For the most accurate results, make sure to clear the datadir after each run.
+
+```bash
+# Linux (default: $XDG_DATA_HOME/reth/ or $HOME/.local/share/reth/)
+rm -rf $HOME/.local/share/reth/
+
+# macOS (default: $HOME/Library/Application Support/reth/)
+rm -rf "$HOME/Library/Application Support/reth/"
+
+# Windows (default: %APPDATA%/reth/)
+rmdir /s "%APPDATA%\reth"
+```

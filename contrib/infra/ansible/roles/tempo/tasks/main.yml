@@ -1,10 +1,10 @@
-- name: Stop the Tempo service
-  systemd:
-    name: tempo
-    state: stopped
-    enabled: no
-    daemon_reload: yes
-  become: yes
+#- name: Stop the Tempo service
+#  systemd:
+#    name: tempo
+#    state: stopped
+#    enabled: no
+#    daemon_reload: yes
+#  become: yes
 
 - name: Reset the network if needed
   file:

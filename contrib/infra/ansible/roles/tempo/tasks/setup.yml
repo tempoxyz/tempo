@@ -15,6 +15,11 @@
   delegate_to: localhost
   run_once: true
 
+- name: Copy reth genesis file
+  copy:
+    src: "files/reth_genesis.json"
+    dest: "{{ ansible_env.HOME }}/malachite/config/reth_genesis.json"
+
 - name: Generate and copy genesis + config files
   template:
     src: "{{ item }}.j2"

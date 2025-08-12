@@ -1,0 +1,10 @@
+[package]
+name = "tempo-telemetry-util"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+eyre.workspace = true
+tracing.workspace = true
+tracing-core = "0.1.34"
