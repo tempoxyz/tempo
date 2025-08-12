@@ -33,7 +33,7 @@ impl ChainSpecParser for TempoChainSpecParser {
 }
 
 pub static ADAGIO: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
-    let _genesis: Genesis = serde_json::from_str(include_str!("../res/genesis/adagio.json"))
+    let _genesis: Genesis = serde_json::from_str(include_str!("./genesis/adagio.json"))
         .expect("Can't deserialize Adagio genesis json");
     let _hardforks: ChainHardforks = EthereumHardfork::mainnet().into();
     let mut spec = ChainSpec {
