@@ -80,7 +80,7 @@ where
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MalachiteConsensusBuilder;
 
 impl<Node> ConsensusBuilder<Node> for MalachiteConsensusBuilder
