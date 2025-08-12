@@ -257,12 +257,12 @@ fn tip20_mutate(c: &mut Criterion) {
                 &admin,
                 ITIP20::mintCall {
                     to: admin,
-                    amount: U256::from(1000000),
+                    amount: U256::MAX,
                 },
             )
             .unwrap();
 
-        let amount = U256::from(100);
+        let amount = U256::from(1);
         b.iter(|| {
             let token = black_box(&mut token);
             let admin = black_box(&admin);
@@ -304,12 +304,12 @@ fn tip20_mutate(c: &mut Criterion) {
                 &admin,
                 ITIP20::mintCall {
                     to: from,
-                    amount: U256::from(1000000),
+                    amount: U256::MAX,
                 },
             )
             .unwrap();
 
-        let amount = U256::from(100);
+        let amount = U256::from(1);
         b.iter(|| {
             let token = black_box(&mut token);
             let from = black_box(&from);
@@ -335,7 +335,7 @@ fn tip20_mutate(c: &mut Criterion) {
                 &admin,
                 ITIP20::mintCall {
                     to: owner,
-                    amount: U256::from(1000000),
+                    amount: U256::MAX,
                 },
             )
             .unwrap();
@@ -344,12 +344,12 @@ fn tip20_mutate(c: &mut Criterion) {
                 &owner,
                 ITIP20::approveCall {
                     spender,
-                    amount: U256::MAX, // Unlimited allowance to avoid updating in bench
+                    amount: U256::MAX,
                 },
             )
             .unwrap();
 
-        let amount = U256::from(100);
+        let amount = U256::from(1);
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -380,12 +380,12 @@ fn tip20_mutate(c: &mut Criterion) {
                 &admin,
                 ITIP20::mintCall {
                     to: from,
-                    amount: U256::from(1000000),
+                    amount: U256::MAX,
                 },
             )
             .unwrap();
 
-        let amount = U256::from(100);
+        let amount = U256::from(1);
         b.iter(|| {
             let token = black_box(&mut token);
             let from = black_box(&from);
