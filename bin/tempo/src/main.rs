@@ -47,6 +47,12 @@ fn main() {
                 node_exit_future,
             } = builder
                 .node(TempoNode::new(args.clone()))
+                .apply(|mut ctx| {
+                    let db = ctx.db_mut();
+                    db.create_tables_for::<reth_malachite::store::tables::Tables>()
+                        .expect("Failed to create consensus tables");
+                    ctx
+                })
                 .launch_with_debug_capabilities()
                 .await?;
 
