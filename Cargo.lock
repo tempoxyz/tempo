@@ -12158,6 +12158,7 @@ dependencies = [
  "reth-ethereum-engine-primitives",
  "reth-ethereum-primitives",
  "reth-evm",
+ "reth-evm-ethereum",
  "reth-malachite",
  "reth-network",
  "reth-node-api",

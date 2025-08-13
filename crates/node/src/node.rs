@@ -8,6 +8,7 @@ use reth_evm::{
     ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes, eth::spec::EthExecutorSpec,
     revm::context::TxEnv,
 };
+use reth_evm_ethereum::RethReceiptBuilder;
 use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
     AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
@@ -265,7 +266,7 @@ where
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = TempoEvmConfig::new(ctx.chain_spec(), AlloyReceiptBuilder::default());
+        let evm_config = TempoEvmConfig::new(ctx.chain_spec(), RethReceiptBuilder::default());
         Ok(evm_config)
     }
 }

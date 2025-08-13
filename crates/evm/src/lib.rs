@@ -25,7 +25,7 @@ use reth_evm::{
     },
     precompiles::PrecompilesMap,
 };
-use reth_evm_ethereum::{EthBlockAssembler, EthEvmConfig};
+use reth_evm_ethereum::{EthBlockAssembler, EthEvmConfig, RethReceiptBuilder};
 use reth_primitives::{EthPrimitives, NodePrimitives, SealedBlock, SealedHeader, Transaction};
 use reth_primitives_traits::{Receipt, SignedTransaction};
 use std::{convert::Infallible, fmt::Debug, sync::Arc};
@@ -36,14 +36,14 @@ use tempo_precompiles::precompiles::extend_tempo_precompiles;
 pub struct TempoEvmConfig<
     C = ChainSpec,
     N: NodePrimitives = EthPrimitives,
-    R: Debug = AlloyReceiptBuilder,
+    R: ReceiptBuilder = RethReceiptBuilder,
 > {
     pub executor_factory: TempoBlockExecutorFactory<R, Arc<C>>,
     pub block_assembler: TempoBlockAssembler<C>,
     _pd: core::marker::PhantomData<N>,
 }
 
-impl<ChainSpec: Hardforks, N: NodePrimitives, R: Debug> TempoEvmConfig<ChainSpec, N, R> {
+impl<ChainSpec: Hardforks, N: NodePrimitives, R: ReceiptBuilder> TempoEvmConfig<ChainSpec, N, R> {
     /// Creates a new [`TempoEvmConfig`] with the given chain spec.
     pub fn new(chain_spec: Arc<ChainSpec>, receipt_builder: R) -> Self {
         Self {
@@ -61,7 +61,7 @@ impl<ChainSpec: Hardforks, N: NodePrimitives, R: Debug> TempoEvmConfig<ChainSpec
 // TODO: configure evm for TempoEvmConfig
 impl<C, N, R> ConfigureEvm for TempoEvmConfig<C, N, R>
 where
-    C: EthChainSpec<Header = Header> + Hardforks + EthereumHardforks,
+    C: EthChainSpec<Header = Header>,
     N: NodePrimitives<
             Receipt = R::Receipt,
             SignedTx = R::Transaction,
