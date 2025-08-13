@@ -1,9 +1,12 @@
+pub mod evm;
+
 use reth::revm::{
-    Inspector,
+    Context, Inspector, Journal,
     context::{
-        TxEnv,
+        BlockEnv, CfgEnv, TxEnv,
         result::{EVMError, HaltReason},
     },
+    handler::EthPrecompiles,
     inspector::NoOpInspector,
     primitives::hardfork::SpecId,
 };
