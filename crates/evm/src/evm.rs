@@ -41,16 +41,12 @@ impl<DB: Database, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE> {
 
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &TempoEvmContext<DB> {
-        // TODO: make EthEvm.inner pub
-        // &self.inner.inner.ctx
-        todo!()
+        self.inner.ctx()
     }
 
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TempoEvmContext<DB> {
-        // TODO: make EthEvm.inner pub
-        // &self.inner.inner.ctx
-        todo!()
+        self.inner.ctx_mut()
     }
 }
 
