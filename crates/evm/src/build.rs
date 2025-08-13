@@ -11,6 +11,7 @@ use reth_evm::{
     execute::{BlockAssembler, BlockAssemblerInput},
 };
 use reth_primitives::{Receipt, TransactionSigned, logs_bloom};
+use reth_primitives_traits::SignedTransaction;
 use reth_provider::BlockExecutionResult;
 
 use crate::executor::TempoBlockExecutionCtx;
@@ -32,59 +33,21 @@ impl<ChainSpec> TempoBlockAssembler<ChainSpec> {
     }
 }
 
-// impl<ChainSpec: EthereumHardforks> TempoBlockAssembler<ChainSpec> {
-//     /// Builds a block for `input` without any bounds on header `H`.
-//     pub fn assemble_block<
-//         F: for<'a> BlockExecutorFactory<
-//                 ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>,
-//                 Transaction: SignedTransaction,
-//                 Receipt: Receipt,
-//             >,
-//         H,
-//     >(
-//         &self,
-//         input: BlockAssemblerInput<'_, '_, F, H>,
-//     ) -> Result<Block<F::Transaction>, BlockExecutionError> {
-//         todo!()
-//     }
-// }
-
-// impl<F, ChainSpec> BlockAssembler<F> for TempoBlockAssembler<ChainSpec>
-// where
-//     ChainSpec: EthereumHardforks,
-//     F: for<'a> BlockExecutorFactory<
-//             ExecutionCtx<'a> = TempoBlockExecutionCtx,
-//             Transaction: SignedTransaction,
-//             Receipt: Receipt,
-//         >,
-// {
-//     type Block = Block<F::Transaction>;
-//
-//     fn assemble_block(
-//         &self,
-//         input: BlockAssemblerInput<'_, '_, F>,
-//     ) -> Result<Self::Block, BlockExecutionError> {
-//         self.assemble_block(input)
-//     }
-// }
-
-impl<F, ChainSpec, Tx, R> BlockAssembler<F> for TempoBlockAssembler<ChainSpec>
+impl<F, ChainSpec> BlockAssembler<F> for TempoBlockAssembler<ChainSpec>
 where
     F: for<'a> BlockExecutorFactory<
             ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>,
-            Transaction = Tx,
-            Receipt = R,
+            Transaction = TransactionSigned,
+            Receipt = Receipt,
         >,
-    Tx: reth_primitives_traits::SignedTransaction,
-    R: reth_primitives_traits::Receipt,
     ChainSpec: EthChainSpec + EthereumHardforks,
 {
-    type Block = Block<F::Transaction>;
+    type Block = Block<TransactionSigned>;
 
     fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, F>,
-    ) -> Result<Block<F::Transaction>, BlockExecutionError> {
+    ) -> Result<Block<TransactionSigned>, BlockExecutionError> {
         let BlockAssemblerInput {
             evm_env,
             execution_ctx: ctx,
@@ -103,8 +66,7 @@ where
         let timestamp = evm_env.block_env.timestamp.saturating_to();
 
         let transactions_root = proofs::calculate_transaction_root(&transactions);
-        let receipts_root = proofs::calculate_receipt_root(receipts);
-
+        let receipts_root = Receipt::calculate_receipt_root_no_memo(receipts);
         let logs_bloom = logs_bloom(receipts.iter().flat_map(|r| r.logs()));
 
         let withdrawals = self
