@@ -5,7 +5,7 @@ use crate::{
     build::TempoBlockAssembler,
     executor::{TempoBlockExecutionCtx, TempoBlockExecutorFactory},
 };
-use alloy_consensus::{Block, Header};
+use alloy_consensus::{Block, EthBlock, Header};
 use reth::revm::{
     Inspector,
     context::{
@@ -39,7 +39,7 @@ pub struct TempoEvmConfig<
     R: ReceiptBuilder = RethReceiptBuilder,
 > {
     pub executor_factory: TempoBlockExecutorFactory<R, Arc<C>>,
-    pub block_assembler: TempoBlockAssembler<C>,
+    pub block_assembler: EthBlockAssembler<C>,
     _pd: core::marker::PhantomData<N>,
 }
 
@@ -54,32 +54,18 @@ impl<ChainSpec: EthereumHardforks, N: NodePrimitives, R: ReceiptBuilder>
                 chain_spec.clone(),
                 TempoEvmFactory::default(),
             ),
-            block_assembler: TempoBlockAssembler::new(chain_spec),
+            block_assembler: EthBlockAssembler::new(chain_spec),
             _pd: core::marker::PhantomData,
         }
     }
 }
 
-// TODO: configure evm for TempoEvmConfig
-impl<C, N, R> ConfigureEvm for TempoEvmConfig<C, N, R>
-where
-    C: EthChainSpec<Header = Header> + EthereumHardforks,
-    N: NodePrimitives<
-            Receipt = R::Receipt,
-            SignedTx = R::Transaction,
-            BlockHeader = Header,
-            BlockBody = alloy_consensus::BlockBody<R::Transaction>,
-            Block = alloy_consensus::Block<R::Transaction>,
-        >,
-    R: ReceiptBuilder<Receipt: Receipt, Transaction: SignedTransaction> + Debug + Copy,
-    TxEnv: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
-    Self: Send + Sync + Unpin + Clone + 'static,
-{
-    type Primitives = N;
+impl ConfigureEvm for TempoEvmConfig {
+    type Primitives = EthPrimitives;
     type Error = Infallible;
     type NextBlockEnvCtx = NextBlockEnvAttributes;
-    type BlockExecutorFactory = TempoBlockExecutorFactory<R, Arc<C>>;
-    type BlockAssembler = TempoBlockAssembler<C>;
+    type BlockExecutorFactory = TempoBlockExecutorFactory<RethReceiptBuilder, Arc<ChainSpec>>;
+    type BlockAssembler = EthBlockAssembler;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
         &self.executor_factory
@@ -103,17 +89,19 @@ where
 
     fn context_for_block<'a>(
         &self,
-        block: &'a SealedBlock<N::Block>,
-    ) -> TempoBlockExecutionCtx<'a> {
-        TempoBlockExecutionCtx::default()
+        block: &'a SealedBlock<reth_ethereum_primitives::Block>,
+    ) -> EthBlockExecutionCtx<'a> {
+        todo!()
+        // EthBlockExecutionCtx::default()
     }
 
     fn context_for_next_block(
         &self,
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
-    ) -> TempoBlockExecutionCtx {
-        TempoBlockExecutionCtx::default()
+    ) -> EthBlockExecutionCtx {
+        todo!()
+        // TempoBlockExecutionCtx::default()
     }
 }
 

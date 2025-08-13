@@ -57,12 +57,7 @@ impl TempoNode {
         MalachiteConsensusBuilder,
     >
     where
-        Node: FullNodeTypes<
-            Types: NodeTypes<
-                ChainSpec: Hardforks + EthereumHardforks + EthExecutorSpec,
-                Primitives = EthPrimitives,
-            >,
-        >,
+        Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ChainSpec, Primitives = EthPrimitives>>,
         <Node::Types as NodeTypes>::Payload: PayloadTypes<
                 BuiltPayload = EthBuiltPayload,
                 PayloadAttributes = PayloadAttributes,
@@ -258,15 +253,9 @@ pub struct TempoExecutorBuilder;
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
-    Node: FullNodeTypes<
-        Types: NodeTypes<ChainSpec: EthereumHardforks + Clone, Primitives = EthPrimitives>,
-    >,
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ChainSpec, Primitives = EthPrimitives>>,
 {
-    type EVM = TempoEvmConfig<
-        <Node::Types as NodeTypes>::ChainSpec,
-        <Node::Types as NodeTypes>::Primitives,
-    >;
-
+    type EVM = TempoEvmConfig;
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
         let evm_config = TempoEvmConfig::new(ctx.chain_spec(), RethReceiptBuilder::default());
         Ok(evm_config)

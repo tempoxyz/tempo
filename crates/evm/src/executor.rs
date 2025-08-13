@@ -4,7 +4,7 @@ use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::{Encodable2718, eip4895::Withdrawals};
 use alloy_primitives::B256;
 use reth::revm::{Inspector, State};
-use reth_chainspec::{ChainHardforks, EthereumHardforks, Hardforks};
+use reth_chainspec::{ChainHardforks, ChainSpec, EthereumHardforks, Hardforks};
 use reth_evm::{
     Database, Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
     block::{
@@ -17,13 +17,14 @@ use reth_evm::{
     },
     revm::context::result::ExecutionResult,
 };
+use reth_evm_ethereum::RethReceiptBuilder;
 
 use crate::TempoEvmFactory;
 
 #[derive(Debug, Clone, Default, Copy)]
 pub struct TempoBlockExecutorFactory<
     R = AlloyReceiptBuilder,
-    Spec = ChainHardforks,
+    Spec = ChainSpec,
     EvmFactory = TempoEvmFactory,
 > {
     /// Receipt builder.
@@ -70,7 +71,7 @@ where
     Self: 'static,
 {
     type EvmFactory = EvmF;
-    type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
+    type ExecutionCtx<'a> = EthBlockExecutionCtx<'a>;
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
 
@@ -112,7 +113,7 @@ pub struct TempoBlockExecutor<'a, Evm, R: ReceiptBuilder, Spec> {
     /// Receipt builder.
     receipt_builder: R,
     /// Context for block execution.
-    ctx: TempoBlockExecutionCtx<'a>,
+    ctx: EthBlockExecutionCtx<'a>,
     /// The EVM used by executor.
     evm: Evm,
     /// Receipts of executed transactions.
@@ -129,7 +130,7 @@ where
     R: ReceiptBuilder,
     Spec: EthereumHardforks + Clone,
 {
-    pub fn new(evm: E, ctx: TempoBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
+    pub fn new(evm: E, ctx: EthBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
         Self {
             spec: spec.clone(),
             receipt_builder,
