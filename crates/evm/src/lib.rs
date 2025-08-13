@@ -38,17 +38,17 @@ pub struct TempoEvmConfig<
     N: NodePrimitives = EthPrimitives,
     R: ReceiptBuilder = RethReceiptBuilder,
 > {
+    inner: EthEvmConfig,
     pub executor_factory: TempoBlockExecutorFactory<R, Arc<C>>,
     pub block_assembler: EthBlockAssembler<C>,
     _pd: core::marker::PhantomData<N>,
 }
 
-impl<ChainSpec: EthereumHardforks, N: NodePrimitives, R: ReceiptBuilder>
-    TempoEvmConfig<ChainSpec, N, R>
-{
+impl TempoEvmConfig {
     /// Creates a new [`TempoEvmConfig`] with the given chain spec.
-    pub fn new(chain_spec: Arc<ChainSpec>, receipt_builder: R) -> Self {
+    pub fn new(chain_spec: Arc<ChainSpec>, receipt_builder: RethReceiptBuilder) -> Self {
         Self {
+            inner: EthEvmConfig::new(chain_spec.clone()),
             executor_factory: TempoBlockExecutorFactory::new(
                 receipt_builder,
                 chain_spec.clone(),
@@ -76,7 +76,7 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &Header) -> EvmEnv {
-        EvmEnv::default()
+        self.inner.evm_env(header)
     }
 
     fn next_evm_env(
@@ -84,15 +84,14 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &Header,
         attributes: &NextBlockEnvAttributes,
     ) -> Result<EvmEnv, Self::Error> {
-        Ok(EvmEnv::default())
+        self.inner.next_evm_env(parent, attributes)
     }
 
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<reth_ethereum_primitives::Block>,
     ) -> EthBlockExecutionCtx<'a> {
-        todo!()
-        // EthBlockExecutionCtx::default()
+        self.inner.context_for_block(block)
     }
 
     fn context_for_next_block(
@@ -100,8 +99,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
     ) -> EthBlockExecutionCtx {
-        todo!()
-        // TempoBlockExecutionCtx::default()
+        self.inner.context_for_next_block(parent, attributes)
     }
 }
 
