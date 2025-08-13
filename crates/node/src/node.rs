@@ -5,7 +5,8 @@ use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadBuilderAttributes};
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
-    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes, eth::spec::EthExecutorSpec,
+    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
+    eth::{receipt_builder::AlloyReceiptBuilder, spec::EthExecutorSpec},
     revm::context::TxEnv,
 };
 use reth_malachite::MalachiteConsensusBuilder;
@@ -14,7 +15,7 @@ use reth_node_api::{
     PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
-    BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
+    BuilderContext, DebugNode, Node, NodeAdapter,
     components::{BasicPayloadServiceBuilder, ComponentsBuilder, ExecutorBuilder},
     rpc::{
         BasicEngineApiBuilder, BasicEngineValidatorBuilder, EngineApiBuilder, EngineValidatorAddOn,
@@ -22,8 +23,8 @@ use reth_node_builder::{
     },
 };
 use reth_node_ethereum::{
-    EthEngineTypes, EthEvmConfig, EthereumEngineValidator, EthereumEngineValidatorBuilder,
-    EthereumEthApiBuilder, EthereumNetworkBuilder, EthereumPayloadBuilder, EthereumPoolBuilder,
+    EthEngineTypes, EthereumEngineValidator, EthereumEngineValidatorBuilder, EthereumEthApiBuilder,
+    EthereumNetworkBuilder, EthereumPayloadBuilder, EthereumPoolBuilder,
 };
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
@@ -31,7 +32,7 @@ use reth_rpc_eth_api::FromEvmError;
 use reth_rpc_eth_types::EthApiError;
 use reth_trie_db::MerklePatriciaTrie;
 use std::{default::Default, sync::Arc};
-use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
+use tempo_evm::TempoEvmConfig;
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
@@ -266,12 +267,11 @@ where
     type EVM = TempoEvmConfig<
         <Node::Types as NodeTypes>::ChainSpec,
         <Node::Types as NodeTypes>::Primitives,
+        AlloyReceiptBuilder,
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config =
-            EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), TempoEvmFactory::default())
-                .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
+        let evm_config = TempoEvmConfig::new(ctx.chain_spec(), AlloyReceiptBuilder::default());
         Ok(evm_config)
     }
 }

@@ -1,7 +1,11 @@
+pub mod build;
 pub mod executor;
 
-use crate::executor::TempoBlockExecutorFactory;
-use alloy_consensus::Header;
+use crate::{
+    build::TempoBlockAssembler,
+    executor::{TempoBlockExecutionCtx, TempoBlockExecutorFactory},
+};
+use alloy_consensus::{Block, Header};
 use reth::revm::{
     Inspector,
     context::{
@@ -11,9 +15,10 @@ use reth::revm::{
     inspector::NoOpInspector,
     primitives::hardfork::SpecId,
 };
-use reth_chainspec::{ChainSpec, EthChainSpec, Hardforks};
+use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
 use reth_evm::{
-    ConfigureEvm, Database, EthEvm, EthEvmFactory, EvmEnv, EvmFactory, NextBlockEnvAttributes,
+    ConfigureEvm, Database, EthEvm, EthEvmFactory, EvmEnv, EvmFactory, FromRecoveredTx,
+    FromTxWithEncoded, NextBlockEnvAttributes,
     eth::{
         EthBlockExecutionCtx, EthEvmContext,
         receipt_builder::{AlloyReceiptBuilder, ReceiptBuilder},
@@ -21,7 +26,7 @@ use reth_evm::{
     precompiles::PrecompilesMap,
 };
 use reth_evm_ethereum::{EthBlockAssembler, EthEvmConfig};
-use reth_primitives::{EthPrimitives, NodePrimitives, SealedHeader};
+use reth_primitives::{EthPrimitives, NodePrimitives, SealedBlock, SealedHeader, Transaction};
 use reth_primitives_traits::{Receipt, SignedTransaction};
 use std::{convert::Infallible, fmt::Debug, sync::Arc};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
@@ -33,8 +38,8 @@ pub struct TempoEvmConfig<
     N: NodePrimitives = EthPrimitives,
     R: Debug = AlloyReceiptBuilder,
 > {
-    pub inner: EthEvmConfig,
     pub executor_factory: TempoBlockExecutorFactory<R, Arc<C>>,
+    pub block_assembler: TempoBlockAssembler<C>,
     _pd: core::marker::PhantomData<N>,
 }
 
@@ -42,21 +47,21 @@ impl<ChainSpec: Hardforks, N: NodePrimitives, R: Debug> TempoEvmConfig<ChainSpec
     /// Creates a new [`TempoEvmConfig`] with the given chain spec.
     pub fn new(chain_spec: Arc<ChainSpec>, receipt_builder: R) -> Self {
         Self {
-            inner: EthEvmConfig::new(chain_spec.clone()),
             executor_factory: TempoBlockExecutorFactory::new(
                 receipt_builder,
-                chain_spec,
+                chain_spec.clone(),
                 TempoEvmFactory::default(),
             ),
+            block_assembler: TempoBlockAssembler::new(chain_spec),
             _pd: core::marker::PhantomData,
         }
     }
 }
 
 // TODO: configure evm for TempoEvmConfig
-impl<ChainSpec, N, R> ConfigureEvm for TempoEvmConfig<ChainSpec, N, R>
+impl<C, N, R> ConfigureEvm for TempoEvmConfig<C, N, R>
 where
-    ChainSpec: EthChainSpec<Header = Header> + Hardforks,
+    C: EthChainSpec<Header = Header> + Hardforks + EthereumHardforks,
     N: NodePrimitives<
             Receipt = R::Receipt,
             SignedTx = R::Transaction,
@@ -65,13 +70,14 @@ where
             Block = alloy_consensus::Block<R::Transaction>,
         >,
     R: ReceiptBuilder<Receipt: Receipt, Transaction: SignedTransaction> + Debug + Copy,
+    TxEnv: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
     type Primitives = N;
     type Error = Infallible;
     type NextBlockEnvCtx = NextBlockEnvAttributes;
-    type BlockExecutorFactory = TempoBlockExecutorFactory<R, Arc<ChainSpec>>;
-    type BlockAssembler = EthBlockAssembler<ChainSpec>;
+    type BlockExecutorFactory = TempoBlockExecutorFactory<R, Arc<C>>;
+    type BlockAssembler = TempoBlockAssembler<C>;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
         &self.executor_factory
@@ -93,7 +99,7 @@ where
         todo!()
     }
 
-    fn context_for_block<'a>(&self, block: &'a SealedBlock<Block>) -> EthBlockExecutionCtx<'a> {
+    fn context_for_block<'a>(&self, block: &'a SealedBlock<N::Block>) -> TempoBlockExecutionCtx {
         todo!()
     }
 
@@ -101,7 +107,7 @@ where
         &self,
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
-    ) -> EthBlockExecutionCtx {
+    ) -> TempoBlockExecutionCtx {
         todo!()
     }
 }

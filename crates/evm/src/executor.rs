@@ -42,18 +42,33 @@ impl<R, Spec, EvmFactory> TempoBlockExecutorFactory<R, Spec, EvmFactory> {
             evm_factory,
         }
     }
+
+    /// Exposes the receipt builder.
+    pub const fn receipt_builder(&self) -> &R {
+        &self.receipt_builder
+    }
+
+    /// Exposes the chain specification.
+    pub const fn spec(&self) -> &Spec {
+        &self.spec
+    }
+
+    /// Exposes the EVM factory.
+    pub const fn evm_factory(&self) -> &EvmFactory {
+        &self.evm_factory
+    }
 }
 
 impl<R, Spec, EvmF> BlockExecutorFactory for TempoBlockExecutorFactory<R, Spec, EvmF>
 where
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt> + Copy,
-    Spec: Hardforks + Copy,
+    Spec: Hardforks + Clone,
     EvmF:
         EvmFactory<Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>> + Copy,
     Self: 'static,
 {
     type EvmFactory = EvmF;
-    type ExecutionCtx<'a> = EthBlockExecutionCtx<'a>;
+    type ExecutionCtx<'a> = TempoBlockExecutionCtx;
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
 
@@ -75,7 +90,7 @@ where
             TempoBlockExecutionCtx {
                 parent_hash: ctx.parent_hash,
             },
-            self.spec,
+            self.spec.clone(),
             self.receipt_builder,
         )
     }
@@ -111,11 +126,11 @@ impl<E, R, Spec> TempoBlockExecutor<E, R, Spec>
 where
     E: Evm,
     R: ReceiptBuilder,
-    Spec: Hardforks + Copy,
+    Spec: Hardforks + Clone,
 {
     pub fn new(evm: E, ctx: TempoBlockExecutionCtx, spec: Spec, receipt_builder: R) -> Self {
         Self {
-            spec,
+            spec: spec.clone(),
             receipt_builder,
             ctx,
             evm,
@@ -134,7 +149,7 @@ where
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
         >,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt>,
-    Spec: Hardforks,
+    Spec: Hardforks + Clone,
 {
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
