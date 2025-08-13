@@ -15,11 +15,6 @@ use reth_evm::{
     },
     revm::context::result::ExecutionResult,
 };
-// use revm::{
-//     DatabaseCommit, Inspector,
-//     context::result::{ExecutionResult, ResultAndState},
-//     database::State,
-// };
 
 use crate::TempoEvmFactory;
 
@@ -35,6 +30,18 @@ pub struct TempoBlockExecutorFactory<
     spec: Spec,
     /// EVM factory.
     evm_factory: EvmFactory,
+}
+
+impl<R, Spec, EvmFactory> TempoBlockExecutorFactory<R, Spec, EvmFactory> {
+    /// Creates a new [`TempoBlockExecutorFactory`] with the given spec, [`EvmFactory`], and
+    /// [`ReceiptBuilder`].
+    pub const fn new(receipt_builder: R, spec: Spec, evm_factory: EvmFactory) -> Self {
+        Self {
+            receipt_builder,
+            spec,
+            evm_factory,
+        }
+    }
 }
 
 impl<R, Spec, EvmF> BlockExecutorFactory for TempoBlockExecutorFactory<R, Spec, EvmF>

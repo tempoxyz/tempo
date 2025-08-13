@@ -1,5 +1,6 @@
 pub mod executor;
 
+use crate::executor::TempoBlockExecutorFactory;
 use reth::revm::{
     Inspector,
     context::{
@@ -9,11 +10,40 @@ use reth::revm::{
     inspector::NoOpInspector,
     primitives::hardfork::SpecId,
 };
+use reth_chainspec::{ChainSpec, Hardforks};
 use reth_evm::{
-    Database, EthEvm, EthEvmFactory, EvmEnv, EvmFactory, eth::EthEvmContext,
+    Database, EthEvm, EthEvmFactory, EvmEnv, EvmFactory,
+    eth::{EthEvmContext, receipt_builder::AlloyReceiptBuilder},
     precompiles::PrecompilesMap,
 };
+use reth_evm_ethereum::EthBlockAssembler;
+use reth_primitives::{EthPrimitives, NodePrimitives};
+use std::sync::Arc;
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
+
+/// Tempo EVM configuration.
+#[derive(Debug, Clone)]
+pub struct TempoEvmConfig<C = ChainSpec, N: NodePrimitives = EthPrimitives, R = AlloyReceiptBuilder>
+{
+    pub executor_factory: TempoBlockExecutorFactory<R, Arc<C>>,
+    pub block_assembler: EthBlockAssembler<C>,
+    _pd: core::marker::PhantomData<N>,
+}
+
+impl<ChainSpec: Hardforks, N: NodePrimitives, R> TempoEvmConfig<ChainSpec, N, R> {
+    /// Creates a new [`TempoEvmConfig`] with the given chain spec.
+    pub fn new(chain_spec: Arc<ChainSpec>, receipt_builder: R) -> Self {
+        Self {
+            block_assembler: EthBlockAssembler::new(chain_spec.clone()),
+            executor_factory: TempoBlockExecutorFactory::new(
+                receipt_builder,
+                chain_spec,
+                TempoEvmFactory::default(),
+            ),
+            _pd: core::marker::PhantomData,
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]

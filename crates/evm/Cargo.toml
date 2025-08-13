@@ -19,6 +19,7 @@ reth-consensus.workspace = true
 reth-db.workspace = true
 reth-db-api.workspace = true
 reth-evm.workspace = true
+reth-evm-ethereum.workspace = true
 reth-engine-primitives.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-ethereum-forks.workspace = true
