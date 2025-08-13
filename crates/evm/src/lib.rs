@@ -16,6 +16,8 @@ use reth_evm::{
 };
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
 
+use crate::evm::TempoEvm;
+
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoEvmFactory {
@@ -23,7 +25,7 @@ pub struct TempoEvmFactory {
 }
 
 impl EvmFactory for TempoEvmFactory {
-    type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = EthEvm<DB, I, PrecompilesMap>;
+    type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I, PrecompilesMap>;
     type Context<DB: Database> = EthEvmContext<DB>;
     type Tx = TxEnv;
     type Error<DBError: std::error::Error + Send + Sync + 'static> = EVMError<DBError>;
@@ -38,7 +40,8 @@ impl EvmFactory for TempoEvmFactory {
     ) -> Self::Evm<DB, NoOpInspector> {
         let mut evm = self.inner.create_evm(db, input);
         extend_tempo_precompiles(&mut evm);
-        evm
+
+        TempoEvm::new(evm, false)
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -49,6 +52,6 @@ impl EvmFactory for TempoEvmFactory {
     ) -> Self::Evm<DB, I> {
         let mut evm = self.inner.create_evm_with_inspector(db, input, inspector);
         extend_tempo_precompiles(&mut evm);
-        evm
+        TempoEvm::new(evm, true)
     }
 }
