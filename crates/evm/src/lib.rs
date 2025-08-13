@@ -1,10 +1,6 @@
-pub mod build;
 pub mod executor;
 
-use crate::{
-    build::TempoBlockAssembler,
-    executor::{TempoBlockExecutionCtx, TempoBlockExecutorFactory},
-};
+use crate::executor::{TempoBlockExecutionCtx, TempoBlockExecutorFactory};
 use alloy_consensus::{Block, EthBlock, Header};
 use reth::revm::{
     Inspector,
