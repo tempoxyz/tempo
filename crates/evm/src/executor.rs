@@ -1,5 +1,7 @@
-use alloy_consensus::{Transaction, TxReceipt};
-use alloy_eips::Encodable2718;
+use std::borrow::Cow;
+
+use alloy_consensus::{Header, Transaction, TxReceipt};
+use alloy_eips::{Encodable2718, eip4895::Withdrawals};
 use alloy_primitives::B256;
 use reth::revm::{Inspector, State};
 use reth_chainspec::{ChainHardforks, EthereumHardforks, Hardforks};
@@ -68,7 +70,7 @@ where
     Self: 'static,
 {
     type EvmFactory = EvmF;
-    type ExecutionCtx<'a> = TempoBlockExecutionCtx;
+    type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
 
@@ -85,33 +87,32 @@ where
         DB: Database + 'a,
         I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
     {
-        TempoBlockExecutor::new(
-            evm,
-            TempoBlockExecutionCtx {
-                parent_hash: ctx.parent_hash,
-            },
-            self.spec.clone(),
-            self.receipt_builder,
-        )
+        TempoBlockExecutor::new(evm, ctx, self.spec.clone(), self.receipt_builder)
     }
 }
 
 /// Context for Tempo block execution.
 #[derive(Debug, Default, Clone)]
-pub struct TempoBlockExecutionCtx {
+pub struct TempoBlockExecutionCtx<'a> {
     /// Parent block hash.
     pub parent_hash: B256,
+    /// Parent beacon block root.
+    pub parent_beacon_block_root: Option<B256>,
+    /// Block ommers
+    pub ommers: &'a [Header],
+    /// Block withdrawals.
+    pub withdrawals: Option<Cow<'a, Withdrawals>>,
 }
 
 /// Block executor for Tempo.
 #[derive(Debug)]
-pub struct TempoBlockExecutor<Evm, R: ReceiptBuilder, Spec> {
+pub struct TempoBlockExecutor<'a, Evm, R: ReceiptBuilder, Spec> {
     /// Spec.
     spec: Spec,
     /// Receipt builder.
     receipt_builder: R,
     /// Context for block execution.
-    ctx: TempoBlockExecutionCtx,
+    ctx: TempoBlockExecutionCtx<'a>,
     /// The EVM used by executor.
     evm: Evm,
     /// Receipts of executed transactions.
@@ -122,13 +123,13 @@ pub struct TempoBlockExecutor<Evm, R: ReceiptBuilder, Spec> {
     system_caller: SystemCaller<Spec>,
 }
 
-impl<E, R, Spec> TempoBlockExecutor<E, R, Spec>
+impl<'a, E, R, Spec> TempoBlockExecutor<'a, E, R, Spec>
 where
     E: Evm,
     R: ReceiptBuilder,
     Spec: EthereumHardforks + Clone,
 {
-    pub fn new(evm: E, ctx: TempoBlockExecutionCtx, spec: Spec, receipt_builder: R) -> Self {
+    pub fn new(evm: E, ctx: TempoBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
         Self {
             spec: spec.clone(),
             receipt_builder,
@@ -141,7 +142,7 @@ where
     }
 }
 
-impl<'db, DB, E, R, Spec> BlockExecutor for TempoBlockExecutor<E, R, Spec>
+impl<'a, 'db, DB, E, R, Spec> BlockExecutor for TempoBlockExecutor<'a, E, R, Spec>
 where
     DB: Database + 'db,
     E: Evm<

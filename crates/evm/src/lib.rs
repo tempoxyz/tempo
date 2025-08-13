@@ -101,7 +101,10 @@ where
         Ok(EvmEnv::default())
     }
 
-    fn context_for_block<'a>(&self, block: &'a SealedBlock<N::Block>) -> TempoBlockExecutionCtx {
+    fn context_for_block<'a>(
+        &self,
+        block: &'a SealedBlock<N::Block>,
+    ) -> TempoBlockExecutionCtx<'a> {
         TempoBlockExecutionCtx::default()
     }
 
