@@ -1,5 +1,3 @@
-use std::ops::{Deref, DerefMut};
-
 use alloy_primitives::{Address, Bytes};
 use reth::revm::{
     Context, Inspector,
@@ -11,7 +9,8 @@ use reth::revm::{
     interpreter::InterpreterResult,
     primitives::hardfork::SpecId,
 };
-use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError, EvmFactory};
+use reth_evm::{Database, EthEvm, Evm, EvmEnv};
+use std::ops::{Deref, DerefMut};
 
 /// The Tempo EVM context type.
 pub type TempoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB>;

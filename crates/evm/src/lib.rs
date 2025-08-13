@@ -1,22 +1,19 @@
 pub mod evm;
 
+use crate::evm::TempoEvm;
 use reth::revm::{
-    Context, Inspector, Journal,
+    Inspector,
     context::{
-        BlockEnv, CfgEnv, TxEnv,
+        TxEnv,
         result::{EVMError, HaltReason},
     },
-    handler::EthPrecompiles,
     inspector::NoOpInspector,
     primitives::hardfork::SpecId,
 };
 use reth_evm::{
-    Database, EthEvm, EthEvmFactory, EvmEnv, EvmFactory, eth::EthEvmContext,
-    precompiles::PrecompilesMap,
+    Database, EthEvmFactory, EvmEnv, EvmFactory, eth::EthEvmContext, precompiles::PrecompilesMap,
 };
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
-
-use crate::evm::TempoEvm;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
