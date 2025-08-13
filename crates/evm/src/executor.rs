@@ -1,25 +1,25 @@
-use alloy_consensus::{ReceiptEnvelope, TxEnvelope, TxReceipt};
+use alloy_consensus::{Transaction, TxReceipt};
 use alloy_eips::Encodable2718;
-use alloy_evm::{
-    Database, Evm,
+use alloy_primitives::B256;
+use reth::revm::{Inspector, State};
+use reth_chainspec::{ChainHardforks, Hardforks};
+use reth_evm::{
+    Database, Evm, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
     block::{
-        BlockExecutionError, BlockExecutionResult, BlockExecutor, CommitChanges, ExecutableTx,
-        OnStateHook, SystemCaller,
+        BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockExecutorFactory,
+        BlockExecutorFor, CommitChanges, ExecutableTx, OnStateHook, SystemCaller,
+    },
+    eth::{
+        EthBlockExecutionCtx,
+        receipt_builder::{AlloyReceiptBuilder, ReceiptBuilder},
     },
     revm::context::result::ExecutionResult,
 };
-use alloy_primitives::B256;
-use reth::revm::{Inspector, State, handler::EthPrecompiles};
-use reth_chainspec::{ChainHardforks, Hardforks};
-use reth_evm::{
-    EthEvm, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
-    block::{BlockExecutorFactory, BlockExecutorFor},
-    eth::{
-        EthBlockExecutionCtx, EthEvmContext,
-        receipt_builder::{AlloyReceiptBuilder, ReceiptBuilder},
-    },
-};
-use reth_primitives_traits::Transaction;
+// use revm::{
+//     DatabaseCommit, Inspector,
+//     context::result::{ExecutionResult, ResultAndState},
+//     database::State,
+// };
 
 use crate::TempoEvmFactory;
 
@@ -39,9 +39,10 @@ pub struct TempoBlockExecutorFactory<
 
 impl<R, Spec, EvmF> BlockExecutorFactory for TempoBlockExecutorFactory<R, Spec, EvmF>
 where
-    R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt>,
-    Spec: Hardforks,
-    EvmF: EvmFactory<Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>>,
+    R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt> + Copy,
+    Spec: Hardforks + Copy,
+    EvmF:
+        EvmFactory<Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>> + Copy,
     Self: 'static,
 {
     type EvmFactory = EvmF;
@@ -62,7 +63,14 @@ where
         DB: Database + 'a,
         I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
     {
-        todo!()
+        TempoBlockExecutor::new(
+            evm,
+            TempoBlockExecutionCtx {
+                parent_hash: ctx.parent_hash,
+            },
+            self.spec,
+            self.receipt_builder,
+        )
     }
 }
 
@@ -92,6 +100,25 @@ pub struct TempoBlockExecutor<Evm, R: ReceiptBuilder, Spec> {
     system_caller: SystemCaller<Spec>,
 }
 
+impl<E, R, Spec> TempoBlockExecutor<E, R, Spec>
+where
+    E: Evm,
+    R: ReceiptBuilder,
+    Spec: Hardforks + Copy,
+{
+    pub fn new(evm: E, ctx: TempoBlockExecutionCtx, spec: Spec, receipt_builder: R) -> Self {
+        Self {
+            spec,
+            receipt_builder,
+            ctx,
+            evm,
+            receipts: Vec::new(),
+            gas_used: 0,
+            system_caller: SystemCaller::new(spec),
+        }
+    }
+}
+
 impl<'db, DB, E, R, Spec> BlockExecutor for TempoBlockExecutor<E, R, Spec>
 where
     DB: Database + 'db,
@@ -112,15 +139,13 @@ where
 
     fn execute_transaction_with_commit_condition(
         &mut self,
-        tx: impl ExecutableTx<Self>,
-        f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> CommitChanges,
+        _tx: impl ExecutableTx<Self>,
+        _f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> CommitChanges,
     ) -> Result<Option<u64>, BlockExecutionError> {
         Ok(None)
     }
 
-    fn finish(
-        mut self,
-    ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
+    fn finish(self) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
         Ok((
             self.evm,
             BlockExecutionResult {
