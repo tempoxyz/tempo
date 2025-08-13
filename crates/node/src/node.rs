@@ -5,8 +5,7 @@ use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadBuilderAttributes};
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
-    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
-    eth::{receipt_builder::AlloyReceiptBuilder, spec::EthExecutorSpec},
+    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes, eth::spec::EthExecutorSpec,
     revm::context::TxEnv,
 };
 use reth_malachite::MalachiteConsensusBuilder;
@@ -256,18 +255,13 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
 #[non_exhaustive]
 pub struct TempoExecutorBuilder;
 
-impl<Types, Node> ExecutorBuilder<Node> for TempoExecutorBuilder
+impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
-    Types: NodeTypes<
-            ChainSpec: Hardforks + EthExecutorSpec + EthereumHardforks,
-            Primitives = EthPrimitives,
-        >,
-    Node: FullNodeTypes<Types = Types>,
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: Hardforks, Primitives = EthPrimitives>>,
 {
     type EVM = TempoEvmConfig<
         <Node::Types as NodeTypes>::ChainSpec,
         <Node::Types as NodeTypes>::Primitives,
-        AlloyReceiptBuilder,
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {

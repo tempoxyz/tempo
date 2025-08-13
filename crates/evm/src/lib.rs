@@ -15,7 +15,7 @@ use reth::revm::{
     inspector::NoOpInspector,
     primitives::hardfork::SpecId,
 };
-use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
+use reth_chainspec::{BaseFeeParams, ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
 use reth_evm::{
     ConfigureEvm, Database, EthEvm, EthEvmFactory, EvmEnv, EvmFactory, FromRecoveredTx,
     FromTxWithEncoded, NextBlockEnvAttributes,
@@ -88,7 +88,7 @@ where
     }
 
     fn evm_env(&self, header: &Header) -> EvmEnv {
-        todo!()
+        EvmEnv::default()
     }
 
     fn next_evm_env(
@@ -96,11 +96,11 @@ where
         parent: &Header,
         attributes: &NextBlockEnvAttributes,
     ) -> Result<EvmEnv, Self::Error> {
-        todo!()
+        Ok(EvmEnv::default())
     }
 
     fn context_for_block<'a>(&self, block: &'a SealedBlock<N::Block>) -> TempoBlockExecutionCtx {
-        todo!()
+        TempoBlockExecutionCtx::default()
     }
 
     fn context_for_next_block(
@@ -108,7 +108,7 @@ where
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
     ) -> TempoBlockExecutionCtx {
-        todo!()
+        TempoBlockExecutionCtx::default()
     }
 }
 
