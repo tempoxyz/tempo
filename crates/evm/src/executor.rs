@@ -12,12 +12,11 @@ use reth_evm::{
         BlockExecutorFor, CommitChanges, ExecutableTx, OnStateHook, SystemCaller,
     },
     eth::{
-        EthBlockExecutionCtx,
+        EthBlockExecutionCtx, EthBlockExecutor,
         receipt_builder::{AlloyReceiptBuilder, ReceiptBuilder},
     },
     revm::context::result::ExecutionResult,
 };
-use reth_evm_ethereum::RethReceiptBuilder;
 
 use crate::TempoEvmFactory;
 
@@ -106,22 +105,8 @@ pub struct TempoBlockExecutionCtx<'a> {
 }
 
 /// Block executor for Tempo.
-#[derive(Debug)]
 pub struct TempoBlockExecutor<'a, Evm, R: ReceiptBuilder, Spec> {
-    /// Spec.
-    spec: Spec,
-    /// Receipt builder.
-    receipt_builder: R,
-    /// Context for block execution.
-    ctx: EthBlockExecutionCtx<'a>,
-    /// The EVM used by executor.
-    evm: Evm,
-    /// Receipts of executed transactions.
-    receipts: Vec<R::Receipt>,
-    /// Total gas used by executed transactions.
-    gas_used: u64,
-    /// Utility to call system smart contracts.
-    system_caller: SystemCaller<Spec>,
+    inner: EthBlockExecutor<'a, Evm, Spec, R>,
 }
 
 impl<'a, E, R, Spec> TempoBlockExecutor<'a, E, R, Spec>
@@ -131,15 +116,8 @@ where
     Spec: EthereumHardforks + Clone,
 {
     pub fn new(evm: E, ctx: EthBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
-        Self {
-            spec: spec.clone(),
-            receipt_builder,
-            ctx,
-            evm,
-            receipts: Vec::new(),
-            gas_used: 0,
-            system_caller: SystemCaller::new(spec),
-        }
+        let inner = EthBlockExecutor::new(evm, ctx, spec, receipt_builder);
+        Self { inner }
     }
 }
 
@@ -158,37 +136,32 @@ where
     type Evm = E;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
-        Ok(())
+        todo!()
     }
 
     fn execute_transaction_with_commit_condition(
         &mut self,
-        _tx: impl ExecutableTx<Self>,
-        _f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> CommitChanges,
+        tx: impl ExecutableTx<Self>,
+        f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> CommitChanges,
     ) -> Result<Option<u64>, BlockExecutionError> {
-        Ok(None)
+        todo!()
     }
 
-    fn finish(self) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
-        Ok((
-            self.evm,
-            BlockExecutionResult {
-                receipts: self.receipts,
-                requests: Default::default(),
-                gas_used: 0,
-            },
-        ))
+    fn finish(
+        mut self,
+    ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
+        todo!()
     }
 
     fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
-        self.system_caller.with_state_hook(hook);
+        todo!()
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
-        &mut self.evm
+        todo!()
     }
 
     fn evm(&self) -> &Self::Evm {
-        &self.evm
+        todo!()
     }
 }
