@@ -91,7 +91,10 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // TODO: call fee manager to ensure sufficient balance
         self.inner.transact_raw(tx)
+
+        // TODO: call fee manager to decrement balance
     }
 
     fn transact_system_call(
