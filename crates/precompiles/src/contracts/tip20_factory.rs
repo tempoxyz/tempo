@@ -1,10 +1,12 @@
 use alloy::primitives::{Address, IntoLogData, U256};
 
-use crate::contracts::{
+use crate::{
     TIP20_FACTORY_ADDRESS,
-    storage::StorageProvider,
-    tip20::TIP20Token,
-    types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
+    contracts::{
+        storage::StorageProvider,
+        tip20::TIP20Token,
+        types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
+    },
 };
 
 mod slots {

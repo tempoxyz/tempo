@@ -19,10 +19,12 @@ pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip4217_registry;
 
-use crate::contracts::{
-    EvmStorageProvider, TIP20_FACTORY_ADDRESS, TIP20Factory, TIP20Token, TIP403_REGISTRY_ADDRESS,
-    TIP403Registry, TIP4217_REGISTRY_ADDRESS, TIP4217Registry, address_is_token_address,
-    address_to_token_id_unchecked,
+use crate::{
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
+    contracts::{
+        EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
+        address_is_token_address, address_to_token_id_unchecked,
+    },
 };
 
 const METADATA_GAS: u64 = 50;

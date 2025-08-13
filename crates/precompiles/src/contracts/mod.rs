@@ -6,21 +6,14 @@ pub mod tip403_registry;
 pub mod tip4217_registry;
 pub mod types;
 
-use alloy::primitives::{Address, address};
+use alloy::primitives::Address;
+use crate::TIP20_TOKEN_PREFIX;
 pub use storage::{StorageProvider, evm::EvmStorageProvider, hashmap::HashMapStorageProvider};
 pub use tip20::TIP20Token;
 pub use tip20_factory::TIP20Factory;
 pub use tip403_registry::TIP403Registry;
 pub use tip4217_registry::TIP4217Registry;
 pub use types::{ITIP20, ITIP20Factory, ITIP403Registry, ITIP4217Registry};
-
-pub const TIP403_REGISTRY_ADDRESS: Address = address!("0x403C000000000000000000000000000000000000");
-pub const TIP20_FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");
-pub const TIP4217_REGISTRY_ADDRESS: Address =
-    address!("0x4217C00000000000000000000000000000000000");
-const TIP20_TOKEN_PREFIX: [u8; 12] = [
-    0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
 
 /// Converts a token ID to its corresponding contract address
 /// Uses the pattern: TIP20_TOKEN_PREFIX ++ token_id
