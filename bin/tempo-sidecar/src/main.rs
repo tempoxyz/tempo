@@ -1,3 +1,4 @@
+use alloy::eips::BlockId;
 use alloy::{
     hex,
     primitives::B256,
@@ -7,11 +8,10 @@ use alloy::{
 use alloy_rpc_types_engine::ForkchoiceState;
 use anyhow::{Context, Result};
 use clap::Parser;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fs, path::PathBuf, time, time::Duration};
-use alloy::eips::BlockId;
-use serde::{Deserialize, Serialize};
-use reqwest::Client;
 use tokio::time::sleep;
 use tracing::{error, info};
 
@@ -45,23 +45,25 @@ struct BlockFollower {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
-    iat: u64
+    iat: u64,
 }
 
 impl BlockFollower {
     async fn new(args: Args) -> Result<Self> {
         let jwt_secret_path = shellexpand::tilde(&args.jwt_secret_file);
         let jwt_secret_path = PathBuf::from(jwt_secret_path.as_ref());
-        
+
         let jwt_secret = fs::read_to_string(&jwt_secret_path)
             .with_context(|| format!("Failed to read JWT secret from {jwt_secret_path:?}"))?;
-        
+
         let jwt_secret = jwt_secret.trim();
-        let jwt_secret_bytes = hex::decode(jwt_secret)
-            .with_context(|| "Failed to decode JWT secret from hex")?;
+        let jwt_secret_bytes =
+            hex::decode(jwt_secret).with_context(|| "Failed to decode JWT secret from hex")?;
 
         let claims = Claims {
-            iat: time::SystemTime::now().duration_since(time::SystemTime::UNIX_EPOCH)?.as_secs(),
+            iat: time::SystemTime::now()
+                .duration_since(time::SystemTime::UNIX_EPOCH)?
+                .as_secs(),
         };
 
         let jwt_token = jsonwebtoken::encode(
@@ -70,8 +72,7 @@ impl BlockFollower {
             &jsonwebtoken::EncodingKey::from_secret(&jwt_secret_bytes),
         )?;
 
-        let producer = ProviderBuilder::new()
-            .connect_http(args.producer_url.parse()?);
+        let producer = ProviderBuilder::new().connect_http(args.producer_url.parse()?);
 
         Ok(Self {
             producer: producer.root().clone(),
@@ -106,7 +107,10 @@ impl BlockFollower {
             "id": 1
         });
 
-        info!("Sending forkchoice update to {}: {}", self.follower_url, payload);
+        info!(
+            "Sending forkchoice update to {}: {}",
+            self.follower_url, payload
+        );
         let response = self
             .client
             .post(&self.follower_url)
@@ -121,18 +125,25 @@ impl BlockFollower {
             let text = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!(
                 "Forkchoice update failed with status {} to URL {}: {}",
-                status, self.follower_url, text
+                status,
+                self.follower_url,
+                text
             ));
         }
 
-        let result: Value = response.json().await
+        let result: Value = response
+            .json()
+            .await
             .with_context(|| "Failed to parse forkchoice update response")?;
 
         if let Some(error) = result.get("error") {
             return Err(anyhow::anyhow!("Forkchoice update error: {}", error));
         }
 
-        info!("Forkchoice update successful for block {}", block.header.hash);
+        info!(
+            "Forkchoice update successful for block {}",
+            block.header.hash
+        );
         Ok(())
     }
 
@@ -148,8 +159,7 @@ impl BlockFollower {
                     if Some(block.header.hash) != last_block_hash {
                         info!(
                             "New block {} (number: {})",
-                            block.header.hash,
-                            block.header.number
+                            block.header.hash, block.header.number
                         );
 
                         if let Err(e) = self.send_forkchoice_updated(&block).await {
