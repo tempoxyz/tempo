@@ -43,7 +43,9 @@ pub struct TempoEvmConfig<
     _pd: core::marker::PhantomData<N>,
 }
 
-impl<ChainSpec: Hardforks, N: NodePrimitives, R: ReceiptBuilder> TempoEvmConfig<ChainSpec, N, R> {
+impl<ChainSpec: EthereumHardforks, N: NodePrimitives, R: ReceiptBuilder>
+    TempoEvmConfig<ChainSpec, N, R>
+{
     /// Creates a new [`TempoEvmConfig`] with the given chain spec.
     pub fn new(chain_spec: Arc<ChainSpec>, receipt_builder: R) -> Self {
         Self {
@@ -61,7 +63,7 @@ impl<ChainSpec: Hardforks, N: NodePrimitives, R: ReceiptBuilder> TempoEvmConfig<
 // TODO: configure evm for TempoEvmConfig
 impl<C, N, R> ConfigureEvm for TempoEvmConfig<C, N, R>
 where
-    C: EthChainSpec<Header = Header>,
+    C: EthChainSpec<Header = Header> + EthereumHardforks,
     N: NodePrimitives<
             Receipt = R::Receipt,
             SignedTx = R::Transaction,

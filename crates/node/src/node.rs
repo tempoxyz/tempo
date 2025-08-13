@@ -258,7 +258,7 @@ pub struct TempoExecutorBuilder;
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
-    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: Hardforks, Primitives = EthPrimitives>>,
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: EthereumHardforks, Primitives = EthPrimitives>>,
 {
     type EVM = TempoEvmConfig<
         <Node::Types as NodeTypes>::ChainSpec,
