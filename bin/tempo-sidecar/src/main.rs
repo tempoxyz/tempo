@@ -2,7 +2,7 @@ use alloy::eips::BlockId;
 use alloy::{
     hex,
     primitives::B256,
-    providers::{Provider, ProviderBuilder, RootProvider},
+    providers::{DynProvider, Provider, ProviderBuilder},
     rpc::types::Block,
 };
 use alloy_rpc_types_engine::ForkchoiceState;
@@ -36,7 +36,7 @@ struct Args {
 }
 
 struct BlockFollower {
-    producer: RootProvider<alloy::network::Ethereum>,
+    producer: DynProvider,
     follower_url: String,
     jwt_token: String,
     client: Client,
@@ -72,10 +72,12 @@ impl BlockFollower {
             &jsonwebtoken::EncodingKey::from_secret(&jwt_secret_bytes),
         )?;
 
-        let producer = ProviderBuilder::new().connect_http(args.producer_url.parse()?);
+        let producer = ProviderBuilder::new()
+            .connect_http(args.producer_url.parse()?)
+            .erased();
 
         Ok(Self {
-            producer: producer.root().clone(),
+            producer,
             follower_url: args.follower_url,
             jwt_token,
             client: reqwest::Client::new(),
