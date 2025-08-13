@@ -263,9 +263,10 @@ where
         >,
     Node: FullNodeTypes<Types = Types>,
 {
-    type EVM = TempoEvmConfig;
-    // type EVM = EthEvmConfig<Types::ChainSpec, TempoEvmFactory>;
-    // let evm_config = TempoEvmConfig::new(ctx.chain_spec(), EthReceiptBuilder::default());
+    type EVM = TempoEvmConfig<
+        <Node::Types as NodeTypes>::ChainSpec,
+        <Node::Types as NodeTypes>::Primitives,
+    >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
         let evm_config =
