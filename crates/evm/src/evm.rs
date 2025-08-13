@@ -11,7 +11,7 @@ use reth::revm::{
     interpreter::InterpreterResult,
     primitives::hardfork::SpecId,
 };
-use reth_evm::{Database, EthEvm, EthEvmFactory, Evm, EvmEnv, EvmError, EvmFactory};
+use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError, EvmFactory};
 
 /// The Tempo EVM context type.
 pub type TempoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
@@ -28,7 +28,7 @@ pub struct TempoEvm<DB: Database, I, PRECOMPILE = EthPrecompiles> {
 }
 
 impl<DB: Database, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE> {
-    /// Creates a new Ethereum EVM instance.
+    /// Creates a new Tempo EVM instance.
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`RevmEvm`] should be invoked on [`Evm::transact`].
@@ -92,8 +92,7 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // self.inner.transact_raw()
-        todo!()
+        self.inner.transact_raw(tx)
     }
 
     fn transact_system_call(
@@ -102,13 +101,11 @@ where
         contract: Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // self.inner.system_call_with_caller(caller, contract, data)
-        todo!()
+        self.inner.transact_system_call(caller, contract, data)
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
-        // self.inner.finish()
-        todo!()
+        self.inner.finish()
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
@@ -116,12 +113,10 @@ where
     }
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
-        // self.inner.components()
-        todo!()
+        self.inner.components()
     }
 
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
-        // self.inner.components_mut()
-        todo!()
+        self.inner.components_mut()
     }
 }
