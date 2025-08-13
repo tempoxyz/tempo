@@ -133,6 +133,97 @@ sol! {
     interface ITIP4217Registry {
         function getCurrencyDecimals(string currency) external view returns (uint8);
     }
+
+    #[derive(Debug, PartialEq, Eq)]
+    interface IFeeManager {
+        // Structs (represented as tuples in Solidity interface)
+        struct Pool {
+            uint128 reserve0;
+            uint128 reserve1;
+        }
+
+        struct QueuedOperation {
+            uint8 opType; // 0 = Deposit, 1 = Withdraw
+            address user;
+            bytes32 poolKey;
+            uint256 amount;
+            address token;
+        }
+
+        struct FeeInfo {
+            uint128 amount;
+            bool hasBeenSet;
+        }
+
+        struct PoolKey {
+            address token0;
+            address token1;
+        }
+
+        // Constants
+        function BASIS_POINTS() external pure returns (uint256);
+        function FEE_BPS() external pure returns (uint256);
+
+        // Pool state view functions
+        function pools(bytes32 poolId) external view returns (Pool memory);
+        function totalSupply(bytes32 poolId) external view returns (uint256);
+        function poolExists(bytes32 poolId) external view returns (bool);
+        function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
+
+        // User preferences
+        function userTokens(address user) external view returns (address);
+        function validatorTokens(address validator) external view returns (address);
+
+        // Pending operations
+        function pendingReserve0(bytes32 poolId) external view returns (uint256);
+        function pendingReserve1(bytes32 poolId) external view returns (uint256);
+
+        // Core functions
+        function setValidatorToken(address token) external;
+        function setUserToken(address token) external;
+        function createPool(address tokenA, address tokenB) external;
+        function getPoolId(PoolKey memory key) external pure returns (bytes32);
+        function getPool(PoolKey memory key) external view returns (Pool memory);
+        function swap(PoolKey memory key, address tokenIn, uint256 amountIn, address to) external;
+        function queueDeposit(PoolKey memory key, uint256 amount, address depositToken) external;
+        function queueWithdraw(PoolKey memory key, uint256 liquidity) external;
+        function executeBlock() external;
+
+        // View functions
+        function getTokensWithFeesLength() external view returns (uint256);
+        function getOperationQueueLength() external view returns (uint256);
+        function getDepositQueueLength() external view returns (uint256);
+        function getWithdrawQueueLength() external view returns (uint256);
+        function isPoolBalanced(PoolKey memory key) external view returns (bool);
+        function getLowerBalanceToken(PoolKey memory key) external view returns (address);
+        function getHigherBalanceToken(PoolKey memory key) external view returns (address);
+        function getTotalValue(PoolKey memory key) external view returns (uint256);
+
+        // Events
+        event PoolCreated(address indexed token0, address indexed token1);
+        event DepositQueued(address indexed user, address indexed token0, address indexed token1, uint256 amount, address token);
+        event WithdrawQueued(address indexed user, address indexed token0, address indexed token1, uint256 liquidity);
+        event BlockExecuted(uint256 deposits, uint256 withdraws, uint256 feeSwaps);
+        event UserTokenSet(address indexed user, address indexed token);
+        event ValidatorTokenSet(address indexed validator, address indexed token);
+        event Deposit(address indexed user, address indexed token0, address indexed token1, address depositToken, uint256 amount, uint256 liquidity);
+        event Withdrawal(address indexed user, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity);
+        event Swap(address indexed token0, address indexed token1, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
+
+        // Errors
+        error OnlyValidator();
+        error IdenticalAddresses();
+        error ZeroAddress();
+        error PoolExists();
+        error PoolDoesNotExist();
+        error InvalidToken();
+        error InsufficientLiquidity();
+        error InsufficientPoolBalance();
+        error InsufficientReserves();
+        error InsufficientLiquidityBalance();
+        error MustDepositLowerBalanceToken();
+        error InvalidAmount();
+    }
 }
 
 #[macro_export]
