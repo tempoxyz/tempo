@@ -10,26 +10,35 @@ use alloy::{
     sol_types::{SolCall, SolValue},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationType {
-    Deposit,
-    Withdraw,
-}
+mod slots {
+    use crate::contracts::storage::slots::to_u256;
+    use alloy::primitives::U256;
 
-impl From<u8> for OperationType {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => OperationType::Deposit,
-            1 => OperationType::Withdraw,
-            _ => panic!("Invalid operation type: {}", value),
-        }
-    }
-}
+    // Pool state mappings
+    pub const POOLS: U256 = to_u256(0);
+    pub const TOTAL_SUPPLY: U256 = to_u256(1);
+    pub const POOL_EXISTS: U256 = to_u256(2);
+    pub const LIQUIDITY_BALANCES: U256 = to_u256(3);
 
-impl From<OperationType> for u8 {
-    fn from(op_type: OperationType) -> Self {
-        op_type as u8
-    }
+    // Token preferences
+    pub const VALIDATOR_TOKENS: U256 = to_u256(4);
+    pub const USER_TOKENS: U256 = to_u256(5);
+
+    // Fee tracking
+    pub const COLLECTED_FEES: U256 = to_u256(6);
+
+    // Pending operations
+    pub const PENDING_RESERVE0: U256 = to_u256(7);
+    pub const PENDING_RESERVE1: U256 = to_u256(8);
+
+    // Arrays
+    pub const OPERATION_QUEUE_LENGTH: U256 = to_u256(9);
+    pub const OPERATION_QUEUE_BASE: U256 = to_u256(10);
+    pub const TOKENS_WITH_FEES_LENGTH: U256 = to_u256(11);
+    pub const TOKENS_WITH_FEES_BASE: U256 = to_u256(12);
+    pub const POOLS_WITH_PENDING_OPS_LENGTH: U256 = to_u256(13);
+    pub const POOLS_WITH_PENDING_OPS_BASE: U256 = to_u256(14);
+    pub const TOKEN_IN_FEES_ARRAY: U256 = to_u256(15);
 }
 
 #[derive(Debug, Clone)]
@@ -38,56 +47,11 @@ pub struct Pool {
     pub reserve1: u128,
 }
 
-impl Pool {
-    pub fn new() -> Self {
-        Self {
-            reserve0: 0,
-            reserve1: 0,
-        }
-    }
-}
-
 impl From<Pool> for IFeeManager::Pool {
     fn from(pool: Pool) -> Self {
         IFeeManager::Pool {
             reserve0: pool.reserve0,
             reserve1: pool.reserve1,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct QueuedOperation {
-    pub op_type: OperationType,
-    pub user: Address,
-    pub pool_key: PoolKey,
-    pub amount: U256,
-    pub token: Address,
-}
-
-impl From<QueuedOperation> for IFeeManager::QueuedOperation {
-    fn from(op: QueuedOperation) -> Self {
-        IFeeManager::QueuedOperation {
-            opType: u8::from(op.op_type),
-            user: op.user,
-            poolKey: op.pool_key.get_id(),
-            amount: op.amount,
-            token: op.token,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FeeInfo {
-    pub amount: u128,
-    pub has_been_set: bool,
-}
-
-impl From<FeeInfo> for IFeeManager::FeeInfo {
-    fn from(fee_info: FeeInfo) -> Self {
-        IFeeManager::FeeInfo {
-            amount: fee_info.amount,
-            hasBeenSet: fee_info.has_been_set,
         }
     }
 }
@@ -129,35 +93,58 @@ impl From<IFeeManager::PoolKey> for PoolKey {
     }
 }
 
-mod slots {
-    use crate::contracts::storage::slots::to_u256;
-    use alloy::primitives::U256;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationType {
+    Deposit,
+    Withdraw,
+}
 
-    // Pool state mappings
-    pub const POOLS: U256 = to_u256(0);
-    pub const TOTAL_SUPPLY: U256 = to_u256(1);
-    pub const POOL_EXISTS: U256 = to_u256(2);
-    pub const LIQUIDITY_BALANCES: U256 = to_u256(3);
+impl From<u8> for OperationType {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => OperationType::Deposit,
+            1 => OperationType::Withdraw,
+            _ => panic!("Invalid operation type: {}", value),
+        }
+    }
+}
 
-    // Token preferences
-    pub const VALIDATOR_TOKENS: U256 = to_u256(4);
-    pub const USER_TOKENS: U256 = to_u256(5);
+#[derive(Debug, Clone)]
+pub struct QueuedOperation {
+    pub op_type: OperationType,
+    pub user: Address,
+    pub pool_key: PoolKey,
+    // NOTE: for deposits, token amount. For withdrawals, liquidity amount
+    pub amount: U256,
+    // NOTE: for deposits, deposit token, for withdrawals, default withdrawal token
+    pub token: Address,
+}
 
-    // Fee tracking
-    pub const COLLECTED_FEES: U256 = to_u256(6);
+impl From<QueuedOperation> for IFeeManager::QueuedOperation {
+    fn from(op: QueuedOperation) -> Self {
+        IFeeManager::QueuedOperation {
+            opType: op.op_type as u8,
+            user: op.user,
+            poolKey: op.pool_key.get_id(),
+            amount: op.amount,
+            token: op.token,
+        }
+    }
+}
 
-    // Pending operations
-    pub const PENDING_RESERVE0: U256 = to_u256(7);
-    pub const PENDING_RESERVE1: U256 = to_u256(8);
+#[derive(Debug, Clone)]
+pub struct FeeInfo {
+    pub amount: u128,
+    pub has_been_set: bool,
+}
 
-    // Arrays (stored as packed data)
-    pub const OPERATION_QUEUE_LENGTH: U256 = to_u256(9);
-    pub const OPERATION_QUEUE_BASE: U256 = to_u256(10);
-    pub const TOKENS_WITH_FEES_LENGTH: U256 = to_u256(11);
-    pub const TOKENS_WITH_FEES_BASE: U256 = to_u256(12);
-    pub const POOLS_WITH_PENDING_OPS_LENGTH: U256 = to_u256(13);
-    pub const POOLS_WITH_PENDING_OPS_BASE: U256 = to_u256(14);
-    pub const TOKEN_IN_FEES_ARRAY: U256 = to_u256(15);
+impl From<FeeInfo> for IFeeManager::FeeInfo {
+    fn from(fee_info: FeeInfo) -> Self {
+        IFeeManager::FeeInfo {
+            amount: fee_info.amount,
+            hasBeenSet: fee_info.has_been_set,
+        }
+    }
 }
 
 pub struct TipFeeManager<S: StorageProvider> {
@@ -166,6 +153,11 @@ pub struct TipFeeManager<S: StorageProvider> {
 }
 
 impl<S: StorageProvider> TipFeeManager<S> {
+    // Constants
+    pub const FEE_BPS: u64 = 25; // 0.25% fee
+    pub const BASIS_POINTS: u64 = 10000;
+    pub const MINIMUM_BALANCE: U256 = U256::from_limbs([1_000_000_000u64, 0, 0, 0]); // 1e9
+
     pub fn new(contract_address: Address, storage: S) -> Self {
         Self {
             contract_address,
@@ -173,10 +165,232 @@ impl<S: StorageProvider> TipFeeManager<S> {
         }
     }
 
-    // Constants
-    pub const FEE_BPS: u64 = 25; // 0.25% fee
-    pub const BASIS_POINTS: u64 = 10000;
-    pub const MINIMUM_BALANCE: U256 = U256::from_limbs([1_000_000_000u64, 0, 0, 0]); // 1e9
+    pub fn set_validator_token(
+        &mut self,
+        sender: &Address,
+        call: IFeeManager::setValidatorTokenCall,
+    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
+        // TODO: FIXME: validate sender
+
+        if call.token.is_zero() {
+            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
+                IFeeManager::InvalidToken {},
+            ));
+        }
+
+        let slot = self.get_validator_token_slot(sender);
+        let token = U256::from_be_bytes(call.token.into_array());
+        self.storage.sstore(self.contract_address, slot, token);
+        // TODO: emit event
+
+        Ok(())
+    }
+
+    pub fn set_user_token(
+        &mut self,
+        sender: &Address,
+        call: IFeeManager::setUserTokenCall,
+    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
+        if call.token.is_zero() {
+            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
+                IFeeManager::InvalidToken {},
+            ));
+        }
+
+        let slot = self.get_user_token_slot(sender);
+        let token = U256::from_be_bytes(call.token.into_array());
+        self.storage.sstore(self.contract_address, slot, token);
+
+        // TODO: emit event
+
+        Ok(())
+    }
+
+    pub fn create_pool(
+        &mut self,
+        sender: &Address,
+        call: IFeeManager::createPoolCall,
+    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
+        if call.tokenA == call.tokenB {
+            return Err(IFeeManager::IFeeManagerErrors::IdenticalAddresses(
+                IFeeManager::IdenticalAddresses {},
+            ));
+        }
+
+        if call.tokenA == Address::ZERO || call.tokenB == Address::ZERO {
+            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
+                IFeeManager::InvalidToken {},
+            ));
+        }
+
+        let pool_key = PoolKey::new(call.tokenA, call.tokenB);
+        let pool_id = pool_key.get_id();
+
+        // Check if pool already exists
+        let exists_slot = self.get_pool_exists_slot(&pool_id);
+        if self.storage.sload(self.contract_address, exists_slot) != U256::ZERO {
+            return Err(IFeeManager::IFeeManagerErrors::PoolExists(
+                IFeeManager::PoolExists {},
+            ));
+        }
+
+        let pool_slot = self.get_pool_slot(&pool_id);
+        // Store as packed uint128 values. reserve1 in high 128 bits, reserve0 in low 128 bits
+        self.storage
+            .sstore(self.contract_address, pool_slot, U256::ZERO);
+
+        // Mark pool as existing
+        self.storage
+            .sstore(self.contract_address, exists_slot, U256::ONE);
+
+        let token0_fees_slot = self.get_collected_fees_slot(&pool_key.token0);
+        let token1_fees_slot = self.get_collected_fees_slot(&pool_key.token1);
+        let fee_info_value = U256::from(1u128) << 128;
+        self.storage
+            .sstore(self.contract_address, token0_fees_slot, fee_info_value);
+        self.storage
+            .sstore(self.contract_address, token1_fees_slot, fee_info_value);
+
+        Ok(())
+    }
+
+    pub fn get_pool_id(&mut self, call: IFeeManager::getPoolIdCall) -> B256 {
+        let pool_key = PoolKey::from(call.key);
+        pool_key.get_id()
+    }
+
+    pub fn get_pool(&mut self, call: IFeeManager::getPoolCall) -> IFeeManager::Pool {
+        let pool_key = PoolKey::from(call.key);
+        let pool_id = pool_key.get_id();
+        let pool_slot = self.get_pool_slot(&pool_id);
+
+        let pool_value = self.storage.sload(self.contract_address, pool_slot);
+        // TODO: double check this
+        // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
+        let reserve0 = (pool_value & U256::from((1u128 << 128) - 1)).to::<u128>();
+        let reserve1 = (pool_value / U256::from(1u128 << 128)).to::<u128>();
+
+        IFeeManager::Pool { reserve0, reserve1 }
+    }
+
+    // TODO: swap function
+
+    // TODO: review
+    pub fn collect_fee(
+        &mut self,
+        sender: &Address,
+        call: IFeeManager::collectFeeCall,
+    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
+        let validator_token = self.get_validator_token()?;
+        let user_token = self.get_user_token(&call.user, &validator_token);
+
+        if user_token != validator_token {
+            let pool_key = PoolKey::new(user_token, validator_token);
+            let pool_id = pool_key.get_id();
+
+            let exists_slot = self.get_pool_exists_slot(&pool_id);
+            let pool_exists = self.storage.sload(self.contract_address, exists_slot) != U256::ZERO;
+
+            if !pool_exists {
+                return Err(IFeeManager::IFeeManagerErrors::PoolDoesNotExist(
+                    IFeeManager::PoolDoesNotExist {},
+                ));
+            }
+
+            let pool_slot = self.get_pool_slot(&pool_id);
+            let pool_value = self.storage.sload(self.contract_address, pool_slot);
+            let reserve0 = U256::from((pool_value & U256::from((1u128 << 128) - 1)).to::<u128>());
+            let reserve1 = U256::from((pool_value / U256::from(1u128 << 128)).to::<u128>());
+
+            if reserve0 < Self::MINIMUM_BALANCE || reserve1 < Self::MINIMUM_BALANCE {
+                return Err(IFeeManager::IFeeManagerErrors::InsufficientPoolBalance(
+                    IFeeManager::InsufficientPoolBalance {},
+                ));
+            }
+        }
+
+        let fees_slot = self.get_collected_fees_slot(&user_token);
+        let fees_value = self.storage.sload(self.contract_address, fees_slot);
+
+        let current_amount = (fees_value & U256::from((1u128 << 128) - 1)).to::<u128>();
+        let has_been_set = fees_value >= (U256::from(1u128) << 128);
+
+        if current_amount == 0 && !has_been_set {
+            let in_array_slot = self.get_token_in_fees_array_slot(&user_token);
+            let in_array = self.storage.sload(self.contract_address, in_array_slot) != U256::ZERO;
+
+            if !in_array {
+                self.storage
+                    .sstore(self.contract_address, in_array_slot, U256::ONE);
+
+                let length_value = self
+                    .storage
+                    .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH);
+                self.storage.sstore(
+                    self.contract_address,
+                    slots::TOKENS_WITH_FEES_LENGTH,
+                    length_value + U256::from(1),
+                );
+            }
+        }
+
+        let new_amount = current_amount.saturating_add(call.amount.try_into().unwrap_or(0));
+        let new_fees_value = (U256::from(1u128) << 128) | U256::from(new_amount);
+        self.storage
+            .sstore(self.contract_address, fees_slot, new_fees_value);
+
+        Ok(())
+    }
+
+    // Helper function to get validator token
+    fn get_validator_token(&mut self) -> Result<Address, IFeeManager::IFeeManagerErrors> {
+        // TODO: FIXME: need to get block.coinbase
+        let coinbase = Address::random(); // In real implementation, use block.coinbase
+        let validator_slot = self.get_validator_token_slot(&coinbase);
+        let validator_token_value = self.storage.sload(self.contract_address, validator_slot);
+        let validator_token = Address::from_slice(&validator_token_value.to_be_bytes::<32>()[12..]);
+
+        if validator_token.is_zero() {
+            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
+                IFeeManager::InvalidToken {},
+            ));
+        }
+
+        Ok(validator_token)
+    }
+
+    // Helper function to get user token with validator fallback
+    fn get_user_token(&mut self, user: &Address, validator_token: &Address) -> Address {
+        let user_slot = self.get_user_token_slot(user);
+        let user_token_value = self.storage.sload(self.contract_address, user_slot);
+        let user_token = Address::from_slice(&user_token_value.to_be_bytes::<32>()[12..]);
+
+        if user_token.is_zero() {
+            *validator_token
+        } else {
+            user_token
+        }
+    }
+
+    // TODO: swap for validator token
+
+    // TODO: queue deposit
+
+    // TODO: queue withdrawal
+
+    // TODO: executeBlock
+
+    // TODO: _executeDeposit
+
+    // TODO: _executeWithdrawal
+
+    // TODO: _determineWithdrawalStrategy
+
+    // TODO: _updatePendingReservesForMixed
+
+    // TODO: _getTokenWithFees
+
+    // TODO: _cleanupTokensWithFees
 
     // Helper methods for storage slots
     fn get_pool_slot(&self, pool_id: &B256) -> U256 {
@@ -219,210 +433,6 @@ impl<S: StorageProvider> TipFeeManager<S> {
         mapping_slot(token, slots::TOKEN_IN_FEES_ARRAY)
     }
 
-    pub fn set_validator_token(
-        &mut self,
-        sender: &Address,
-        call: IFeeManager::setValidatorTokenCall,
-    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // Validate sender is current builder/validator
-        // TODO: FIXME:: In real implementation, this would check block.coinbase
-        // For now, we'll allow any sender for testing
-
-        if call.token.is_zero() {
-            return Err(IFeeManager::IFeeManagerErrors::ZeroAddress(
-                IFeeManager::ZeroAddress {},
-            ));
-        }
-
-        let slot = self.get_validator_token_slot(sender);
-        let token_value = U256::from_be_bytes(call.token.into_array());
-        self.storage
-            .sstore(self.contract_address, slot, token_value);
-
-        // TODO: emit event
-        Ok(())
-    }
-
-    pub fn set_user_token(
-        &mut self,
-        sender: &Address,
-        call: IFeeManager::setUserTokenCall,
-    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        if call.token.is_zero() {
-            return Err(IFeeManager::IFeeManagerErrors::ZeroAddress(
-                IFeeManager::ZeroAddress {},
-            ));
-        }
-
-        let slot = self.get_user_token_slot(sender);
-        let token_value = U256::from_be_bytes(call.token.into_array());
-        self.storage
-            .sstore(self.contract_address, slot, token_value);
-
-        Ok(())
-    }
-
-    pub fn create_pool(
-        &mut self,
-        sender: &Address,
-        call: IFeeManager::createPoolCall,
-    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        if call.tokenA == call.tokenB {
-            return Err(IFeeManager::IFeeManagerErrors::IdenticalAddresses(
-                IFeeManager::IdenticalAddresses {},
-            ));
-        }
-
-        let pool_key = PoolKey::new(call.tokenA, call.tokenB);
-
-        if pool_key.token0.is_zero() {
-            return Err(IFeeManager::IFeeManagerErrors::ZeroAddress(
-                IFeeManager::ZeroAddress {},
-            ));
-        }
-
-        let pool_id = pool_key.get_id();
-
-        // Check if pool already exists
-        let exists_slot = self.get_pool_exists_slot(&pool_id);
-        if self.storage.sload(self.contract_address, exists_slot) != U256::ZERO {
-            return Err(IFeeManager::IFeeManagerErrors::PoolExists(
-                IFeeManager::PoolExists {},
-            ));
-        }
-
-        // Create the pool - reserve0 and reserve1 both start at 0
-        let pool_slot = self.get_pool_slot(&pool_id);
-        // Store as packed uint128 values. reserve1 in high 128 bits, reserve0 in low 128 bits
-        let pool_value = U256::ZERO;
-        self.storage
-            .sstore(self.contract_address, pool_slot, pool_value);
-
-        // Mark pool as existing
-        self.storage
-            .sstore(self.contract_address, exists_slot, U256::ONE);
-
-        let token0_fees_slot = self.get_collected_fees_slot(&pool_key.token0);
-        let token1_fees_slot = self.get_collected_fees_slot(&pool_key.token1);
-        let fee_info_value = U256::from(1u128) << 128;
-        self.storage
-            .sstore(self.contract_address, token0_fees_slot, fee_info_value);
-        self.storage
-            .sstore(self.contract_address, token1_fees_slot, fee_info_value);
-
-        Ok(())
-    }
-
-    pub fn get_pool_id(&mut self, call: IFeeManager::getPoolIdCall) -> B256 {
-        let pool_key = PoolKey::from(call.key);
-        pool_key.get_id()
-    }
-
-    pub fn get_pool(&mut self, call: IFeeManager::getPoolCall) -> IFeeManager::Pool {
-        let pool_key = PoolKey::from(call.key);
-        let pool_id = pool_key.get_id();
-        let pool_slot = self.get_pool_slot(&pool_id);
-
-        let pool_value = self.storage.sload(self.contract_address, pool_slot);
-        // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
-        let reserve0 = (pool_value & U256::from((1u128 << 128) - 1)).to::<u128>();
-        let reserve1 = (pool_value / U256::from(1u128 << 128)).to::<u128>();
-
-        IFeeManager::Pool { reserve0, reserve1 }
-    }
-
-    pub fn collect_fee(
-        &mut self,
-        sender: &Address,
-        call: IFeeManager::collectFeeCall,
-    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // Get validator's preferred token
-        let validator_slot = self.get_validator_token_slot(sender); // In real implementation, use block.coinbase
-        let validator_token_value = self.storage.sload(self.contract_address, validator_slot);
-        let validator_token = Address::from_slice(&validator_token_value.to_be_bytes::<32>()[12..]);
-
-        if validator_token.is_zero() {
-            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
-                IFeeManager::InvalidToken {},
-            ));
-        }
-
-        // Get user's preferred token, default to validator's token if not set
-        let user_slot = self.get_user_token_slot(&call.user);
-        let user_token_value = self.storage.sload(self.contract_address, user_slot);
-        let user_token = Address::from_slice(&user_token_value.to_be_bytes::<32>()[12..]);
-        let user_token = if user_token.is_zero() {
-            validator_token
-        } else {
-            user_token
-        };
-
-        // If user token is different from validator token, check pool exists and has minimum balance
-        if user_token != validator_token {
-            let pool_key = PoolKey::new(user_token, validator_token);
-            let pool_id = pool_key.get_id();
-
-            let exists_slot = self.get_pool_exists_slot(&pool_id);
-            let pool_exists = self.storage.sload(self.contract_address, exists_slot) != U256::ZERO;
-
-            if !pool_exists {
-                return Err(IFeeManager::IFeeManagerErrors::PoolDoesNotExist(
-                    IFeeManager::PoolDoesNotExist {},
-                ));
-            }
-
-            let pool_slot = self.get_pool_slot(&pool_id);
-            let pool_value = self.storage.sload(self.contract_address, pool_slot);
-            let reserve0 = U256::from((pool_value & U256::from((1u128 << 128) - 1)).to::<u128>());
-            let reserve1 = U256::from((pool_value / U256::from(1u128 << 128)).to::<u128>());
-
-            if reserve0 < Self::MINIMUM_BALANCE || reserve1 < Self::MINIMUM_BALANCE {
-                return Err(IFeeManager::IFeeManagerErrors::InsufficientPoolBalance(
-                    IFeeManager::InsufficientPoolBalance {},
-                ));
-            }
-        }
-
-        // Update collected fees
-        let fees_slot = self.get_collected_fees_slot(&user_token);
-        let fees_value = self.storage.sload(self.contract_address, fees_slot);
-
-        // Unpack current fee info: hasBeenSet in bit 128, amount in lower 128 bits
-        let current_amount = (fees_value & U256::from((1u128 << 128) - 1)).to::<u128>();
-        let has_been_set = fees_value >= (U256::from(1u128) << 128);
-
-        // Add to tracking array if first time collecting fees for this token
-        if current_amount == 0 && !has_been_set {
-            let in_array_slot = self.get_token_in_fees_array_slot(&user_token);
-            let in_array = self.storage.sload(self.contract_address, in_array_slot) != U256::ZERO;
-
-            if !in_array {
-                // For simplicity, just mark as in array - full array management would be more complex
-                self.storage
-                    .sstore(self.contract_address, in_array_slot, U256::ONE);
-
-                // Increment tokens with fees length
-                let length_value = self
-                    .storage
-                    .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH);
-                self.storage.sstore(
-                    self.contract_address,
-                    slots::TOKENS_WITH_FEES_LENGTH,
-                    length_value + U256::from(1),
-                );
-            }
-        }
-
-        // Update fee info - pack: hasBeenSet in bit 128, new amount in lower 128 bits
-        let new_amount = current_amount.saturating_add(call.amount.try_into().unwrap_or(0));
-        let new_fees_value = (U256::from(1u128) << 128) | U256::from(new_amount);
-        self.storage
-            .sstore(self.contract_address, fees_slot, new_fees_value);
-
-        Ok(())
-    }
-
-    // View functions
     pub fn user_tokens(&mut self, call: IFeeManager::userTokensCall) -> Address {
         let slot = self.get_user_token_slot(&call.user);
         let token_value = self.storage.sload(self.contract_address, slot);
@@ -461,14 +471,6 @@ impl<S: StorageProvider> TipFeeManager<S> {
         }
     }
 
-    pub fn basis_points(&self) -> U256 {
-        U256::from(Self::BASIS_POINTS)
-    }
-
-    pub fn fee_bps(&self) -> U256 {
-        U256::from(Self::FEE_BPS)
-    }
-
     pub fn pools(&mut self, call: IFeeManager::poolsCall) -> IFeeManager::Pool {
         let pool_slot = self.get_pool_slot(&call.poolId);
         let pool_value = self.storage.sload(self.contract_address, pool_slot);
@@ -479,50 +481,9 @@ impl<S: StorageProvider> TipFeeManager<S> {
         IFeeManager::Pool { reserve0, reserve1 }
     }
 
-    pub fn total_supply(&mut self, call: IFeeManager::totalSupplyCall) -> U256 {
-        let slot = self.get_total_supply_slot(&call.poolId);
-        self.storage.sload(self.contract_address, slot)
-    }
-
     pub fn pool_exists(&mut self, call: IFeeManager::poolExistsCall) -> bool {
         let slot = self.get_pool_exists_slot(&call.poolId);
         self.storage.sload(self.contract_address, slot) != U256::ZERO
-    }
-
-    pub fn liquidity_balances(&mut self, call: IFeeManager::liquidityBalancesCall) -> U256 {
-        let slot = self.get_liquidity_balance_slot(&call.poolId, &call.user);
-        self.storage.sload(self.contract_address, slot)
-    }
-
-    pub fn pending_reserve0(&mut self, call: IFeeManager::pendingReserve0Call) -> U256 {
-        let slot = self.get_pending_reserve0_slot(&call.poolId);
-        self.storage.sload(self.contract_address, slot)
-    }
-
-    pub fn pending_reserve1(&mut self, call: IFeeManager::pendingReserve1Call) -> U256 {
-        let slot = self.get_pending_reserve1_slot(&call.poolId);
-        self.storage.sload(self.contract_address, slot)
-    }
-
-    // Additional view functions for compatibility
-    pub fn get_tokens_with_fees_length(&mut self) -> U256 {
-        self.storage
-            .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH)
-    }
-
-    pub fn get_operation_queue_length(&mut self) -> U256 {
-        self.storage
-            .sload(self.contract_address, slots::OPERATION_QUEUE_LENGTH)
-    }
-
-    pub fn get_deposit_queue_length(&self) -> U256 {
-        // For now, return 0 - would need more complex queue tracking
-        U256::ZERO
-    }
-
-    pub fn get_withdraw_queue_length(&self) -> U256 {
-        // For now, return 0 - would need more complex queue tracking
-        U256::ZERO
     }
 }
 
