@@ -153,7 +153,7 @@ where
         let caller = tx.caller;
         let (_, token_decimals, balance) = self.get_fee_token_balance(caller)?;
 
-        // Compute and collect gas fee
+        // Compute adjusted gas fee and ensure sufficient balance
         let gas_fee = tx.gas_limit * tx.gas_price as u64;
         let adjusted_fee = (gas_fee / 1000) + 1;
 
@@ -166,16 +166,17 @@ where
             ));
         }
 
-        // Collect fee and return early if fee fails
+        // TODO: decrement fee from balance before tx
+
+        // Execute the tx and return fees for unused gas
+        let res = self.inner.transact_raw(tx)?;
+
+        // TODO: collect fees and process refund
+        let gas_spent = res.result.gas_used();
         let exec_result = self.collect_fee(caller, adjusted_fee)?;
         if !exec_result.result.is_success() {
             return Ok(exec_result);
         }
-
-        // Execute the tx and return fees for unused gas
-        let res = self.inner.transact_raw(tx)?;
-        // TODO: refund unused gas
-        let gas_spent = res.result.gas_used();
 
         Ok(res)
     }
