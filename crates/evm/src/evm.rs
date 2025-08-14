@@ -155,11 +155,7 @@ where
 
         // Compute and collect gas fee
         let gas_fee = tx.gas_limit * tx.gas_price as u64;
-        let adjusted_fee = if token_decimals < 9 {
-            gas_fee / (10 * (9 - token_decimals as u64))
-        } else {
-            gas_fee * (10 * (token_decimals as u64 - 9))
-        };
+        let adjusted_fee = (gas_fee / 1000) + 1;
 
         if adjusted_fee > balance {
             return Err(EVMError::Transaction(
