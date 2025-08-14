@@ -542,7 +542,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        contracts::{tip20::ISSUER_ROLE, EvmStorageProvider, HashMapStorageProvider}, TIP_FEE_MANAGER_ADDRESS
+        TIP_FEE_MANAGER_ADDRESS,
+        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE},
     };
 
     #[test]
@@ -617,8 +618,6 @@ mod tests {
     // TODO: check
     #[test]
     fn test_collect_fee() {
-
-        EvmStorageProvider::new(internals, chain_id)
         let mut storage = HashMapStorageProvider::new(1);
 
         let user = Address::random();
