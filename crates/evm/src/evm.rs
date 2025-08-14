@@ -1,4 +1,5 @@
-use alloy_primitives::{Address, Bytes};
+use alloy::sol_types::SolCall;
+use alloy_primitives::{Address, Bytes, U256};
 use reth::revm::{
     Context, Inspector,
     context::{
@@ -12,7 +13,11 @@ use reth::revm::{
 use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError};
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::{
-    TEMPO_FEE_MANAGER_ADDRESS, contracts::types::IFeeManager::IFeeManagerCalls,
+    TEMPO_FEE_MANAGER_ADDRESS,
+    contracts::{
+        ITIP20,
+        types::IFeeManager::{self, IFeeManagerCalls},
+    },
 };
 
 /// The Tempo EVM context type.
@@ -58,18 +63,27 @@ where
     I: Inspector<TempoEvmContext<DB>>,
     PRECOMPILE: PrecompileProvider<TempoEvmContext<DB>, Output = InterpreterResult>,
 {
-    pub fn get_fee_token_balance(&mut self, sender: Address) -> Result<u64, EVMError<DB::Error>> {
-        // TODO: Use IFeeManagerCalls::getFeeTokenBalance and encode
-
-        let call_data = Bytes::default();
+    pub fn get_fee_token_balance(
+        &mut self,
+        sender: Address,
+    ) -> Result<(Address, u8, u64), EVMError<DB::Error>> {
+        let call_data = IFeeManager::getFeeTokenBalanceCall { sender }
+            .abi_encode()
+            .into();
 
         let balance_result =
             self.inner
                 .transact_system_call(Address::ZERO, TEMPO_FEE_MANAGER_ADDRESS, call_data)?;
-
         let output = balance_result.result.output().unwrap_or_default();
-        // TODO: decode the response, should just be u256 so should try to decode
 
+        let token_address = Address::from_slice(&output[12..32]);
+        let decimals = output[63];
+        let balance = U256::from_be_slice(&output[64..96]).to::<u64>();
+
+        Ok((token_address, decimals, balance))
+    }
+
+    pub fn collect_fee_token(&mut self) {
         todo!()
     }
 }
@@ -117,17 +131,25 @@ where
         mut tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // Check that the account has a sufficient balance
-        // TODO: handle decimals
-        let fee_token_balance = self.get_fee_token_balance(tx.caller)?;
+        let (_fee_token, token_decimals, balance) = self.get_fee_token_balance(tx.caller)?;
 
-        if tx.gas_limit > fee_token_balance {
+        let adjusted_balance = if token_decimals < 9 {
+            balance * (10 * (9 - token_decimals as u64))
+        } else {
+            balance / (10 * (token_decimals as u64 - 9))
+        };
+
+        if tx.gas_limit > adjusted_balance {
             // TODO: return error
         }
 
         tx.gas_price = 1;
-        self.inner.transact_raw(tx)
+        let res = self.inner.transact_raw(tx);
 
-        // TODO: call fee manager to decrement balance
+        // TODO: get gas used
+        self.collect_fee_token();
+
+        res
     }
 
     fn transact_system_call(

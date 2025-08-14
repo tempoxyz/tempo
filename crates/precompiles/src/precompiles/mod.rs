@@ -51,6 +51,7 @@ pub fn extend_tempo_precompiles<DB: Database, I: Inspector<EthEvmContext<DB>>>(
             } else if *address == TIP4217_REGISTRY_ADDRESS {
                 Some(TIP4217RegistryPrecompile::create())
             } else {
+                // TODO: add fee manager precompile
                 None
             }
         });
