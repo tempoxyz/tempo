@@ -39,7 +39,9 @@ impl<DB: Database, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE> {
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// `RevmEvm` should be invoked on [`Evm::transact`].
-    pub const fn new(evm: EthEvm<DB, I, PRECOMPILE>, inspect: bool) -> Self {
+    pub fn new(evm: EthEvm<DB, I, PRECOMPILE>, inspect: bool) -> Self {
+        // TODO:
+        // evm.ctx_mut().cfg.disable_nonce_check = true;
         Self {
             inner: evm,
             inspect,
@@ -162,11 +164,14 @@ where
             ));
         }
 
+        // TODO: collect fees before tx execution
+
         tx.gas_price = 1;
         let res = self.inner.transact_raw(tx)?;
 
+        // TODO: refund unused gas
         let gas_spent = res.result.gas_used();
-        self.collect_fee(caller, gas_spent);
+        self.collect_fee(caller, gas_spent)?;
 
         Ok(res)
     }
