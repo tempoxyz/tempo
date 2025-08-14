@@ -4,7 +4,10 @@ use reth::revm::{
     Context, Inspector,
     context::{
         BlockEnv, CfgEnv, TxEnv,
-        result::{EVMError, HaltReason, InvalidTransaction, ResultAndState},
+        result::{
+            EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
+            ResultAndState,
+        },
     },
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::InterpreterResult,
@@ -85,7 +88,11 @@ where
         Ok((token_address, decimals, balance))
     }
 
-    pub fn collect_fee(&mut self, sender: Address, amount: u64) -> Result<(), EVMError<DB::Error>> {
+    pub fn collect_fee(
+        &mut self,
+        sender: Address,
+        amount: u64,
+    ) -> Result<ExecResultAndState<ExecutionResult>, EVMError<DB::Error>> {
         let call_data = IFeeManager::collectFeeCall {
             user: sender,
             amount: U256::from(amount),
@@ -97,9 +104,7 @@ where
             self.inner
                 .transact_system_call(Address::ZERO, TEMPO_FEE_MANAGER_ADDRESS, call_data)?;
 
-        // TODO: handle exec result
-
-        Ok(())
+        Ok(exec_result)
     }
 }
 
@@ -143,35 +148,34 @@ where
 
     fn transact_raw(
         &mut self,
-        mut tx: Self::Tx,
+        tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let caller = tx.caller;
-        // Check that the account has a sufficient balance
         let (_, token_decimals, balance) = self.get_fee_token_balance(caller)?;
 
-        let adjusted_balance = if token_decimals < 9 {
-            balance * (10 * (9 - token_decimals as u64))
+        // Compute and collect gas fee
+        let gas_fee = tx.gas_limit * tx.gas_price as u64;
+        let adjusted_fee = if token_decimals < 9 {
+            gas_fee / (10 * (9 - token_decimals as u64))
         } else {
-            balance / (10 * (token_decimals as u64 - 9))
+            gas_fee * (10 * (token_decimals as u64 - 9))
         };
 
-        if tx.gas_limit > adjusted_balance {
+        if adjusted_fee > balance {
             return Err(EVMError::Transaction(
                 InvalidTransaction::LackOfFundForMaxFee {
-                    fee: Box::new(U256::from(tx.gas_limit)),
-                    balance: Box::new(U256::from(adjusted_balance)),
+                    fee: Box::new(U256::from(adjusted_fee)),
+                    balance: Box::new(U256::from(balance)),
                 },
             ));
         }
+        self.collect_fee(caller, adjusted_fee)?;
 
-        // TODO: collect fees before tx execution
-
-        tx.gas_price = 1;
+        // Execute the tx and return fees for unused gas
         let res = self.inner.transact_raw(tx)?;
 
         // TODO: refund unused gas
         let gas_spent = res.result.gas_used();
-        self.collect_fee(caller, gas_spent)?;
 
         Ok(res)
     }
