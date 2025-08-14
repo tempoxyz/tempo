@@ -10,7 +10,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::SolValue,
 };
-use reth::revm::interpreter::instructions::utility::IntoU256;
+use reth::revm::{db, interpreter::instructions::utility::IntoU256};
 
 mod slots {
     use crate::contracts::storage::slots::to_u256;
@@ -290,6 +290,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let validator_token = self.get_validator_token(coinbase)?;
         let user_token = self.get_user_token(&call.user, &validator_token);
 
+        dbg!(user_token);
+        dbg!(validator_token);
+
         if user_token != validator_token {
             let pool_key = PoolKey::new(user_token, validator_token);
             let pool_id = pool_key.get_id();
@@ -316,6 +319,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         let token_id = address_to_token_id_unchecked(&user_token);
+
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
         let transfer_call = ITIP20::transferFromCall {
             from: call.user,
@@ -538,8 +542,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        TIP_FEE_MANAGER_ADDRESS,
-        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE},
+        contracts::{tip20::ISSUER_ROLE, EvmStorageProvider, HashMapStorageProvider}, TIP_FEE_MANAGER_ADDRESS
     };
 
     #[test]
@@ -614,30 +617,31 @@ mod tests {
     // TODO: check
     #[test]
     fn test_collect_fee() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
 
-        let validator = Address::random();
+        EvmStorageProvider::new(internals, chain_id)
+        let mut storage = HashMapStorageProvider::new(1);
+
         let user = Address::random();
+        // TODO: FIXME: udpate this to a separate address once coinbase checks are functional
+        let validator = user;
         let token = Address::random();
         let amount = U256::from(1000);
 
         // Setup TIP20 token
         let token_id = address_to_token_id_unchecked(&token);
-        let mut tip20_token = TIP20Token::new(token_id, fee_manager.storage);
+        let mut tip20_token = TIP20Token::new(token_id, &mut storage);
 
         // Initialize token with admin, set the transfer policy to always allow
-        let admin = Address::random();
         tip20_token
-            .initialize("TestToken", "TEST", "USD", &admin)
+            .initialize("TestToken", "TEST", "USD", &user)
             .unwrap();
 
         // Grant issuer role to admin and mint tokens to user
         let mut roles = tip20_token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        roles.grant_role_internal(&user, *ISSUER_ROLE);
         tip20_token
             .mint(
-                &admin,
+                &user,
                 ITIP20::mintCall {
                     to: user,
                     amount: U256::MAX,
@@ -660,6 +664,12 @@ mod tests {
             owner: user,
             spender: TIP_FEE_MANAGER_ADDRESS,
         });
+
+        dbg!(TIP_FEE_MANAGER_ADDRESS);
+        dbg!(user);
+        dbg!(balance);
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
 
         // Set fee tokens
         let set_validator_call = IFeeManager::setValidatorTokenCall { token };
