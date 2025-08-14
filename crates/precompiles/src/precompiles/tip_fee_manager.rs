@@ -1,16 +1,16 @@
 use crate::{
     contracts::{
-        EvmStorageProvider,
+        storage::StorageProvider,
         tip_fee_manager::TipFeeManager,
         types::IFeeManager,
     },
-    precompiles::{Precompile, metadata, mutate, mutate_void, view},
+    precompiles::{Precompile, view, mutate_void},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileResult};
 
 #[rustfmt::skip]
-impl Precompile for TipFeeManager<EvmStorageProvider<'_>> {
+impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| { 
             PrecompileError::Other("Invalid input: missing function selector".to_string()) 
@@ -29,7 +29,7 @@ impl Precompile for TipFeeManager<EvmStorageProvider<'_>> {
             // State changing functions
             IFeeManager::setValidatorTokenCall::SELECTOR => mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_validator_token(s, call)),
             IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),
-            IFeeManager::createPoolCall::SELECTOR => mutate_void::<IFeeManager::createPoolCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.create_pool(call)),
+            IFeeManager::createPoolCall::SELECTOR => mutate_void::<IFeeManager::createPoolCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |_s, call| self.create_pool(call)),
             IFeeManager::collectFeeCall::SELECTOR => mutate_void::<IFeeManager::collectFeeCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee(s, call)),
 
             _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
@@ -49,15 +49,11 @@ mod tests {
     use alloy_eips::eip4895::Withdrawals;
     use alloy_primitives::Bytes;
 
-    fn setup_fee_manager() -> TipFeeManager<HashMapStorageProvider> {
-        let storage = HashMapStorageProvider::new(1);
-        let contract_addr = Address::from([0u8; 20]);
-        TipFeeManager::new(contract_addr, storage)
-    }
-
     #[test]
     fn test_set_validator_token() {
-        let mut fee_manager = setup_fee_manager();
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_addr = Address::from([0u8; 20]);
+        let mut fee_manager = TipFeeManager::new(contract_addr, &mut storage);
         let validator = Address::random();
         let token = Address::random();
 

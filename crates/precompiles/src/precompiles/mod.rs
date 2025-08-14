@@ -110,8 +110,11 @@ pub struct TipFeeManagerPrecompile;
 impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         DynPrecompile::new(move |input| {
-            let storage = EvmStorageProvider::new(input.internals, chain_id);
-            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage).call(input.data, &input.caller)
+            TipFeeManager::new(
+                TIP_FEE_MANAGER_ADDRESS,
+                &mut EvmStorageProvider::new(input.internals, chain_id),
+            )
+            .call(input.data, &input.caller)
         })
     }
 }

@@ -355,6 +355,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // Check and update allowance
         let allowed = self.get_allowance(&call.from, msg_sender);
+        dbg!(&allowed);
         if call.amount > allowed {
             return Err(tip20_err!(InsufficientAllowance));
         }
@@ -465,6 +466,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
 // Utility functions
 impl<'a, S: StorageProvider> TIP20Token<'a, S> {
+    // NOTE: can we just pass address in here?
     pub fn new(token_id: u64, storage: &'a mut S) -> Self {
         Self {
             token_address: token_id_to_address(token_id),

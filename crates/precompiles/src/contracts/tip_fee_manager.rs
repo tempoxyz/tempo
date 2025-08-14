@@ -1,15 +1,14 @@
-use std::io::Read;
-
 use crate::contracts::{
+    TIP20Token, address_to_token_id_unchecked,
     storage::{
         StorageProvider,
-        slots::{double_mapping_slot, mapping_slot, to_u256},
+        slots::{double_mapping_slot, mapping_slot},
     },
-    types::IFeeManager,
+    types::{IFeeManager, ITIP20},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256},
-    sol_types::{SolCall, SolValue},
+    sol_types::SolValue,
 };
 use reth::revm::interpreter::instructions::utility::IntoU256;
 
@@ -150,18 +149,18 @@ impl From<FeeInfo> for IFeeManager::FeeInfo {
     }
 }
 
-pub struct TipFeeManager<S: StorageProvider> {
+pub struct TipFeeManager<'a, S: StorageProvider> {
     contract_address: Address,
-    storage: S,
+    storage: &'a mut S,
 }
 
-impl<S: StorageProvider> TipFeeManager<S> {
+impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     // Constants
     pub const FEE_BPS: u64 = 25; // 0.25% fee
     pub const BASIS_POINTS: u64 = 10000;
     pub const MINIMUM_BALANCE: U256 = U256::from_limbs([1_000_000_000u64, 0, 0, 0]); // 1e9
 
-    pub fn new(contract_address: Address, storage: S) -> Self {
+    pub fn new(contract_address: Address, storage: &'a mut S) -> Self {
         Self {
             contract_address,
             storage,
@@ -286,7 +285,9 @@ impl<S: StorageProvider> TipFeeManager<S> {
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         // TODO: require that only system contract can call into this function
 
-        let validator_token = self.get_validator_token()?;
+        // TODO: FIXME: need to get block.coinbase
+        let coinbase = sender;
+        let validator_token = self.get_validator_token(coinbase)?;
         let user_token = self.get_user_token(&call.user, &validator_token);
 
         if user_token != validator_token {
@@ -314,7 +315,21 @@ impl<S: StorageProvider> TipFeeManager<S> {
             }
         }
 
-        // TODO: TIP20(userToken).transferFrom(user, address(this), amount);
+        let token_id = address_to_token_id_unchecked(&user_token);
+        let mut tip20_token = TIP20Token::new(token_id, self.storage);
+        let transfer_call = ITIP20::transferFromCall {
+            from: call.user,
+            to: self.contract_address,
+            amount: call.amount,
+        };
+
+        dbg!(self.contract_address);
+        dbg!(call.amount);
+        dbg!(call.user);
+
+        tip20_token
+            .transfer_from(&call.user, transfer_call)
+            .expect("TODO: handle error");
 
         // Cache fee info to minimize storage access
         let mut fee_info = self.get_fee_info(&user_token);
@@ -351,10 +366,11 @@ impl<S: StorageProvider> TipFeeManager<S> {
         Ok(())
     }
 
-    fn get_validator_token(&mut self) -> Result<Address, IFeeManager::IFeeManagerErrors> {
-        // TODO: FIXME: need to get block.coinbase
-        let coinbase = Address::random(); // In real implementation, use block.coinbase
-        let validator_slot = self.get_validator_token_slot(&coinbase);
+    fn get_validator_token(
+        &mut self,
+        validator: &Address,
+    ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
+        let validator_slot = self.get_validator_token_slot(validator);
         let validator_token_value = self.storage.sload(self.contract_address, validator_slot);
         let validator_token = Address::from_slice(&validator_token_value.to_be_bytes::<32>()[12..]);
 
@@ -521,7 +537,10 @@ impl<S: StorageProvider> TipFeeManager<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TIP_FEE_MANAGER_ADDRESS, contracts::HashMapStorageProvider};
+    use crate::{
+        TIP_FEE_MANAGER_ADDRESS,
+        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE},
+    };
 
     #[test]
     fn test_pool_key_ordering() {
@@ -540,8 +559,8 @@ mod tests {
 
     #[test]
     fn test_create_pool() {
-        let storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage);
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
 
         let token_a = Address::random();
         let token_b = Address::random();
@@ -561,8 +580,8 @@ mod tests {
 
     #[test]
     fn test_set_user_token() {
-        let storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage);
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
 
         let user = Address::random();
         let token = Address::random();
@@ -577,8 +596,8 @@ mod tests {
 
     #[test]
     fn test_set_validator_token() {
-        let storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage);
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
 
         let validator = Address::random();
         let token = Address::random();
@@ -595,20 +614,58 @@ mod tests {
     // TODO: check
     #[test]
     fn test_collect_fee() {
-        let storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage);
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
 
         let validator = Address::random();
         let user = Address::random();
         let token = Address::random();
-        let amount = U256::random();
+        let amount = U256::from(1000);
+
+        // Setup TIP20 token
+        let token_id = address_to_token_id_unchecked(&token);
+        let mut tip20_token = TIP20Token::new(token_id, fee_manager.storage);
+
+        // Initialize token with admin, set the transfer policy to always allow
+        let admin = Address::random();
+        tip20_token
+            .initialize("TestToken", "TEST", "USD", &admin)
+            .unwrap();
+
+        // Grant issuer role to admin and mint tokens to user
+        let mut roles = tip20_token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        tip20_token
+            .mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: user,
+                    amount: U256::MAX,
+                },
+            )
+            .unwrap();
+
+        // Set allowance for fee manager to transfer tokens
+        tip20_token
+            .approve(
+                &user,
+                ITIP20::approveCall {
+                    spender: TIP_FEE_MANAGER_ADDRESS,
+                    amount: U256::MAX,
+                },
+            )
+            .unwrap();
+
+        let balance = tip20_token.allowance(ITIP20::allowanceCall {
+            owner: user,
+            spender: TIP_FEE_MANAGER_ADDRESS,
+        });
 
         // Set fee tokens
         let set_validator_call = IFeeManager::setValidatorTokenCall { token };
         fee_manager
             .set_validator_token(&validator, set_validator_call)
             .unwrap();
-
         let set_user_call = IFeeManager::setUserTokenCall { token };
         fee_manager.set_user_token(&user, set_user_call).unwrap();
 
@@ -627,732 +684,3 @@ mod tests {
         // TODO: check that TIP20 balance was mutated
     }
 }
-
-// Solidity reference
-// // SPDX-License-Identifier: MIT
-// pragma solidity ^0.8.13;
-//
-// import { TIP20 } from "./TIP20.sol";
-//
-// contract TIP1559 {
-//     struct PoolKey {
-//         address token0;
-//         address token1;
-//     }
-//
-//     struct Pool {
-//         uint128 reserve0;
-//         uint128 reserve1;
-//     }
-//
-//     enum OperationType {
-//         Deposit,
-//         Withdraw
-//     }
-//
-//     struct QueuedOperation {
-//         OperationType opType;
-//         address user;
-//         PoolKey poolKey;
-//         uint256 amount; // For deposits: token amount, for withdrawals: liquidity amount
-//         address token; // For deposits: deposit token, for withdrawals: default withdrawal token
-//     }
-//
-//     uint256 public constant FEE_BPS = 25; // 0.25% fee
-//     uint256 public constant BASIS_POINTS = 10000;
-//     uint256 public constant MINIMUM_BALANCE = 1e9; // Minimum balance required for pool validity
-//
-//     // Pool state
-//     mapping(bytes32 => Pool) public pools;
-//     mapping(bytes32 => uint256) public totalSupply; // poolId => total LP supply
-//     mapping(bytes32 => bool) public poolExists; // poolId => exists
-//
-//     // Liquidity token balances: poolId => user => balance
-//     mapping(bytes32 => mapping(address => uint256)) public liquidityBalances;
-//
-//     // Validator token preferences
-//     mapping(address => address) public validatorTokens;
-//
-//     // User token preferences
-//     mapping(address => address) public userTokens;
-//
-//     // Fee collection tracking - optimized for warm storage access
-//     struct FeeInfo {
-//         uint128 amount;    // Fee amount collected
-//         bool hasBeenSet;   // Whether this token has ever had fees collected (for gas optimization)
-//     }
-//
-//     // Private to reduce risk of any kind of probabilistic backrunning MEV
-//     mapping(address => FeeInfo) private collectedFees; // token => fee info
-//
-//     // Pending reserves tracking: poolId => (pendingReserve0, pendingReserve1)
-//     // Public so that any rebalancing MEV is an orderly race at the top of the block
-//     mapping(bytes32 => uint256) public pendingReserve0;
-//     mapping(bytes32 => uint256) public pendingReserve1;
-//
-//     // Track which pools have pending operations to reset efficiently
-//     bytes32[] private poolsWithPendingOps;
-//
-//     // Track tokens that have collected fees
-//     address[] private tokensWithFees;
-//     mapping(address => bool) private tokenInFeesArray; // Track if token is already in tokensWithFees array
-//
-//     // Unified operation queue
-//     QueuedOperation[] public operationQueue;
-//
-//     event PoolCreated(address indexed token0, address indexed token1);
-//     event DepositQueued(
-//         address indexed user, address indexed token0, address indexed token1, uint256 amount, address token
-//     );
-//     event WithdrawQueued(address indexed user, address indexed token0, address indexed token1, uint256 liquidity);
-//     event BlockExecuted(uint256 deposits, uint256 withdraws, uint256 feeSwaps);
-//     event ValidatorTokenSet(address indexed validator, address indexed token);
-//     event UserTokenSet(address indexed user, address indexed token);
-//     event Deposit(
-//         address indexed user,
-//         address indexed token0,
-//         address indexed token1,
-//         address depositToken,
-//         uint256 amount,
-//         uint256 liquidity
-//     );
-//     event Withdrawal(
-//         address indexed user,
-//         address indexed token0,
-//         address indexed token1,
-//         uint256 token0Amount,
-//         uint256 token1Amount,
-//         uint256 liquidity
-//     );
-//     event Swap(
-//         address indexed token0,
-//         address indexed token1,
-//         address indexed to,
-//         address tokenIn,
-//         address tokenOut,
-//         uint256 amountIn,
-//         uint256 amountOut
-//     );
-//
-//     function setValidatorToken(address token) external {
-//         require(msg.sender == block.coinbase, "ONLY_CURRENT_BUILDER");
-//         require(token != address(0), "INVALID_TOKEN");
-//         validatorTokens[msg.sender] = token;
-//         emit ValidatorTokenSet(msg.sender, token);
-//     }
-//
-//     function setUserToken(address token) external {
-//         require(token != address(0), "INVALID_TOKEN");
-//         userTokens[msg.sender] = token;
-//         emit UserTokenSet(msg.sender, token);
-//     }
-//
-//     function createPool(address tokenA, address tokenB) external {
-//         require(tokenA != tokenB, "IDENTICAL_ADDRESSES");
-//         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-//         require(token0 != address(0), "ZERO_ADDRESS");
-//
-//         PoolKey memory key = PoolKey({token0: token0, token1: token1});
-//         bytes32 poolId = getPoolId(key);
-//         require(!poolExists[poolId], "POOL_EXISTS");
-//
-//         pools[poolId] = Pool({reserve0: 0, reserve1: 0});
-//         poolExists[poolId] = true;
-//
-//         // Pre-warm storage for fee collection by setting hasBeenSet flags
-//         // This makes future fee collection more gas-efficient for these tokens
-//         if (!collectedFees[token0].hasBeenSet) {
-//             collectedFees[token0].hasBeenSet = true;
-//         }
-//         if (!collectedFees[token1].hasBeenSet) {
-//             collectedFees[token1].hasBeenSet = true;
-//         }
-//
-//         emit PoolCreated(token0, token1);
-//     }
-//
-//     function getPoolId(PoolKey memory key) public pure returns (bytes32) {
-//         return keccak256(abi.encode(key.token0, key.token1));
-//     }
-//
-//     function getPool(PoolKey memory key) external view returns (Pool memory) {
-//         bytes32 poolId = getPoolId(key);
-//         return pools[poolId];
-//     }
-//
-//     function swap(PoolKey memory key, address tokenIn, uint256 amountIn, address to) external {
-//         bytes32 poolId = getPoolId(key);
-//         Pool storage pool = pools[poolId];
-//         require(poolExists[poolId], "POOL_DOES_NOT_EXIST");
-//         require(tokenIn == key.token0 || tokenIn == key.token1, "INVALID_TOKEN");
-//
-//         TIP20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
-//
-//         uint256 amountOut = (amountIn * (BASIS_POINTS - FEE_BPS)) / BASIS_POINTS;
-//
-//         if (tokenIn == key.token0) {
-//             require(amountOut <= pool.reserve1, "INSUFFICIENT_LIQUIDITY");
-//             pool.reserve0 = uint128(uint256(pool.reserve0) + amountIn);
-//             pool.reserve1 = uint128(uint256(pool.reserve1) - amountOut);
-//             TIP20(key.token1).transfer(to, amountOut);
-//             emit Swap(key.token0, key.token1, to, key.token0, key.token1, amountIn, amountOut);
-//         } else {
-//             require(amountOut <= pool.reserve0, "INSUFFICIENT_LIQUIDITY");
-//             pool.reserve1 = uint128(uint256(pool.reserve1) + amountIn);
-//             pool.reserve0 = uint128(uint256(pool.reserve0) - amountOut);
-//             TIP20(key.token0).transfer(to, amountOut);
-//             emit Swap(key.token0, key.token1, to, key.token1, key.token0, amountIn, amountOut);
-//         }
-//     }
-//
-//     function _swapForValidatorToken(PoolKey memory key, address tokenIn, uint256 amountIn, address to) private {
-//         bytes32 poolId = getPoolId(key);
-//         Pool storage pool = pools[poolId];
-//
-//         uint256 amountOut = (amountIn * (BASIS_POINTS - FEE_BPS)) / BASIS_POINTS;
-//
-//         if (tokenIn == key.token0) {
-//             pool.reserve0 = uint128(uint256(pool.reserve0) + amountIn);
-//             pool.reserve1 = uint128(uint256(pool.reserve1) - amountOut);
-//             TIP20(key.token1).transfer(to, amountOut);
-//             emit Swap(key.token0, key.token1, to, key.token0, key.token1, amountIn, amountOut);
-//         } else {
-//             pool.reserve1 = uint128(uint256(pool.reserve1) + amountIn);
-//             pool.reserve0 = uint128(uint256(pool.reserve0) - amountOut);
-//             TIP20(key.token0).transfer(to, amountOut);
-//             emit Swap(key.token0, key.token1, to, key.token1, key.token0, amountIn, amountOut);
-//         }
-//     }
-//
-//     function collectFee(address user, uint256 amount) external {
-//         // Get validator's preferred token
-//         address validatorToken = validatorTokens[block.coinbase];
-//         require(validatorToken != address(0), "VALIDATOR_TOKEN_NOT_SET");
-//
-//         // Get user's preferred token, default to the validator's token if not set
-//         address userToken = userTokens[user];
-//         if (userToken == address(0)) {
-//             userToken = validatorToken;
-//         }
-//
-//         // If user token is different from validator token, check that a pair exists and has minimum balance
-//         if (userToken != validatorToken) {
-//             // Inline pool ID calculation to avoid memory allocation
-//             bytes32 poolId = userToken < validatorToken
-//                 ? keccak256(abi.encode(userToken, validatorToken))
-//                 : keccak256(abi.encode(validatorToken, userToken));
-//
-//             require(poolExists[poolId], "NO_POOL_FOR_TOKEN_PAIR");
-//
-//             // Load pool once and check both conditions
-//             Pool storage pool = pools[poolId];
-//             require(pool.reserve0 >= MINIMUM_BALANCE && pool.reserve1 >= MINIMUM_BALANCE, "INSUFFICIENT_POOL_BALANCE");
-//         }
-//
-//         TIP20(userToken).transferFrom(user, address(this), amount);
-//
-//         // Cache fee info to minimize storage access
-//         FeeInfo memory feeInfo = collectedFees[userToken];
-//
-//         // Add to tracking array only if this is the first time collecting fees for this token
-//         if (feeInfo.amount == 0 && !tokenInFeesArray[userToken]) {
-//             tokensWithFees.push(userToken);
-//             tokenInFeesArray[userToken] = true;
-//         }
-//
-//         // Update fee info in single storage write
-//         unchecked {
-//             collectedFees[userToken] = FeeInfo({
-//                 amount: feeInfo.amount + uint128(amount),
-//                 hasBeenSet: true  // Always set to true (may already be true from pool creation)
-//             });
-//         }
-//     }
-//
-//     function queueDeposit(PoolKey memory key, uint256 amount, address depositToken) external {
-//         bytes32 poolId = getPoolId(key);
-//         require(poolExists[poolId], "POOL_DOES_NOT_EXIST");
-//         require(depositToken == key.token0 || depositToken == key.token1, "INVALID_DEPOSIT_TOKEN");
-//
-//         TIP20(depositToken).transferFrom(msg.sender, address(this), amount);
-//
-//         // Track pending reserves
-//         if (pendingReserve0[poolId] == 0 && pendingReserve1[poolId] == 0) {
-//             poolsWithPendingOps.push(poolId);
-//         }
-//         if (depositToken == key.token0) {
-//             pendingReserve0[poolId] += amount;
-//         } else {
-//             pendingReserve1[poolId] += amount;
-//         }
-//
-//         operationQueue.push(
-//             QueuedOperation({
-//                 opType: OperationType.Deposit,
-//                 user: msg.sender,
-//                 poolKey: key,
-//                 amount: amount,
-//                 token: depositToken
-//             })
-//         );
-//
-//         emit DepositQueued(msg.sender, key.token0, key.token1, amount, depositToken);
-//     }
-//
-//     function queueWithdraw(PoolKey memory key, uint256 liquidity) external {
-//         bytes32 poolId = getPoolId(key);
-//         require(poolExists[poolId], "POOL_DOES_NOT_EXIST");
-//         require(liquidityBalances[poolId][msg.sender] >= liquidity, "INSUFFICIENT_LIQUIDITY_BALANCE");
-//
-//         // Track pool with pending operations
-//         if (pendingReserve0[poolId] == 0 && pendingReserve1[poolId] == 0) {
-//             poolsWithPendingOps.push(poolId);
-//         }
-//
-//         // Get current pending reserves (including all queued deposits and withdrawals)
-//         Pool memory pool = pools[poolId];
-//         uint256 currentPendingReserve0 = pool.reserve0 + pendingReserve0[poolId];
-//         uint256 currentPendingReserve1 = pool.reserve1 + pendingReserve1[poolId];
-//
-//         // Calculate withdrawal value
-//         uint256 totalValue = currentPendingReserve0 + currentPendingReserve1;
-//         uint256 poolTotalSupply = totalSupply[poolId];
-//         uint256 withdrawValue = poolTotalSupply > 0 ? (liquidity * totalValue) / poolTotalSupply : 0;
-//
-//         // Determine withdrawal strategy to prevent inequality flipping
-//         address defaultWithdrawalToken = _determineWithdrawalStrategy(
-//             poolId,
-//             key,
-//             currentPendingReserve0,
-//             currentPendingReserve1,
-//             withdrawValue,
-//             pool.reserve0,
-//             pool.reserve1
-//         );
-//
-//         // Move LP tokens from user balance to pending withdrawal
-//         liquidityBalances[poolId][msg.sender] -= liquidity;
-//
-//         operationQueue.push(
-//             QueuedOperation({
-//                 opType: OperationType.Withdraw,
-//                 user: msg.sender,
-//                 poolKey: key,
-//                 amount: liquidity,
-//                 token: defaultWithdrawalToken
-//             })
-//         );
-//
-//         emit WithdrawQueued(msg.sender, key.token0, key.token1, liquidity);
-//     }
-//
-//     function executeBlock() external {
-//         uint256 feeSwaps = 0;
-//         uint256 deposits = 0;
-//         uint256 withdraws = 0;
-//
-//         // Get current validator's preferred token
-//         address validatorToken = validatorTokens[block.coinbase];
-//         require(validatorToken != address(0), "VALIDATOR_TOKEN_NOT_SET");
-//
-//         // 1. Swap all collected fees to validator token
-//         for (uint256 i = 0; i < 256; i++) {
-//             // Limit iterations to prevent gas issues
-//             address token = _getTokenWithFees(i);
-//             if (token == address(0)) break;
-//
-//             uint256 amount = uint256(collectedFees[token].amount);
-//             if (amount > 0 && token != validatorToken) {
-//                 PoolKey memory key = PoolKey({
-//                     token0: token < validatorToken ? token : validatorToken,
-//                     token1: token < validatorToken ? validatorToken : token
-//                 });
-//                 bytes32 poolId = getPoolId(key);
-//                 if (poolExists[poolId]) {
-//                     TIP20(token).transfer(address(this), amount);
-//                     // Calculate output amount (same logic as in swapForValidatorToken)
-//                     uint256 amountOut = (amount * (BASIS_POINTS - FEE_BPS)) / BASIS_POINTS;
-//                     _swapForValidatorToken(key, token, amount, address(this));
-//
-//                     // Track validator token fees if first time collecting
-//                     FeeInfo memory validatorFeeInfo = collectedFees[validatorToken];
-//                     if (validatorFeeInfo.amount == 0 && !tokenInFeesArray[validatorToken]) {
-//                         tokensWithFees.push(validatorToken);
-//                         tokenInFeesArray[validatorToken] = true;
-//                     }
-//
-//                     // Update validator token fees in single write
-//                     unchecked {
-//                         collectedFees[validatorToken] = FeeInfo({
-//                             amount: validatorFeeInfo.amount + uint128(amountOut),
-//                             hasBeenSet: true
-//                         });
-//                     }
-//                     collectedFees[token].amount = 0;
-//                     feeSwaps++;
-//                 }
-//             }
-//         }
-//
-//         // 2. Execute all operations in order
-//         uint256 operationCount = operationQueue.length;
-//         for (uint256 i = 0; i < operationCount; i++) {
-//             QueuedOperation memory operation = operationQueue[i];
-//
-//             if (operation.opType == OperationType.Deposit) {
-//                 TIP20(operation.token).transfer(address(this), operation.amount);
-//                 _executeDeposit(operation.user, operation.poolKey, operation.token, operation.amount);
-//                 deposits++;
-//             } else if (operation.opType == OperationType.Withdraw) {
-//                 _executeWithdrawal(operation.user, operation.poolKey, operation.amount, operation.token);
-//                 withdraws++;
-//             }
-//         }
-//
-//         // Clear queue and reset pending reserves for all affected pools
-//         for (uint256 i = 0; i < poolsWithPendingOps.length; i++) {
-//             bytes32 poolId = poolsWithPendingOps[i];
-//             pendingReserve0[poolId] = 0;
-//             pendingReserve1[poolId] = 0;
-//         }
-//         delete poolsWithPendingOps;
-//         delete operationQueue;
-//
-//         // Clean up tokens with fees array - remove tokens with zero fees
-//         _cleanupTokensWithFees();
-//
-//         emit BlockExecuted(deposits, withdraws, feeSwaps);
-//     }
-//
-//     function _executeDeposit(address user, PoolKey memory key, address depositToken, uint256 amount) private {
-//         bytes32 poolId = getPoolId(key);
-//         Pool storage pool = pools[poolId];
-//         require(poolExists[poolId], "POOL_DOES_NOT_EXIST");
-//         require(depositToken == key.token0 || depositToken == key.token1, "INVALID_TOKEN");
-//
-//         uint256 liquidity;
-//
-//         if (totalSupply[poolId] == 0) {
-//             // First deposit - mint liquidity equal to deposit amount
-//             liquidity = amount;
-//
-//             if (depositToken == key.token0) {
-//                 pool.reserve0 = uint128(uint256(pool.reserve0) + amount);
-//             } else {
-//                 pool.reserve1 = uint128(uint256(pool.reserve1) + amount);
-//             }
-//         } else {
-//             // Check if pool is imbalanced
-//             bool poolImbalanced = pool.reserve0 != pool.reserve1;
-//
-//             if (poolImbalanced) {
-//                 // Must deposit in the token with lower balance
-//                 address lowerToken = pool.reserve0 < pool.reserve1 ? key.token0 : key.token1;
-//                 require(depositToken == lowerToken, "MUST_DEPOSIT_LOWER_BALANCE_TOKEN");
-//
-//                 // Mint liquidity proportional to the increase in total value
-//                 uint256 oldTotalValue = uint256(pool.reserve0) + uint256(pool.reserve1);
-//                 liquidity = (amount * totalSupply[poolId]) / oldTotalValue;
-//
-//                 if (depositToken == key.token0) {
-//                     pool.reserve0 = uint128(uint256(pool.reserve0) + amount);
-//                 } else {
-//                     pool.reserve1 = uint128(uint256(pool.reserve1) + amount);
-//                 }
-//             } else {
-//                 // Pool is balanced - can deposit either token
-//                 liquidity = (amount * totalSupply[poolId]) / (uint256(pool.reserve0) + uint256(pool.reserve1));
-//
-//                 if (depositToken == key.token0) {
-//                     pool.reserve0 = uint128(uint256(pool.reserve0) + amount);
-//                 } else {
-//                     pool.reserve1 = uint128(uint256(pool.reserve1) + amount);
-//                 }
-//             }
-//         }
-//
-//         require(liquidity > 0, "INSUFFICIENT_LIQUIDITY_MINTED");
-//         totalSupply[poolId] += liquidity;
-//         liquidityBalances[poolId][user] += liquidity;
-//
-//         emit Deposit(user, key.token0, key.token1, depositToken, amount, liquidity);
-//     }
-//
-//     function _executeWithdrawal(address user, PoolKey memory key, uint256 liquidity, address defaultWithdrawalToken) private {
-//         bytes32 poolId = getPoolId(key);
-//         Pool storage pool = pools[poolId];
-//         require(poolExists[poolId], "POOL_DOES_NOT_EXIST");
-//         require(liquidity > 0, "INSUFFICIENT_LIQUIDITY");
-//         require(defaultWithdrawalToken == key.token0 || defaultWithdrawalToken == key.token1 || defaultWithdrawalToken == address(0), "INVALID_DESIRED_TOKEN");
-//
-//         uint256 amount0 = 0;
-//         uint256 amount1 = 0;
-//
-//         // Calculate total withdrawal value
-//         uint256 totalValue = uint256(pool.reserve0) + uint256(pool.reserve1);
-//         uint256 withdrawValue = (liquidity * totalValue) / totalSupply[poolId];
-//
-//         // Handle mixed withdrawal (address(0) means withdraw from both tokens)
-//         if (defaultWithdrawalToken == address(0)) {
-//             // Mixed withdrawal - split proportionally or as close to balanced as possible
-//             uint256 targetAmount0 = withdrawValue / 2;
-//             uint256 targetAmount1 = withdrawValue - targetAmount0;
-//
-//             // Ensure we don't withdraw more than available
-//             amount0 = targetAmount0 <= pool.reserve0 ? targetAmount0 : pool.reserve0;
-//             amount1 = targetAmount1 <= pool.reserve1 ? targetAmount1 : pool.reserve1;
-//
-//             // If one reserve is insufficient, take the remainder from the other
-//             uint256 actualTotal = amount0 + amount1;
-//             if (actualTotal < withdrawValue) {
-//                 uint256 remaining = withdrawValue - actualTotal;
-//                 if (amount0 < targetAmount0 && pool.reserve1 >= amount1 + remaining) {
-//                     // Reserve0 was insufficient, take more from reserve1
-//                     amount1 += remaining;
-//                 } else if (amount1 < targetAmount1 && pool.reserve0 >= amount0 + remaining) {
-//                     // Reserve1 was insufficient, take more from reserve0
-//                     amount0 += remaining;
-//                 }
-//             }
-//
-//             // Execute the mixed withdrawal
-//             if (amount0 > 0) {
-//                 pool.reserve0 = uint128(uint256(pool.reserve0) - amount0);
-//                 TIP20(key.token0).transfer(user, amount0);
-//             }
-//             if (amount1 > 0) {
-//                 pool.reserve1 = uint128(uint256(pool.reserve1) - amount1);
-//                 TIP20(key.token1).transfer(user, amount1);
-//             }
-//         } else {
-//             // Original single-token withdrawal logic
-//             // Check if pool is imbalanced
-//             bool poolImbalanced = pool.reserve0 != pool.reserve1;
-//
-//             if (poolImbalanced) {
-//                 // For imbalanced pools, try to honor default withdrawal token if it's the higher balance token
-//                 address higherToken = pool.reserve0 > pool.reserve1 ? key.token0 : key.token1;
-//
-//                 if (defaultWithdrawalToken == higherToken) {
-//                     // Can honor default withdrawal token - withdraw entirely in higher balance token
-//                     if (defaultWithdrawalToken == key.token0) {
-//                         amount0 = withdrawValue;
-//                         if (amount0 <= pool.reserve0) {
-//                             pool.reserve0 = uint128(uint256(pool.reserve0) - amount0);
-//                             TIP20(key.token0).transfer(user, amount0);
-//                         } else {
-//                             // Fallback: give all available token0, rest in token1
-//                             amount0 = pool.reserve0;
-//                             amount1 = withdrawValue - amount0;
-//                             require(amount1 <= pool.reserve1, "INSUFFICIENT_RESERVES");
-//                             pool.reserve0 = 0;
-//                             pool.reserve1 = uint128(uint256(pool.reserve1) - amount1);
-//                             TIP20(key.token0).transfer(user, amount0);
-//                             TIP20(key.token1).transfer(user, amount1);
-//                         }
-//                     } else {
-//                         amount1 = withdrawValue;
-//                         if (amount1 <= pool.reserve1) {
-//                             pool.reserve1 = uint128(uint256(pool.reserve1) - amount1);
-//                             TIP20(key.token1).transfer(user, amount1);
-//                         } else {
-//                             // Fallback: give all available token1, rest in token0
-//                             amount1 = pool.reserve1;
-//                             amount0 = withdrawValue - amount1;
-//                             require(amount0 <= pool.reserve0, "INSUFFICIENT_RESERVES");
-//                             pool.reserve1 = 0;
-//                             pool.reserve0 = uint128(uint256(pool.reserve0) - amount0);
-//                             TIP20(key.token1).transfer(user, amount1);
-//                             TIP20(key.token0).transfer(user, amount0);
-//                         }
-//                     }
-//                 } else {
-//                     // Default withdrawal token is not the higher balance token - fallback to higher balance token
-//                     if (higherToken == key.token0) {
-//                         amount0 = withdrawValue;
-//                         require(amount0 <= pool.reserve0, "INSUFFICIENT_RESERVE0");
-//                         pool.reserve0 = uint128(uint256(pool.reserve0) - amount0);
-//                         TIP20(key.token0).transfer(user, amount0);
-//                     } else {
-//                         amount1 = withdrawValue;
-//                         require(amount1 <= pool.reserve1, "INSUFFICIENT_RESERVE1");
-//                         pool.reserve1 = uint128(uint256(pool.reserve1) - amount1);
-//                         TIP20(key.token1).transfer(user, amount1);
-//                     }
-//                 }
-//             } else {
-//                 // Pool is balanced - try to honor default withdrawal token preference
-//                 if (defaultWithdrawalToken == key.token0 && withdrawValue <= pool.reserve0) {
-//                     // Can withdraw entirely in default withdrawal token0
-//                     amount0 = withdrawValue;
-//                     pool.reserve0 = uint128(uint256(pool.reserve0) - amount0);
-//                     TIP20(key.token0).transfer(user, amount0);
-//                 } else if (defaultWithdrawalToken == key.token1 && withdrawValue <= pool.reserve1) {
-//                     // Can withdraw entirely in default withdrawal token1
-//                     amount1 = withdrawValue;
-//                     pool.reserve1 = uint128(uint256(pool.reserve1) - amount1);
-//                     TIP20(key.token1).transfer(user, amount1);
-//                 } else {
-//                     // Fallback: split evenly
-//                     amount0 = withdrawValue / 2;
-//                     amount1 = withdrawValue / 2;
-//
-//                     require(amount0 <= pool.reserve0 && amount1 <= pool.reserve1, "INSUFFICIENT_RESERVES");
-//
-//                     pool.reserve0 = uint128(uint256(pool.reserve0) - amount0);
-//                     pool.reserve1 = uint128(uint256(pool.reserve1) - amount1);
-//
-//                     if (amount0 > 0) TIP20(key.token0).transfer(user, amount0);
-//                     if (amount1 > 0) TIP20(key.token1).transfer(user, amount1);
-//                 }
-//             }
-//         }
-//
-//         totalSupply[poolId] -= liquidity;
-//
-//         emit Withdrawal(user, key.token0, key.token1, amount0, amount1, liquidity);
-//     }
-//
-//     function _determineWithdrawalStrategy(
-//         bytes32 poolId,
-//         PoolKey memory key,
-//         uint256 currentPendingReserve0,
-//         uint256 currentPendingReserve1,
-//         uint256 withdrawValue,
-//         uint256 poolReserve0,
-//         uint256 poolReserve1
-//     ) private returns (address defaultWithdrawalToken) {
-//         if (currentPendingReserve0 == currentPendingReserve1) {
-//             // Pool is balanced - withdraw evenly from both
-//             defaultWithdrawalToken = address(0);
-//             _updatePendingReservesForMixed(poolId, withdrawValue, poolReserve0, poolReserve1);
-//             return defaultWithdrawalToken;
-//         }
-//
-//         // Pool is imbalanced - check if withdrawal would flip the inequality
-//         bool reserve0Higher = currentPendingReserve0 > currentPendingReserve1;
-//         uint256 higherReserve = reserve0Higher ? currentPendingReserve0 : currentPendingReserve1;
-//         uint256 lowerReserve = reserve0Higher ? currentPendingReserve1 : currentPendingReserve0;
-//
-//         // If withdrawing all from higher reserve would make it lower than the current lower reserve,
-//         // we should withdraw from both to maintain better balance
-//         if (higherReserve - withdrawValue < lowerReserve) {
-//             defaultWithdrawalToken = address(0); // Signal mixed withdrawal
-//             _updatePendingReservesForMixed(poolId, withdrawValue, poolReserve0, poolReserve1);
-//         } else {
-//             // Safe to withdraw from higher balance token without flipping
-//             defaultWithdrawalToken = reserve0Higher ? key.token0 : key.token1;
-//             if (reserve0Higher) {
-//                 pendingReserve0[poolId] = currentPendingReserve0 > poolReserve0 + withdrawValue
-//                     ? pendingReserve0[poolId] - withdrawValue : 0;
-//             } else {
-//                 pendingReserve1[poolId] = currentPendingReserve1 > poolReserve1 + withdrawValue
-//                     ? pendingReserve1[poolId] - withdrawValue : 0;
-//             }
-//         }
-//     }
-//
-//     function _updatePendingReservesForMixed(
-//         bytes32 poolId,
-//         uint256 withdrawValue,
-//         uint256 poolReserve0,
-//         uint256 poolReserve1
-//     ) private {
-//         uint256 withdraw0 = withdrawValue / 2;
-//         uint256 withdraw1 = withdrawValue - withdraw0;
-//
-//         pendingReserve0[poolId] = pendingReserve0[poolId] > poolReserve0 + withdraw0
-//             ? pendingReserve0[poolId] - withdraw0 : 0;
-//         pendingReserve1[poolId] = pendingReserve1[poolId] > poolReserve1 + withdraw1
-//             ? pendingReserve1[poolId] - withdraw1 : 0;
-//     }
-//
-//     function _getTokenWithFees(uint256 index) private view returns (address) {
-//         if (index >= tokensWithFees.length) {
-//             return address(0);
-//         }
-//         return tokensWithFees[index];
-//     }
-//
-//     function _cleanupTokensWithFees() private {
-//         uint256 writeIndex = 0;
-//         for (uint256 readIndex = 0; readIndex < tokensWithFees.length; readIndex++) {
-//             address token = tokensWithFees[readIndex];
-//             if (collectedFees[token].amount > 0) {
-//                 // Keep token in array by copying to write position
-//                 tokensWithFees[writeIndex] = token;
-//                 writeIndex++;
-//             } else {
-//                 // Token has no fees, remove from tracking mapping
-//                 tokenInFeesArray[token] = false;
-//             }
-//         }
-//         // Trim array to remove gaps
-//         while (tokensWithFees.length > writeIndex) {
-//             tokensWithFees.pop();
-//         }
-//     }
-//
-//     function getTokensWithFeesLength() external view returns (uint256) {
-//         return tokensWithFees.length;
-//     }
-//
-//     function getOperationQueueLength() external view returns (uint256) {
-//         return operationQueue.length;
-//     }
-//
-//     function getDepositQueueLength() external view returns (uint256) {
-//         uint256 count = 0;
-//         for (uint256 i = 0; i < operationQueue.length; i++) {
-//             if (operationQueue[i].opType == OperationType.Deposit) {
-//                 count++;
-//             }
-//         }
-//         return count;
-//     }
-//
-//     function getWithdrawQueueLength() external view returns (uint256) {
-//         uint256 count = 0;
-//         for (uint256 i = 0; i < operationQueue.length; i++) {
-//             if (operationQueue[i].opType == OperationType.Withdraw) {
-//                 count++;
-//             }
-//         }
-//         return count;
-//     }
-//
-//     function isPoolImbalanced(PoolKey memory key) external view returns (bool) {
-//         bytes32 poolId = getPoolId(key);
-//         Pool memory pool = pools[poolId];
-//         return pool.reserve0 != pool.reserve1;
-//     }
-//
-//     function getLowerBalanceToken(PoolKey memory key) external view returns (address) {
-//         bytes32 poolId = getPoolId(key);
-//         Pool memory pool = pools[poolId];
-//         if (pool.reserve0 < pool.reserve1) {
-//             return key.token0;
-//         } else if (pool.reserve1 < pool.reserve0) {
-//             return key.token1;
-//         } else {
-//             return address(0); // Balanced
-//         }
-//     }
-//
-//     function getHigherBalanceToken(PoolKey memory key) external view returns (address) {
-//         bytes32 poolId = getPoolId(key);
-//         Pool memory pool = pools[poolId];
-//         if (pool.reserve0 > pool.reserve1) {
-//             return key.token0;
-//         } else if (pool.reserve1 > pool.reserve0) {
-//             return key.token1;
-//         } else {
-//             return address(0); // Balanced
-//         }
-//     }
-//
-//     function getLiquidityBalance(PoolKey memory key, address user) external view returns (uint256) {
-//         bytes32 poolId = getPoolId(key);
-//         return liquidityBalances[poolId][user];
-//     }
-// }
