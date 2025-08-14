@@ -281,6 +281,8 @@ impl<S: StorageProvider> TipFeeManager<S> {
         sender: &Address,
         call: IFeeManager::collectFeeCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
+        // TODO: require that only system contract can call into this function
+
         let validator_token = self.get_validator_token()?;
         let user_token = self.get_user_token(&call.user, &validator_token);
 
@@ -340,6 +342,8 @@ impl<S: StorageProvider> TipFeeManager<S> {
         fee_info.has_been_set = true;
 
         self.set_fee_info(&user_token, &fee_info);
+
+        // TODO: refund unused fees
 
         Ok(())
     }
