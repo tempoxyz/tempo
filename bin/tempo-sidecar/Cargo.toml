@@ -19,7 +19,7 @@ serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = "0.3"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 jsonwebtoken = "9.3"
 shellexpand = "3.1"
 
