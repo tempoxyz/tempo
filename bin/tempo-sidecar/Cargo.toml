@@ -10,7 +10,7 @@ default-run = "tempo-sidecar"
 # workspace = true
 
 [dependencies]
-alloy = { workspace = true, default-features = false, features = ["network", "reqwest", "rpc", "rpc-types", "transports", "providers", "reqwest-rustls-tls"] }
+alloy = { workspace = true, default-features = false, features = ["network", "rpc", "rpc-types", "transports", "providers", "reqwest-rustls-tls"] }
 alloy-rpc-types-engine.workspace = true
 anyhow.workspace = true
 clap.workspace = true
