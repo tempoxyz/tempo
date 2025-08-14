@@ -84,7 +84,7 @@ impl GenesisArgs {
         };
 
         let mut genesis = Genesis::default()
-            .with_gas_limit(u64::MAX)
+            .with_gas_limit(0xfffffffffff)
             .with_nonce(0x42)
             .with_extra_data(Bytes::from_static(b"tempo-genesis"))
             .with_coinbase(Address::ZERO);
