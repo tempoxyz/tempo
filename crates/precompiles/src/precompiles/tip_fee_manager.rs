@@ -29,7 +29,7 @@ impl Precompile for TipFeeManager<EvmStorageProvider<'_>> {
             // State changing functions
             IFeeManager::setValidatorTokenCall::SELECTOR => mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_validator_token(s, call)),
             IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),
-            IFeeManager::createPoolCall::SELECTOR => mutate_void::<IFeeManager::createPoolCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.create_pool(s, call)),
+            IFeeManager::createPoolCall::SELECTOR => mutate_void::<IFeeManager::createPoolCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.create_pool(call)),
             IFeeManager::collectFeeCall::SELECTOR => mutate_void::<IFeeManager::collectFeeCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee(s, call)),
 
             _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
@@ -43,8 +43,28 @@ mod tests {
     use crate::{
         contracts::{HashMapStorageProvider, types::IFeeManager},
         precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
+        fee_manager_err,
     };
     use alloy::{primitives::{Address, U256, B256}, sol_types::SolValue};
+    use alloy_eips::eip4895::Withdrawals;
     use alloy_primitives::Bytes;
+
+    fn setup_fee_manager() -> TipFeeManager<HashMapStorageProvider> {
+        let storage = HashMapStorageProvider::new(1);
+        let contract_addr = Address::from([0u8; 20]);
+        TipFeeManager::new(contract_addr, storage)
+    }
+
+    #[test]
+    fn test_set_validator_token() {
+        let mut fee_manager = setup_fee_manager();
+        let validator = Address::random();
+        let token = Address::random();
+
+        let call = IFeeManager::setValidatorTokenCall { token };
+        let calldata = call.abi_encode();
+        let res = fee_manager.set_validator_token(&validator, call);
+
+    }
 
 }

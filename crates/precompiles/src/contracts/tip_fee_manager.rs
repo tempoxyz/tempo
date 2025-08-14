@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use crate::contracts::{
     storage::{
         StorageProvider,
@@ -9,6 +11,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::{SolCall, SolValue},
 };
+use reth::revm::interpreter::instructions::utility::IntoU256;
 
 mod slots {
     use crate::contracts::storage::slots::to_u256;
@@ -179,7 +182,8 @@ impl<S: StorageProvider> TipFeeManager<S> {
         }
 
         let slot = self.get_validator_token_slot(sender);
-        let token = U256::from_be_bytes(call.token.into_array());
+
+        let token = call.token.into_u256();
         self.storage.sstore(self.contract_address, slot, token);
         // TODO: emit event
 
@@ -198,7 +202,7 @@ impl<S: StorageProvider> TipFeeManager<S> {
         }
 
         let slot = self.get_user_token_slot(sender);
-        let token = U256::from_be_bytes(call.token.into_array());
+        let token = call.token.into_u256();
         self.storage.sstore(self.contract_address, slot, token);
 
         // TODO: emit event
@@ -208,7 +212,6 @@ impl<S: StorageProvider> TipFeeManager<S> {
 
     pub fn create_pool(
         &mut self,
-        sender: &Address,
         call: IFeeManager::createPoolCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         if call.tokenA == call.tokenB {
@@ -267,8 +270,8 @@ impl<S: StorageProvider> TipFeeManager<S> {
         let pool_value = self.storage.sload(self.contract_address, pool_slot);
         // TODO: double check this
         // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
-        let reserve0 = (pool_value & U256::from((1u128 << 128) - 1)).to::<u128>();
-        let reserve1 = (pool_value / U256::from(1u128 << 128)).to::<u128>();
+        let reserve0 = (pool_value & U256::from(u128::MAX)).to::<u128>();
+        let reserve1 = pool_value.wrapping_shr(128).to::<u128>();
 
         IFeeManager::Pool { reserve0, reserve1 }
     }
@@ -301,8 +304,8 @@ impl<S: StorageProvider> TipFeeManager<S> {
 
             let pool_slot = self.get_pool_slot(&pool_id);
             let pool_value = self.storage.sload(self.contract_address, pool_slot);
-            let reserve0 = U256::from((pool_value & U256::from((1u128 << 128) - 1)).to::<u128>());
-            let reserve1 = U256::from((pool_value / U256::from(1u128 << 128)).to::<u128>());
+            let reserve0 = U256::from((pool_value & U256::from(u128::MAX)).to::<u128>());
+            let reserve1 = U256::from(pool_value.wrapping_shr(128).to::<u128>());
 
             if reserve0 < Self::MINIMUM_BALANCE || reserve1 < Self::MINIMUM_BALANCE {
                 return Err(IFeeManager::IFeeManagerErrors::InsufficientPoolBalance(
@@ -380,7 +383,7 @@ impl<S: StorageProvider> TipFeeManager<S> {
         let fees_slot = self.get_collected_fees_slot(token);
         let fees_value = self.storage.sload(self.contract_address, fees_slot);
 
-        let amount = (fees_value & U256::from((1u128 << 128) - 1)).to::<u128>();
+        let amount = (fees_value & U256::from(u128::MAX)).to::<u128>();
         let has_been_set = fees_value >= (U256::from(1u128) << 128);
 
         FeeInfo {
@@ -491,7 +494,7 @@ impl<S: StorageProvider> TipFeeManager<S> {
         let fees_slot = self.get_collected_fees_slot(&user_token);
         let fees_value = self.storage.sload(self.contract_address, fees_slot);
         // Unpack: amount in lower 128 bits
-        let amount = fees_value & U256::from((1u128 << 128) - 1);
+        let amount = fees_value & U256::from(u128::MAX);
 
         IFeeManager::getFeeTokenBalanceReturn {
             _0: user_token,
@@ -503,8 +506,8 @@ impl<S: StorageProvider> TipFeeManager<S> {
         let pool_slot = self.get_pool_slot(&call.poolId);
         let pool_value = self.storage.sload(self.contract_address, pool_slot);
         // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
-        let reserve0 = (pool_value & U256::from((1u128 << 128) - 1)).to::<u128>();
-        let reserve1 = (pool_value / U256::from(1u128 << 128)).to::<u128>();
+        let reserve0 = (pool_value & U256::from(u128::MAX)).to::<u128>();
+        let reserve1 = pool_value.wrapping_shr(128).to::<u128>();
 
         IFeeManager::Pool { reserve0, reserve1 }
     }
@@ -518,7 +521,7 @@ impl<S: StorageProvider> TipFeeManager<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::HashMapStorageProvider;
+    use crate::{TIP_FEE_MANAGER_ADDRESS, contracts::HashMapStorageProvider};
 
     #[test]
     fn test_pool_key_ordering() {
@@ -526,10 +529,10 @@ mod tests {
         let addr2 = Address::from([2u8; 20]);
 
         let key1 = PoolKey::new(addr1, addr2);
-        let key2 = PoolKey::new(addr2, addr1);
-
         assert_eq!(key1.token0, addr1);
         assert_eq!(key1.token1, addr2);
+
+        let key2 = PoolKey::new(addr2, addr1);
         assert_eq!(key2.token0, addr1);
         assert_eq!(key2.token1, addr2);
         assert_eq!(key1, key2);
@@ -538,22 +541,18 @@ mod tests {
     #[test]
     fn test_create_pool() {
         let storage = HashMapStorageProvider::new(1);
-        let contract_addr = Address::from([0u8; 20]);
-        let mut fee_manager = TipFeeManager::new(contract_addr, storage);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage);
 
-        let sender = Address::from([1u8; 20]);
-        let token_a = Address::from([10u8; 20]);
-        let token_b = Address::from([20u8; 20]);
-
+        let token_a = Address::random();
+        let token_b = Address::random();
         let call = IFeeManager::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
         };
 
-        let result = fee_manager.create_pool(&sender, call);
+        let result = fee_manager.create_pool(call);
         assert!(result.is_ok());
 
-        // Verify pool exists
         let pool_key = PoolKey::new(token_a, token_b);
         let pool_id = pool_key.get_id();
         let exists_call = IFeeManager::poolExistsCall { poolId: pool_id };
@@ -563,52 +562,69 @@ mod tests {
     #[test]
     fn test_set_user_token() {
         let storage = HashMapStorageProvider::new(1);
-        let contract_addr = Address::from([0u8; 20]);
-        let mut fee_manager = TipFeeManager::new(contract_addr, storage);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage);
 
-        let user = Address::from([1u8; 20]);
-        let token = Address::from([10u8; 20]);
+        let user = Address::random();
+        let token = Address::random();
 
         let call = IFeeManager::setUserTokenCall { token };
         let result = fee_manager.set_user_token(&user, call);
         assert!(result.is_ok());
 
-        // Verify token was set
-        let query = IFeeManager::userTokensCall { user };
-        assert_eq!(fee_manager.user_tokens(query), token);
+        let call = IFeeManager::userTokensCall { user };
+        assert_eq!(fee_manager.user_tokens(call), token);
     }
 
     #[test]
+    fn test_set_validator_token() {
+        let storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage);
+
+        let validator = Address::random();
+        let token = Address::random();
+
+        let call = IFeeManager::setValidatorTokenCall { token };
+        let result = fee_manager.set_validator_token(&validator, call);
+        assert!(result.is_ok());
+
+        let query_call = IFeeManager::validatorTokensCall { validator };
+        let returned_token = fee_manager.validator_tokens(query_call);
+        assert_eq!(returned_token, token);
+    }
+
+    // TODO: check
+    #[test]
     fn test_collect_fee() {
         let storage = HashMapStorageProvider::new(1);
-        let contract_addr = Address::from([0u8; 20]);
-        let mut fee_manager = TipFeeManager::new(contract_addr, storage);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage);
 
-        let validator = Address::from([1u8; 20]);
-        let user = Address::from([2u8; 20]);
-        let token = Address::from([10u8; 20]);
-        let amount = U256::from(1000);
+        let validator = Address::random();
+        let user = Address::random();
+        let token = Address::random();
+        let amount = U256::random();
 
-        // Set validator token
+        // Set fee tokens
         let set_validator_call = IFeeManager::setValidatorTokenCall { token };
         fee_manager
             .set_validator_token(&validator, set_validator_call)
             .unwrap();
 
-        // Set user token (same as validator for simplicity)
         let set_user_call = IFeeManager::setUserTokenCall { token };
         fee_manager.set_user_token(&user, set_user_call).unwrap();
 
-        // Collect fee
+        // Collect fee and verify balances
         let collect_call = IFeeManager::collectFeeCall { user, amount };
         let result = fee_manager.collect_fee(&validator, collect_call);
         assert!(result.is_ok());
 
-        // Verify fee was collected
         let balance_call = IFeeManager::getFeeTokenBalanceCall { sender: user };
         let result = fee_manager.get_fee_token_balance(balance_call);
         assert_eq!(result._0, token);
         assert_eq!(result._1, amount);
+
+        // TODO: check validator balances
+
+        // TODO: check that TIP20 balance was mutated
     }
 }
 
