@@ -83,8 +83,21 @@ where
         Ok((token_address, decimals, balance))
     }
 
-    pub fn collect_fee(&mut self, sender: Address, amount: u64) {
-        todo!()
+    pub fn collect_fee(&mut self, sender: Address, amount: u64) -> Result<(), EVMError<DB::Error>> {
+        let call_data = IFeeManager::collectFeeCall {
+            user: sender,
+            amount: U256::from(amount),
+        }
+        .abi_encode()
+        .into();
+
+        let exec_result =
+            self.inner
+                .transact_system_call(Address::ZERO, TEMPO_FEE_MANAGER_ADDRESS, call_data)?;
+
+        // TODO: handle exec result
+
+        Ok(())
     }
 }
 
