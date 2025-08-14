@@ -31,14 +31,14 @@ struct Args {
     )]
     jwt_secret_file: String,
 
-    #[arg(long, default_value = "5", help = "Poll interval in seconds")]
+    #[arg(long, default_value = "1000", help = "Poll interval in milliseconds")]
     interval: u64,
 }
 
 struct BlockFollower {
     producer: DynProvider,
     follower_url: String,
-    jwt_token: String,
+    jwt_secret: Vec<u8>,
     client: Client,
     interval: Duration,
 }
@@ -60,6 +60,20 @@ impl BlockFollower {
         let jwt_secret_bytes =
             hex::decode(jwt_secret).with_context(|| "Failed to decode JWT secret from hex")?;
 
+        let producer = ProviderBuilder::new()
+            .connect_http(args.producer_url.parse()?)
+            .erased();
+
+        Ok(Self {
+            producer,
+            follower_url: args.follower_url,
+            jwt_secret: jwt_secret_bytes,
+            client: reqwest::Client::new(),
+            interval: Duration::from_millis(args.interval),
+        })
+    }
+
+    fn generate_jwt_token(&self) -> Result<String> {
         let claims = Claims {
             iat: time::SystemTime::now()
                 .duration_since(time::SystemTime::UNIX_EPOCH)?
@@ -69,20 +83,10 @@ impl BlockFollower {
         let jwt_token = jsonwebtoken::encode(
             &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
             &claims,
-            &jsonwebtoken::EncodingKey::from_secret(&jwt_secret_bytes),
+            &jsonwebtoken::EncodingKey::from_secret(&self.jwt_secret),
         )?;
 
-        let producer = ProviderBuilder::new()
-            .connect_http(args.producer_url.parse()?)
-            .erased();
-
-        Ok(Self {
-            producer,
-            follower_url: args.follower_url,
-            jwt_token,
-            client: reqwest::Client::new(),
-            interval: Duration::from_secs(args.interval),
-        })
+        Ok(jwt_token)
     }
 
     async fn get_latest_block(&self) -> Result<Block> {
@@ -113,10 +117,13 @@ impl BlockFollower {
             "Sending forkchoice update to {}: {}",
             self.follower_url, payload
         );
+
+        let jwt_token = self.generate_jwt_token()?;
+
         let response = self
             .client
             .post(&self.follower_url)
-            .header("Authorization", format!("Bearer {}", self.jwt_token))
+            .header("Authorization", format!("Bearer {}", jwt_token))
             .header("Content-Type", "application/json")
             .json(&payload)
             .send()
