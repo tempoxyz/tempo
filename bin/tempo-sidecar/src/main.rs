@@ -1,5 +1,5 @@
-use alloy::eips::BlockId;
 use alloy::{
+    eips::BlockId,
     hex,
     primitives::B256,
     providers::{DynProvider, Provider, ProviderBuilder},
