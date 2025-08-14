@@ -21,7 +21,7 @@ pub mod tip4217_registry;
 pub mod tip_fee_manager;
 
 use crate::{
-    TEMPO_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     TIP4217_REGISTRY_ADDRESS,
     contracts::{
         EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
@@ -52,7 +52,7 @@ pub fn extend_tempo_precompiles<DB: Database, I: Inspector<EthEvmContext<DB>>>(
                 Some(TIP403RegistryPrecompile::create(chain_id))
             } else if *address == TIP4217_REGISTRY_ADDRESS {
                 Some(TIP4217RegistryPrecompile::create())
-            } else if *address == TEMPO_FEE_MANAGER_ADDRESS {
+            } else if *address == TIP_FEE_MANAGER_ADDRESS {
                 Some(TipFeeManagerPrecompile::create(chain_id))
             } else {
                 None
@@ -111,7 +111,7 @@ impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         DynPrecompile::new(move |input| {
             let storage = EvmStorageProvider::new(input.internals, chain_id);
-            TipFeeManager::new(TEMPO_FEE_MANAGER_ADDRESS, storage).call(input.data, &input.caller)
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, storage).call(input.data, &input.caller)
         })
     }
 }

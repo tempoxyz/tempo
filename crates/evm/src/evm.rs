@@ -16,7 +16,7 @@ use reth::revm::{
 use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError};
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::{
-    TEMPO_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         ITIP20,
         types::IFeeManager::{self, IFeeManagerCalls},
@@ -78,7 +78,7 @@ where
 
         let balance_result =
             self.inner
-                .transact_system_call(Address::ZERO, TEMPO_FEE_MANAGER_ADDRESS, call_data)?;
+                .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, call_data)?;
 
         // TODO: handle failure
         let output = balance_result.result.output().unwrap_or_default();
@@ -103,7 +103,7 @@ where
 
         let exec_result =
             self.inner
-                .transact_system_call(Address::ZERO, TEMPO_FEE_MANAGER_ADDRESS, call_data)?;
+                .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, call_data)?;
 
         Ok(exec_result)
     }
