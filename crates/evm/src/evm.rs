@@ -71,7 +71,7 @@ where
     pub fn get_fee_token_balance(
         &mut self,
         sender: Address,
-    ) -> Result<(Address, u8, u64), EVMError<DB::Error>> {
+    ) -> Result<(Address, u64), EVMError<DB::Error>> {
         let call_data = IFeeManager::getFeeTokenBalanceCall { sender }
             .abi_encode()
             .into();
@@ -79,13 +79,14 @@ where
         let balance_result =
             self.inner
                 .transact_system_call(Address::ZERO, TEMPO_FEE_MANAGER_ADDRESS, call_data)?;
+
+        // TODO: handle failure
         let output = balance_result.result.output().unwrap_or_default();
 
         let token_address = Address::from_slice(&output[12..32]);
-        let decimals = output[63];
-        let balance = U256::from_be_slice(&output[64..96]).to::<u64>();
+        let balance = U256::from_be_slice(&output[32..64]).to::<u64>();
 
-        Ok((token_address, decimals, balance))
+        Ok((token_address, balance))
     }
 
     pub fn collect_fee(
@@ -151,7 +152,7 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let caller = tx.caller;
-        let (_, token_decimals, balance) = self.get_fee_token_balance(caller)?;
+        let (_, balance) = self.get_fee_token_balance(caller)?;
 
         // Compute adjusted gas fee and ensure sufficient balance
         let gas_fee = tx.gas_limit * tx.gas_price as u64;

@@ -18,12 +18,14 @@ pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip4217_registry;
+pub mod tip_fee_manager;
 
 use crate::{
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
+    TEMPO_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP4217_REGISTRY_ADDRESS,
     contracts::{
         EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
-        address_is_token_address, address_to_token_id_unchecked,
+        address_is_token_address, address_to_token_id_unchecked, tip_fee_manager::TipFeeManager,
     },
 };
 
@@ -50,8 +52,9 @@ pub fn extend_tempo_precompiles<DB: Database, I: Inspector<EthEvmContext<DB>>>(
                 Some(TIP403RegistryPrecompile::create(chain_id))
             } else if *address == TIP4217_REGISTRY_ADDRESS {
                 Some(TIP4217RegistryPrecompile::create())
+            } else if *address == TEMPO_FEE_MANAGER_ADDRESS {
+                Some(TipFeeManagerPrecompile::create(chain_id))
             } else {
-                // TODO: add fee manager precompile
                 None
             }
         });
@@ -99,6 +102,17 @@ pub struct TIP4217RegistryPrecompile;
 impl TIP4217RegistryPrecompile {
     pub fn create() -> DynPrecompile {
         DynPrecompile::new(move |input| TIP4217Registry::default().call(input.data, &input.caller))
+    }
+}
+
+pub struct TipFeeManagerPrecompile;
+
+impl TipFeeManagerPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        DynPrecompile::new(move |input| {
+            let storage = EvmStorageProvider::new(input.internals, chain_id);
+            TipFeeManager::new(TEMPO_FEE_MANAGER_ADDRESS, storage).call(input.data, &input.caller)
+        })
     }
 }
 

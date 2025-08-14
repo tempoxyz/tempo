@@ -168,7 +168,7 @@ sol! {
         // User preferences
         function userTokens(address user) external view returns (address);
         function validatorTokens(address validator) external view returns (address);
-        function getFeeTokenBalance(address sender) external view returns (address, uint8, uint256);
+        function getFeeTokenBalance(address sender) external view returns (address, uint256);
         function setUserToken(address token) external;
 
         // Core functions
@@ -241,6 +241,15 @@ macro_rules! tip403_err {
     };
 }
 
+#[macro_export]
+macro_rules! fee_manager_err {
+    ($err:ident) => {
+        $crate::contracts::types::IFeeManager::IFeeManagerErrors::$err(
+            $crate::contracts::types::IFeeManager::$err {},
+        )
+    };
+}
+
 // Use the auto-generated error and event enums
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
@@ -248,3 +257,4 @@ pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };
+pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
