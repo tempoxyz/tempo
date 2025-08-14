@@ -309,13 +309,13 @@ impl<S: StorageProvider> TipFeeManager<S> {
             }
         }
 
-        let fees_slot = self.get_collected_fees_slot(&user_token);
-        let fees_value = self.storage.sload(self.contract_address, fees_slot);
+        // TODO: TIP20(userToken).transferFrom(user, address(this), amount);
 
-        let current_amount = (fees_value & U256::from((1u128 << 128) - 1)).to::<u128>();
-        let has_been_set = fees_value >= (U256::from(1u128) << 128);
+        // Cache fee info to minimize storage access
+        let mut fee_info = self.get_fee_info(&user_token);
 
-        if current_amount == 0 && !has_been_set {
+        // Add to tracking array only if this is the first time collecting fees for this token
+        if fee_info.amount == 0 && !fee_info.has_been_set {
             let in_array_slot = self.get_token_in_fees_array_slot(&user_token);
             let in_array = self.storage.sload(self.contract_address, in_array_slot) != U256::ZERO;
 
@@ -326,6 +326,7 @@ impl<S: StorageProvider> TipFeeManager<S> {
                 let length_value = self
                     .storage
                     .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH);
+
                 self.storage.sstore(
                     self.contract_address,
                     slots::TOKENS_WITH_FEES_LENGTH,
@@ -334,15 +335,15 @@ impl<S: StorageProvider> TipFeeManager<S> {
             }
         }
 
-        let new_amount = current_amount.saturating_add(call.amount.try_into().unwrap_or(0));
-        let new_fees_value = (U256::from(1u128) << 128) | U256::from(new_amount);
-        self.storage
-            .sstore(self.contract_address, fees_slot, new_fees_value);
+        // Update fee info in single storage write
+        fee_info.amount = fee_info.amount.saturating_add(call.amount.to::<u128>());
+        fee_info.has_been_set = true;
+
+        self.set_fee_info(&user_token, &fee_info);
 
         Ok(())
     }
 
-    // Helper function to get validator token
     fn get_validator_token(&mut self) -> Result<Address, IFeeManager::IFeeManagerErrors> {
         // TODO: FIXME: need to get block.coinbase
         let coinbase = Address::random(); // In real implementation, use block.coinbase
@@ -359,7 +360,6 @@ impl<S: StorageProvider> TipFeeManager<S> {
         Ok(validator_token)
     }
 
-    // Helper function to get user token with validator fallback
     fn get_user_token(&mut self, user: &Address, validator_token: &Address) -> Address {
         let user_slot = self.get_user_token_slot(user);
         let user_token_value = self.storage.sload(self.contract_address, user_slot);
@@ -370,6 +370,30 @@ impl<S: StorageProvider> TipFeeManager<S> {
         } else {
             user_token
         }
+    }
+
+    fn get_fee_info(&mut self, token: &Address) -> FeeInfo {
+        let fees_slot = self.get_collected_fees_slot(token);
+        let fees_value = self.storage.sload(self.contract_address, fees_slot);
+
+        let amount = (fees_value & U256::from((1u128 << 128) - 1)).to::<u128>();
+        let has_been_set = fees_value >= (U256::from(1u128) << 128);
+
+        FeeInfo {
+            amount,
+            has_been_set,
+        }
+    }
+
+    fn set_fee_info(&mut self, token: &Address, fee_info: &FeeInfo) {
+        let fees_slot = self.get_collected_fees_slot(token);
+        let fees_value = if fee_info.has_been_set {
+            (U256::from(1u128) << 128) | U256::from(fee_info.amount)
+        } else {
+            U256::from(fee_info.amount)
+        };
+        self.storage
+            .sstore(self.contract_address, fees_slot, fees_value);
     }
 
     // TODO: swap for validator token
