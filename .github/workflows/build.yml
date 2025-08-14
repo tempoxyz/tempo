@@ -29,10 +29,11 @@ jobs:
       run: |
         just install-cross
     - run: |
-        just build ${{ matrix.binary }}
+        just build-release ${{ matrix.binary }}
     - uses: actions/upload-artifact@v4
       id: binary_upload
       with:
+        if-no-files-found: 'error'
         name: ${{ matrix.binary }}-x86_64-unknown-linux-gnu
         path: target/x86_64-unknown-linux-gnu/release/${{ matrix.binary }}
     - uses: cloudposse/github-action-matrix-outputs-write@v1
