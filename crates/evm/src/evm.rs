@@ -169,11 +169,15 @@ where
                 },
             ));
         }
-        self.collect_fee(caller, adjusted_fee)?;
+
+        // Collect fee and return early if fee fails
+        let exec_result = self.collect_fee(caller, adjusted_fee)?;
+        if !exec_result.result.is_success() {
+            return Ok(exec_result);
+        }
 
         // Execute the tx and return fees for unused gas
         let res = self.inner.transact_raw(tx)?;
-
         // TODO: refund unused gas
         let gas_spent = res.result.gas_used();
 
