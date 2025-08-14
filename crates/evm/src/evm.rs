@@ -4,7 +4,7 @@ use reth::revm::{
     Context, Inspector,
     context::{
         BlockEnv, CfgEnv, TxEnv,
-        result::{EVMError, HaltReason, ResultAndState},
+        result::{EVMError, HaltReason, InvalidTransaction, ResultAndState},
     },
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::InterpreterResult,
@@ -83,7 +83,7 @@ where
         Ok((token_address, decimals, balance))
     }
 
-    pub fn collect_fee_token(&mut self) {
+    pub fn collect_fee(&mut self, sender: Address, amount: u64) {
         todo!()
     }
 }
@@ -130,8 +130,9 @@ where
         &mut self,
         mut tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        let caller = tx.caller;
         // Check that the account has a sufficient balance
-        let (_fee_token, token_decimals, balance) = self.get_fee_token_balance(tx.caller)?;
+        let (_, token_decimals, balance) = self.get_fee_token_balance(caller)?;
 
         let adjusted_balance = if token_decimals < 9 {
             balance * (10 * (9 - token_decimals as u64))
@@ -140,16 +141,21 @@ where
         };
 
         if tx.gas_limit > adjusted_balance {
-            // TODO: return error
+            return Err(EVMError::Transaction(
+                InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(U256::from(tx.gas_limit)),
+                    balance: Box::new(U256::from(adjusted_balance)),
+                },
+            ));
         }
 
         tx.gas_price = 1;
-        let res = self.inner.transact_raw(tx);
+        let res = self.inner.transact_raw(tx)?;
 
-        // TODO: get gas used
-        self.collect_fee_token();
+        let gas_spent = res.result.gas_used();
+        self.collect_fee(caller, gas_spent);
 
-        res
+        Ok(res)
     }
 
     fn transact_system_call(

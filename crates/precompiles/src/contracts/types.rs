@@ -164,24 +164,15 @@ sol! {
         function BASIS_POINTS() external pure returns (uint256);
         function FEE_BPS() external pure returns (uint256);
 
-        // Pool state view functions
-        function pools(bytes32 poolId) external view returns (Pool memory);
-        function totalSupply(bytes32 poolId) external view returns (uint256);
-        function poolExists(bytes32 poolId) external view returns (bool);
-        function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
 
         // User preferences
         function userTokens(address user) external view returns (address);
         function validatorTokens(address validator) external view returns (address);
         function getFeeTokenBalance(address sender) external view returns (address, uint8, uint256);
-
-        // Pending operations
-        function pendingReserve0(bytes32 poolId) external view returns (uint256);
-        function pendingReserve1(bytes32 poolId) external view returns (uint256);
+        function setUserToken(address token) external;
 
         // Core functions
         function setValidatorToken(address token) external;
-        function setUserToken(address token) external;
         function createPool(address tokenA, address tokenB) external;
         function getPoolId(PoolKey memory key) external pure returns (bytes32);
         function getPool(PoolKey memory key) external view returns (Pool memory);
@@ -189,6 +180,7 @@ sol! {
         function queueDeposit(PoolKey memory key, uint256 amount, address depositToken) external;
         function queueWithdraw(PoolKey memory key, uint256 liquidity) external;
         function executeBlock() external;
+        function collectFee(address user, uint256 amount) external;
 
         // View functions
         function getTokensWithFeesLength() external view returns (uint256);
@@ -199,6 +191,12 @@ sol! {
         function getLowerBalanceToken(PoolKey memory key) external view returns (address);
         function getHigherBalanceToken(PoolKey memory key) external view returns (address);
         function getTotalValue(PoolKey memory key) external view returns (uint256);
+        function pendingReserve0(bytes32 poolId) external view returns (uint256);
+        function pendingReserve1(bytes32 poolId) external view returns (uint256);
+        function pools(bytes32 poolId) external view returns (Pool memory);
+        function totalSupply(bytes32 poolId) external view returns (uint256);
+        function poolExists(bytes32 poolId) external view returns (bool);
+        function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
 
         // Events
         event PoolCreated(address indexed token0, address indexed token1);
