@@ -7,8 +7,9 @@ jobs:
   build:
     name: Build
     runs-on: depot-ubuntu-24.04-16
-    outputs:
-      artifact_id: "${{ steps.binary_upload.outputs.artifact-id }}"
+    strategy:
+      matrix:
+        binary: [tempo, tempo-bench, tempo-sidecar]
     steps:
     - uses: actions/checkout@v2
     - uses: rui314/setup-mold@v1
@@ -28,12 +29,19 @@ jobs:
       run: |
         just install-cross
     - run: |
-        just build-all-release
+        just build-all ${{ matrix.binary }}
     - uses: actions/upload-artifact@v4
       id: binary_upload
       with:
-        name: tempo-x86_64-unknown-linux-gnu
-        path: target/x86_64-unknown-linux-gnu/release/tempo
+        name: ${{ matrix.binary }}-x86_64-unknown-linux-gnu
+        path: target/x86_64-unknown-linux-gnu/release/${{ matrix.binary }}
+    - uses: cloudposse/github-action-matrix-outputs-write@v1
+      id: out
+      with:
+        matrix-step-name: ${{ github.job }}
+        matrix-key: ${{ matrix.binary }}
+        outputs: |-
+          artifact_id: ${{ steps.binary_upload.outputs.artifact-id }}
   deploy:
     name: Deploy to devnet-1
     runs-on: depot-ubuntu-24.04-4
@@ -53,8 +61,12 @@ jobs:
         ANSIBLE_VAULT_PASSWORD: "${{secrets.ANSIBLE_VAULT_PASSWORD}}"
       run: |
         echo -e "$ANSIBLE_VAULT_PASSWORD" >> vault.key
+    - uses: cloudposse/github-action-matrix-outputs-read@v1
+      id: read
+      with:
+        matrix-step-name: tempo
     - name: Run playbook
       working-directory: contrib/infra/ansible
       run: |
         just dependencies
-        just run-playbook-ci devnet devnet-1 "tempo_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{needs.build.outputs.artifact_id}}/zip'"
+        just run-playbook-ci devnet devnet-1 "tempo_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{ fromJson(steps.read.outputs.result).artifact_id.tempo }}/zip' tempo_sidecar_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{ fromJson(steps.read.outputs.result).artifact_id.tempo_sidecar }}/zip'"
