@@ -9,8 +9,11 @@ use reth::revm::{
     interpreter::InterpreterResult,
     primitives::hardfork::SpecId,
 };
-use reth_evm::{Database, EthEvm, Evm, EvmEnv};
+use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError};
 use std::ops::{Deref, DerefMut};
+use tempo_precompiles::{
+    TEMPO_FEE_MANAGER_ADDRESS, contracts::types::IFeeManager::IFeeManagerCalls,
+};
 
 /// The Tempo EVM context type.
 pub type TempoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
@@ -46,6 +49,28 @@ impl<DB: Database, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE> {
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TempoEvmContext<DB> {
         self.inner.ctx_mut()
+    }
+}
+
+impl<DB, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE>
+where
+    DB: Database,
+    I: Inspector<TempoEvmContext<DB>>,
+    PRECOMPILE: PrecompileProvider<TempoEvmContext<DB>, Output = InterpreterResult>,
+{
+    pub fn get_fee_token_balance(&mut self, sender: Address) -> Result<u64, EVMError<DB::Error>> {
+        // TODO: Use IFeeManagerCalls::getFeeTokenBalance and encode
+
+        let call_data = Bytes::default();
+
+        let balance_result =
+            self.inner
+                .transact_system_call(Address::ZERO, TEMPO_FEE_MANAGER_ADDRESS, call_data)?;
+
+        let output = balance_result.result.output().unwrap_or_default();
+        // TODO: decode the response, should just be u256 so should try to decode
+
+        todo!()
     }
 }
 
@@ -89,9 +114,17 @@ where
 
     fn transact_raw(
         &mut self,
-        tx: Self::Tx,
+        mut tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // TODO: call fee manager to ensure sufficient balance
+        // Check that the account has a sufficient balance
+        // TODO: handle decimals
+        let fee_token_balance = self.get_fee_token_balance(tx.caller)?;
+
+        if tx.gas_limit > fee_token_balance {
+            // TODO: return error
+        }
+
+        tx.gas_price = 1;
         self.inner.transact_raw(tx)
 
         // TODO: call fee manager to decrement balance
