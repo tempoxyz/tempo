@@ -272,7 +272,7 @@ mod tests {
     use alloy_primitives::{B256, U256};
     use rand::random;
     use reth::revm::{
-        context::{BlockEnv, CfgEnv, ContextTr},
+        context::{BlockEnv, CfgEnv, ContextTr, Host},
         db::{CacheDB, EmptyDB},
         inspector::NoOpInspector,
     };

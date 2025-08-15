@@ -1,4 +1,5 @@
 use alloy::primitives::{Address, IntoLogData, U256};
+use reth::revm::db;
 
 use crate::{
     TIP20_FACTORY_ADDRESS,
@@ -44,6 +45,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
             &call.currency,
             &call.admin,
         )?;
+
         self.storage.emit_event(
             TIP20_FACTORY_ADDRESS,
             TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
@@ -55,6 +57,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
             })
             .into_log_data(),
         );
+
         Ok(token_id)
     }
 
