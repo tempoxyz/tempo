@@ -65,7 +65,7 @@ pub struct TIP20Precompile;
 impl TIP20Precompile {
     pub fn create(address: &Address, chain_id: u64) -> DynPrecompile {
         let token_id = address_to_token_id_unchecked(address);
-        DynPrecompile::new(move |input| {
+        DynPrecompile::new_stateful(move |input| {
             TIP20Token::new(
                 token_id,
                 &mut EvmStorageProvider::new(input.internals, chain_id),
@@ -79,7 +79,7 @@ pub struct TIP20FactoryPrecompile;
 
 impl TIP20FactoryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        DynPrecompile::new(move |input| {
+        DynPrecompile::new_stateful(move |input| {
             TIP20Factory::new(&mut EvmStorageProvider::new(input.internals, chain_id))
                 .call(input.data, &input.caller)
         })
@@ -90,7 +90,7 @@ pub struct TIP403RegistryPrecompile;
 
 impl TIP403RegistryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        DynPrecompile::new(move |input| {
+        DynPrecompile::new_stateful(move |input| {
             TIP403Registry::new(&mut EvmStorageProvider::new(input.internals, chain_id))
                 .call(input.data, &input.caller)
         })
@@ -101,7 +101,9 @@ pub struct TIP4217RegistryPrecompile;
 
 impl TIP4217RegistryPrecompile {
     pub fn create() -> DynPrecompile {
-        DynPrecompile::new(move |input| TIP4217Registry::default().call(input.data, &input.caller))
+        DynPrecompile::new_stateful(move |input| {
+            TIP4217Registry::default().call(input.data, &input.caller)
+        })
     }
 }
 
@@ -109,7 +111,7 @@ pub struct TipFeeManagerPrecompile;
 
 impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        DynPrecompile::new(move |input| {
+        DynPrecompile::new_stateful(move |input| {
             TipFeeManager::new(
                 TIP_FEE_MANAGER_ADDRESS,
                 &mut EvmStorageProvider::new(input.internals, chain_id),
