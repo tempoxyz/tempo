@@ -282,10 +282,16 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn collect_fee(
         &mut self,
-        coinbase: &Address,
+        sender: &Address,
         call: IFeeManager::collectFeeCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        let validator_token = self.get_validator_token(coinbase)?;
+        if *sender != Address::ZERO {
+            return Err(IFeeManager::IFeeManagerErrors::OnlySystemContract(
+                IFeeManager::OnlySystemContract {},
+            ));
+        }
+
+        let validator_token = self.get_validator_token(&call.coinbase)?;
         let user_token = self.get_user_token(&call.user, &validator_token);
 
         if user_token != validator_token {
@@ -318,7 +324,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         tip20_token
             .transfer_from(
-                &call.user,
+                &self.contract_address,
                 ITIP20::transferFromCall {
                     from: call.user,
                     to: self.contract_address,
@@ -611,6 +617,9 @@ mod tests {
     fn test_collect_fee() {
         let mut storage = HashMapStorageProvider::new(1);
 
+        // NOTE: when spender is call.to then it is approved so we are not approving the right
+        // sender
+
         let user = Address::random();
         let validator = Address::random();
         let token = Address::random();
@@ -661,8 +670,14 @@ mod tests {
             .unwrap();
 
         // Collect fee and verify balances
-        let result =
-            fee_manager.collect_fee(&Address::ZERO, IFeeManager::collectFeeCall { user, amount });
+        let result = fee_manager.collect_fee(
+            &Address::ZERO,
+            IFeeManager::collectFeeCall {
+                user,
+                coinbase: validator,
+                amount,
+            },
+        );
         assert!(result.is_ok());
 
         let result =
@@ -670,8 +685,6 @@ mod tests {
         assert_eq!(result._0, token);
         assert_eq!(result._1, amount);
 
-        // TODO: check validator balances
-
-        // TODO: check that TIP20 balance was mutated
+        // TODO: assert balances
     }
 }

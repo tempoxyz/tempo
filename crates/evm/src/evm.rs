@@ -96,7 +96,8 @@ where
         amount: U256,
     ) -> Result<ExecResultAndState<ExecutionResult>, EVMError<DB::Error>> {
         let call_data = IFeeManager::collectFeeCall {
-            user: coinbase,
+            user: caller,
+            coinbase,
             amount,
         }
         .abi_encode()
@@ -104,7 +105,7 @@ where
 
         let exec_result =
             self.inner
-                .transact_system_call(caller, TIP_FEE_MANAGER_ADDRESS, call_data)?;
+                .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, call_data)?;
 
         Ok(exec_result)
     }

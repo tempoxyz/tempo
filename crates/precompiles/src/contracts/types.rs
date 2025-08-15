@@ -180,7 +180,7 @@ sol! {
         function queueDeposit(PoolKey memory key, uint256 amount, address depositToken) external;
         function queueWithdraw(PoolKey memory key, uint256 liquidity) external;
         function executeBlock() external;
-        function collectFee(address user, uint256 amount) external;
+        function collectFee(address user, address coinbase, uint256 amount) external;
 
         // View functions
         function getTokensWithFeesLength() external view returns (uint256);

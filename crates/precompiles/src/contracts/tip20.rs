@@ -354,7 +354,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.check_transfer_authorized(&call.from, &call.to)?;
 
         // Check and update allowance
-        let allowed = self.get_allowance(&call.from, &call.to);
+        let allowed = self.get_allowance(&call.from, msg_sender);
         if call.amount > allowed {
             return Err(tip20_err!(InsufficientAllowance));
         }

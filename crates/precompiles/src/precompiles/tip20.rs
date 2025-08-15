@@ -63,7 +63,10 @@ mod tests {
         precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
         tip20_err,
     };
-    use alloy::{primitives::U256, sol_types::SolValue};
+    use alloy::{
+        primitives::{U256, keccak256},
+        sol_types::SolValue,
+    };
     use alloy_primitives::Bytes;
 
     use super::*;
@@ -256,10 +259,10 @@ mod tests {
     fn test_approve_and_transfer_from() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        let admin = Address::from([0u8; 20]);
-        let owner = Address::from([1u8; 20]);
-        let spender = Address::from([2u8; 20]);
-        let recipient = Address::from([3u8; 20]);
+        let admin = Address::random();
+        let owner = Address::random();
+        let spender = Address::random();
+        let recipient = Address::random();
         let approve_amount = U256::from(500);
         let transfer_amount = U256::from(300);
         let initial_owner_balance = U256::from(1000);
@@ -268,7 +271,6 @@ mod tests {
         token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to admin
-        use alloy::primitives::keccak256;
         let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
         token
             .get_roles_contract()
