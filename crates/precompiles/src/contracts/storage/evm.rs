@@ -49,29 +49,46 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{B256, LogData, address};
     use alloy_evm::{
-        EthEvm, EthEvmFactory, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap,
-        revm::context::ContextTr,
+        EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
+        revm::context::{ContextTr, Host},
     };
     use reth::revm::db::{CacheDB, EmptyDB};
 
     #[test]
-    fn test_sstore() {
+    fn test_sstore_sload() {
         let db = CacheDB::new(EmptyDB::new());
-        let evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-        let journal = evm.journal_mut();
-        let block_env = evm.block;
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+        let mut provider = EvmStorageProvider::new(evm_internals, 1);
 
-        let evm_internals = EvmInternals::new(journal, block_env);
-        // let mut provider = EvmStorageProvider::new(evm_internals, 1);
+        let addr = Address::random();
+        let key = U256::random();
+        let value = U256::random();
+        provider.sstore(addr, key, value);
+
+        let sload_val = provider.sload(addr, key);
+
+        assert_eq!(sload_val, value);
     }
 
     #[test]
-    fn test_sload() {}
+    fn test_set_code() {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+        let mut provider = EvmStorageProvider::new(evm_internals, 1);
 
-    #[test]
-    fn test_set_code() {}
+        let addr = Address::random();
+        let code = vec![0xff];
+        provider.set_code(addr, code.clone());
+        drop(provider);
+
+        let account_code = evm.load_account_code(addr);
+        assert!(account_code.is_some());
+    }
 
     #[test]
     fn test_emit_event() {}
