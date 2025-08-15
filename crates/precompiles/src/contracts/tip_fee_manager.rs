@@ -461,14 +461,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         mapping_slot(token, slots::COLLECTED_FEES)
     }
 
-    fn get_pending_reserve0_slot(&self, pool_id: &B256) -> U256 {
-        mapping_slot(pool_id, slots::PENDING_RESERVE0)
-    }
-
-    fn get_pending_reserve1_slot(&self, pool_id: &B256) -> U256 {
-        mapping_slot(pool_id, slots::PENDING_RESERVE1)
-    }
-
     fn get_token_in_fees_array_slot(&self, token: &Address) -> U256 {
         mapping_slot(token, slots::TOKEN_IN_FEES_ARRAY)
     }

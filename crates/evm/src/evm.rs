@@ -213,6 +213,7 @@ where
         let res = self.inner.transact_raw(tx)?;
         self.increment_gas_fee(caller, fee_token, adjusted_fee)?;
 
+        // Adjust gas to 6 decimals and collect fees
         let adjusted_gas_spent = (res.result.gas_used() / 1000) - 1;
         let coinbase = self.inner.ctx().block.beneficiary;
         let exec_result = self.collect_fee(caller, coinbase, U256::from(adjusted_gas_spent))?;

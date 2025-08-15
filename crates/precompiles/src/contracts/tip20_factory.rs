@@ -36,7 +36,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
             TIP20_FACTORY_ADDRESS,
             slots::TOKEN_ID_COUNTER,
             token_id + U256::ONE,
-        ); // Increment.
+        );
 
         TIP20Token::new(token_id.try_into().unwrap(), self.storage).initialize(
             &call.name,
