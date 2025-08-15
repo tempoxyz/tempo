@@ -1,7 +1,7 @@
 use alloy::{
     eips::BlockId,
     hex,
-    primitives::B256,
+    primitives::BlockNumber,
     providers::{DynProvider, Provider, ProviderBuilder},
     rpc::types::Block,
 };
@@ -41,6 +41,7 @@ struct BlockFollower {
     jwt_secret: Vec<u8>,
     client: Client,
     interval: Duration,
+    last_seen_block_number: Option<BlockNumber>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,6 +71,7 @@ impl BlockFollower {
             jwt_secret: jwt_secret_bytes,
             client: reqwest::Client::new(),
             interval: Duration::from_millis(args.interval),
+            last_seen_block_number: None,
         })
     }
 
@@ -123,7 +125,7 @@ impl BlockFollower {
         let response = self
             .client
             .post(&self.follower_url)
-            .header("Authorization", format!("Bearer {}", jwt_token))
+            .header("Authorization", format!("Bearer {jwt_token}"))
             .header("Content-Type", "application/json")
             .json(&payload)
             .send()
@@ -156,25 +158,26 @@ impl BlockFollower {
         Ok(())
     }
 
-    async fn run(&self) -> Result<()> {
+    async fn run(&mut self) -> Result<()> {
         info!("Starting block follower loop");
         info!("Poll interval: {:?}", self.interval);
-
-        let mut last_block_hash: Option<B256> = None;
 
         loop {
             match self.get_latest_block().await {
                 Ok(block) => {
-                    if Some(block.header.hash) != last_block_hash {
+                    if self
+                        .last_seen_block_number
+                        .is_none_or(|height| height < block.header.number)
+                    {
                         info!(
                             "New block {} (number: {})",
                             block.header.hash, block.header.number
                         );
 
+                        self.last_seen_block_number = Some(block.header.number);
+
                         if let Err(e) = self.send_forkchoice_updated(&block).await {
                             error!("Failed to send forkchoice update: {}", e);
-                        } else {
-                            last_block_hash = Some(block.header.hash);
                         }
                     }
                 }
@@ -193,6 +196,6 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
-    let follower = BlockFollower::new(args).await?;
+    let mut follower = BlockFollower::new(args).await?;
     follower.run().await
 }
