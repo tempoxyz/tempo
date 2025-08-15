@@ -290,9 +290,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let validator_token = self.get_validator_token(coinbase)?;
         let user_token = self.get_user_token(&call.user, &validator_token);
 
-        dbg!(user_token);
-        dbg!(validator_token);
-
         if user_token != validator_token {
             let pool_key = PoolKey::new(user_token, validator_token);
             let pool_id = pool_key.get_id();
@@ -319,20 +316,17 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         let token_id = address_to_token_id_unchecked(&user_token);
-
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
-        let transfer_call = ITIP20::transferFromCall {
-            from: call.user,
-            to: self.contract_address,
-            amount: call.amount,
-        };
-
-        dbg!(self.contract_address);
-        dbg!(call.amount);
-        dbg!(call.user);
 
         tip20_token
-            .transfer_from(&call.user, transfer_call)
+            .transfer_from(
+                &call.user,
+                ITIP20::transferFromCall {
+                    from: call.user,
+                    to: self.contract_address,
+                    amount: call.amount,
+                },
+            )
             .expect("TODO: handle error");
 
         // Cache fee info to minimize storage access
@@ -543,7 +537,7 @@ mod tests {
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
-        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE},
+        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE, token_id_to_address},
     };
 
     #[test]
@@ -659,32 +653,24 @@ mod tests {
             )
             .unwrap();
 
-        let balance = tip20_token.allowance(ITIP20::allowanceCall {
-            owner: user,
-            spender: TIP_FEE_MANAGER_ADDRESS,
-        });
-
-        dbg!(TIP_FEE_MANAGER_ADDRESS);
-        dbg!(user);
-        dbg!(balance);
-
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, tip20_token.storage);
 
         // Set fee tokens
-        let set_validator_call = IFeeManager::setValidatorTokenCall { token };
         fee_manager
-            .set_validator_token(&validator, set_validator_call)
+            .set_validator_token(&validator, IFeeManager::setValidatorTokenCall { token })
             .unwrap();
-        let set_user_call = IFeeManager::setUserTokenCall { token };
-        fee_manager.set_user_token(&user, set_user_call).unwrap();
+
+        fee_manager
+            .set_user_token(&user, IFeeManager::setUserTokenCall { token })
+            .unwrap();
 
         // Collect fee and verify balances
-        let collect_call = IFeeManager::collectFeeCall { user, amount };
-        let result = fee_manager.collect_fee(&validator, collect_call);
+        let result =
+            fee_manager.collect_fee(&validator, IFeeManager::collectFeeCall { user, amount });
         assert!(result.is_ok());
 
-        let balance_call = IFeeManager::getFeeTokenBalanceCall { sender: user };
-        let result = fee_manager.get_fee_token_balance(balance_call);
+        let result =
+            fee_manager.get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall { sender: user });
         assert_eq!(result._0, token);
         assert_eq!(result._1, amount);
 

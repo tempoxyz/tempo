@@ -39,8 +39,8 @@ mod slots {
 
 #[derive(Debug)]
 pub struct TIP20Token<'a, S: StorageProvider> {
-    token_address: Address,
-    storage: &'a mut S,
+    pub token_address: Address,
+    pub storage: &'a mut S,
 }
 
 pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"PAUSE_ROLE")));
@@ -354,8 +354,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.check_transfer_authorized(&call.from, &call.to)?;
 
         // Check and update allowance
-        let allowed = self.get_allowance(&call.from, msg_sender);
-        dbg!(&allowed);
+        let allowed = self.get_allowance(&call.from, &call.to);
         if call.amount > allowed {
             return Err(tip20_err!(InsufficientAllowance));
         }
