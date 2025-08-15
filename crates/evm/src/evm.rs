@@ -1,27 +1,26 @@
 use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, Bytes, U256};
 use reth::revm::{
-    Context, Inspector,
     context::{
-        BlockEnv, Cfg, CfgEnv, TxEnv,
         result::{
             EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
             ResultAndState,
         },
+        BlockEnv, Cfg, CfgEnv, TxEnv,
     },
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::InterpreterResult,
     primitives::hardfork::SpecId,
+    Context, Inspector,
 };
-use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError, precompiles::PrecompilesMap};
+use reth_evm::{precompiles::PrecompilesMap, Database, EthEvm, Evm, EvmEnv, EvmError};
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
     contracts::{
-        ITIP20,
         types::IFeeManager::{self},
+        ITIP20,
     },
-    precompiles,
+    precompiles, TIP_FEE_MANAGER_ADDRESS,
 };
 
 /// The Tempo EVM context type.
@@ -276,20 +275,20 @@ mod tests {
         db::{CacheDB, EmptyDB},
         inspector::NoOpInspector,
     };
-    use reth_evm::{EthEvmFactory, EvmEnv, EvmFactory, precompiles::PrecompilesMap};
+    use reth_evm::{precompiles::PrecompilesMap, EthEvmFactory, EvmEnv, EvmFactory};
     use std::collections::HashMap;
     use tempo_precompiles::{
-        TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
         contracts::{
-            self, HashMapStorageProvider,
-            ITIP20::ITIP20Calls,
-            ITIP20Factory, TIP20Token, address_to_token_id_unchecked,
+            self, address_to_token_id_unchecked,
             storage::evm::EvmStorageProvider,
-            tip_fee_manager::TipFeeManager,
             tip20::ISSUER_ROLE,
+            tip_fee_manager::TipFeeManager,
             types::{IFeeManager, ITIP20},
+            HashMapStorageProvider, ITIP20Factory, TIP20Token,
+            ITIP20::ITIP20Calls,
         },
         precompiles::extend_tempo_precompiles,
+        TIP20_FACTORY_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     };
 
     fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap> {

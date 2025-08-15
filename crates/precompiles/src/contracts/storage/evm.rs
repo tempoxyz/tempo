@@ -1,6 +1,6 @@
 use alloy::primitives::{Address, Log, LogData, U256};
+use alloy_evm::EvmInternals;
 use reth::revm::state::Bytecode;
-use reth_evm::EvmInternals;
 
 use crate::contracts::storage::StorageProvider;
 
@@ -50,24 +50,20 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
 mod tests {
     use super::*;
     use alloy::primitives::{B256, LogData, address};
-    use reth::revm::{
-        Context, MainContext,
-        context::{ContextTr, Evm},
-        db::{CacheDB, EmptyDB, InMemoryDB},
-        inspector::NoOpInspector,
+    use alloy_evm::{
+        EthEvm, EthEvmFactory, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap,
+        revm::context::ContextTr,
     };
-    use reth_evm::{EthEvm, EthEvmFactory, EvmEnv, EvmFactory, precompiles::PrecompilesMap};
-
-    fn create_evm() -> EthEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap> {
-        let db = CacheDB::new(EmptyDB::new());
-        let evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-        evm
-    }
+    use reth::revm::db::{CacheDB, EmptyDB};
 
     #[test]
     fn test_sstore() {
-        let mut evm = create_evm();
-        // let evm_internals = EvmInternals::new(evm.journal(), evm.block);
+        let db = CacheDB::new(EmptyDB::new());
+        let evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let journal = evm.journal_mut();
+        let block_env = evm.block;
+
+        let evm_internals = EvmInternals::new(journal, block_env);
         // let mut provider = EvmStorageProvider::new(evm_internals, 1);
     }
 
