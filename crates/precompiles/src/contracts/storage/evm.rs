@@ -16,6 +16,13 @@ impl<'a> EvmStorageProvider<'a> {
             chain_id,
         }
     }
+
+    pub fn ensure_loaded_account(&mut self, account: Address) {
+        self.internals
+            .load_account(account)
+            .expect("TODO: handle err");
+        self.internals.touch_account(account);
+    }
 }
 
 impl<'a> StorageProvider for EvmStorageProvider<'a> {
@@ -24,11 +31,13 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
     }
 
     fn set_code(&mut self, address: Address, code: Vec<u8>) {
+        self.ensure_loaded_account(address);
         self.internals
             .set_code(address, Bytecode::new_raw(code.into()));
     }
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) {
+        self.ensure_loaded_account(address);
         self.internals
             .sstore(address, key, value)
             .expect("Could not store value");
@@ -42,6 +51,7 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
     }
 
     fn sload(&mut self, address: Address, key: U256) -> U256 {
+        self.ensure_loaded_account(address);
         self.internals
             .sload(address, key)
             .map_or(U256::ZERO, |value| value.data)
