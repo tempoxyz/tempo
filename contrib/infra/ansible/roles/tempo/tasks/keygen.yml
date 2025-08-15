@@ -9,12 +9,6 @@
     - "{{ ansible_env.HOME }}/malachite/config/pub_key.pem"
   when: tempo_force_reset
 
-- name: Create malachite config directory
-  file:
-    path: "{{ ansible_env.HOME }}/malachite/config"
-    state: directory
-    mode: '0755'
-
 - name: Generate ED25519 private key
   command: openssl genpkey -algorithm ED25519 -out "{{ ansible_env.HOME }}/malachite/config/priv_key.pem"
   args:

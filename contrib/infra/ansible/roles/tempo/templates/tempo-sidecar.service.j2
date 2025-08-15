@@ -1,0 +1,26 @@
+[Unit]
+Description=Tempo Sidecar
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+Group={{ ansible_user }}
+WorkingDirectory={{ ansible_env.HOME }}/malachite
+Environment=RUST_LOG=info
+ExecStart=/usr/local/bin/tempo-sidecar \
+    --producer-url http://{{ tempo_producer }}:8545 \
+    --follower-url http://localhost:8551 \
+    --jwt-secret-file {{ ansible_env.HOME }}/malachite/reth/jwt.hex \
+    --interval 1
+
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tempo-sidecar
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target

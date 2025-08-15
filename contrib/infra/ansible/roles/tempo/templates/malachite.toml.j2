@@ -6,20 +6,15 @@ moniker = "{{ ansible_host }}"
 
 # Consensus configuration
 [consensus]
-# How long to wait before proposing a new block
+# How long we wait for a proposal block before prevoting nil
 timeout_propose = "5s"
 timeout_propose_delta = "1s"
-# How long to wait for prevotes
+# How long we wait after receiving +2/3 prevotes for “anything” (ie. not a single block or nil)
 timeout_prevote = "2s"
 timeout_prevote_delta = "1s"
-# How long to wait for precommits
+# How long we wait after receiving +2/3 precommits for “anything” (ie. not a single block or nil)
 timeout_precommit = "2s"
 timeout_precommit_delta = "1s"
-# How long to wait before entering next round
-timeout_commit = "2s"
-
-# Whether to skip timeout_commit if all signatures are collected
-skip_timeout_commit = true
 
 # Value payload type
 value_payload = "proposal-and-parts"
@@ -92,10 +87,10 @@ namespace = "malachite"
 # Runtime configuration
 [runtime]
 # Runtime flavor (single_threaded or multi_threaded)
-flavor = "single_threaded"
+flavor = "multi_threaded"
 
 # Number of worker threads for async runtime
-num_threads = 4
+worker_threads = 4
 
 # Thread name prefix
 thread_name = "malachite-{{ ansible_host }}"

@@ -1,0 +1,31 @@
+- name: Download tempo sidecar binary ZIP
+  get_url:
+    url: "{{ tempo_sidecar_download_url }}"
+    dest: /tmp/tempo_sidecar.zip
+    mode: '0755'
+    headers:
+      Accept: "application/vnd.github+json"
+      X-GitHub-Api-Version: "2022-11-28"
+      Authorization: "Bearer {{ tempo_github_token }}"
+    unredirected_headers:
+    - Authorization
+
+- name: Unarchive tempo binary
+  unarchive:
+    src: /tmp/tempo_sidecar.zip
+    dest: /usr/local/bin
+    remote_src: yes
+  become: yes
+
+- name: Delete tempo binary Zip
+  file:
+    path: /tmp/tempo_sidecar.zip
+    state: absent
+
+- name: Install tempo systemd service
+  template:
+    src: tempo-sidecar.service.j2
+    dest: /etc/systemd/system/tempo-sidecar.service
+    mode: '0644'
+  become: yes
+  notify: reload systemd
