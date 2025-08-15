@@ -268,18 +268,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{U256, address};
+    use crate::TempoEvmFactory;
+    use alloy_primitives::{B256, U256};
+    use rand::random;
     use reth::revm::{
-        context::{BlockEnv, CfgEnv, TxEnv},
+        context::{BlockEnv, CfgEnv, ContextTr},
+        db::{CacheDB, EmptyDB},
         inspector::NoOpInspector,
-        primitives::hardfork::SpecId,
     };
-    use reth_evm::{Database, EvmEnv};
+    use reth_evm::{EthEvmFactory, EvmEnv, EvmFactory, precompiles::PrecompilesMap};
     use std::collections::HashMap;
     use tempo_precompiles::{
-        TIP_FEE_MANAGER_ADDRESS,
+        TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
         contracts::{
-            HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
+            self, HashMapStorageProvider,
+            ITIP20::ITIP20Calls,
+            ITIP20Factory, TIP20Token, address_to_token_id_unchecked,
+            storage::evm::EvmStorageProvider,
             tip_fee_manager::TipFeeManager,
             tip20::ISSUER_ROLE,
             types::{IFeeManager, ITIP20},
@@ -287,8 +292,73 @@ mod tests {
         precompiles::extend_tempo_precompiles,
     };
 
+    fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap> {
+        let db = CacheDB::default();
+        let env = EvmEnv::default();
+        let factory = TempoEvmFactory::default();
+        factory.create_evm(db, env)
+    }
+
     #[test]
-    fn test_get_gas_fee_token_balance() {}
+    fn test_get_gas_fee_token_balance() -> eyre::Result<()> {
+        let mut evm = setup_tempo_evm();
+
+        // Create the fee token
+        let admin = Address::random();
+        let create_token_call = ITIP20Factory::createTokenCall {
+            name: "TestUSD".into(),
+            symbol: "T".into(),
+            currency: "USD".into(),
+            admin,
+        };
+
+        let result = evm.transact_system_call(
+            admin,
+            TIP20_FACTORY_ADDRESS,
+            create_token_call.abi_encode().into(),
+        )?;
+
+        assert!(result.result.is_success(), "Token creation failed");
+
+        let output = result.result.output().unwrap_or_default();
+        let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?;
+        let token_address = contracts::token_id_to_address(token_id.to::<u64>());
+
+        // Assert that the fee token is not set
+        let sender = Address::random();
+        let (fee_token, balance) = evm.get_fee_token_balance(sender)?;
+
+        assert_eq!(fee_token, Address::ZERO);
+        assert_eq!(balance, 0);
+
+        // Set fee token
+        let set_fee_token_call = IFeeManager::setUserTokenCall {
+            token: token_address,
+        };
+
+        let result = evm.transact_system_call(
+            sender,
+            TIP_FEE_MANAGER_ADDRESS,
+            set_fee_token_call.abi_encode().into(),
+        )?;
+        assert!(result.result.is_success());
+
+        let fee_balance = random::<u64>();
+        let mint_call = ITIP20::mintCall {
+            to: sender,
+            amount: U256::from(fee_balance),
+        };
+
+        let result =
+            evm.transact_system_call(admin, token_address, mint_call.abi_encode().into())?;
+        assert!(result.result.is_success());
+
+        let (fee_token, balance) = evm.get_fee_token_balance(sender)?;
+        assert_eq!(fee_token, token_address);
+        assert_eq!(balance, fee_balance);
+
+        Ok(())
+    }
 
     #[test]
     fn test_increment_gas_fee() {}
