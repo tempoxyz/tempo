@@ -29,7 +29,9 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
     }
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) {
-        self.internals.sstore(address, key, value).unwrap();
+        self.internals
+            .sstore(address, key, value)
+            .expect("Could not store value");
     }
 
     fn emit_event(&mut self, address: Address, event: LogData) {
@@ -66,8 +68,8 @@ mod tests {
         let addr = Address::random();
         let key = U256::random();
         let value = U256::random();
-        provider.sstore(addr, key, value);
 
+        provider.sstore(addr, key, value);
         let sload_val = provider.sload(addr, key);
 
         assert_eq!(sload_val, value);
