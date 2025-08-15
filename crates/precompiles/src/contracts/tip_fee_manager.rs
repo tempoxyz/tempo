@@ -10,10 +10,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::SolValue,
 };
-use reth::revm::{
-    db,
-    interpreter::instructions::utility::{IntoAddress, IntoU256},
-};
+use reth::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 mod slots {
     use crate::contracts::storage::slots::to_u256;

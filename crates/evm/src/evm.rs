@@ -19,7 +19,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         ITIP20,
-        types::IFeeManager::{self, IFeeManagerCalls},
+        types::IFeeManager::{self},
     },
 };
 
