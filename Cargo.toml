@@ -88,9 +88,7 @@ reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = 
   "serde-bincode-compat",
 ] }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-execution-types" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-node-builder", features = [
-  "test-utils",
-] }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-node-builder" }
 reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-node-core" }
 reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-node-ethereum" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4db6adfedd5e1096f47de13ae7385bfa1d2fb1d4", package = "reth-payload-builder" }
