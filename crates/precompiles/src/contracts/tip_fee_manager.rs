@@ -172,7 +172,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         sender: &Address,
         call: IFeeManager::setValidatorTokenCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // TODO: FIXME: validate sender
+        // TODO: ensure sender is a validator
 
         if call.token.is_zero() {
             return Err(IFeeManager::IFeeManagerErrors::InvalidToken(

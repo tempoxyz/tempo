@@ -91,18 +91,59 @@ where
 
     pub fn collect_fee(
         &mut self,
-        amount: u64,
+        caller: Address,
+        coinbase: Address,
+        amount: U256,
     ) -> Result<ExecResultAndState<ExecutionResult>, EVMError<DB::Error>> {
         let call_data = IFeeManager::collectFeeCall {
-            user: Address::ZERO,
-            amount: U256::from(amount),
+            user: coinbase,
+            amount,
         }
         .abi_encode()
         .into();
 
         let exec_result =
             self.inner
-                .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, call_data)?;
+                .transact_system_call(caller, TIP_FEE_MANAGER_ADDRESS, call_data)?;
+
+        Ok(exec_result)
+    }
+
+    pub fn decrement_gas_fee(
+        &mut self,
+        caller: Address,
+        fee_token: Address,
+        gas_fee: U256,
+    ) -> Result<ExecResultAndState<ExecutionResult>, EVMError<DB::Error>> {
+        let call_data = ITIP20::transferCall {
+            to: TIP_FEE_MANAGER_ADDRESS,
+            amount: gas_fee,
+        }
+        .abi_encode()
+        .into();
+
+        let exec_result = self
+            .inner
+            .transact_system_call(caller, fee_token, call_data)?;
+
+        Ok(exec_result)
+    }
+
+    pub fn increment_gas_fee(
+        &mut self,
+        caller: Address,
+        fee_token: Address,
+        gas_fee: U256,
+    ) -> Result<ExecResultAndState<ExecutionResult>, EVMError<DB::Error>> {
+        let call_data = ITIP20::transferCall {
+            to: caller,
+            amount: gas_fee,
+        }
+        .abi_encode()
+        .into();
+        let exec_result =
+            self.inner
+                .transact_system_call(TIP_FEE_MANAGER_ADDRESS, fee_token, call_data)?;
 
         Ok(exec_result)
     }
@@ -151,7 +192,7 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let caller = tx.caller;
-        let (_, balance) = self.get_fee_token_balance(caller)?;
+        let (fee_token, balance) = self.get_fee_token_balance(caller)?;
 
         // Compute adjusted gas fee and ensure sufficient balance
         let gas_fee = tx.gas_limit * tx.gas_price as u64;
@@ -166,14 +207,16 @@ where
             ));
         }
 
-        // TODO: decrement fee from balance before tx
-
-        // Execute the tx and return fees for unused gas
+        // Temporarily cache gas fees and execute tx
+        let adjusted_fee = U256::from(adjusted_fee);
+        self.decrement_gas_fee(caller, fee_token, adjusted_fee)?;
         let res = self.inner.transact_raw(tx)?;
+        self.increment_gas_fee(caller, fee_token, adjusted_fee)?;
 
-        // TODO: collect fees and process refund
-        let gas_spent = res.result.gas_used();
-        let exec_result = self.collect_fee(adjusted_fee)?;
+        let adjusted_gas_spent = (res.result.gas_used() / 1000) - 1;
+        let coinbase = self.inner.ctx().block.beneficiary;
+        let exec_result = self.collect_fee(caller, coinbase, U256::from(adjusted_gas_spent))?;
+
         if !exec_result.result.is_success() {
             return Ok(exec_result);
         }

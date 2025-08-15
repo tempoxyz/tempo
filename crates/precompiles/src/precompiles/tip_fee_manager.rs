@@ -44,12 +44,8 @@ mod tests {
     use super::*;
     use crate::{
         contracts::{HashMapStorageProvider, types::IFeeManager},
-        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
-        fee_manager_err,
     };
-    use alloy::{primitives::{Address, U256, B256}, sol_types::SolValue};
-    use alloy_eips::eip4895::Withdrawals;
-    use alloy_primitives::Bytes;
+    use alloy::primitives::Address;
 
     #[test]
     fn test_set_validator_token() {
