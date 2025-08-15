@@ -277,16 +277,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     // TODO: swap function
 
-    // TODO: review
     pub fn collect_fee(
         &mut self,
-        sender: &Address,
+        coinbase: &Address,
         call: IFeeManager::collectFeeCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // TODO: require that only system contract can call into this function
-
-        // TODO: FIXME: need to get block.coinbase
-        let coinbase = sender;
         let validator_token = self.get_validator_token(coinbase)?;
         let user_token = self.get_user_token(&call.user, &validator_token);
 
@@ -609,14 +604,12 @@ mod tests {
         assert_eq!(returned_token, token);
     }
 
-    // TODO: check
     #[test]
     fn test_collect_fee() {
         let mut storage = HashMapStorageProvider::new(1);
 
         let user = Address::random();
-        // TODO: FIXME: udpate this to a separate address once coinbase checks are functional
-        let validator = user;
+        let validator = Address::random();
         let token = Address::random();
         let amount = U256::from(1000);
 
@@ -666,7 +659,7 @@ mod tests {
 
         // Collect fee and verify balances
         let result =
-            fee_manager.collect_fee(&validator, IFeeManager::collectFeeCall { user, amount });
+            fee_manager.collect_fee(&Address::ZERO, IFeeManager::collectFeeCall { user, amount });
         assert!(result.is_ok());
 
         let result =

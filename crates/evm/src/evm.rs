@@ -91,11 +91,10 @@ where
 
     pub fn collect_fee(
         &mut self,
-        sender: Address,
         amount: u64,
     ) -> Result<ExecResultAndState<ExecutionResult>, EVMError<DB::Error>> {
         let call_data = IFeeManager::collectFeeCall {
-            user: sender,
+            user: Address::ZERO,
             amount: U256::from(amount),
         }
         .abi_encode()
@@ -174,7 +173,7 @@ where
 
         // TODO: collect fees and process refund
         let gas_spent = res.result.gas_used();
-        let exec_result = self.collect_fee(caller, adjusted_fee)?;
+        let exec_result = self.collect_fee(adjusted_fee)?;
         if !exec_result.result.is_success() {
             return Ok(exec_result);
         }
