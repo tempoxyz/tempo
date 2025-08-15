@@ -10,7 +10,10 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::SolValue,
 };
-use reth::revm::{db, interpreter::instructions::utility::IntoU256};
+use reth::revm::{
+    db,
+    interpreter::instructions::utility::{IntoAddress, IntoU256},
+};
 
 mod slots {
     use crate::contracts::storage::slots::to_u256;
@@ -364,8 +367,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         validator: &Address,
     ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
         let validator_slot = self.get_validator_token_slot(validator);
-        let validator_token_value = self.storage.sload(self.contract_address, validator_slot);
-        let validator_token = Address::from_slice(&validator_token_value.to_be_bytes::<32>()[12..]);
+        let validator_token = self
+            .storage
+            .sload(self.contract_address, validator_slot)
+            .into_address();
 
         if validator_token.is_zero() {
             return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
@@ -378,8 +383,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     fn get_user_token(&mut self, user: &Address, validator_token: &Address) -> Address {
         let user_slot = self.get_user_token_slot(user);
-        let user_token_value = self.storage.sload(self.contract_address, user_slot);
-        let user_token = Address::from_slice(&user_token_value.to_be_bytes::<32>()[12..]);
+        let user_token = self
+            .storage
+            .sload(self.contract_address, user_slot)
+            .into_address();
 
         if user_token.is_zero() {
             *validator_token
@@ -467,14 +474,16 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn user_tokens(&mut self, call: IFeeManager::userTokensCall) -> Address {
         let slot = self.get_user_token_slot(&call.user);
-        let token_value = self.storage.sload(self.contract_address, slot);
-        Address::from_slice(&token_value.to_be_bytes::<32>()[12..])
+        self.storage
+            .sload(self.contract_address, slot)
+            .into_address()
     }
 
     pub fn validator_tokens(&mut self, call: IFeeManager::validatorTokensCall) -> Address {
         let slot = self.get_validator_token_slot(&call.validator);
-        let token_value = self.storage.sload(self.contract_address, slot);
-        Address::from_slice(&token_value.to_be_bytes::<32>()[12..])
+        self.storage
+            .sload(self.contract_address, slot)
+            .into_address()
     }
 
     pub fn get_fee_token_balance(
@@ -482,8 +491,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         call: IFeeManager::getFeeTokenBalanceCall,
     ) -> IFeeManager::getFeeTokenBalanceReturn {
         let user_slot = self.get_user_token_slot(&call.sender);
-        let user_token_value = self.storage.sload(self.contract_address, user_slot);
-        let user_token = Address::from_slice(&user_token_value.to_be_bytes::<32>()[12..]);
+        let user_token = self
+            .storage
+            .sload(self.contract_address, user_slot)
+            .into_address();
 
         if user_token.is_zero() {
             return IFeeManager::getFeeTokenBalanceReturn {
