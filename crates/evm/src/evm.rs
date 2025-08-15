@@ -3,7 +3,7 @@ use alloy_primitives::{Address, Bytes, U256};
 use reth::revm::{
     Context, Inspector,
     context::{
-        BlockEnv, CfgEnv, TxEnv,
+        BlockEnv, Cfg, CfgEnv, TxEnv,
         result::{
             EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
             ResultAndState,
