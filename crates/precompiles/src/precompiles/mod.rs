@@ -37,28 +37,22 @@ pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult;
 }
 
-pub fn extend_tempo_precompiles<DB: Database, I: Inspector<EthEvmContext<DB>>>(
-    evm: &mut EthEvm<DB, I, PrecompilesMap>,
-) {
-    if evm.cfg.spec >= SpecId::PRAGUE {
-        let chain_id = evm.cfg.chain_id;
-        let precompiles = evm.precompiles_mut();
-        precompiles.set_precompile_lookup(move |address: &Address| {
-            if address_is_token_address(address) {
-                Some(TIP20Precompile::create(address, chain_id))
-            } else if *address == TIP20_FACTORY_ADDRESS {
-                Some(TIP20FactoryPrecompile::create(chain_id))
-            } else if *address == TIP403_REGISTRY_ADDRESS {
-                Some(TIP403RegistryPrecompile::create(chain_id))
-            } else if *address == TIP4217_REGISTRY_ADDRESS {
-                Some(TIP4217RegistryPrecompile::create())
-            } else if *address == TIP_FEE_MANAGER_ADDRESS {
-                Some(TipFeeManagerPrecompile::create(chain_id))
-            } else {
-                None
-            }
-        });
-    }
+pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64) {
+    precompiles.set_precompile_lookup(move |address: &Address| {
+        if address_is_token_address(address) {
+            Some(TIP20Precompile::create(address, chain_id))
+        } else if *address == TIP20_FACTORY_ADDRESS {
+            Some(TIP20FactoryPrecompile::create(chain_id))
+        } else if *address == TIP403_REGISTRY_ADDRESS {
+            Some(TIP403RegistryPrecompile::create(chain_id))
+        } else if *address == TIP4217_REGISTRY_ADDRESS {
+            Some(TIP4217RegistryPrecompile::create())
+        } else if *address == TIP_FEE_MANAGER_ADDRESS {
+            Some(TipFeeManagerPrecompile::create(chain_id))
+        } else {
+            None
+        }
+    });
 }
 
 pub struct TIP20Precompile;

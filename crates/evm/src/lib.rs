@@ -11,9 +11,9 @@ use reth::revm::{
     primitives::hardfork::SpecId,
 };
 use reth_evm::{
-    Database, EthEvmFactory, EvmEnv, EvmFactory, eth::EthEvmContext, precompiles::PrecompilesMap,
+    Database, EthEvmFactory, Evm, EvmEnv, EvmFactory, eth::EthEvmContext,
+    precompiles::PrecompilesMap,
 };
-use tempo_precompiles::precompiles::extend_tempo_precompiles;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -35,10 +35,8 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        let mut evm = self.inner.create_evm(db, input);
-        extend_tempo_precompiles(&mut evm);
-
-        TempoEvm::new(evm, false)
+        let evm = self.inner.create_evm(db, input);
+        TempoEvm::new(evm, false).with_tempo_precompiles()
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -47,8 +45,7 @@ impl EvmFactory for TempoEvmFactory {
         input: EvmEnv<Self::Spec>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        let mut evm = self.inner.create_evm_with_inspector(db, input, inspector);
-        extend_tempo_precompiles(&mut evm);
-        TempoEvm::new(evm, true)
+        let evm = self.inner.create_evm_with_inspector(db, input, inspector);
+        TempoEvm::new(evm, true).with_tempo_precompiles()
     }
 }

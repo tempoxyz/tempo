@@ -13,7 +13,7 @@ use reth::revm::{
     interpreter::InterpreterResult,
     primitives::hardfork::SpecId,
 };
-use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError};
+use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError, precompiles::PrecompilesMap};
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -21,6 +21,7 @@ use tempo_precompiles::{
         ITIP20,
         types::IFeeManager::{self},
     },
+    precompiles,
 };
 
 /// The Tempo EVM context type.
@@ -45,6 +46,7 @@ impl<DB: Database, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE> {
     pub fn new(evm: EthEvm<DB, I, PRECOMPILE>, inspect: bool) -> Self {
         // TODO: disable balance check
         // evm.ctx_mut().cfg.disable_balance_check = true;
+
         Self {
             inner: evm,
             inspect,
@@ -62,6 +64,17 @@ impl<DB: Database, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE> {
     }
 }
 
+impl<DB, I> TempoEvm<DB, I, PrecompilesMap>
+where
+    DB: Database,
+    I: Inspector<TempoEvmContext<DB>>,
+{
+    pub fn with_tempo_precompiles(mut self) -> Self {
+        let chain_id = self.chain_id();
+        precompiles::extend_tempo_precompiles(self.inner.precompiles_mut(), chain_id);
+        self
+    }
+}
 impl<DB, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE>
 where
     DB: Database,
