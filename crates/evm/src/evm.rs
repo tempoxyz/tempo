@@ -283,7 +283,7 @@ mod tests {
         TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
         contracts::{
             self, HashMapStorageProvider,
-            ITIP20::ITIP20Calls,
+            ITIP20::{ITIP20Calls, balanceOfCall},
             ITIP20Factory, TIP20Token, address_to_token_id_unchecked,
             storage::evm::EvmStorageProvider,
             tip_fee_manager::TipFeeManager,
@@ -353,6 +353,20 @@ mod tests {
         Ok(token_address)
     }
 
+    fn balance_of_call(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
+        account: Address,
+        token: Address,
+    ) -> eyre::Result<u64> {
+        let balance_call = ITIP20::balanceOfCall { account };
+        let result = evm.transact_system_call(account, token, balance_call.abi_encode().into())?;
+
+        let output = result.result.output().unwrap_or_default();
+        let balance = ITIP20::balanceOfCall::abi_decode_returns(output)?.to::<u64>();
+
+        Ok(balance)
+    }
+
     #[test]
     fn test_get_gas_fee_token_balance() -> eyre::Result<()> {
         let mut evm = setup_tempo_evm();
@@ -395,46 +409,46 @@ mod tests {
     }
 
     #[test]
-    fn test_decrement_gas_fee() -> eyre::Result<()> {
+    fn test_decrement_increment_gas_fee() -> eyre::Result<()> {
         let mut evm = setup_tempo_evm();
         let admin = Address::random();
         let fee_token = create_fee_token(admin, &mut evm)?;
 
         let caller = Address::random();
-        let initial_balance = 1000;
-        let gas_fee = U256::from(100);
 
-        let transfer_call = ITIP20::transferCall {
-            to: caller,
-            amount: U256::from(initial_balance),
-        };
-        let result =
-            evm.transact_system_call(admin, fee_token, transfer_call.abi_encode().into())?;
+        // Transfer initial balance of the fee token to the caller
+        let result = evm.transact_system_call(
+            admin,
+            fee_token,
+            ITIP20::transferCall {
+                to: caller,
+                amount: U256::from(1000),
+            }
+            .abi_encode()
+            .into(),
+        )?;
         assert!(result.result.is_success());
         evm.db_mut().commit(result.state);
 
         // Check initial balance
-        let balance_call = ITIP20::balanceOfCall { account: caller };
-        let result =
-            evm.transact_system_call(caller, fee_token, balance_call.abi_encode().into())?;
-        evm.db_mut().commit(result.state);
-
-        let output = result.result.output().unwrap_or_default();
-        let balance = ITIP20::balanceOfCall::abi_decode_returns(output)?.to::<u64>();
-        assert_eq!(balance, initial_balance);
+        let initial_balance = balance_of_call(&mut evm, caller, fee_token)?;
 
         // Decrement gas fee
+        let gas_fee = U256::from(100);
         let result = evm.decrement_gas_fee(caller, fee_token, gas_fee)?;
         assert!(result.result.is_success());
         evm.db_mut().commit(result.state);
 
-        // Check balance after decrement
-        let result =
-            evm.transact_system_call(caller, fee_token, balance_call.abi_encode().into())?;
+        let decremented_balance = balance_of_call(&mut evm, caller, fee_token)?;
+        assert_eq!(decremented_balance, initial_balance - gas_fee.to::<u64>());
 
-        let output = result.result.output().unwrap_or_default();
-        let new_balance = ITIP20::balanceOfCall::abi_decode_returns(output)?.to::<u64>();
-        assert_eq!(new_balance, initial_balance - gas_fee.to::<u64>());
+        // Increment gas fee
+        let result = evm.increment_gas_fee(caller, fee_token, gas_fee)?;
+        assert!(result.result.is_success());
+        evm.db_mut().commit(result.state);
+
+        let incremented_balance = balance_of_call(&mut evm, caller, fee_token)?;
+        assert_eq!(incremented_balance, initial_balance);
 
         Ok(())
     }
