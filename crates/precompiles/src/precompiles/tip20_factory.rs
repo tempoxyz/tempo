@@ -64,7 +64,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
-
             currency: "USD".to_string(),
             admin: sender,
         };
@@ -97,7 +96,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Token 1".to_string(),
             symbol: "TOK1".to_string(),
-
             currency: "USD".to_string(),
             admin: sender,
         };
@@ -115,7 +113,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Token 2".to_string(),
             symbol: "TOK2".to_string(),
-
             currency: "EUR".to_string(),
             admin: sender,
         };
@@ -142,7 +139,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "High Precision Token".to_string(),
             symbol: "HPT".to_string(),
-
             currency: "USD".to_string(),
             admin: admin1,
         };
@@ -155,7 +151,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Low Precision Token".to_string(),
             symbol: "LPT".to_string(),
-
             currency: "EUR".to_string(),
             admin: admin2,
         };
@@ -167,7 +162,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Japanese Yen Token".to_string(),
             symbol: "JYT".to_string(),
-
             currency: "JPY".to_string(),
             admin: admin1,
         };
@@ -186,7 +180,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "No Currency Token".to_string(),
             symbol: "NCT".to_string(),
-
             currency: "".to_string(),
             admin: sender,
         };
@@ -208,7 +201,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: name.clone(),
             symbol: symbol.clone(),
-
             currency: "USD".to_string(),
             admin: sender,
         };
@@ -232,7 +224,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Caller1 Token".to_string(),
             symbol: "C1T".to_string(),
-
             currency: "USD".to_string(),
             admin: caller1,
         };
@@ -244,7 +235,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Caller2 Token".to_string(),
             symbol: "C2T".to_string(),
-
             currency: "EUR".to_string(),
             admin: caller2,
         };
@@ -256,7 +246,6 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "Caller3 Token".to_string(),
             symbol: "C3T".to_string(),
-
             currency: "GBP".to_string(),
             admin: caller1, // Different admin than caller
         };

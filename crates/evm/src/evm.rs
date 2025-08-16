@@ -276,7 +276,7 @@ mod tests {
         db::{CacheDB, EmptyDB},
         inspector::NoOpInspector,
     };
-    use reth_evm::{EthEvmFactory, EvmEnv, EvmFactory, precompiles::PrecompilesMap};
+    use reth_evm::{EthEvmFactory, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
     use std::collections::HashMap;
     use tempo_precompiles::{
         TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
@@ -299,12 +299,10 @@ mod tests {
         factory.create_evm(db, env)
     }
 
-    #[test]
-    fn test_get_gas_fee_token_balance() -> eyre::Result<()> {
-        let mut evm = setup_tempo_evm();
-
-        // Create the fee token
-        let admin = Address::random();
+    fn create_fee_token(
+        admin: Address,
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
+    ) -> eyre::Result<Address> {
         let create_token_call = ITIP20Factory::createTokenCall {
             name: "TestUSD".into(),
             symbol: "T".into(),
@@ -317,24 +315,57 @@ mod tests {
             TIP20_FACTORY_ADDRESS,
             create_token_call.abi_encode().into(),
         )?;
-
         assert!(result.result.is_success(), "Token creation failed");
 
         let output = result.result.output().unwrap_or_default();
-        let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?;
-        let token_address = contracts::token_id_to_address(token_id.to::<u64>());
+        let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?.to::<u64>();
+        let token_address = contracts::token_id_to_address(token_id);
+
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+        let mut token = TIP20Token::new(token_id, &mut provider);
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+        let _result = token.set_supply_cap(
+            &admin,
+            ITIP20::setSupplyCapCall {
+                newSupplyCap: U256::from(u64::MAX),
+            },
+        );
+
+        dbg!("here");
+        token
+            .mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: U256::from(10000),
+                },
+            )
+            .expect("Token minting failed");
+
+        Ok(token_address)
+    }
+
+    #[test]
+    fn test_get_gas_fee_token_balance() -> eyre::Result<()> {
+        let mut evm = setup_tempo_evm();
+        let admin = Address::random();
+        let fee_token = create_fee_token(admin, &mut evm)?;
 
         // Assert that the fee token is not set
         let sender = Address::random();
-        let (fee_token, balance) = evm.get_fee_token_balance(sender)?;
+        let (_, balance) = evm.get_fee_token_balance(sender)?;
 
         assert_eq!(fee_token, Address::ZERO);
         assert_eq!(balance, 0);
 
         // Set fee token
-        let set_fee_token_call = IFeeManager::setUserTokenCall {
-            token: token_address,
-        };
+        let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
 
         let result = evm.transact_system_call(
             sender,
@@ -344,18 +375,18 @@ mod tests {
         assert!(result.result.is_success());
 
         let fee_balance = random::<u64>();
-        let mint_call = ITIP20::mintCall {
+        // Transfer tokens from admin to sender (admin already has minted tokens from create_fee_token)
+        let transfer_call = ITIP20::transferCall {
             to: sender,
             amount: U256::from(fee_balance),
         };
 
         let result =
-            evm.transact_system_call(admin, token_address, mint_call.abi_encode().into())?;
+            evm.transact_system_call(admin, fee_token, transfer_call.abi_encode().into())?;
 
-        dbg!(&result);
         assert!(result.result.is_success());
 
-        let (fee_token, balance) = evm.get_fee_token_balance(sender)?;
+        let (token_address, balance) = evm.get_fee_token_balance(sender)?;
         assert_eq!(fee_token, token_address);
         assert_eq!(balance, fee_balance);
 
@@ -363,10 +394,50 @@ mod tests {
     }
 
     #[test]
-    fn test_increment_gas_fee() {}
+    fn test_decrement_gas_fee() -> eyre::Result<()> {
+        let mut evm = setup_tempo_evm();
+        let admin = Address::random();
+        let fee_token = create_fee_token(admin, &mut evm)?;
+
+        let caller = Address::random();
+        let initial_balance = 1000;
+        let gas_fee = U256::from(100);
+
+        // Transfer tokens to caller from admin (admin already has minted tokens from create_fee_token)
+        let transfer_call = ITIP20::transferCall {
+            to: caller,
+            amount: U256::from(initial_balance),
+        };
+        let result =
+            evm.transact_system_call(admin, fee_token, transfer_call.abi_encode().into())?;
+        assert!(result.result.is_success());
+
+        // Check initial balance
+        let balance_call = ITIP20::balanceOfCall { account: caller };
+        let result =
+            evm.transact_system_call(caller, fee_token, balance_call.abi_encode().into())?;
+
+        let output = result.result.output().unwrap_or_default();
+        let balance = ITIP20::balanceOfCall::abi_decode_returns(output)?.to::<u64>();
+        assert_eq!(balance, initial_balance);
+
+        // Decrement gas fee
+        let result = evm.decrement_gas_fee(caller, fee_token, gas_fee)?;
+        assert!(result.result.is_success());
+
+        // Check balance after decrement
+        let result =
+            evm.transact_system_call(caller, fee_token, balance_call.abi_encode().into())?;
+
+        let output = result.result.output().unwrap_or_default();
+        let new_balance = ITIP20::balanceOfCall::abi_decode_returns(output)?.to::<u64>();
+        assert_eq!(new_balance, initial_balance - gas_fee.to::<u64>());
+
+        Ok(())
+    }
 
     #[test]
-    fn test_decrement_gas_fee() {}
+    fn test_increment_gas_fee() {}
 
     #[test]
     fn test_transact_raw() {}
