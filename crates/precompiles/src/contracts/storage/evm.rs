@@ -65,7 +65,11 @@ mod tests {
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         revm::context::{ContextTr, Host},
     };
-    use reth::revm::db::{CacheDB, EmptyDB};
+    use alloy_primitives::Bytes;
+    use reth::revm::{
+        db::{CacheDB, EmptyDB},
+        interpreter::StateLoad,
+    };
 
     #[test]
     fn test_sstore_sload() {
@@ -98,8 +102,11 @@ mod tests {
         provider.set_code(addr, code.clone());
         drop(provider);
 
-        let account_code = evm.load_account_code(addr);
-        assert!(account_code.is_some());
+        let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
+            panic!("TODO: handle")
+        };
+
+        assert_eq!(data, Bytes::from(code));
     }
 
     #[test]
