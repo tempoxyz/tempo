@@ -14,6 +14,7 @@ use reth_evm::{
     Database, EthEvmFactory, Evm, EvmEnv, EvmFactory, eth::EthEvmContext,
     precompiles::PrecompilesMap,
 };
+use tempo_precompiles::precompiles::extend_tempo_precompiles;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -36,7 +37,7 @@ impl EvmFactory for TempoEvmFactory {
         input: EvmEnv<Self::Spec>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let evm = self.inner.create_evm(db, input);
-        TempoEvm::new(evm, false).with_tempo_precompiles()
+        TempoEvm::new(evm, false)
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -46,6 +47,6 @@ impl EvmFactory for TempoEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let evm = self.inner.create_evm_with_inspector(db, input, inspector);
-        TempoEvm::new(evm, true).with_tempo_precompiles()
+        TempoEvm::new(evm, true)
     }
 }

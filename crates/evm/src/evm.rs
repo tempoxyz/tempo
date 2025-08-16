@@ -1,9 +1,10 @@
 use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, Bytes, U256};
-use reth::revm::{
+use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError, precompiles::PrecompilesMap};
+use reth_revm::{
     Context, Inspector,
     context::{
-        BlockEnv, Cfg, CfgEnv, TxEnv,
+        BlockEnv, Cfg, CfgEnv, ContextTr, Host, TxEnv,
         result::{
             EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
             ResultAndState,
@@ -13,7 +14,6 @@ use reth::revm::{
     interpreter::InterpreterResult,
     primitives::hardfork::SpecId,
 };
-use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError, precompiles::PrecompilesMap};
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -38,21 +38,11 @@ pub struct TempoEvm<DB: Database, I, PRECOMPILE = EthPrecompiles> {
     inspect: bool,
 }
 
-impl<DB: Database, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE> {
-    /// Creates a new Tempo EVM instance.
-    ///
-    /// The `inspect` argument determines whether the configured [`Inspector`] of the given
-    /// `RevmEvm` should be invoked on [`Evm::transact`].
-    pub fn new(evm: EthEvm<DB, I, PRECOMPILE>, inspect: bool) -> Self {
-        // TODO: disable balance check
-        // evm.ctx_mut().cfg.disable_balance_check = true;
-
-        Self {
-            inner: evm,
-            inspect,
-        }
-    }
-
+impl<DB: Database, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE>
+where
+    DB: Database,
+    I: Inspector<TempoEvmContext<DB>>,
+{
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &TempoEvmContext<DB> {
         self.inner.ctx()
@@ -69,12 +59,22 @@ where
     DB: Database,
     I: Inspector<TempoEvmContext<DB>>,
 {
-    pub fn with_tempo_precompiles(mut self) -> Self {
-        let chain_id = self.chain_id();
-        precompiles::extend_tempo_precompiles(self.inner.precompiles_mut(), chain_id);
-        self
+    /// Creates a new Tempo EVM instance.
+    ///
+    /// The `inspect` argument determines whether the configured [`Inspector`] of the given
+    /// `RevmEvm` should be invoked on [`Evm::transact`].
+    pub fn new(mut evm: EthEvm<DB, I, PrecompilesMap>, inspect: bool) -> Self {
+        evm.cfg.disable_balance_check = true;
+        let chain_id = evm.chain_id();
+        precompiles::extend_tempo_precompiles(evm.precompiles_mut(), chain_id);
+
+        Self {
+            inner: evm,
+            inspect,
+        }
     }
 }
+
 impl<DB, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE>
 where
     DB: Database,
@@ -164,7 +164,11 @@ where
     }
 }
 
-impl<DB: Database, I, PRECOMPILE> Deref for TempoEvm<DB, I, PRECOMPILE> {
+impl<DB: Database, I, PRECOMPILE> Deref for TempoEvm<DB, I, PRECOMPILE>
+where
+    DB: Database,
+    I: Inspector<TempoEvmContext<DB>>,
+{
     type Target = TempoEvmContext<DB>;
 
     #[inline]
@@ -173,7 +177,11 @@ impl<DB: Database, I, PRECOMPILE> Deref for TempoEvm<DB, I, PRECOMPILE> {
     }
 }
 
-impl<DB: Database, I, PRECOMPILE> DerefMut for TempoEvm<DB, I, PRECOMPILE> {
+impl<DB: Database, I, PRECOMPILE> DerefMut for TempoEvm<DB, I, PRECOMPILE>
+where
+    DB: Database,
+    I: Inspector<TempoEvmContext<DB>>,
+{
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.ctx_mut()
