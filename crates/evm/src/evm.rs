@@ -4,7 +4,7 @@ use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError, precompiles::Precompiles
 use reth_revm::{
     Context, Inspector,
     context::{
-        BlockEnv, Cfg, CfgEnv, ContextTr, Host, TxEnv,
+        BlockEnv, Cfg, CfgEnv, ContextTr, Host, JournalTr, TxEnv,
         result::{
             EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
             ResultAndState,
@@ -13,6 +13,7 @@ use reth_revm::{
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::InterpreterResult,
     primitives::hardfork::SpecId,
+    state::{Account, EvmState},
 };
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::{
@@ -161,6 +162,47 @@ where
         // TODO: FIXME: commit to state
 
         Ok(exec_result)
+    }
+
+    fn journal_state(&mut self, state: EvmState) {
+        let journal = self.inner.ctx_mut().journal_mut();
+        for (address, account) in state.iter() {
+            for (address, mut account) in state.iter() {
+                if !account.is_touched() {
+                    continue;
+                }
+
+                if account.is_selfdestructed() {
+                    journal
+                        .selfdestruct(*address, Address::ZERO)
+                        .expect("TODO: ");
+                    continue;
+                }
+
+                // let is_newly_created = account.is_created();
+                // journal.db_mut().insert_contract(&mut account.info);
+                //
+                //         let db_account = self.cache.accounts.entry(address).or_default();
+                //         db_account.info = account.info;
+                //
+                //         db_account.account_state = if is_newly_created {
+                //             db_account.storage.clear();
+                //             AccountState::StorageCleared
+                //         } else if db_account.account_state.is_storage_cleared() {
+                //             // Preserve old account state if it already exists
+                //             AccountState::StorageCleared
+                //         } else {
+                //             AccountState::Touched
+                //         };
+                //         db_account.storage.extend(
+                //             account
+                //                 .storage
+                //                 .into_iter()
+                //                 .map(|(key, value)| (key, value.present_value())),
+                //         );
+                //     }
+            }
+        }
     }
 }
 
