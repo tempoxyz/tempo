@@ -95,11 +95,10 @@ where
 
         // TODO: handle failure
         let output = balance_result.result.output().unwrap_or_default();
+        let return_val = IFeeManager::getFeeTokenBalanceCall::abi_decode_returns(output)
+            .expect("TODO: Handle error ");
 
-        let token_address = Address::from_slice(&output[12..32]);
-        let balance = U256::from_be_slice(&output[32..64]).to::<u64>();
-
-        Ok((token_address, balance))
+        Ok((return_val._0, return_val._1.to::<u64>()))
     }
 
     pub fn collect_fee(
@@ -208,6 +207,10 @@ where
         let caller = tx.caller;
         let (fee_token, balance) = self.get_fee_token_balance(caller)?;
 
+        dbg!(balance);
+
+        dbg!(fee_token);
+
         // Compute adjusted gas fee and ensure sufficient balance
         let gas_fee = tx.gas_limit * tx.gas_price as u64;
         let adjusted_fee = (gas_fee / 1000) + 1;
@@ -300,14 +303,18 @@ mod tests {
         factory.create_evm(db, env)
     }
 
-    fn create_fee_token(
+    fn create_and_mint_token(
+        symbol: String,
+        name: String,
+        currency: String,
         admin: Address,
+        mint_amount: U256,
         evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
     ) -> eyre::Result<Address> {
         let create_token_call = ITIP20Factory::createTokenCall {
-            name: "TestUSD".into(),
-            symbol: "T".into(),
-            currency: "USD".into(),
+            name,
+            symbol,
+            currency,
             admin,
         };
 
@@ -345,7 +352,7 @@ mod tests {
                 &admin,
                 ITIP20::mintCall {
                     to: admin,
-                    amount: U256::from(10000),
+                    amount: mint_amount,
                 },
             )
             .expect("Token minting failed");
@@ -371,7 +378,14 @@ mod tests {
     fn test_get_gas_fee_token_balance() -> eyre::Result<()> {
         let mut evm = setup_tempo_evm();
         let admin = Address::random();
-        let fee_token = create_fee_token(admin, &mut evm)?;
+        let fee_token = create_and_mint_token(
+            "T".to_string(),
+            "TestUSD".to_string(),
+            "USD".to_string(),
+            admin,
+            U256::from(10000),
+            &mut evm,
+        )?;
 
         // Assert that the fee token is not set
         let sender = Address::random();
@@ -412,7 +426,14 @@ mod tests {
     fn test_decrement_increment_gas_fee() -> eyre::Result<()> {
         let mut evm = setup_tempo_evm();
         let admin = Address::random();
-        let fee_token = create_fee_token(admin, &mut evm)?;
+        let fee_token = create_and_mint_token(
+            "T".to_string(),
+            "TestUSD".to_string(),
+            "USD".to_string(),
+            admin,
+            U256::from(10000),
+            &mut evm,
+        )?;
 
         let caller = Address::random();
 
@@ -454,10 +475,116 @@ mod tests {
     }
 
     #[test]
-    fn test_increment_gas_fee() {}
+    fn test_transact_raw() -> eyre::Result<()> {
+        let mut evm = setup_tempo_evm();
+        let admin = Address::random();
+        let user = Address::random();
+        let recipient = Address::random();
 
-    #[test]
-    fn test_transact_raw() {}
+        // Create fee token and transfer token
+        let fee_token = create_and_mint_token(
+            "FEE".to_string(),
+            "FeeToken".to_string(),
+            "USD".to_string(),
+            admin,
+            U256::from(100000),
+            &mut evm,
+        )?;
+
+        let transfer_token = create_and_mint_token(
+            "TRANS".to_string(),
+            "TransferToken".to_string(),
+            "USD".to_string(),
+            admin,
+            U256::from(50000),
+            &mut evm,
+        )?;
+
+        // Transfer tokens to user
+        let result = evm.transact_system_call(
+            admin,
+            fee_token,
+            ITIP20::transferCall {
+                to: user,
+                amount: U256::from(10000),
+            }
+            .abi_encode()
+            .into(),
+        )?;
+        assert!(result.result.is_success());
+        evm.db_mut().commit(result.state);
+
+        let result = evm.transact_system_call(
+            admin,
+            transfer_token,
+            ITIP20::transferCall {
+                to: user,
+                amount: U256::from(5000),
+            }
+            .abi_encode()
+            .into(),
+        )?;
+        assert!(result.result.is_success());
+        evm.db_mut().commit(result.state);
+
+        // Set fee token for user
+        let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
+        let result = evm.transact_system_call(
+            user,
+            TIP_FEE_MANAGER_ADDRESS,
+            set_fee_token_call.abi_encode().into(),
+        )?;
+        assert!(result.result.is_success());
+        evm.db_mut().commit(result.state);
+        dbg!(fee_token);
+        dbg!(transfer_token);
+
+        // Check initial balances
+        let initial_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
+        let initial_transfer_balance = balance_of_call(&mut evm, user, transfer_token)?;
+        dbg!(initial_fee_balance);
+        dbg!(initial_transfer_balance);
+
+        // Create transaction to transfer tokens
+        let tx = TxEnv {
+            caller: user,
+            kind: transfer_token.into(),
+            data: ITIP20::transferCall {
+                to: recipient,
+                amount: U256::from(1000),
+            }
+            .abi_encode()
+            .into(),
+            gas_limit: 100000,
+            gas_price: 20000000000,
+            value: U256::ZERO,
+            ..Default::default()
+        };
+
+        // Execute transaction
+        let result = evm.transact_raw(tx)?;
+        assert!(result.result.is_success(), "Transaction should succeed");
+        evm.db_mut().commit(result.state);
+
+        // Verify balances after transaction
+        let final_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
+        let final_transfer_balance = balance_of_call(&mut evm, user, transfer_token)?;
+        let recipient_balance = balance_of_call(&mut evm, recipient, transfer_token)?;
+
+        // User should have less fee tokens due to gas payment
+        assert!(
+            final_fee_balance < initial_fee_balance,
+            "Fee balance should decrease"
+        );
+
+        // User should have less transfer tokens due to the transfer
+        assert_eq!(final_transfer_balance, initial_transfer_balance - 1000);
+
+        // Recipient should have received the transfer tokens
+        assert_eq!(recipient_balance, 1000);
+
+        Ok(())
+    }
 
     #[test]
     fn test_transact_raw_insufficient_balance() {}

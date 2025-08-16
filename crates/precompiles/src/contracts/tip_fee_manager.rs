@@ -506,14 +506,15 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             };
         }
 
-        let fees_slot = self.get_collected_fees_slot(&user_token);
-        let fees_value = self.storage.sload(self.contract_address, fees_slot);
-        // Unpack: amount in lower 128 bits
-        let amount = fees_value & U256::from(u128::MAX);
+        let token_id = address_to_token_id_unchecked(&user_token);
+        let mut token = TIP20Token::new(token_id, self.storage);
+        let token_balance = token.balance_of(ITIP20::balanceOfCall {
+            account: call.sender,
+        });
 
         IFeeManager::getFeeTokenBalanceReturn {
             _0: user_token,
-            _1: amount,
+            _1: token_balance,
         }
     }
 
