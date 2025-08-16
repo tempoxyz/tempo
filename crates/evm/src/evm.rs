@@ -327,7 +327,7 @@ mod tests {
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
         let mut provider = EvmStorageProvider::new(evm_internals, 1);
 
-        let mut token = TIP20Token::new_existing(token_id, &mut provider);
+        let mut token = TIP20Token::new(token_id, &mut provider);
         token
             .get_roles_contract()
             .grant_role_internal(&admin, *ISSUER_ROLE);
