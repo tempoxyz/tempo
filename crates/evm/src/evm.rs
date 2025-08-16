@@ -138,6 +138,7 @@ where
         let exec_result = self
             .inner
             .transact_system_call(caller, fee_token, call_data)?;
+        // TODO: FIXME: commit to state
 
         Ok(exec_result)
     }
@@ -157,6 +158,7 @@ where
         let exec_result =
             self.inner
                 .transact_system_call(TIP_FEE_MANAGER_ADDRESS, fee_token, call_data)?;
+        // TODO: FIXME: commit to state
 
         Ok(exec_result)
     }
@@ -206,10 +208,6 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let caller = tx.caller;
         let (fee_token, balance) = self.get_fee_token_balance(caller)?;
-
-        dbg!(balance);
-
-        dbg!(fee_token);
 
         // Compute adjusted gas fee and ensure sufficient balance
         let gas_fee = tx.gas_limit * tx.gas_price as u64;
@@ -482,21 +480,22 @@ mod tests {
         let recipient = Address::random();
 
         // Create fee token and transfer token
+        let mint_amount = U256::from(u64::MAX);
         let fee_token = create_and_mint_token(
-            "FEE".to_string(),
+            "F".to_string(),
             "FeeToken".to_string(),
             "USD".to_string(),
             admin,
-            U256::from(100000),
+            mint_amount,
             &mut evm,
         )?;
 
         let transfer_token = create_and_mint_token(
-            "TRANS".to_string(),
+            "T".to_string(),
             "TransferToken".to_string(),
             "USD".to_string(),
             admin,
-            U256::from(50000),
+            mint_amount,
             &mut evm,
         )?;
 
@@ -506,7 +505,7 @@ mod tests {
             fee_token,
             ITIP20::transferCall {
                 to: user,
-                amount: U256::from(10000),
+                amount: mint_amount,
             }
             .abi_encode()
             .into(),
@@ -519,7 +518,7 @@ mod tests {
             transfer_token,
             ITIP20::transferCall {
                 to: user,
-                amount: U256::from(5000),
+                amount: mint_amount,
             }
             .abi_encode()
             .into(),
@@ -536,14 +535,10 @@ mod tests {
         )?;
         assert!(result.result.is_success());
         evm.db_mut().commit(result.state);
-        dbg!(fee_token);
-        dbg!(transfer_token);
 
         // Check initial balances
         let initial_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
         let initial_transfer_balance = balance_of_call(&mut evm, user, transfer_token)?;
-        dbg!(initial_fee_balance);
-        dbg!(initial_transfer_balance);
 
         // Create transaction to transfer tokens
         let tx = TxEnv {
@@ -551,12 +546,12 @@ mod tests {
             kind: transfer_token.into(),
             data: ITIP20::transferCall {
                 to: recipient,
-                amount: U256::from(1000),
+                amount: U256::ONE,
             }
             .abi_encode()
             .into(),
-            gas_limit: 100000,
-            gas_price: 20000000000,
+            gas_limit: 30000,
+            gas_price: 1,
             value: U256::ZERO,
             ..Default::default()
         };
