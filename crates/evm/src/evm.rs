@@ -272,6 +272,7 @@ mod tests {
     use alloy_primitives::{B256, U256};
     use rand::random;
     use reth::revm::{
+        DatabaseCommit,
         context::{BlockEnv, CfgEnv, ContextTr, Host},
         db::{CacheDB, EmptyDB},
         inspector::NoOpInspector,
@@ -316,6 +317,7 @@ mod tests {
             create_token_call.abi_encode().into(),
         )?;
         assert!(result.result.is_success(), "Token creation failed");
+        evm.db_mut().commit(result.state);
 
         let output = result.result.output().unwrap_or_default();
         let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?.to::<u64>();
@@ -325,19 +327,19 @@ mod tests {
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
         let mut provider = EvmStorageProvider::new(evm_internals, 1);
 
-        let mut token = TIP20Token::new(token_id, &mut provider);
+        let mut token = TIP20Token::new_existing(token_id, &mut provider);
+        token
+            .get_roles_contract()
+            .grant_role_internal(&admin, *ISSUER_ROLE);
 
-        let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
-
-        let _result = token.set_supply_cap(
+        let result = token.set_supply_cap(
             &admin,
             ITIP20::setSupplyCapCall {
                 newSupplyCap: U256::from(u64::MAX),
             },
         );
+        assert!(result.is_ok());
 
-        dbg!("here");
         token
             .mint(
                 &admin,
@@ -359,23 +361,22 @@ mod tests {
 
         // Assert that the fee token is not set
         let sender = Address::random();
-        let (_, balance) = evm.get_fee_token_balance(sender)?;
+        let (user_fee_token, balance) = evm.get_fee_token_balance(sender)?;
 
-        assert_eq!(fee_token, Address::ZERO);
+        assert_eq!(user_fee_token, Address::ZERO);
         assert_eq!(balance, 0);
 
         // Set fee token
         let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
-
         let result = evm.transact_system_call(
             sender,
             TIP_FEE_MANAGER_ADDRESS,
             set_fee_token_call.abi_encode().into(),
         )?;
         assert!(result.result.is_success());
+        evm.db_mut().commit(result.state);
 
         let fee_balance = random::<u64>();
-        // Transfer tokens from admin to sender (admin already has minted tokens from create_fee_token)
         let transfer_call = ITIP20::transferCall {
             to: sender,
             amount: U256::from(fee_balance),
@@ -383,8 +384,8 @@ mod tests {
 
         let result =
             evm.transact_system_call(admin, fee_token, transfer_call.abi_encode().into())?;
-
         assert!(result.result.is_success());
+        evm.db_mut().commit(result.state);
 
         let (token_address, balance) = evm.get_fee_token_balance(sender)?;
         assert_eq!(fee_token, token_address);
@@ -403,7 +404,6 @@ mod tests {
         let initial_balance = 1000;
         let gas_fee = U256::from(100);
 
-        // Transfer tokens to caller from admin (admin already has minted tokens from create_fee_token)
         let transfer_call = ITIP20::transferCall {
             to: caller,
             amount: U256::from(initial_balance),
@@ -411,11 +411,13 @@ mod tests {
         let result =
             evm.transact_system_call(admin, fee_token, transfer_call.abi_encode().into())?;
         assert!(result.result.is_success());
+        evm.db_mut().commit(result.state);
 
         // Check initial balance
         let balance_call = ITIP20::balanceOfCall { account: caller };
         let result =
             evm.transact_system_call(caller, fee_token, balance_call.abi_encode().into())?;
+        evm.db_mut().commit(result.state);
 
         let output = result.result.output().unwrap_or_default();
         let balance = ITIP20::balanceOfCall::abi_decode_returns(output)?.to::<u64>();
@@ -424,6 +426,7 @@ mod tests {
         // Decrement gas fee
         let result = evm.decrement_gas_fee(caller, fee_token, gas_fee)?;
         assert!(result.result.is_success());
+        evm.db_mut().commit(result.state);
 
         // Check balance after decrement
         let result =
