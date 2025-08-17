@@ -75,27 +75,36 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     pub fn total_supply(&mut self) -> U256 {
-        self.storage.sload(self.token_address, slots::TOTAL_SUPPLY)
+        self.storage
+            .sload(self.token_address, slots::TOTAL_SUPPLY)
+            .expect("TODO: handle error")
     }
 
     pub fn supply_cap(&mut self) -> U256 {
-        self.storage.sload(self.token_address, slots::SUPPLY_CAP)
+        self.storage
+            .sload(self.token_address, slots::SUPPLY_CAP)
+            .expect("TODO: handle error")
     }
 
     pub fn paused(&mut self) -> bool {
-        self.storage.sload(self.token_address, slots::PAUSED) != U256::ZERO
+        self.storage
+            .sload(self.token_address, slots::PAUSED)
+            .expect("TODO: handle error")
+            != U256::ZERO
     }
 
     pub fn transfer_policy_id(&mut self) -> u64 {
         self.storage
             .sload(self.token_address, slots::TRANSFER_POLICY_ID)
+            .expect("TODO: handle error")
             .to::<u64>()
     }
 
     pub fn domain_separator(&mut self) -> B256 {
         B256::from(
             self.storage
-                .sload(self.token_address, slots::DOMAIN_SEPARATOR),
+                .sload(self.token_address, slots::DOMAIN_SEPARATOR)
+                .expect("TODO: handle error"),
         )
     }
 
@@ -110,12 +119,17 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     pub fn nonces(&mut self, call: ITIP20::noncesCall) -> U256 {
         let slot = mapping_slot(call.owner, slots::NONCES);
-        self.storage.sload(self.token_address, slot)
+        self.storage
+            .sload(self.token_address, slot)
+            .expect("TODO: handle error")
     }
 
     pub fn salts(&mut self, call: ITIP20::saltsCall) -> bool {
         let slot = double_mapping_slot(call.owner, call.salt, slots::SALTS);
-        self.storage.sload(self.token_address, slot) != U256::ZERO
+        self.storage
+            .sload(self.token_address, slot)
+            .expect("TODO: handle error")
+            != U256::ZERO
     }
 
     // Admin functions
@@ -388,7 +402,10 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // Get current nonce (increment after successful verification)
         let nonce_slot = mapping_slot(call.owner, slots::NONCES);
-        let nonce = self.storage.sload(self.token_address, nonce_slot);
+        let nonce = self
+            .storage
+            .sload(self.token_address, nonce_slot)
+            .expect("TODO: handle error");
 
         // Recover address from signature
         let recovered_addr = {
@@ -537,7 +554,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn get_balance(&mut self, account: &Address) -> U256 {
         let slot = mapping_slot(account, slots::BALANCES);
-        self.storage.sload(self.token_address, slot)
+        self.storage
+            .sload(self.token_address, slot)
+            .expect("TODO: handle error")
     }
 
     fn set_balance(&mut self, account: &Address, amount: U256) {
@@ -547,7 +566,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn get_allowance(&mut self, owner: &Address, spender: &Address) -> U256 {
         let slot = double_mapping_slot(owner, spender, slots::ALLOWANCES);
-        self.storage.sload(self.token_address, slot)
+        self.storage
+            .sload(self.token_address, slot)
+            .expect("TODO: handle error")
     }
 
     fn set_allowance(&mut self, owner: &Address, spender: &Address, amount: U256) {
@@ -643,7 +664,10 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     fn read_string(&mut self, slot: U256) -> String {
-        let value = self.storage.sload(self.token_address, slot);
+        let value = self
+            .storage
+            .sload(self.token_address, slot)
+            .expect("TODO: handle error");
         let bytes = value.to_be_bytes::<32>();
         let len = bytes[31] as usize / 2; // Last byte stores length * 2 for short strings
         if len > 31 {
@@ -740,7 +764,10 @@ mod tests {
         // Build EIP-712 struct hash
         let nonce_slot =
             crate::contracts::storage::slots::mapping_slot(owner, super::slots::NONCES);
-        let nonce = token.storage.sload(token.token_address, nonce_slot);
+        let nonce = token
+            .storage
+            .sload(token.token_address, nonce_slot)
+            .expect("Could not get nonce");
 
         let mut struct_data = [0u8; 168];
         struct_data[0..32].copy_from_slice(super::PERMIT_TYPEHASH.as_slice());
@@ -784,7 +811,10 @@ mod tests {
 
         // Effects: allowance set and nonce incremented
         assert_eq!(token.get_allowance(&owner, &spender), value);
-        let nonce_after = token.storage.sload(token.token_address, nonce_slot);
+        let nonce_after = token
+            .storage
+            .sload(token.token_address, nonce_slot)
+            .expect("Could not get nonce");
         assert_eq!(nonce_after, U256::ONE);
     }
 
@@ -814,7 +844,10 @@ mod tests {
         // Build digest
         let nonce_slot =
             crate::contracts::storage::slots::mapping_slot(owner, super::slots::NONCES);
-        let nonce = token.storage.sload(token.token_address, nonce_slot);
+        let nonce = token
+            .storage
+            .sload(token.token_address, nonce_slot)
+            .expect("Could not get nonce");
 
         let mut struct_data = [0u8; 168];
         struct_data[0..32].copy_from_slice(super::PERMIT_TYPEHASH.as_slice());

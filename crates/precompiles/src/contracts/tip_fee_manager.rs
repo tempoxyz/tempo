@@ -230,7 +230,12 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         // Check if pool already exists
         let exists_slot = self.get_pool_exists_slot(&pool_id);
-        if self.storage.sload(self.contract_address, exists_slot) != U256::ZERO {
+        if self
+            .storage
+            .sload(self.contract_address, exists_slot)
+            .expect("TODO: handle error")
+            != U256::ZERO
+        {
             return Err(IFeeManager::IFeeManagerErrors::PoolExists(
                 IFeeManager::PoolExists {},
             ));
@@ -266,7 +271,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let pool_id = pool_key.get_id();
         let pool_slot = self.get_pool_slot(&pool_id);
 
-        let pool_value = self.storage.sload(self.contract_address, pool_slot);
+        let pool_value = self
+            .storage
+            .sload(self.contract_address, pool_slot)
+            .expect("TODO: handle error");
         // TODO: double check this
         // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
         let reserve0 = (pool_value & U256::from(u128::MAX)).to::<u128>();
@@ -296,7 +304,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             let pool_id = pool_key.get_id();
 
             let exists_slot = self.get_pool_exists_slot(&pool_id);
-            let pool_exists = self.storage.sload(self.contract_address, exists_slot) != U256::ZERO;
+            let pool_exists = self
+                .storage
+                .sload(self.contract_address, exists_slot)
+                .expect("TODO: handle error")
+                != U256::ZERO;
 
             if !pool_exists {
                 return Err(IFeeManager::IFeeManagerErrors::PoolDoesNotExist(
@@ -305,7 +317,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             }
 
             let pool_slot = self.get_pool_slot(&pool_id);
-            let pool_value = self.storage.sload(self.contract_address, pool_slot);
+            let pool_value = self
+                .storage
+                .sload(self.contract_address, pool_slot)
+                .expect("TODO: handle error");
             let reserve0 = U256::from((pool_value & U256::from(u128::MAX)).to::<u128>());
             let reserve1 = U256::from(pool_value.wrapping_shr(128).to::<u128>());
 
@@ -328,7 +343,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                     amount: call.amount,
                 },
             )
-            .expect("TODO: handle error");
+            .map_err(|_| {
+                IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                    IFeeManager::InsufficientFeeTokenBalance {},
+                )
+            })?;
 
         // Cache fee info to minimize storage access
         let mut fee_info = self.get_fee_info(&user_token);
@@ -336,7 +355,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         // Add to tracking array only if this is the first time collecting fees for this token
         if fee_info.amount == 0 && !fee_info.has_been_set {
             let in_array_slot = self.get_token_in_fees_array_slot(&user_token);
-            let in_array = self.storage.sload(self.contract_address, in_array_slot) != U256::ZERO;
+            let in_array = self
+                .storage
+                .sload(self.contract_address, in_array_slot)
+                .expect("TODO: handle error")
+                != U256::ZERO;
 
             if !in_array {
                 self.storage
@@ -344,7 +367,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
                 let length_value = self
                     .storage
-                    .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH);
+                    .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH)
+                    .expect("TODO: handle error");
 
                 self.storage.sstore(
                     self.contract_address,
@@ -373,6 +397,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let validator_token = self
             .storage
             .sload(self.contract_address, validator_slot)
+            .expect("TODO: handle error")
             .into_address();
 
         if validator_token.is_zero() {
@@ -389,6 +414,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let user_token = self
             .storage
             .sload(self.contract_address, user_slot)
+            .expect("TODO: handle error")
             .into_address();
 
         if user_token.is_zero() {
@@ -400,7 +426,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     fn get_fee_info(&mut self, token: &Address) -> FeeInfo {
         let fees_slot = self.get_collected_fees_slot(token);
-        let fees_value = self.storage.sload(self.contract_address, fees_slot);
+        let fees_value = self
+            .storage
+            .sload(self.contract_address, fees_slot)
+            .expect("TODO: handle error");
 
         let amount = (fees_value & U256::from(u128::MAX)).to::<u128>();
         let has_been_set = fees_value >= (U256::from(1u128) << 128);
@@ -479,6 +508,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let slot = self.get_user_token_slot(&call.user);
         self.storage
             .sload(self.contract_address, slot)
+            .expect("TODO: handle error")
             .into_address()
     }
 
@@ -486,6 +516,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let slot = self.get_validator_token_slot(&call.validator);
         self.storage
             .sload(self.contract_address, slot)
+            .expect("TODO: handle error")
             .into_address()
     }
 
@@ -497,6 +528,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let user_token = self
             .storage
             .sload(self.contract_address, user_slot)
+            .expect("TODO: handle error")
             .into_address();
 
         if user_token.is_zero() {
@@ -520,7 +552,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn pools(&mut self, call: IFeeManager::poolsCall) -> IFeeManager::Pool {
         let pool_slot = self.get_pool_slot(&call.poolId);
-        let pool_value = self.storage.sload(self.contract_address, pool_slot);
+        let pool_value = self
+            .storage
+            .sload(self.contract_address, pool_slot)
+            .expect("TODO: handle error");
         // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
         let reserve0 = (pool_value & U256::from(u128::MAX)).to::<u128>();
         let reserve1 = pool_value.wrapping_shr(128).to::<u128>();
@@ -530,7 +565,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn pool_exists(&mut self, call: IFeeManager::poolExistsCall) -> bool {
         let slot = self.get_pool_exists_slot(&call.poolId);
-        self.storage.sload(self.contract_address, slot) != U256::ZERO
+        self.storage
+            .sload(self.contract_address, slot)
+            .expect("TODO: handle error")
+            != U256::ZERO
     }
 }
 

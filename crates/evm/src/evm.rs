@@ -95,10 +95,9 @@ where
             self.inner
                 .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, call_data)?;
 
-        // TODO: handle failure
         let output = balance_result.result.output().unwrap_or_default();
         let return_val = IFeeManager::getFeeTokenBalanceCall::abi_decode_returns(output)
-            .expect("TODO: Handle error ");
+            .map_err(|e| EVMError::Custom(format!("Failed to decode fee token balance: {e}")))?;
 
         Ok((return_val._0, return_val._1.to::<u64>()))
     }
@@ -121,9 +120,8 @@ where
             self.inner
                 .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, call_data)?;
 
-        // NOTE: is there a more efficient way to do this rather than cloning state?
         if exec_result.result.is_success() {
-            self.journal_state(exec_result.state.clone());
+            self.journal_state(exec_result.state.clone())?;
         }
 
         Ok(exec_result)
@@ -146,9 +144,8 @@ where
             .inner
             .transact_system_call(caller, fee_token, call_data)?;
 
-        // NOTE: is there a more efficient way to do this rather than cloning state?
         if exec_result.result.is_success() {
-            self.journal_state(exec_result.state.clone());
+            self.journal_state(exec_result.state.clone())?;
         }
 
         Ok(exec_result)
@@ -170,22 +167,23 @@ where
             self.inner
                 .transact_system_call(TIP_FEE_MANAGER_ADDRESS, fee_token, call_data)?;
 
-        // NOTE: is there a more efficient way to do this rather than cloning state?
         if exec_result.result.is_success() {
-            self.journal_state(exec_result.state.clone());
+            self.journal_state(exec_result.state.clone())?;
         }
 
         Ok(exec_result)
     }
 
-    fn journal_state(&mut self, state: EvmState) {
+    fn journal_state(&mut self, state: EvmState) -> Result<(), EVMError<DB::Error>> {
         let journal = self.inner.ctx_mut().journal_mut();
         for (address, account) in state.iter() {
             if !account.is_touched() {
                 continue;
             }
 
-            journal.load_account(*address).expect("TODO: handle err");
+            journal
+                .load_account(*address)
+                .map_err(|e| EVMError::Custom(format!("Failed to load account {address}: {e}")))?;
             journal.touch_account(*address);
 
             if account.is_selfdestructed() {
@@ -209,9 +207,12 @@ where
             for (key, value) in account.storage.iter() {
                 journal
                     .sstore(*address, *key, value.present_value())
-                    .expect("TODO: handle error");
+                    .map_err(|e| {
+                        EVMError::Custom(format!("Failed to store value at {address}: {e}"))
+                    })?;
             }
         }
+        Ok(())
     }
 }
 
@@ -382,7 +383,7 @@ mod tests {
             create_token_call.abi_encode().into(),
         )?;
         assert!(result.result.is_success(), "Token creation failed");
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)?;
 
         let output = result.result.output().unwrap_or_default();
         let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?.to::<u64>();
@@ -425,7 +426,8 @@ mod tests {
     ) -> eyre::Result<u64> {
         let balance_call = ITIP20::balanceOfCall { account };
         let result = evm.transact_system_call(account, token, balance_call.abi_encode().into())?;
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
 
         let output = result.result.output().unwrap_or_default();
         let balance = ITIP20::balanceOfCall::abi_decode_returns(output)?.to::<u64>();
@@ -508,7 +510,8 @@ mod tests {
             .into(),
         )?;
         assert!(result.result.is_success());
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
 
         // Check initial balance
         let initial_balance = balance_of_call(&mut evm, caller, fee_token)?;
@@ -569,7 +572,8 @@ mod tests {
             .into(),
         )?;
         assert!(result.result.is_success());
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
 
         let result = evm.transact_system_call(
             admin,
@@ -582,7 +586,8 @@ mod tests {
             .into(),
         )?;
         assert!(result.result.is_success());
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
 
         // Set fee token for user
         let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
@@ -592,7 +597,8 @@ mod tests {
             set_fee_token_call.abi_encode().into(),
         )?;
         assert!(result.result.is_success());
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
 
         // Check initial balances
         let initial_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
@@ -617,7 +623,8 @@ mod tests {
         // Execute transaction
         let result = evm.transact_raw(tx)?;
         assert!(result.result.is_success(), "Transaction should succeed");
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
 
         // Verify balances after transaction
         let final_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
@@ -678,7 +685,8 @@ mod tests {
             .into(),
         )?;
         assert!(result.result.is_success());
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
 
         let result = evm.transact_system_call(
             admin,
@@ -691,7 +699,8 @@ mod tests {
             .into(),
         )?;
         assert!(result.result.is_success());
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
 
         // Set fee token for user
         let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
@@ -701,7 +710,8 @@ mod tests {
             set_fee_token_call.abi_encode().into(),
         )?;
         assert!(result.result.is_success());
-        evm.journal_state(result.state);
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
 
         // Create tx with gas limit higher than fee balance
         let gas_limit = 50000;

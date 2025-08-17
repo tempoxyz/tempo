@@ -11,7 +11,9 @@ impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| {
             PrecompileError::Other("Invalid input: missing function selector".to_string())
-        })?.try_into().expect("TODO: handle error");
+        })?.try_into().map_err(|_| {
+            PrecompileError::Other("Invalid function selector length".to_string())
+        })?;
 
         match selector {
             ITIP20Factory::tokenIdCounterCall::SELECTOR => {

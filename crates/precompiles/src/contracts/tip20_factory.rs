@@ -63,6 +63,6 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
 
     pub fn token_id_counter(&mut self) -> U256 {
         self.storage
-            .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)
+            .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER).expect("TODO: handle error")
     }
 }

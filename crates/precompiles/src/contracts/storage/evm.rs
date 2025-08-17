@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, Log, LogData, U256};
-use alloy_evm::EvmInternals;
+use alloy_evm::{EvmInternals, EvmInternalsError};
 use reth::revm::state::Bytecode;
 
 use crate::contracts::storage::StorageProvider;
@@ -17,44 +17,47 @@ impl<'a> EvmStorageProvider<'a> {
         }
     }
 
-    pub fn ensure_loaded_account(&mut self, account: Address) {
-        self.internals
-            .load_account(account)
-            .expect("TODO: handle err");
+    pub fn ensure_loaded_account(&mut self, account: Address) -> Result<(), EvmInternalsError> {
+        self.internals.load_account(account)?;
         self.internals.touch_account(account);
+        Ok(())
     }
 }
 
 impl<'a> StorageProvider for EvmStorageProvider<'a> {
+    type Error = EvmInternalsError;
+
     fn chain_id(&self) -> u64 {
         self.chain_id
     }
 
-    fn set_code(&mut self, address: Address, code: Vec<u8>) {
-        self.ensure_loaded_account(address);
+    fn set_code(&mut self, address: Address, code: Vec<u8>) -> Result<(), Self::Error> {
+        self.ensure_loaded_account(address)?;
         self.internals
             .set_code(address, Bytecode::new_raw(code.into()));
+        Ok(())
     }
 
-    fn sstore(&mut self, address: Address, key: U256, value: U256) {
-        self.ensure_loaded_account(address);
-        self.internals
-            .sstore(address, key, value)
-            .expect("Could not store value");
+    fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
+        self.ensure_loaded_account(address)?;
+        self.internals.sstore(address, key, value)?;
+        Ok(())
     }
 
-    fn emit_event(&mut self, address: Address, event: LogData) {
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
         self.internals.log(Log {
             address,
             data: event,
         });
+        Ok(())
     }
 
-    fn sload(&mut self, address: Address, key: U256) -> U256 {
-        self.ensure_loaded_account(address);
-        self.internals
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
+        self.ensure_loaded_account(address)?;
+        Ok(self
+            .internals
             .sload(address, key)
-            .map_or(U256::ZERO, |value| value.data)
+            .map_or(U256::ZERO, |value| value.data))
     }
 }
 
@@ -72,7 +75,7 @@ mod tests {
     };
 
     #[test]
-    fn test_sstore_sload() {
+    fn test_sstore_sload() -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
@@ -84,9 +87,10 @@ mod tests {
         let value = U256::random();
 
         provider.sstore(addr, key, value);
-        let sload_val = provider.sload(addr, key);
+        let sload_val = provider.sload(addr, key)?;
 
         assert_eq!(sload_val, value);
+        Ok(())
     }
 
     #[test]
@@ -103,7 +107,7 @@ mod tests {
         drop(provider);
 
         let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
-            panic!("TODO: handle")
+            panic!("Failed to load account code")
         };
 
         assert_eq!(data, Bytes::from(code));

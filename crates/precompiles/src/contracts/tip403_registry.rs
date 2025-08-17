@@ -39,7 +39,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
     pub fn policy_id_counter(&mut self) -> u64 {
         let counter_val = self
             .storage
-            .sload(TIP403_REGISTRY_ADDRESS, slots::POLICY_ID_COUNTER);
+            .sload(TIP403_REGISTRY_ADDRESS, slots::POLICY_ID_COUNTER).expect("TODO: handle error");
         // Initialize policy ID counter to 2 if it's 0 (skip special policies)
         if counter_val == U256::ZERO {
             self.storage.sstore(
@@ -311,7 +311,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
     // Internal helper functions
     fn get_policy_data(&mut self, policy_id: u64) -> PolicyData {
         let slot = mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA);
-        let value = self.storage.sload(TIP403_REGISTRY_ADDRESS, slot);
+        let value = self.storage.sload(TIP403_REGISTRY_ADDRESS, slot).expect("TODO: handle error");
 
         // Extract policy type (low 128 bits) and admin policy ID (high 128 bits)
         let policy_type = (value.to::<u128>() & 0xFF) as u8;
@@ -353,7 +353,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let is_in_set = self.storage.sload(
             TIP403_REGISTRY_ADDRESS,
             double_mapping_slot(policy_id.to_be_bytes(), user, slots::POLICY_SET),
-        ) != U256::ZERO;
+        ).expect("TODO: handle error") != U256::ZERO;
 
         match data.policy_type {
             ITIP403Registry::PolicyType::WHITELIST => is_in_set,

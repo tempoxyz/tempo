@@ -155,7 +155,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     // Internal implementation functions
     fn has_role_internal(&mut self, account: &Address, role: B256) -> bool {
         let slot = double_mapping_slot(account, role, self.roles_slot);
-        self.storage.sload(self.parent_contract_address, slot) != U256::ZERO
+        self.storage.sload(self.parent_contract_address, slot).expect("TODO: handle error") != U256::ZERO
     }
 
     pub fn grant_role_internal(&mut self, account: &Address, role: B256) {
@@ -172,7 +172,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
     fn get_role_admin_internal(&mut self, role: B256) -> B256 {
         let slot = mapping_slot(role, self.role_admin_slot);
-        let admin = self.storage.sload(self.parent_contract_address, slot);
+        let admin = self.storage.sload(self.parent_contract_address, slot).expect("TODO: handle error");
         B256::from(admin) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     }
 

@@ -21,26 +21,31 @@ impl HashMapStorageProvider {
 }
 
 impl StorageProvider for HashMapStorageProvider {
+    type Error = ();
+    
     fn chain_id(&self) -> u64 {
         self.chain_id
     }
 
-    fn set_code(&mut self, _address: Address, _code: Vec<u8>) {
+    fn set_code(&mut self, _address: Address, _code: Vec<u8>) -> Result<(), Self::Error> {
         // noop
+        Ok(())
     }
 
-    fn sstore(&mut self, address: Address, key: U256, value: U256) {
+    fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
         self.internals.insert((address, key), value);
+        Ok(())
     }
 
-    fn emit_event(&mut self, address: Address, event: LogData) {
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
         self.events.entry(address).or_default().push(event);
+        Ok(())
     }
 
-    fn sload(&mut self, address: Address, key: U256) -> U256 {
-        self.internals
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
+        Ok(self.internals
             .get(&(address, key))
             .copied()
-            .unwrap_or(U256::ZERO)
+            .unwrap_or(U256::ZERO))
     }
 }

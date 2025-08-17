@@ -223,6 +223,7 @@ sol! {
         error InsufficientLiquidityBalance();
         error MustDepositLowerBalanceToken();
         error InvalidAmount();
+        error InsufficientFeeTokenBalance();
     }
 }
 
