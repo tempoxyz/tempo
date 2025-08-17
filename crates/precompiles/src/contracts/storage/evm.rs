@@ -86,7 +86,7 @@ mod tests {
         let key = U256::random();
         let value = U256::random();
 
-        provider.sstore(addr, key, value);
+        provider.sstore(addr, key, value)?;
         let sload_val = provider.sload(addr, key)?;
 
         assert_eq!(sload_val, value);
@@ -94,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_code() {
+    fn test_set_code() -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
@@ -103,7 +103,7 @@ mod tests {
 
         let addr = Address::random();
         let code = vec![0xff];
-        provider.set_code(addr, code.clone());
+        provider.set_code(addr, code.clone())?;
         drop(provider);
 
         let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
@@ -111,6 +111,7 @@ mod tests {
         };
 
         assert_eq!(data, Bytes::from(code));
+        Ok(())
     }
 
     #[test]

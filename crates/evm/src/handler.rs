@@ -2,9 +2,8 @@
 
 use reth::revm::handler::MainnetHandler;
 use reth_revm::{
-    Database, ExecuteEvm,
     context::{ContextTr, JournalTr, result::HaltReason},
-    handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler, post_execution},
+    handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler},
     interpreter::interpreter_action::FrameInit,
     state::EvmState,
 };

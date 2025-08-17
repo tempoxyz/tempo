@@ -4,7 +4,7 @@ use reth_evm::{Database, EthEvm, Evm, EvmEnv, precompiles::PrecompilesMap};
 use reth_revm::{
     Context, Inspector,
     context::{
-        BlockEnv, Cfg, CfgEnv, ContextTr, Host, JournalTr, TxEnv,
+        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
         result::{
             EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
             ResultAndState,
@@ -330,28 +330,24 @@ where
 mod tests {
     use super::*;
     use crate::TempoEvmFactory;
-    use alloy_primitives::{B256, U256};
+    use alloy_primitives::U256;
     use rand::random;
     use reth::revm::{
         DatabaseCommit,
-        context::{BlockEnv, CfgEnv, ContextTr, Host},
+        context::ContextTr,
         db::{CacheDB, EmptyDB},
         inspector::NoOpInspector,
     };
-    use reth_evm::{EthEvmFactory, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
-    use std::collections::HashMap;
+    use reth_evm::{EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
     use tempo_precompiles::{
         TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
         contracts::{
-            self, HashMapStorageProvider,
-            ITIP20::{ITIP20Calls, balanceOfCall},
-            ITIP20Factory, TIP20Token, address_to_token_id_unchecked,
+            ITIP20Factory, TIP20Token,
             storage::evm::EvmStorageProvider,
-            tip_fee_manager::TipFeeManager,
             tip20::ISSUER_ROLE,
+            token_id_to_address,
             types::{IFeeManager, ITIP20},
         },
-        precompiles::extend_tempo_precompiles,
     };
 
     fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap> {
@@ -386,7 +382,7 @@ mod tests {
 
         let output = result.result.output().unwrap_or_default();
         let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?.to::<u64>();
-        let token_address = contracts::token_id_to_address(token_id);
+        let token_address = token_id_to_address(token_id);
 
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);

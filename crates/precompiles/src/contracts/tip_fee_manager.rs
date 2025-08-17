@@ -1,9 +1,6 @@
 use crate::contracts::{
     TIP20Token, address_to_token_id_unchecked,
-    storage::{
-        StorageProvider,
-        slots::{double_mapping_slot, mapping_slot},
-    },
+    storage::{StorageProvider, slots::mapping_slot},
     types::{IFeeManager, ITIP20},
 };
 use alloy::{
@@ -16,30 +13,13 @@ mod slots {
     use crate::contracts::storage::slots::to_u256;
     use alloy::primitives::U256;
 
-    // Pool state mappings
     pub const POOLS: U256 = to_u256(0);
-    pub const TOTAL_SUPPLY: U256 = to_u256(1);
     pub const POOL_EXISTS: U256 = to_u256(2);
-    pub const LIQUIDITY_BALANCES: U256 = to_u256(3);
 
-    // Token preferences
     pub const VALIDATOR_TOKENS: U256 = to_u256(4);
     pub const USER_TOKENS: U256 = to_u256(5);
-
-    // Fee tracking
     pub const COLLECTED_FEES: U256 = to_u256(6);
-
-    // Pending operations
-    pub const PENDING_RESERVE0: U256 = to_u256(7);
-    pub const PENDING_RESERVE1: U256 = to_u256(8);
-
-    // Arrays
-    pub const OPERATION_QUEUE_LENGTH: U256 = to_u256(9);
-    pub const OPERATION_QUEUE_BASE: U256 = to_u256(10);
     pub const TOKENS_WITH_FEES_LENGTH: U256 = to_u256(11);
-    pub const TOKENS_WITH_FEES_BASE: U256 = to_u256(12);
-    pub const POOLS_WITH_PENDING_OPS_LENGTH: U256 = to_u256(13);
-    pub const POOLS_WITH_PENDING_OPS_BASE: U256 = to_u256(14);
     pub const TOKEN_IN_FEES_ARRAY: U256 = to_u256(15);
 }
 
@@ -183,7 +163,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let slot = self.get_validator_token_slot(sender);
 
         let token = call.token.into_u256();
-        self.storage.sstore(self.contract_address, slot, token).expect("TODO: handle error");
+        self.storage
+            .sstore(self.contract_address, slot, token)
+            .expect("TODO: handle error");
         // TODO: emit event
 
         Ok(())
@@ -202,7 +184,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         let slot = self.get_user_token_slot(sender);
         let token = call.token.into_u256();
-        self.storage.sstore(self.contract_address, slot, token).expect("TODO: handle error");
+        self.storage
+            .sstore(self.contract_address, slot, token)
+            .expect("TODO: handle error");
 
         // TODO: emit event
 
@@ -244,19 +228,23 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let pool_slot = self.get_pool_slot(&pool_id);
         // Store as packed uint128 values. reserve1 in high 128 bits, reserve0 in low 128 bits
         self.storage
-            .sstore(self.contract_address, pool_slot, U256::ZERO).expect("TODO: handle error");
+            .sstore(self.contract_address, pool_slot, U256::ZERO)
+            .expect("TODO: handle error");
 
         // Mark pool as existing
         self.storage
-            .sstore(self.contract_address, exists_slot, U256::ONE).expect("TODO: handle error");
+            .sstore(self.contract_address, exists_slot, U256::ONE)
+            .expect("TODO: handle error");
 
         let token0_fees_slot = self.get_collected_fees_slot(&pool_key.token0);
         let token1_fees_slot = self.get_collected_fees_slot(&pool_key.token1);
         let fee_info_value = U256::from(1u128) << 128;
         self.storage
-            .sstore(self.contract_address, token0_fees_slot, fee_info_value).expect("TODO: handle error");
+            .sstore(self.contract_address, token0_fees_slot, fee_info_value)
+            .expect("TODO: handle error");
         self.storage
-            .sstore(self.contract_address, token1_fees_slot, fee_info_value).expect("TODO: handle error");
+            .sstore(self.contract_address, token1_fees_slot, fee_info_value)
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -363,18 +351,21 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
             if !in_array {
                 self.storage
-                    .sstore(self.contract_address, in_array_slot, U256::ONE).expect("TODO: handle error");
+                    .sstore(self.contract_address, in_array_slot, U256::ONE)
+                    .expect("TODO: handle error");
 
                 let length_value = self
                     .storage
                     .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH)
                     .expect("TODO: handle error");
 
-                self.storage.sstore(
-                    self.contract_address,
-                    slots::TOKENS_WITH_FEES_LENGTH,
-                    length_value + U256::from(1),
-                ).expect("TODO: handle error");
+                self.storage
+                    .sstore(
+                        self.contract_address,
+                        slots::TOKENS_WITH_FEES_LENGTH,
+                        length_value + U256::from(1),
+                    )
+                    .expect("TODO: handle error");
             }
         }
 
@@ -448,7 +439,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             U256::from(fee_info.amount)
         };
         self.storage
-            .sstore(self.contract_address, fees_slot, fees_value).expect("TODO: handle error");
+            .sstore(self.contract_address, fees_slot, fees_value)
+            .expect("TODO: handle error");
     }
 
     // TODO: swap for validator token
@@ -476,16 +468,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         mapping_slot(pool_id, slots::POOLS)
     }
 
-    fn get_total_supply_slot(&self, pool_id: &B256) -> U256 {
-        mapping_slot(pool_id, slots::TOTAL_SUPPLY)
-    }
-
     fn get_pool_exists_slot(&self, pool_id: &B256) -> U256 {
         mapping_slot(pool_id, slots::POOL_EXISTS)
-    }
-
-    fn get_liquidity_balance_slot(&self, pool_id: &B256, user: &Address) -> U256 {
-        double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES)
     }
 
     fn get_validator_token_slot(&self, validator: &Address) -> U256 {
@@ -577,7 +561,7 @@ mod tests {
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
-        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE, token_id_to_address},
+        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE},
     };
 
     #[test]

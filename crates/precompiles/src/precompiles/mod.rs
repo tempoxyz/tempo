@@ -3,10 +3,7 @@ use alloy::{
     sol_types::{SolCall, SolInterface},
 };
 use alloy_primitives::Bytes;
-use reth::revm::{
-    Inspector,
-    precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
-};
+use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use reth_evm::precompiles::{DynPrecompile, PrecompilesMap};
 
 pub mod tip20;
