@@ -6,13 +6,8 @@ use alloy_primitives::Bytes;
 use reth::revm::{
     Inspector,
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
-    primitives::hardfork::SpecId,
 };
-use reth_evm::{
-    Database, EthEvm, Evm,
-    eth::EthEvmContext,
-    precompiles::{DynPrecompile, PrecompilesMap},
-};
+use reth_evm::precompiles::{DynPrecompile, PrecompilesMap};
 
 pub mod tip20;
 pub mod tip20_factory;

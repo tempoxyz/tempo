@@ -1,5 +1,4 @@
 use alloy::primitives::{Address, IntoLogData, U256};
-use reth::revm::db;
 
 use crate::{
     TIP20_FACTORY_ADDRESS,
