@@ -39,14 +39,17 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
     pub fn policy_id_counter(&mut self) -> u64 {
         let counter_val = self
             .storage
-            .sload(TIP403_REGISTRY_ADDRESS, slots::POLICY_ID_COUNTER).expect("TODO: handle error");
+            .sload(TIP403_REGISTRY_ADDRESS, slots::POLICY_ID_COUNTER)
+            .expect("TODO: handle error");
         // Initialize policy ID counter to 2 if it's 0 (skip special policies)
         if counter_val == U256::ZERO {
-            self.storage.sstore(
-                TIP403_REGISTRY_ADDRESS,
-                slots::POLICY_ID_COUNTER,
-                U256::from(2),
-            ).expect("TODO: handle error");
+            self.storage
+                .sstore(
+                    TIP403_REGISTRY_ADDRESS,
+                    slots::POLICY_ID_COUNTER,
+                    U256::from(2),
+                )
+                .expect("TODO: handle error");
             return 2;
         }
         counter_val.to::<u64>()
@@ -76,11 +79,13 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let new_policy_id = self.policy_id_counter();
 
         // Increment counter
-        self.storage.sstore(
-            TIP403_REGISTRY_ADDRESS,
-            slots::POLICY_ID_COUNTER,
-            U256::from(new_policy_id + 1),
-        ).expect("TODO: handle error");
+        self.storage
+            .sstore(
+                TIP403_REGISTRY_ADDRESS,
+                slots::POLICY_ID_COUNTER,
+                U256::from(new_policy_id + 1),
+            )
+            .expect("TODO: handle error");
 
         // Store policy data
         self.set_policy_data(
@@ -92,25 +97,29 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         );
 
         // Emit events
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyCreated(ITIP403Registry::PolicyCreated {
-                policyId: new_policy_id,
-                updater: *msg_sender,
-                policyType: call.policyType,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                TIP403_REGISTRY_ADDRESS,
+                TIP403RegistryEvent::PolicyCreated(ITIP403Registry::PolicyCreated {
+                    policyId: new_policy_id,
+                    updater: *msg_sender,
+                    policyType: call.policyType,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
-                policyId: new_policy_id,
-                updater: *msg_sender,
-                adminPolicyId: call.adminPolicyId,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                TIP403_REGISTRY_ADDRESS,
+                TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
+                    policyId: new_policy_id,
+                    updater: *msg_sender,
+                    adminPolicyId: call.adminPolicyId,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(new_policy_id)
     }
@@ -133,11 +142,13 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         }
 
         // Increment counter
-        self.storage.sstore(
-            TIP403_REGISTRY_ADDRESS,
-            slots::POLICY_ID_COUNTER,
-            U256::from(new_policy_id + 1),
-        ).expect("TODO: handle error");
+        self.storage
+            .sstore(
+                TIP403_REGISTRY_ADDRESS,
+                slots::POLICY_ID_COUNTER,
+                U256::from(new_policy_id + 1),
+            )
+            .expect("TODO: handle error");
 
         // Store policy data
 
@@ -155,28 +166,36 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
 
             match policy_type {
                 ITIP403Registry::PolicyType::WHITELIST => {
-                    self.storage.emit_event(
-                        TIP403_REGISTRY_ADDRESS,
-                        TIP403RegistryEvent::WhitelistUpdated(ITIP403Registry::WhitelistUpdated {
-                            policyId: new_policy_id,
-                            updater: *msg_sender,
-                            account: *account,
-                            allowed: true,
-                        })
-                        .into_log_data(),
-                    ).expect("TODO: handle error");
+                    self.storage
+                        .emit_event(
+                            TIP403_REGISTRY_ADDRESS,
+                            TIP403RegistryEvent::WhitelistUpdated(
+                                ITIP403Registry::WhitelistUpdated {
+                                    policyId: new_policy_id,
+                                    updater: *msg_sender,
+                                    account: *account,
+                                    allowed: true,
+                                },
+                            )
+                            .into_log_data(),
+                        )
+                        .expect("TODO: handle error");
                 }
                 ITIP403Registry::PolicyType::BLACKLIST => {
-                    self.storage.emit_event(
-                        TIP403_REGISTRY_ADDRESS,
-                        TIP403RegistryEvent::BlacklistUpdated(ITIP403Registry::BlacklistUpdated {
-                            policyId: new_policy_id,
-                            updater: *msg_sender,
-                            account: *account,
-                            restricted: true,
-                        })
-                        .into_log_data(),
-                    ).expect("TODO: handle error");
+                    self.storage
+                        .emit_event(
+                            TIP403_REGISTRY_ADDRESS,
+                            TIP403RegistryEvent::BlacklistUpdated(
+                                ITIP403Registry::BlacklistUpdated {
+                                    policyId: new_policy_id,
+                                    updater: *msg_sender,
+                                    account: *account,
+                                    restricted: true,
+                                },
+                            )
+                            .into_log_data(),
+                        )
+                        .expect("TODO: handle error");
                 }
                 ITIP403Registry::PolicyType::__Invalid => {
                     return Err(tip403_err!(IncompatiblePolicyType));
@@ -185,25 +204,29 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         }
 
         // Emit policy creation events
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyCreated(ITIP403Registry::PolicyCreated {
-                policyId: new_policy_id,
-                updater: *msg_sender,
-                policyType: call.policyType,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                TIP403_REGISTRY_ADDRESS,
+                TIP403RegistryEvent::PolicyCreated(ITIP403Registry::PolicyCreated {
+                    policyId: new_policy_id,
+                    updater: *msg_sender,
+                    policyType: call.policyType,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
-                policyId: new_policy_id,
-                updater: *msg_sender,
-                adminPolicyId: admin_policy_id,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                TIP403_REGISTRY_ADDRESS,
+                TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
+                    policyId: new_policy_id,
+                    updater: *msg_sender,
+                    adminPolicyId: admin_policy_id,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(new_policy_id)
     }
@@ -229,15 +252,17 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
             },
         );
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
-                policyId: call.policyId,
-                updater: *msg_sender,
-                adminPolicyId: call.adminPolicyId,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                TIP403_REGISTRY_ADDRESS,
+                TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
+                    policyId: call.policyId,
+                    updater: *msg_sender,
+                    adminPolicyId: call.adminPolicyId,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -261,16 +286,18 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
 
         self.set_policy_set(call.policyId, &call.account, call.allowed);
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::WhitelistUpdated(ITIP403Registry::WhitelistUpdated {
-                policyId: call.policyId,
-                updater: *msg_sender,
-                account: call.account,
-                allowed: call.allowed,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                TIP403_REGISTRY_ADDRESS,
+                TIP403RegistryEvent::WhitelistUpdated(ITIP403Registry::WhitelistUpdated {
+                    policyId: call.policyId,
+                    updater: *msg_sender,
+                    account: call.account,
+                    allowed: call.allowed,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -294,16 +321,18 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
 
         self.set_policy_set(call.policyId, &call.account, call.restricted);
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::BlacklistUpdated(ITIP403Registry::BlacklistUpdated {
-                policyId: call.policyId,
-                updater: *msg_sender,
-                account: call.account,
-                restricted: call.restricted,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                TIP403_REGISTRY_ADDRESS,
+                TIP403RegistryEvent::BlacklistUpdated(ITIP403Registry::BlacklistUpdated {
+                    policyId: call.policyId,
+                    updater: *msg_sender,
+                    account: call.account,
+                    restricted: call.restricted,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -311,7 +340,10 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
     // Internal helper functions
     fn get_policy_data(&mut self, policy_id: u64) -> PolicyData {
         let slot = mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA);
-        let value = self.storage.sload(TIP403_REGISTRY_ADDRESS, slot).expect("TODO: handle error");
+        let value = self
+            .storage
+            .sload(TIP403_REGISTRY_ADDRESS, slot)
+            .expect("TODO: handle error");
 
         // Extract policy type (low 128 bits) and admin policy ID (high 128 bits)
         let policy_type = (value.to::<u128>() & 0xFF) as u8;
@@ -329,16 +361,20 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         // Pack policy type and admin policy ID into single U256
         let value = U256::from(data.policy_type as u128) | (U256::from(data.admin_policy_id) << 64);
 
-        self.storage.sstore(TIP403_REGISTRY_ADDRESS, slot, value).expect("TODO: handle error");
+        self.storage
+            .sstore(TIP403_REGISTRY_ADDRESS, slot, value)
+            .expect("TODO: handle error");
     }
 
     fn set_policy_set(&mut self, policy_id: u64, account: &Address, value: bool) {
         let slot = double_mapping_slot(policy_id.to_be_bytes(), account, slots::POLICY_SET);
-        self.storage.sstore(
-            TIP403_REGISTRY_ADDRESS,
-            slot,
-            if value { U256::from(1) } else { U256::ZERO },
-        ).expect("TODO: handle error");
+        self.storage
+            .sstore(
+                TIP403_REGISTRY_ADDRESS,
+                slot,
+                if value { U256::from(1) } else { U256::ZERO },
+            )
+            .expect("TODO: handle error");
     }
 
     fn is_authorized_internal(&mut self, policy_id: u64, user: &Address) -> bool {
@@ -350,10 +386,14 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         }
 
         let data = self.get_policy_data(policy_id);
-        let is_in_set = self.storage.sload(
-            TIP403_REGISTRY_ADDRESS,
-            double_mapping_slot(policy_id.to_be_bytes(), user, slots::POLICY_SET),
-        ).expect("TODO: handle error") != U256::ZERO;
+        let is_in_set = self
+            .storage
+            .sload(
+                TIP403_REGISTRY_ADDRESS,
+                double_mapping_slot(policy_id.to_be_bytes(), user, slots::POLICY_SET),
+            )
+            .expect("TODO: handle error")
+            != U256::ZERO;
 
         match data.policy_type {
             ITIP403Registry::PolicyType::WHITELIST => is_in_set,

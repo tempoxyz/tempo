@@ -1,10 +1,6 @@
 use crate::{
-    contracts::{
-        storage::StorageProvider,
-        tip_fee_manager::TipFeeManager,
-        types::IFeeManager,
-    },
-    precompiles::{Precompile, view, mutate_void},
+    contracts::{storage::StorageProvider, tip_fee_manager::TipFeeManager, types::IFeeManager},
+    precompiles::{Precompile, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth::revm::precompile::{PrecompileError, PrecompileResult};
@@ -12,10 +8,11 @@ use reth::revm::precompile::{PrecompileError, PrecompileResult};
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| { 
-            PrecompileError::Other("Invalid input: missing function selector".to_string()) 
-        })?.try_into().unwrap();
-
+        let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| {
+            PrecompileError::Other("Invalid input: missing function selector".to_string())
+        })?.try_into().map_err(|_| {
+            PrecompileError::Other("Invalid function selector length".to_string())
+        })?;
         match selector {
             // View functions
             IFeeManager::userTokensCall::SELECTOR => view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call)),
@@ -42,12 +39,18 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        contracts::{HashMapStorageProvider, types::IFeeManager, tip20::ISSUER_ROLE, TIP20Token, tip_fee_manager::PoolKey},
+        TIP_FEE_MANAGER_ADDRESS,
+        contracts::{
+            HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
+            tip_fee_manager::PoolKey,
+            tip20::ISSUER_ROLE,
+            types::{IFeeManager, ITIP20},
+        },
+        fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
-        fee_manager_err, TIP_FEE_MANAGER_ADDRESS, contracts::{address_to_token_id_unchecked, types::ITIP20},
     };
     use alloy::{
-        primitives::{Address, Bytes, U256, B256},
+        primitives::{Address, B256, Bytes, U256},
         sol_types::SolValue,
     };
     use eyre::Result;
@@ -70,13 +73,7 @@ mod tests {
         let mut roles = tip20_token.get_roles_contract();
         roles.grant_role_internal(&user, *ISSUER_ROLE);
         tip20_token
-            .mint(
-                &user,
-                ITIP20::mintCall {
-                    to: user,
-                    amount,
-                },
-            )
+            .mint(&user, ITIP20::mintCall { to: user, amount })
             .unwrap();
 
         // Approve fee manager to transfer tokens
@@ -110,7 +107,7 @@ mod tests {
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let returned_token = Address::abi_decode(&result.bytes)?;
         assert_eq!(returned_token, token);
-        
+
         Ok(())
     }
 
@@ -120,10 +117,13 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
         let validator = Address::random();
 
-        let calldata = IFeeManager::setValidatorTokenCall { token: Address::ZERO }.abi_encode();
+        let calldata = IFeeManager::setValidatorTokenCall {
+            token: Address::ZERO,
+        }
+        .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &validator);
         expect_precompile_error(&result, fee_manager_err!(InvalidToken));
-        
+
         Ok(())
     }
 
@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let returned_token = Address::abi_decode(&result.bytes)?;
         assert_eq!(returned_token, token);
-        
+
         Ok(())
     }
 
@@ -154,7 +154,10 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
         let user = Address::random();
 
-        let calldata = IFeeManager::setUserTokenCall { token: Address::ZERO }.abi_encode();
+        let calldata = IFeeManager::setUserTokenCall {
+            token: Address::ZERO,
+        }
+        .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &user);
         expect_precompile_error(&result, fee_manager_err!(InvalidToken));
     }
@@ -169,16 +172,21 @@ mod tests {
         let calldata = IFeeManager::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
-        }.abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), &Address::random()).unwrap();
+        }
+        .abi_encode();
+        let result = fee_manager
+            .call(&Bytes::from(calldata), &Address::random())
+            .unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify pool exists
         let pool_key = PoolKey::new(token_a, token_b);
         let pool_id = pool_key.get_id();
-        
+
         let calldata = IFeeManager::poolExistsCall { poolId: pool_id }.abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), &Address::random()).unwrap();
+        let result = fee_manager
+            .call(&Bytes::from(calldata), &Address::random())
+            .unwrap();
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let exists = bool::abi_decode(&result.bytes).unwrap();
         assert!(exists);
@@ -193,7 +201,8 @@ mod tests {
         let calldata = IFeeManager::createPoolCall {
             tokenA: token,
             tokenB: token,
-        }.abi_encode();
+        }
+        .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
         expect_precompile_error(&result, fee_manager_err!(IdenticalAddresses));
     }
@@ -207,7 +216,8 @@ mod tests {
         let calldata = IFeeManager::createPoolCall {
             tokenA: Address::ZERO,
             tokenB: token,
-        }.abi_encode();
+        }
+        .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
         expect_precompile_error(&result, fee_manager_err!(InvalidToken));
     }
@@ -222,10 +232,13 @@ mod tests {
         let calldata = IFeeManager::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
-        }.abi_encode();
-        
+        }
+        .abi_encode();
+
         // Create pool first time
-        let result = fee_manager.call(&Bytes::from(calldata.clone()), &Address::random()).unwrap();
+        let result = fee_manager
+            .call(&Bytes::from(calldata.clone()), &Address::random())
+            .unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Try to create same pool again
@@ -245,14 +258,15 @@ mod tests {
             token1: token_b,
         };
         let calldata = IFeeManager::getPoolIdCall { key }.abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), &Address::random()).unwrap();
+        let result = fee_manager
+            .call(&Bytes::from(calldata), &Address::random())
+            .unwrap();
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
-        
+
         let returned_id = B256::abi_decode(&result.bytes).unwrap();
         let expected_id = PoolKey::new(token_a, token_b).get_id();
         assert_eq!(returned_id, expected_id);
     }
-
 
     #[test]
     fn test_collect_fee() -> Result<()> {
@@ -283,7 +297,7 @@ mod tests {
             amount,
         };
         let collect_calldata = collect_call.abi_encode();
-        
+
         let result = fee_manager.call(&Bytes::from(collect_calldata), &Address::ZERO)?;
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
@@ -291,11 +305,11 @@ mod tests {
         let balance_call = IFeeManager::getFeeTokenBalanceCall { sender: user };
         let balance_calldata = balance_call.abi_encode();
         let result = fee_manager.call(&Bytes::from(balance_calldata), &user)?;
-        let balance_result = IFeeManager::getFeeTokenBalanceCall::abi_decode_returns(&result.bytes)?;
+        let balance_result =
+            IFeeManager::getFeeTokenBalanceCall::abi_decode_returns(&result.bytes)?;
         assert_eq!(balance_result._0, token);
         assert_eq!(balance_result._1, U256::MAX - amount);
-        
+
         Ok(())
     }
-
 }

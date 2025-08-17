@@ -22,7 +22,7 @@ impl HashMapStorageProvider {
 
 impl StorageProvider for HashMapStorageProvider {
     type Error = ();
-    
+
     fn chain_id(&self) -> u64 {
         self.chain_id
     }
@@ -43,7 +43,8 @@ impl StorageProvider for HashMapStorageProvider {
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
-        Ok(self.internals
+        Ok(self
+            .internals
             .get(&(address, key))
             .copied()
             .unwrap_or(U256::ZERO))

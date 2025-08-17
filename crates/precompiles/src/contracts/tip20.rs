@@ -139,20 +139,24 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         call: ITIP20::changeTransferPolicyIdCall,
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-        self.storage.sstore(
-            self.token_address,
-            slots::TRANSFER_POLICY_ID,
-            U256::from(call.newPolicyId),
-        ).expect("TODO: handle error");
+        self.storage
+            .sstore(
+                self.token_address,
+                slots::TRANSFER_POLICY_ID,
+                U256::from(call.newPolicyId),
+            )
+            .expect("TODO: handle error");
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::TransferPolicyUpdate(ITIP20::TransferPolicyUpdate {
-                updater: *msg_sender,
-                newPolicyId: call.newPolicyId,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::TransferPolicyUpdate(ITIP20::TransferPolicyUpdate {
+                    updater: *msg_sender,
+                    newPolicyId: call.newPolicyId,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
         Ok(())
     }
 
@@ -166,16 +170,19 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             return Err(tip20_err!(SupplyCapExceeded));
         }
         self.storage
-            .sstore(self.token_address, slots::SUPPLY_CAP, call.newSupplyCap).expect("TODO: handle error");
+            .sstore(self.token_address, slots::SUPPLY_CAP, call.newSupplyCap)
+            .expect("TODO: handle error");
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::SupplyCapUpdate(ITIP20::SupplyCapUpdate {
-                updater: *msg_sender,
-                newSupplyCap: call.newSupplyCap,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::SupplyCapUpdate(ITIP20::SupplyCapUpdate {
+                    updater: *msg_sender,
+                    newSupplyCap: call.newSupplyCap,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
         Ok(())
     }
 
@@ -186,16 +193,19 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *PAUSE_ROLE)?;
         self.storage
-            .sstore(self.token_address, slots::PAUSED, U256::ONE).expect("TODO: handle error");
+            .sstore(self.token_address, slots::PAUSED, U256::ONE)
+            .expect("TODO: handle error");
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::PauseStateUpdate(ITIP20::PauseStateUpdate {
-                updater: *msg_sender,
-                isPaused: true,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::PauseStateUpdate(ITIP20::PauseStateUpdate {
+                    updater: *msg_sender,
+                    isPaused: true,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
         Ok(())
     }
 
@@ -206,16 +216,19 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *UNPAUSE_ROLE)?;
         self.storage
-            .sstore(self.token_address, slots::PAUSED, U256::ZERO).expect("TODO: handle error");
+            .sstore(self.token_address, slots::PAUSED, U256::ZERO)
+            .expect("TODO: handle error");
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::PauseStateUpdate(ITIP20::PauseStateUpdate {
-                updater: *msg_sender,
-                isPaused: false,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::PauseStateUpdate(ITIP20::PauseStateUpdate {
+                    updater: *msg_sender,
+                    isPaused: false,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
         Ok(())
     }
 
@@ -242,24 +255,28 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 .ok_or(tip20_err!(SupplyCapExceeded))?;
         self.set_balance(&call.to, new_to_balance);
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::Transfer(ITIP20::Transfer {
-                from: Address::ZERO,
-                to: call.to,
-                amount: call.amount,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::Transfer(ITIP20::Transfer {
+                    from: Address::ZERO,
+                    to: call.to,
+                    amount: call.amount,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::Mint(ITIP20::Mint {
-                to: call.to,
-                amount: call.amount,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::Mint(ITIP20::Mint {
+                    to: call.to,
+                    amount: call.amount,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -275,14 +292,16 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .ok_or(tip20_err!(InsufficientBalance))?;
         self.set_total_supply(new_supply);
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::Burn(ITIP20::Burn {
-                from: *msg_sender,
-                amount: call.amount,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::Burn(ITIP20::Burn {
+                    from: *msg_sender,
+                    amount: call.amount,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -313,14 +332,16 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .ok_or(tip20_err!(InsufficientBalance))?;
         self.set_total_supply(new_supply);
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::BurnBlocked(ITIP20::BurnBlocked {
-                from: call.from,
-                amount: call.amount,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::BurnBlocked(ITIP20::BurnBlocked {
+                    from: call.from,
+                    amount: call.amount,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -333,15 +354,17 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<bool, TIP20Error> {
         self.set_allowance(msg_sender, &call.spender, call.amount);
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::Approval(ITIP20::Approval {
-                owner: *msg_sender,
-                spender: call.spender,
-                amount: call.amount,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::Approval(ITIP20::Approval {
+                    owner: *msg_sender,
+                    spender: call.spender,
+                    amount: call.amount,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(true)
     }
@@ -436,19 +459,22 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // Increment nonce after successful verification
         self.storage
-            .sstore(self.token_address, nonce_slot, nonce + U256::ONE).expect("TODO: handle error");
+            .sstore(self.token_address, nonce_slot, nonce + U256::ONE)
+            .expect("TODO: handle error");
 
         self.set_allowance(&call.owner, &call.spender, call.value);
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::Approval(ITIP20::Approval {
-                owner: call.owner,
-                spender: call.spender,
-                amount: call.value,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::Approval(ITIP20::Approval {
+                    owner: call.owner,
+                    spender: call.spender,
+                    amount: call.value,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -465,16 +491,18 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         self._transfer(msg_sender, &call.to, call.amount)?;
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: *msg_sender,
-                to: call.to,
-                amount: call.amount,
-                memo: call.memo,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                    from: *msg_sender,
+                    to: call.to,
+                    amount: call.amount,
+                    memo: call.memo,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -501,7 +529,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         admin: &Address,
     ) -> Result<(), TIP20Error> {
         // EVM invariant that empty accounts do nothing, so must give some code.
-        self.storage.set_code(self.token_address, vec![0xef]).expect("TODO: handle error");
+        self.storage
+            .set_code(self.token_address, vec![0xef])
+            .expect("TODO: handle error");
 
         self.write_string(slots::NAME, name.to_string())?;
         self.write_string(slots::SYMBOL, symbol.to_string())?;
@@ -514,9 +544,11 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // Set default values
         self.storage
-            .sstore(self.token_address, slots::SUPPLY_CAP, U256::MAX).expect("TODO: handle error");
+            .sstore(self.token_address, slots::SUPPLY_CAP, U256::MAX)
+            .expect("TODO: handle error");
         self.storage
-            .sstore(self.token_address, slots::TRANSFER_POLICY_ID, U256::ONE).expect("TODO: handle error"); // Default "always-allow" policy
+            .sstore(self.token_address, slots::TRANSFER_POLICY_ID, U256::ONE)
+            .expect("TODO: handle error"); // Default "always-allow" policy
 
         // Initialize roles system and grant admin role
         let mut roles = self.get_roles_contract();
@@ -533,11 +565,13 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         domain_data.extend_from_slice(&U256::from(self.storage.chain_id()).to_be_bytes::<32>());
         domain_data.extend_from_slice(self.token_address.as_slice());
         let domain_separator = keccak256(&domain_data);
-        self.storage.sstore(
-            self.token_address,
-            slots::DOMAIN_SEPARATOR,
-            U256::from_be_bytes(domain_separator.0),
-        ).expect("TODO: handle error");
+        self.storage
+            .sstore(
+                self.token_address,
+                slots::DOMAIN_SEPARATOR,
+                U256::from_be_bytes(domain_separator.0),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -561,7 +595,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn set_balance(&mut self, account: &Address, amount: U256) {
         let slot = mapping_slot(account, slots::BALANCES);
-        self.storage.sstore(self.token_address, slot, amount).expect("TODO: handle error");
+        self.storage
+            .sstore(self.token_address, slot, amount)
+            .expect("TODO: handle error");
     }
 
     fn get_allowance(&mut self, owner: &Address, spender: &Address) -> U256 {
@@ -573,12 +609,15 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn set_allowance(&mut self, owner: &Address, spender: &Address, amount: U256) {
         let slot = double_mapping_slot(owner, spender, slots::ALLOWANCES);
-        self.storage.sstore(self.token_address, slot, amount).expect("TODO: handle error");
+        self.storage
+            .sstore(self.token_address, slot, amount)
+            .expect("TODO: handle error");
     }
 
     fn set_total_supply(&mut self, amount: U256) {
         self.storage
-            .sstore(self.token_address, slots::TOTAL_SUPPLY, amount).expect("TODO: handle error");
+            .sstore(self.token_address, slots::TOTAL_SUPPLY, amount)
+            .expect("TODO: handle error");
     }
 
     fn check_role(&mut self, account: &Address, role: B256) -> Result<(), TIP20Error> {
@@ -650,15 +689,17 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             self.set_balance(to, new_to_balance);
         }
 
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::Transfer(ITIP20::Transfer {
-                from: *from,
-                to: *to,
-                amount,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::Transfer(ITIP20::Transfer {
+                    from: *from,
+                    to: *to,
+                    amount,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -688,7 +729,8 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         storage_bytes[31] = (bytes.len() * 2) as u8; // Store length * 2 in last byte
 
         self.storage
-            .sstore(self.token_address, slot, U256::from_be_bytes(storage_bytes)).expect("TODO: handle error");
+            .sstore(self.token_address, slot, U256::from_be_bytes(storage_bytes))
+            .expect("TODO: handle error");
         Ok(())
     }
 

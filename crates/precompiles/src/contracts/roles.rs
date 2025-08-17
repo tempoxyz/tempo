@@ -63,16 +63,18 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
         self.grant_role_internal(&call.account, call.role);
 
-        self.storage.emit_event(
-            self.parent_contract_address,
-            RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
-                role: call.role,
-                account: call.account,
-                sender: *msg_sender,
-                hasRole: true,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.parent_contract_address,
+                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
+                    role: call.role,
+                    account: call.account,
+                    sender: *msg_sender,
+                    hasRole: true,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -87,16 +89,18 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
         self.revoke_role_internal(&call.account, call.role);
 
-        self.storage.emit_event(
-            self.parent_contract_address,
-            RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
-                role: call.role,
-                account: call.account,
-                sender: *msg_sender,
-                hasRole: false,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.parent_contract_address,
+                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
+                    role: call.role,
+                    account: call.account,
+                    sender: *msg_sender,
+                    hasRole: false,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -110,16 +114,18 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
         self.revoke_role_internal(msg_sender, call.role);
 
-        self.storage.emit_event(
-            self.parent_contract_address,
-            RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
-                role: call.role,
-                account: *msg_sender,
-                sender: *msg_sender,
-                hasRole: false,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.parent_contract_address,
+                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
+                    role: call.role,
+                    account: *msg_sender,
+                    sender: *msg_sender,
+                    hasRole: false,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -134,15 +140,17 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
         self.set_role_admin_internal(call.role, call.adminRole);
 
-        self.storage.emit_event(
-            self.parent_contract_address,
-            RolesAuthEvent::RoleAdminUpdated(IRolesAuth::RoleAdminUpdated {
-                role: call.role,
-                newAdminRole: call.adminRole,
-                sender: *msg_sender,
-            })
-            .into_log_data(),
-        ).expect("TODO: handle error");
+        self.storage
+            .emit_event(
+                self.parent_contract_address,
+                RolesAuthEvent::RoleAdminUpdated(IRolesAuth::RoleAdminUpdated {
+                    role: call.role,
+                    newAdminRole: call.adminRole,
+                    sender: *msg_sender,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -155,34 +163,44 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     // Internal implementation functions
     fn has_role_internal(&mut self, account: &Address, role: B256) -> bool {
         let slot = double_mapping_slot(account, role, self.roles_slot);
-        self.storage.sload(self.parent_contract_address, slot).expect("TODO: handle error") != U256::ZERO
+        self.storage
+            .sload(self.parent_contract_address, slot)
+            .expect("TODO: handle error")
+            != U256::ZERO
     }
 
     pub fn grant_role_internal(&mut self, account: &Address, role: B256) {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         self.storage
-            .sstore(self.parent_contract_address, slot, U256::ONE).expect("TODO: handle error");
+            .sstore(self.parent_contract_address, slot, U256::ONE)
+            .expect("TODO: handle error");
     }
 
     fn revoke_role_internal(&mut self, account: &Address, role: B256) {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         self.storage
-            .sstore(self.parent_contract_address, slot, U256::ZERO).expect("TODO: handle error");
+            .sstore(self.parent_contract_address, slot, U256::ZERO)
+            .expect("TODO: handle error");
     }
 
     fn get_role_admin_internal(&mut self, role: B256) -> B256 {
         let slot = mapping_slot(role, self.role_admin_slot);
-        let admin = self.storage.sload(self.parent_contract_address, slot).expect("TODO: handle error");
+        let admin = self
+            .storage
+            .sload(self.parent_contract_address, slot)
+            .expect("TODO: handle error");
         B256::from(admin) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     }
 
     fn set_role_admin_internal(&mut self, role: B256, admin_role: B256) {
         let slot = mapping_slot(role, self.role_admin_slot);
-        self.storage.sstore(
-            self.parent_contract_address,
-            slot,
-            U256::from_be_bytes(admin_role.0),
-        ).expect("TODO: handle error");
+        self.storage
+            .sstore(
+                self.parent_contract_address,
+                slot,
+                U256::from_be_bytes(admin_role.0),
+            )
+            .expect("TODO: handle error");
     }
 
     fn check_role_internal(&mut self, account: &Address, role: B256) -> Result<(), RolesAuthError> {
