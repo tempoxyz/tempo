@@ -161,11 +161,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         let slot = self.get_validator_token_slot(sender);
-
         let token = call.token.into_u256();
         self.storage
             .sstore(self.contract_address, slot, token)
             .expect("TODO: handle error");
+
         // TODO: emit event
 
         Ok(())
@@ -636,10 +636,6 @@ mod tests {
     #[test]
     fn test_collect_fee() {
         let mut storage = HashMapStorageProvider::new(1);
-
-        // NOTE: when spender is call.to then it is approved so we are not approving the right
-        // sender
-
         let user = Address::random();
         let validator = Address::random();
         let token = Address::random();

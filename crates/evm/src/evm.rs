@@ -94,6 +94,11 @@ where
             self.inner
                 .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, call_data)?;
 
+        // NOTE: transact_system_call clears the journal so we need to commit to journal state
+        if balance_result.result.is_success() {
+            self.journal_state(balance_result.state)?;
+        }
+
         let output = balance_result.result.output().unwrap_or_default();
         let return_val = IFeeManager::getFeeTokenBalanceCall::abi_decode_returns(output)
             .map_err(|e| EVMError::Custom(format!("Failed to decode fee token balance: {e}")))?;
@@ -339,6 +344,7 @@ mod tests {
         inspector::NoOpInspector,
     };
     use reth_evm::{EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
+    use reth_revm::context::Host;
     use tempo_precompiles::{
         TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
         contracts::{
@@ -458,9 +464,9 @@ mod tests {
             set_fee_token_call.abi_encode().into(),
         )?;
         assert!(result.result.is_success());
-        evm.db_mut().commit(result.state);
+        evm.journal_state(result.state)?;
 
-        let fee_balance = random::<u64>();
+        let fee_balance = 1000;
         let transfer_call = ITIP20::transferCall {
             to: sender,
             amount: U256::from(fee_balance),
@@ -468,8 +474,9 @@ mod tests {
 
         let result =
             evm.transact_system_call(admin, fee_token, transfer_call.abi_encode().into())?;
+
         assert!(result.result.is_success());
-        evm.db_mut().commit(result.state);
+        evm.journal_state(result.state)?;
 
         let (token_address, balance) = evm.get_fee_token_balance(sender)?;
         assert_eq!(fee_token, token_address);
@@ -595,6 +602,17 @@ mod tests {
         evm.journal_state(result.state)
             .expect("Failed to journal state");
 
+        // Set fee token for validator
+        let set_validator_fee_token_call = IFeeManager::setValidatorTokenCall { token: fee_token };
+        let result = evm.transact_system_call(
+            admin,
+            TIP_FEE_MANAGER_ADDRESS,
+            set_validator_fee_token_call.abi_encode().into(),
+        )?;
+        assert!(result.result.is_success());
+        evm.journal_state(result.state)
+            .expect("Failed to journal state");
+
         // Check initial balances
         let initial_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
         let initial_transfer_balance = balance_of_call(&mut evm, user, transfer_token)?;
@@ -616,6 +634,7 @@ mod tests {
         };
 
         // Execute transaction
+        evm.ctx_mut().block.beneficiary = admin;
         let result = evm.transact_raw(tx)?;
         assert!(result.result.is_success(), "Transaction should succeed");
         evm.journal_state(result.state)
