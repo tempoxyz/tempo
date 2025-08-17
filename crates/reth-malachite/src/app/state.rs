@@ -40,7 +40,7 @@ use malachitebft_core_types::{
     CommitCertificate, Height as HeightTrait, Round, Validity, VoteExtensions,
 };
 use rand::{SeedableRng, rngs::StdRng};
-use reth_engine_primitives::BeaconConsensusEngineHandle;
+use reth_engine_primitives::ConsensusEngineHandle;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_builder::{NodeTypes, PayloadTypes};
 use reth_payload_builder::{PayloadBuilderHandle, PayloadStore};
@@ -146,7 +146,7 @@ pub struct State<N: NodeTypes> {
     pub address: Address,
     store: Store, // Already thread-safe
     pub signing_provider: Ed25519Provider,
-    pub engine_handle: BeaconConsensusEngineHandle<N::Payload>,
+    pub engine_handle: ConsensusEngineHandle<N::Payload>,
     pub payload_store: Arc<PayloadStore<N::Payload>>,
 
     // Mutable fields wrapped in RwLock for concurrent read/write access
@@ -176,7 +176,7 @@ where
         genesis: Genesis,
         address: Address,
         store: Store,
-        engine_handle: BeaconConsensusEngineHandle<N::Payload>,
+        engine_handle: ConsensusEngineHandle<N::Payload>,
         payload_builder_handle: PayloadBuilderHandle<N::Payload>,
         signing_provider: Option<Ed25519Provider>,
     ) -> Self {
@@ -212,7 +212,7 @@ where
         genesis: Genesis,
         address: Address,
         provider: Arc<P>,
-        engine_handle: BeaconConsensusEngineHandle<N::Payload>,
+        engine_handle: ConsensusEngineHandle<N::Payload>,
         payload_builder_handle: PayloadBuilderHandle<N::Payload>,
         signing_provider: Option<Ed25519Provider>,
     ) -> Result<Self>
