@@ -1,4 +1,5 @@
 pub mod evm;
+pub mod handler;
 
 use crate::evm::TempoEvm;
 use reth::revm::{
