@@ -308,8 +308,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let validator_token = self.get_validator_token(&call.coinbase)?;
         let user_token = self.get_user_token(&call.user, &validator_token);
 
-        dbg!(validator_token);
-        dbg!(user_token);
         if user_token != validator_token {
             let pool_key = PoolKey::new(user_token, validator_token);
             let pool_id = pool_key.get_id();
@@ -397,8 +395,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         fee_info.has_been_set = true;
 
         self.set_fee_info(&user_token, &fee_info);
-
-        // TODO: refund unused fees
 
         Ok(())
     }
