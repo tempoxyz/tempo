@@ -735,7 +735,5 @@ mod tests {
             fee_manager.get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall { sender: user });
         assert_eq!(result._0, token);
         assert_eq!(result._1, initial_balance - amount);
-
-        // TODO: assert balances
     }
 }
