@@ -11,10 +11,8 @@ use reth::revm::{
     primitives::hardfork::SpecId,
 };
 use reth_evm::{
-    Database, EthEvmFactory, Evm, EvmEnv, EvmFactory, eth::EthEvmContext,
-    precompiles::PrecompilesMap,
+    Database, EthEvmFactory, EvmEnv, EvmFactory, eth::EthEvmContext, precompiles::PrecompilesMap,
 };
-use tempo_precompiles::precompiles::extend_tempo_precompiles;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]

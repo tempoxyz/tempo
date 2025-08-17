@@ -1,9 +1,6 @@
 use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, Bytes, U256};
-use alloy_trie::KECCAK_EMPTY;
-use reth_evm::{
-    Database, EthEvm, Evm, EvmEnv, EvmError, EvmInternals, precompiles::PrecompilesMap,
-};
+use reth_evm::{Database, EthEvm, Evm, EvmEnv, precompiles::PrecompilesMap};
 
 use reth_revm::{
     Context, Inspector,
@@ -17,7 +14,7 @@ use reth_revm::{
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::InterpreterResult,
     primitives::hardfork::SpecId,
-    state::{Account, EvmState},
+    state::EvmState,
 };
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::{
@@ -271,7 +268,8 @@ where
         let caller = tx.caller;
         let (fee_token, balance) = self.get_fee_token_balance(caller)?;
 
-        // Compute adjusted gas fee and ensure sufficient balance
+        // All fee tokens are denominated in 6 decimals. Since gas is 9 decimals, the fee is
+        // adjusted for decimals and rounded up.
         let gas_fee = tx.gas_limit * tx.gas_price as u64;
         let adjusted_fee = (gas_fee / 1000) + 1;
 
