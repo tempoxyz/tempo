@@ -336,15 +336,13 @@ mod tests {
     use super::*;
     use crate::TempoEvmFactory;
     use alloy_primitives::U256;
-    use rand::random;
+
     use reth::revm::{
-        DatabaseCommit,
         context::ContextTr,
         db::{CacheDB, EmptyDB},
         inspector::NoOpInspector,
     };
     use reth_evm::{EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
-    use reth_revm::context::Host;
     use tempo_precompiles::{
         TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
         contracts::{
