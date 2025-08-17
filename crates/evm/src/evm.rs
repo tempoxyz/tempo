@@ -1,6 +1,10 @@
 use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, Bytes, U256};
-use reth_evm::{Database, EthEvm, Evm, EvmEnv, EvmError, precompiles::PrecompilesMap};
+use alloy_trie::KECCAK_EMPTY;
+use reth_evm::{
+    Database, EthEvm, Evm, EvmEnv, EvmError, EvmInternals, precompiles::PrecompilesMap,
+};
+
 use reth_revm::{
     Context, Inspector,
     context::{
@@ -120,6 +124,11 @@ where
             self.inner
                 .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, call_data)?;
 
+        // NOTE: is there a more efficient way to do this rather than cloning state?
+        if exec_result.result.is_success() {
+            self.journal_state(exec_result.state.clone());
+        }
+
         Ok(exec_result)
     }
 
@@ -139,7 +148,11 @@ where
         let exec_result = self
             .inner
             .transact_system_call(caller, fee_token, call_data)?;
-        // TODO: FIXME: commit to state
+
+        // NOTE: is there a more efficient way to do this rather than cloning state?
+        if exec_result.result.is_success() {
+            self.journal_state(exec_result.state.clone());
+        }
 
         Ok(exec_result)
     }
@@ -159,7 +172,11 @@ where
         let exec_result =
             self.inner
                 .transact_system_call(TIP_FEE_MANAGER_ADDRESS, fee_token, call_data)?;
-        // TODO: FIXME: commit to state
+
+        // NOTE: is there a more efficient way to do this rather than cloning state?
+        if exec_result.result.is_success() {
+            self.journal_state(exec_result.state.clone());
+        }
 
         Ok(exec_result)
     }
@@ -167,40 +184,35 @@ where
     fn journal_state(&mut self, state: EvmState) {
         let journal = self.inner.ctx_mut().journal_mut();
         for (address, account) in state.iter() {
-            for (address, mut account) in state.iter() {
-                if !account.is_touched() {
-                    continue;
-                }
+            if !account.is_touched() {
+                continue;
+            }
 
-                if account.is_selfdestructed() {
-                    journal
-                        .selfdestruct(*address, Address::ZERO)
-                        .expect("TODO: ");
-                    continue;
-                }
+            journal.load_account(*address).expect("TODO: handle err");
+            journal.touch_account(*address);
 
-                // let is_newly_created = account.is_created();
-                // journal.db_mut().insert_contract(&mut account.info);
+            if account.is_selfdestructed() {
+                // FIXME: Get `target` for self destruct
                 //
-                //         let db_account = self.cache.accounts.entry(address).or_default();
-                //         db_account.info = account.info;
-                //
-                //         db_account.account_state = if is_newly_created {
-                //             db_account.storage.clear();
-                //             AccountState::StorageCleared
-                //         } else if db_account.account_state.is_storage_cleared() {
-                //             // Preserve old account state if it already exists
-                //             AccountState::StorageCleared
-                //         } else {
-                //             AccountState::Touched
-                //         };
-                //         db_account.storage.extend(
-                //             account
-                //                 .storage
-                //                 .into_iter()
-                //                 .map(|(key, value)| (key, value.present_value())),
-                //         );
-                //     }
+                // NOTE: journal_state is only called after increment_gas_fee,
+                // decrement_gas_fee and collect_fee. There should never be a self destruct but
+                // it would be nice to have `journal_state` as a general fn.
+                journal
+                    .selfdestruct(*address, Address::ZERO)
+                    .expect("Failed to selfdestruct account");
+                continue;
+            }
+
+            if let Some(code) = &account.info.code {
+                journal.set_code(*address, code.clone());
+            }
+
+            // TODO: we are not setting acct info atm
+
+            for (key, value) in account.storage.iter() {
+                journal
+                    .sstore(*address, *key, value.present_value())
+                    .expect("TODO: handle error");
             }
         }
     }
@@ -372,7 +384,7 @@ mod tests {
             create_token_call.abi_encode().into(),
         )?;
         assert!(result.result.is_success(), "Token creation failed");
-        evm.db_mut().commit(result.state);
+        evm.journal_state(result.state);
 
         let output = result.result.output().unwrap_or_default();
         let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?.to::<u64>();
@@ -415,6 +427,7 @@ mod tests {
     ) -> eyre::Result<u64> {
         let balance_call = ITIP20::balanceOfCall { account };
         let result = evm.transact_system_call(account, token, balance_call.abi_encode().into())?;
+        evm.journal_state(result.state);
 
         let output = result.result.output().unwrap_or_default();
         let balance = ITIP20::balanceOfCall::abi_decode_returns(output)?.to::<u64>();
@@ -497,7 +510,7 @@ mod tests {
             .into(),
         )?;
         assert!(result.result.is_success());
-        evm.db_mut().commit(result.state);
+        evm.journal_state(result.state);
 
         // Check initial balance
         let initial_balance = balance_of_call(&mut evm, caller, fee_token)?;
@@ -506,7 +519,6 @@ mod tests {
         let gas_fee = U256::from(100);
         let result = evm.decrement_gas_fee(caller, fee_token, gas_fee)?;
         assert!(result.result.is_success());
-        evm.db_mut().commit(result.state);
 
         let decremented_balance = balance_of_call(&mut evm, caller, fee_token)?;
         assert_eq!(decremented_balance, initial_balance - gas_fee.to::<u64>());
@@ -514,11 +526,9 @@ mod tests {
         // Increment gas fee
         let result = evm.increment_gas_fee(caller, fee_token, gas_fee)?;
         assert!(result.result.is_success());
-        evm.db_mut().commit(result.state);
 
         let incremented_balance = balance_of_call(&mut evm, caller, fee_token)?;
         assert_eq!(incremented_balance, initial_balance);
-
         Ok(())
     }
 
@@ -561,7 +571,7 @@ mod tests {
             .into(),
         )?;
         assert!(result.result.is_success());
-        evm.db_mut().commit(result.state);
+        evm.journal_state(result.state);
 
         let result = evm.transact_system_call(
             admin,
@@ -574,7 +584,7 @@ mod tests {
             .into(),
         )?;
         assert!(result.result.is_success());
-        evm.db_mut().commit(result.state);
+        evm.journal_state(result.state);
 
         // Set fee token for user
         let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
@@ -584,7 +594,7 @@ mod tests {
             set_fee_token_call.abi_encode().into(),
         )?;
         assert!(result.result.is_success());
-        evm.db_mut().commit(result.state);
+        evm.journal_state(result.state);
 
         // Check initial balances
         let initial_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
@@ -609,7 +619,7 @@ mod tests {
         // Execute transaction
         let result = evm.transact_raw(tx)?;
         assert!(result.result.is_success(), "Transaction should succeed");
-        evm.db_mut().commit(result.state);
+        evm.journal_state(result.state);
 
         // Verify balances after transaction
         let final_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
