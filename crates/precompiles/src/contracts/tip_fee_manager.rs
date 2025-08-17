@@ -183,7 +183,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let slot = self.get_validator_token_slot(sender);
 
         let token = call.token.into_u256();
-        self.storage.sstore(self.contract_address, slot, token);
+        self.storage.sstore(self.contract_address, slot, token).expect("TODO: handle error");
         // TODO: emit event
 
         Ok(())
@@ -202,7 +202,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         let slot = self.get_user_token_slot(sender);
         let token = call.token.into_u256();
-        self.storage.sstore(self.contract_address, slot, token);
+        self.storage.sstore(self.contract_address, slot, token).expect("TODO: handle error");
 
         // TODO: emit event
 
@@ -244,19 +244,19 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let pool_slot = self.get_pool_slot(&pool_id);
         // Store as packed uint128 values. reserve1 in high 128 bits, reserve0 in low 128 bits
         self.storage
-            .sstore(self.contract_address, pool_slot, U256::ZERO);
+            .sstore(self.contract_address, pool_slot, U256::ZERO).expect("TODO: handle error");
 
         // Mark pool as existing
         self.storage
-            .sstore(self.contract_address, exists_slot, U256::ONE);
+            .sstore(self.contract_address, exists_slot, U256::ONE).expect("TODO: handle error");
 
         let token0_fees_slot = self.get_collected_fees_slot(&pool_key.token0);
         let token1_fees_slot = self.get_collected_fees_slot(&pool_key.token1);
         let fee_info_value = U256::from(1u128) << 128;
         self.storage
-            .sstore(self.contract_address, token0_fees_slot, fee_info_value);
+            .sstore(self.contract_address, token0_fees_slot, fee_info_value).expect("TODO: handle error");
         self.storage
-            .sstore(self.contract_address, token1_fees_slot, fee_info_value);
+            .sstore(self.contract_address, token1_fees_slot, fee_info_value).expect("TODO: handle error");
 
         Ok(())
     }
@@ -363,7 +363,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
             if !in_array {
                 self.storage
-                    .sstore(self.contract_address, in_array_slot, U256::ONE);
+                    .sstore(self.contract_address, in_array_slot, U256::ONE).expect("TODO: handle error");
 
                 let length_value = self
                     .storage
@@ -374,7 +374,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                     self.contract_address,
                     slots::TOKENS_WITH_FEES_LENGTH,
                     length_value + U256::from(1),
-                );
+                ).expect("TODO: handle error");
             }
         }
 
@@ -448,7 +448,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             U256::from(fee_info.amount)
         };
         self.storage
-            .sstore(self.contract_address, fees_slot, fees_value);
+            .sstore(self.contract_address, fees_slot, fees_value).expect("TODO: handle error");
     }
 
     // TODO: swap for validator token

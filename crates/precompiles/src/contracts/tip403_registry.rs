@@ -46,7 +46,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 TIP403_REGISTRY_ADDRESS,
                 slots::POLICY_ID_COUNTER,
                 U256::from(2),
-            );
+            ).expect("TODO: handle error");
             return 2;
         }
         counter_val.to::<u64>()
@@ -80,7 +80,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
             TIP403_REGISTRY_ADDRESS,
             slots::POLICY_ID_COUNTER,
             U256::from(new_policy_id + 1),
-        );
+        ).expect("TODO: handle error");
 
         // Store policy data
         self.set_policy_data(
@@ -100,7 +100,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 policyType: call.policyType,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
@@ -110,7 +110,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 adminPolicyId: call.adminPolicyId,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(new_policy_id)
     }
@@ -137,7 +137,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
             TIP403_REGISTRY_ADDRESS,
             slots::POLICY_ID_COUNTER,
             U256::from(new_policy_id + 1),
-        );
+        ).expect("TODO: handle error");
 
         // Store policy data
 
@@ -164,7 +164,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                             allowed: true,
                         })
                         .into_log_data(),
-                    );
+                    ).expect("TODO: handle error");
                 }
                 ITIP403Registry::PolicyType::BLACKLIST => {
                     self.storage.emit_event(
@@ -176,7 +176,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                             restricted: true,
                         })
                         .into_log_data(),
-                    );
+                    ).expect("TODO: handle error");
                 }
                 ITIP403Registry::PolicyType::__Invalid => {
                     return Err(tip403_err!(IncompatiblePolicyType));
@@ -193,7 +193,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 policyType: call.policyType,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
@@ -203,7 +203,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 adminPolicyId: admin_policy_id,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(new_policy_id)
     }
@@ -237,7 +237,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 adminPolicyId: call.adminPolicyId,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -270,7 +270,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 allowed: call.allowed,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -303,7 +303,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 restricted: call.restricted,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -329,7 +329,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         // Pack policy type and admin policy ID into single U256
         let value = U256::from(data.policy_type as u128) | (U256::from(data.admin_policy_id) << 64);
 
-        self.storage.sstore(TIP403_REGISTRY_ADDRESS, slot, value);
+        self.storage.sstore(TIP403_REGISTRY_ADDRESS, slot, value).expect("TODO: handle error");
     }
 
     fn set_policy_set(&mut self, policy_id: u64, account: &Address, value: bool) {
@@ -338,7 +338,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
             TIP403_REGISTRY_ADDRESS,
             slot,
             if value { U256::from(1) } else { U256::ZERO },
-        );
+        ).expect("TODO: handle error");
     }
 
     fn is_authorized_internal(&mut self, policy_id: u64, user: &Address) -> bool {

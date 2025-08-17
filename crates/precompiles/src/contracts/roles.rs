@@ -72,7 +72,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
                 hasRole: true,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -96,7 +96,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
                 hasRole: false,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -119,7 +119,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
                 hasRole: false,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -142,7 +142,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
                 sender: *msg_sender,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -161,13 +161,13 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     pub fn grant_role_internal(&mut self, account: &Address, role: B256) {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         self.storage
-            .sstore(self.parent_contract_address, slot, U256::ONE);
+            .sstore(self.parent_contract_address, slot, U256::ONE).expect("TODO: handle error");
     }
 
     fn revoke_role_internal(&mut self, account: &Address, role: B256) {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         self.storage
-            .sstore(self.parent_contract_address, slot, U256::ZERO);
+            .sstore(self.parent_contract_address, slot, U256::ZERO).expect("TODO: handle error");
     }
 
     fn get_role_admin_internal(&mut self, role: B256) -> B256 {
@@ -182,7 +182,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
             self.parent_contract_address,
             slot,
             U256::from_be_bytes(admin_role.0),
-        );
+        ).expect("TODO: handle error");
     }
 
     fn check_role_internal(&mut self, account: &Address, role: B256) -> Result<(), RolesAuthError> {

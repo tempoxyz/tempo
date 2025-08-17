@@ -143,7 +143,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             self.token_address,
             slots::TRANSFER_POLICY_ID,
             U256::from(call.newPolicyId),
-        );
+        ).expect("TODO: handle error");
 
         self.storage.emit_event(
             self.token_address,
@@ -152,7 +152,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 newPolicyId: call.newPolicyId,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
         Ok(())
     }
 
@@ -166,7 +166,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             return Err(tip20_err!(SupplyCapExceeded));
         }
         self.storage
-            .sstore(self.token_address, slots::SUPPLY_CAP, call.newSupplyCap);
+            .sstore(self.token_address, slots::SUPPLY_CAP, call.newSupplyCap).expect("TODO: handle error");
 
         self.storage.emit_event(
             self.token_address,
@@ -175,7 +175,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 newSupplyCap: call.newSupplyCap,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
         Ok(())
     }
 
@@ -186,7 +186,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *PAUSE_ROLE)?;
         self.storage
-            .sstore(self.token_address, slots::PAUSED, U256::ONE);
+            .sstore(self.token_address, slots::PAUSED, U256::ONE).expect("TODO: handle error");
 
         self.storage.emit_event(
             self.token_address,
@@ -195,7 +195,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 isPaused: true,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
         Ok(())
     }
 
@@ -206,7 +206,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *UNPAUSE_ROLE)?;
         self.storage
-            .sstore(self.token_address, slots::PAUSED, U256::ZERO);
+            .sstore(self.token_address, slots::PAUSED, U256::ZERO).expect("TODO: handle error");
 
         self.storage.emit_event(
             self.token_address,
@@ -215,7 +215,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 isPaused: false,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
         Ok(())
     }
 
@@ -250,7 +250,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 amount: call.amount,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         self.storage.emit_event(
             self.token_address,
@@ -259,7 +259,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 amount: call.amount,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -282,7 +282,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 amount: call.amount,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -320,7 +320,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 amount: call.amount,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -341,7 +341,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 amount: call.amount,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(true)
     }
@@ -436,7 +436,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // Increment nonce after successful verification
         self.storage
-            .sstore(self.token_address, nonce_slot, nonce + U256::ONE);
+            .sstore(self.token_address, nonce_slot, nonce + U256::ONE).expect("TODO: handle error");
 
         self.set_allowance(&call.owner, &call.spender, call.value);
 
@@ -448,7 +448,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 amount: call.value,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -474,7 +474,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 memo: call.memo,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -501,7 +501,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         admin: &Address,
     ) -> Result<(), TIP20Error> {
         // EVM invariant that empty accounts do nothing, so must give some code.
-        self.storage.set_code(self.token_address, vec![0xef]);
+        self.storage.set_code(self.token_address, vec![0xef]).expect("TODO: handle error");
 
         self.write_string(slots::NAME, name.to_string())?;
         self.write_string(slots::SYMBOL, symbol.to_string())?;
@@ -514,9 +514,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // Set default values
         self.storage
-            .sstore(self.token_address, slots::SUPPLY_CAP, U256::MAX);
+            .sstore(self.token_address, slots::SUPPLY_CAP, U256::MAX).expect("TODO: handle error");
         self.storage
-            .sstore(self.token_address, slots::TRANSFER_POLICY_ID, U256::ONE); // Default "always-allow" policy
+            .sstore(self.token_address, slots::TRANSFER_POLICY_ID, U256::ONE).expect("TODO: handle error"); // Default "always-allow" policy
 
         // Initialize roles system and grant admin role
         let mut roles = self.get_roles_contract();
@@ -537,7 +537,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             self.token_address,
             slots::DOMAIN_SEPARATOR,
             U256::from_be_bytes(domain_separator.0),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -561,7 +561,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn set_balance(&mut self, account: &Address, amount: U256) {
         let slot = mapping_slot(account, slots::BALANCES);
-        self.storage.sstore(self.token_address, slot, amount);
+        self.storage.sstore(self.token_address, slot, amount).expect("TODO: handle error");
     }
 
     fn get_allowance(&mut self, owner: &Address, spender: &Address) -> U256 {
@@ -573,12 +573,12 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn set_allowance(&mut self, owner: &Address, spender: &Address, amount: U256) {
         let slot = double_mapping_slot(owner, spender, slots::ALLOWANCES);
-        self.storage.sstore(self.token_address, slot, amount);
+        self.storage.sstore(self.token_address, slot, amount).expect("TODO: handle error");
     }
 
     fn set_total_supply(&mut self, amount: U256) {
         self.storage
-            .sstore(self.token_address, slots::TOTAL_SUPPLY, amount);
+            .sstore(self.token_address, slots::TOTAL_SUPPLY, amount).expect("TODO: handle error");
     }
 
     fn check_role(&mut self, account: &Address, role: B256) -> Result<(), TIP20Error> {
@@ -658,7 +658,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 amount,
             })
             .into_log_data(),
-        );
+        ).expect("TODO: handle error");
 
         Ok(())
     }
@@ -688,7 +688,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         storage_bytes[31] = (bytes.len() * 2) as u8; // Store length * 2 in last byte
 
         self.storage
-            .sstore(self.token_address, slot, U256::from_be_bytes(storage_bytes));
+            .sstore(self.token_address, slot, U256::from_be_bytes(storage_bytes)).expect("TODO: handle error");
         Ok(())
     }
 
