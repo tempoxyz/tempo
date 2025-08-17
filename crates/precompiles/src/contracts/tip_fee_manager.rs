@@ -7,39 +7,18 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::SolValue,
 };
-use reth::{
-    revm::interpreter::instructions::utility::{IntoAddress, IntoU256},
-    rpc::server_types::eth::cache::db,
-};
+use reth::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 mod slots {
     use crate::contracts::storage::slots::to_u256;
     use alloy::primitives::U256;
 
-    // Pool state mappings
     pub const POOLS: U256 = to_u256(0);
-    pub const TOTAL_SUPPLY: U256 = to_u256(1);
     pub const POOL_EXISTS: U256 = to_u256(2);
-    pub const LIQUIDITY_BALANCES: U256 = to_u256(3);
-
-    // Token preferences
     pub const VALIDATOR_TOKENS: U256 = to_u256(4);
     pub const USER_TOKENS: U256 = to_u256(5);
-
-    // Fee tracking
     pub const COLLECTED_FEES: U256 = to_u256(6);
-
-    // Pending operations
-    pub const PENDING_RESERVE0: U256 = to_u256(7);
-    pub const PENDING_RESERVE1: U256 = to_u256(8);
-
-    // Arrays
-    pub const OPERATION_QUEUE_LENGTH: U256 = to_u256(9);
-    pub const OPERATION_QUEUE_BASE: U256 = to_u256(10);
     pub const TOKENS_WITH_FEES_LENGTH: U256 = to_u256(11);
-    pub const TOKENS_WITH_FEES_BASE: U256 = to_u256(12);
-    pub const POOLS_WITH_PENDING_OPS_LENGTH: U256 = to_u256(13);
-    pub const POOLS_WITH_PENDING_OPS_BASE: U256 = to_u256(14);
     pub const TOKEN_IN_FEES_ARRAY: U256 = to_u256(15);
 }
 
@@ -587,7 +566,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::sol_types::SolCall;
 
     use super::*;
     use crate::{

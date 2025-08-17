@@ -1,6 +1,5 @@
 use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, Bytes, U256};
-use reth::rpc::server_types::eth::cache::db;
 use reth_evm::{Database, EthEvm, Evm, EvmEnv, precompiles::PrecompilesMap};
 use reth_revm::{
     Context, Inspector,
@@ -304,7 +303,6 @@ where
         let coinbase = self.inner.ctx().block.beneficiary;
         let exec_result = self.collect_fee(caller, coinbase, U256::from(adjusted_gas_spent))?;
 
-        let (fee_token, new_balance) = self.get_fee_token_balance(caller)?;
         if !exec_result.result.is_success() {
             return Ok(exec_result);
         }
