@@ -510,9 +510,14 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
 // Utility functions
 impl<'a, S: StorageProvider> TIP20Token<'a, S> {
-    // NOTE: can we just pass the address here?
     pub fn new(token_id: u64, storage: &'a mut S) -> Self {
         let token_address = token_id_to_address(token_id);
+
+        // NOTE: We initialize this here since `Token::new` is called during collect_fees
+        // EVM invariant that empty accounts do nothing, so must give some code.
+        storage
+            .set_code(token_address, vec![0xef])
+            .expect("TODO: handle error");
 
         Self {
             token_address,
@@ -528,11 +533,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         currency: &str,
         admin: &Address,
     ) -> Result<(), TIP20Error> {
-        // EVM invariant that empty accounts do nothing, so must give some code.
-        self.storage
-            .set_code(self.token_address, vec![0xef])
-            .expect("TODO: handle error");
-
         self.write_string(slots::NAME, name.to_string())?;
         self.write_string(slots::SYMBOL, symbol.to_string())?;
         self.write_string(slots::CURRENCY, currency.to_string())?;

@@ -7,19 +7,39 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::SolValue,
 };
-use reth::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use reth::{
+    revm::interpreter::instructions::utility::{IntoAddress, IntoU256},
+    rpc::server_types::eth::cache::db,
+};
 
 mod slots {
     use crate::contracts::storage::slots::to_u256;
     use alloy::primitives::U256;
 
+    // Pool state mappings
     pub const POOLS: U256 = to_u256(0);
+    pub const TOTAL_SUPPLY: U256 = to_u256(1);
     pub const POOL_EXISTS: U256 = to_u256(2);
+    pub const LIQUIDITY_BALANCES: U256 = to_u256(3);
 
+    // Token preferences
     pub const VALIDATOR_TOKENS: U256 = to_u256(4);
     pub const USER_TOKENS: U256 = to_u256(5);
+
+    // Fee tracking
     pub const COLLECTED_FEES: U256 = to_u256(6);
+
+    // Pending operations
+    pub const PENDING_RESERVE0: U256 = to_u256(7);
+    pub const PENDING_RESERVE1: U256 = to_u256(8);
+
+    // Arrays
+    pub const OPERATION_QUEUE_LENGTH: U256 = to_u256(9);
+    pub const OPERATION_QUEUE_BASE: U256 = to_u256(10);
     pub const TOKENS_WITH_FEES_LENGTH: U256 = to_u256(11);
+    pub const TOKENS_WITH_FEES_BASE: U256 = to_u256(12);
+    pub const POOLS_WITH_PENDING_OPS_LENGTH: U256 = to_u256(13);
+    pub const POOLS_WITH_PENDING_OPS_BASE: U256 = to_u256(14);
     pub const TOKEN_IN_FEES_ARRAY: U256 = to_u256(15);
 }
 
@@ -162,6 +182,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         let slot = self.get_validator_token_slot(sender);
         let token = call.token.into_u256();
+
         self.storage
             .sstore(self.contract_address, slot, token)
             .expect("TODO: handle error");
@@ -287,6 +308,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let validator_token = self.get_validator_token(&call.coinbase)?;
         let user_token = self.get_user_token(&call.user, &validator_token);
 
+        dbg!(validator_token);
+        dbg!(user_token);
         if user_token != validator_token {
             let pool_key = PoolKey::new(user_token, validator_token);
             let pool_id = pool_key.get_id();
@@ -509,27 +532,37 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         call: IFeeManager::getFeeTokenBalanceCall,
     ) -> IFeeManager::getFeeTokenBalanceReturn {
         let user_slot = self.get_user_token_slot(&call.sender);
-        let user_token = self
+        let mut token = self
             .storage
             .sload(self.contract_address, user_slot)
             .expect("TODO: handle error")
             .into_address();
 
-        if user_token.is_zero() {
-            return IFeeManager::getFeeTokenBalanceReturn {
-                _0: Address::ZERO,
-                _1: U256::ZERO,
-            };
+        if token.is_zero() {
+            let validator_slot = self.get_validator_token_slot(&call.sender);
+            let validator_token = self
+                .storage
+                .sload(self.contract_address, validator_slot)
+                .expect("TODO: handle error")
+                .into_address();
+            if validator_token.is_zero() {
+                return IFeeManager::getFeeTokenBalanceReturn {
+                    _0: Address::ZERO,
+                    _1: U256::ZERO,
+                };
+            } else {
+                token = validator_token;
+            }
         }
 
-        let token_id = address_to_token_id_unchecked(&user_token);
-        let mut token = TIP20Token::new(token_id, self.storage);
-        let token_balance = token.balance_of(ITIP20::balanceOfCall {
+        let token_id = address_to_token_id_unchecked(&token);
+        let mut tip20_token = TIP20Token::new(token_id, self.storage);
+        let token_balance = tip20_token.balance_of(ITIP20::balanceOfCall {
             account: call.sender,
         });
 
         IFeeManager::getFeeTokenBalanceReturn {
-            _0: user_token,
+            _0: token,
             _1: token_balance,
         }
     }

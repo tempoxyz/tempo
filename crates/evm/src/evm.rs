@@ -589,6 +589,8 @@ mod tests {
         evm.journal_state(result.state)
             .expect("Failed to journal state");
 
+        let (user_fee_token, balance) = evm.get_fee_token_balance(user)?;
+        dbg!(user_fee_token);
         // Set fee token for user
         let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
         let result = evm.transact_system_call(
@@ -600,6 +602,12 @@ mod tests {
         evm.journal_state(result.state)
             .expect("Failed to journal state");
 
+        let (user_fee_token, balance) = evm.get_fee_token_balance(user)?;
+        dbg!(user_fee_token);
+
+        let (val_fee_token, balance) = evm.get_fee_token_balance(admin)?;
+        dbg!(val_fee_token);
+
         // Set fee token for validator
         let set_validator_fee_token_call = IFeeManager::setValidatorTokenCall { token: fee_token };
         let result = evm.transact_system_call(
@@ -607,10 +615,13 @@ mod tests {
             TIP_FEE_MANAGER_ADDRESS,
             set_validator_fee_token_call.abi_encode().into(),
         )?;
+
         assert!(result.result.is_success());
         evm.journal_state(result.state)
             .expect("Failed to journal state");
 
+        let (val_fee_token, balance) = evm.get_fee_token_balance(admin)?;
+        dbg!(val_fee_token);
         // Check initial balances
         let initial_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
         let initial_transfer_balance = balance_of_call(&mut evm, user, transfer_token)?;
