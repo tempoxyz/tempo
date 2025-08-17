@@ -392,7 +392,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // Check and update allowance
         let allowed = self.get_allowance(&call.from, msg_sender);
-        dbg!(allowed);
         if call.amount > allowed {
             return Err(tip20_err!(InsufficientAllowance));
         }
@@ -680,7 +679,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .ok_or(tip20_err!(InsufficientBalance))?;
         self.set_balance(from, new_from_balance);
 
-        dbg!(new_from_balance);
         if *to != Address::ZERO {
             let to_balance = self.get_balance(to);
             let new_to_balance = to_balance

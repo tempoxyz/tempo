@@ -587,6 +587,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use alloy::sol_types::SolCall;
+
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
@@ -714,6 +716,10 @@ mod tests {
             .set_user_token(&user, IFeeManager::setUserTokenCall { token })
             .unwrap();
 
+        let initial_balance = fee_manager
+            .get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall { sender: user })
+            ._1;
+
         // Collect fee and verify balances
         let result = fee_manager.collect_fee(
             &Address::ZERO,
@@ -728,7 +734,7 @@ mod tests {
         let result =
             fee_manager.get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall { sender: user });
         assert_eq!(result._0, token);
-        assert_eq!(result._1, amount);
+        assert_eq!(result._1, initial_balance - amount);
 
         // TODO: assert balances
     }
