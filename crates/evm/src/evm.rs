@@ -642,5 +642,100 @@ mod tests {
     }
 
     #[test]
-    fn test_transact_raw_insufficient_balance() {}
+    fn test_transact_raw_insufficient_balance() -> eyre::Result<()> {
+        let mut evm = setup_tempo_evm();
+        let admin = Address::random();
+        let user = Address::random();
+        let recipient = Address::random();
+
+        // Create fee token with minimal mint amount
+        let mint_amount = U256::from(1000);
+        let fee_token = create_and_mint_token(
+            "F".to_string(),
+            "FeeToken".to_string(),
+            "USD".to_string(),
+            admin,
+            mint_amount,
+            &mut evm,
+        )?;
+
+        let transfer_token = create_and_mint_token(
+            "T".to_string(),
+            "TransferToken".to_string(),
+            "USD".to_string(),
+            admin,
+            mint_amount,
+            &mut evm,
+        )?;
+
+        // Transfer tokens to the user with insufficient fee token amount
+        let result = evm.transact_system_call(
+            admin,
+            fee_token,
+            ITIP20::transferCall {
+                to: user,
+                amount: U256::from(10),
+            }
+            .abi_encode()
+            .into(),
+        )?;
+        assert!(result.result.is_success());
+        evm.journal_state(result.state);
+
+        let result = evm.transact_system_call(
+            admin,
+            transfer_token,
+            ITIP20::transferCall {
+                to: user,
+                amount: mint_amount,
+            }
+            .abi_encode()
+            .into(),
+        )?;
+        assert!(result.result.is_success());
+        evm.journal_state(result.state);
+
+        // Set fee token for user
+        let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
+        let result = evm.transact_system_call(
+            user,
+            TIP_FEE_MANAGER_ADDRESS,
+            set_fee_token_call.abi_encode().into(),
+        )?;
+        assert!(result.result.is_success());
+        evm.journal_state(result.state);
+
+        // Create tx with gas limit higher than fee balance
+        let gas_limit = 50000;
+        let tx = TxEnv {
+            caller: user,
+            kind: transfer_token.into(),
+            data: ITIP20::transferCall {
+                to: recipient,
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into(),
+            gas_limit,
+            gas_price: 1,
+            value: U256::ZERO,
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+
+        match result {
+            Err(EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee {
+                fee,
+                balance,
+            })) => {
+                let expected_adjusted_fee = U256::from((gas_limit / 1000) + 1);
+                assert_eq!(*fee, expected_adjusted_fee);
+                assert_eq!(*balance, U256::from(10));
+            }
+            _ => panic!("Expected LackOfFundForMaxFee error, got: {:?}", result),
+        }
+
+        Ok(())
+    }
 }
