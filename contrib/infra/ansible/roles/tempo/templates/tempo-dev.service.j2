@@ -9,6 +9,10 @@ User={{ ansible_user }}
 Group={{ ansible_user }}
 WorkingDirectory={{ ansible_env.HOME }}/malachite
 ExecStart=/usr/local/bin/tempo node --datadir {{ ansible_env.HOME }}/malachite/reth \
+{% if tempo_proposer == 'true' %}
+  --dev \
+  --dev.block-time 1sec \
+{% endif %}
   --chain {{ ansible_env.HOME }}/malachite/config/reth_genesis.json \
   --port 30303 \
   --discovery.port 30303 \
@@ -19,12 +23,6 @@ ExecStart=/usr/local/bin/tempo node --datadir {{ ansible_env.HOME }}/malachite/r
   --authrpc.port 8551 \
   --metrics 9000 \
   --ipcdisable \
-  --malachite-home {{ ansible_env.HOME }}/malachite \
-  --consensus-config {{ ansible_env.HOME }}/malachite/config/malachite.toml \
-  --validator-key {{ ansible_env.HOME }}/malachite/config/priv_validator_key.json \
-  --genesis {{ ansible_env.HOME }}/malachite/config/genesis.json \
-  --node-id "{{ ansible_host }}" \
-  --chain-id "{{ tempo_chain_id }}" \
   --builder.gaslimit 3000000000 \
   --builder.max-tasks 16 \
   --builder.deadline 3 \

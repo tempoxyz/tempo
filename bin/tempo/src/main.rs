@@ -56,7 +56,7 @@ fn main() {
                 .launch_with_debug_capabilities()
                 .await?;
 
-            let malachite_handle = if node.config.dev.dev {
+            let malachite_handle = if node.config.dev.dev || args.no_consensus {
                 tokio::spawn(async move { future::pending::<()>().await })
             } else {
                 spawn_malachite(node.clone(), args.malachite_args)

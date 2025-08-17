@@ -1,7 +1,6 @@
 use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, Bytes, U256};
 use reth_evm::{Database, EthEvm, Evm, EvmEnv, precompiles::PrecompilesMap};
-
 use reth_revm::{
     Context, Inspector,
     context::{
