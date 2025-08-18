@@ -1,0 +1,23 @@
+groups:
+  - name: reth.blockchain
+    rules:
+      - alert: RethBlockHeightNotMoving
+        expr: increase(reth_blockchain_tree_canonical_chain_height[10m]) == 0
+        for: 5m
+        labels:
+          severity: p1
+          service: reth
+          component: blockchain
+        annotations:
+          summary: "Reth blockchain height has not increased"
+          description: "The Reth blockchain height for instance {{ $labels.instance }} has not increased in the last 10 minutes. Current height: {{ $value }}"
+      - alert: RethNodeDown
+        expr: up{instance=~"reth.*"} == 0 
+        for: 5m
+        labels:
+          severity: p1
+          service: reth
+          component: blockchain
+        annotations:
+          summary: "Reth node is down"
+          description: "The Reth blockchain node metrics are not accessible"
