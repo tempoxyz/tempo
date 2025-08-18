@@ -12120,7 +12120,7 @@ name = "tempo-transaction-pool"
 version = "0.1.0"
 dependencies = [
  "reth-chainspec",
- "reth-primitives",
+ "reth-ethereum-primitives",
  "reth-primitives-traits",
  "reth-storage-api",
  "reth-transaction-pool",

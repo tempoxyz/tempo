@@ -1,6 +1,5 @@
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
-use reth_primitives::SealedBlock;
-use reth_primitives_traits::Block;
+use reth_primitives_traits::{Block, SealedBlock};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
     EthPoolTransaction, EthTransactionValidator, TransactionOrigin, TransactionValidationOutcome,
