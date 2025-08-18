@@ -64,6 +64,8 @@ jobs:
       - uses: codespell-project/actions-codespell@v2
         with:
           skip: "*.json,target,Cargo.lock"
+          ignore_words_list: "amountIn"
+
 
   lint-success:
     name: lint success
