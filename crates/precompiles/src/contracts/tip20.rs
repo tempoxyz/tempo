@@ -677,6 +677,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         let new_from_balance = from_balance
             .checked_sub(amount)
             .ok_or(tip20_err!(InsufficientBalance))?;
+
         self.set_balance(from, new_from_balance);
 
         if *to != Address::ZERO {

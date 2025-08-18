@@ -348,7 +348,8 @@ mod tests {
         inspector::NoOpInspector,
     };
     use reth_evm::{EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
-    use tempo_precompiles::{
+    use reth_revm::DatabaseCommit;
+    use tempo_prectompiles::{
         TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
         contracts::{
             ITIP20Factory, TIP20Token,
@@ -657,19 +658,17 @@ mod tests {
         evm.ctx_mut().block.beneficiary = validator;
         let result = evm.transact_raw(tx)?;
         assert!(result.result.is_success(), "Transaction should succeed");
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
+        evm.db_mut().commit(result.state);
 
         // Verify balances after transaction
         let final_transfer_balance = balance_of_call(&mut evm, user, transfer_token)?;
         let recipient_balance = balance_of_call(&mut evm, recipient, transfer_token)?;
         let final_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
 
-        assert!(final_fee_balance < initial_fee_balance);
-        // assert_eq!(
-        //     final_fee_balance,
-        //     initial_fee_balance - ((result.result.gas_used() / 1000) + 1)
-        // );
+        assert_eq!(
+            final_fee_balance,
+            initial_fee_balance - ((result.result.gas_used() / 1000) + 1)
+        );
         assert_eq!(final_transfer_balance, initial_transfer_balance - 1);
         assert_eq!(recipient_balance, 1);
 
