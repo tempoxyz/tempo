@@ -349,7 +349,7 @@ mod tests {
     };
     use reth_evm::{EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
     use reth_revm::DatabaseCommit;
-    use tempo_prectompiles::{
+    use tempo_precompiles::{
         TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
         contracts::{
             ITIP20Factory, TIP20Token,
