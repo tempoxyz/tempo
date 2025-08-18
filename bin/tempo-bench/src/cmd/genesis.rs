@@ -2,12 +2,27 @@ use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
     primitives::{Address, Bytes, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
+    sol_types::SolCall,
 };
 use alloy_signer_local::coins_bip39::English;
 use clap::Parser;
 use rayon::prelude::*;
+use reth::revm::{
+    context::ContextTr,
+    db::{CacheDB, EmptyDB},
+    inspector::NoOpInspector,
+};
+use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
 use simple_tqdm::ParTqdm;
 use std::{collections::BTreeMap, fs, path::PathBuf};
+use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
+use tempo_precompiles::{
+    TIP20_FACTORY_ADDRESS,
+    contracts::{
+        EvmStorageProvider, ITIP20, ITIP20Factory, TIP20Token, tip20::ISSUER_ROLE,
+        token_id_to_address,
+    },
+};
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
@@ -40,6 +55,21 @@ pub struct GenesisArgs {
 impl GenesisArgs {
     pub async fn run(self) -> eyre::Result<()> {
         println!("Generating {:?} accounts...", self.accounts);
+
+        // TODO:: alloc TestUSD balance
+        let signer = MnemonicBuilder::<English>::default()
+            .phrase(self.mnemonic.clone())
+            .build()?;
+        let admin = secret_key_to_address(signer.credential());
+        let mut evm = setup_tempo_evm();
+        create_and_mint_token(
+            "TestUSD",
+            "TestUSD",
+            "USD",
+            admin,
+            U256::from(u128::MAX),
+            &mut evm,
+        )?;
 
         let alloc: BTreeMap<Address, GenesisAccount> = (0..self.accounts)
             .into_par_iter()
@@ -97,4 +127,68 @@ impl GenesisArgs {
 
         Ok(())
     }
+}
+
+fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap> {
+    let db = CacheDB::default();
+    let env = EvmEnv::default();
+    let factory = TempoEvmFactory::default();
+    factory.create_evm(db, env)
+}
+
+fn create_and_mint_token(
+    symbol: &str,
+    name: &str,
+    currency: &str,
+    admin: Address,
+    mint_amount: U256,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
+) -> eyre::Result<Address> {
+    let create_token_call = ITIP20Factory::createTokenCall {
+        name: name.into(),
+        symbol: symbol.into(),
+        currency: currency.into(),
+        admin,
+    };
+
+    let result = evm.transact_system_call(
+        admin,
+        TIP20_FACTORY_ADDRESS,
+        create_token_call.abi_encode().into(),
+    )?;
+    assert!(result.result.is_success(), "Token creation failed");
+    evm.journal_state(result.state)?;
+
+    let output = result.result.output().unwrap_or_default();
+    let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?.to::<u64>();
+    let token_address = token_id_to_address(token_id);
+
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+    let mut token = TIP20Token::new(token_id, &mut provider);
+    token
+        .get_roles_contract()
+        .grant_role_internal(&admin, *ISSUER_ROLE);
+
+    let result = token.set_supply_cap(
+        &admin,
+        ITIP20::setSupplyCapCall {
+            newSupplyCap: U256::from(u64::MAX),
+        },
+    );
+    assert!(result.is_ok());
+
+    token
+        .mint(
+            &admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )
+        .expect("Token minting failed");
+
+    Ok(token_address)
 }

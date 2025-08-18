@@ -178,7 +178,7 @@ where
         Ok(exec_result)
     }
 
-    fn journal_state(&mut self, state: EvmState) -> Result<(), EVMError<DB::Error>> {
+    pub fn journal_state(&mut self, state: EvmState) -> Result<(), EVMError<DB::Error>> {
         let journal = self.inner.ctx_mut().journal_mut();
         for (address, account) in state.iter() {
             if !account.is_touched() {
