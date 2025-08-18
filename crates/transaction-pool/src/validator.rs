@@ -11,7 +11,7 @@ use reth_transaction_pool::{
 #[derive(Debug, Clone)]
 pub struct TempoTransactionValidator<Client, Tx> {
     /// The type that performs the actual validation.
-    inner: EthTransactionValidator<Client, Tx>,
+    _inner: EthTransactionValidator<Client, Tx>,
 }
 
 impl<Client, Tx> TransactionValidator for TempoTransactionValidator<Client, Tx>
@@ -23,8 +23,8 @@ where
 
     async fn validate_transaction(
         &self,
-        origin: TransactionOrigin,
-        transaction: Self::Transaction,
+        _origin: TransactionOrigin,
+        _transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
         // self.inner.validate_one(origin, transaction)
         todo!()
@@ -32,7 +32,7 @@ where
 
     async fn validate_transactions(
         &self,
-        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+        _transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         // self.inner.validate_batch(transactions)
         todo!()
@@ -40,14 +40,14 @@ where
 
     async fn validate_transactions_with_origin(
         &self,
-        origin: TransactionOrigin,
-        transactions: impl IntoIterator<Item = Self::Transaction> + Send,
+        _origin: TransactionOrigin,
+        _transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         // self.inner.validate_batch_with_origin(origin, transactions)
         todo!()
     }
 
-    fn on_new_head_block<B>(&self, new_tip_block: &SealedBlock<B>)
+    fn on_new_head_block<B>(&self, _new_tip_block: &SealedBlock<B>)
     where
         B: Block,
     {
