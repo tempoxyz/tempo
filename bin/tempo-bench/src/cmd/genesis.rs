@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use reth::revm::{
     context::ContextTr,
     db::{CacheDB, EmptyDB},
-    inspector::NoOpInspector,
+    inspector::{JournalExt, NoOpInspector},
 };
 use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
 use simple_tqdm::ParTqdm;
@@ -56,13 +56,23 @@ impl GenesisArgs {
     pub async fn run(self) -> eyre::Result<()> {
         println!("Generating {:?} accounts...", self.accounts);
 
-        // TODO:: alloc TestUSD balance
-        let signer = MnemonicBuilder::<English>::default()
-            .phrase(self.mnemonic.clone())
-            .build()?;
-        let admin = secret_key_to_address(signer.credential());
+        let addresses: Vec<Address> = (0..self.accounts)
+            .into_par_iter()
+            .tqdm()
+            .map(|worker_id| -> eyre::Result<Address> {
+                let signer = MnemonicBuilder::<English>::default()
+                    .phrase(self.mnemonic.clone())
+                    .index(worker_id)?
+                    .build()?;
+                let address = secret_key_to_address(signer.credential());
+                Ok(address)
+            })
+            .collect::<eyre::Result<Vec<Address>>>()?;
+
+        // Deploy TestUSD fee token
+        let admin = addresses[0];
         let mut evm = setup_tempo_evm();
-        create_and_mint_token(
+        let fee_token = create_and_mint_token(
             "TestUSD",
             "TestUSD",
             "USD",
@@ -71,25 +81,37 @@ impl GenesisArgs {
             &mut evm,
         )?;
 
-        let alloc: BTreeMap<Address, GenesisAccount> = (0..self.accounts)
-            .into_par_iter()
-            .tqdm()
-            .map(|worker_id| -> eyre::Result<(Address, GenesisAccount)> {
-                let signer = MnemonicBuilder::<English>::default()
-                    .phrase(self.mnemonic.clone())
-                    .index(worker_id)?
-                    .build()?;
-                let address = secret_key_to_address(signer.credential());
+        // Mint TestUSD to all addresses
+        for address in addresses.iter() {
+            let mint_call = ITIP20::mintCall {
+                to: *address,
+                amount: U256::from(u64::MAX),
+            };
+            let result =
+                evm.transact_system_call(admin, fee_token, mint_call.abi_encode().into())?;
+            assert!(result.result.is_success(), "TestUSD minting failed");
+            evm.journal_state(result.state)?;
+        }
 
-                Ok((
-                    address,
-                    GenesisAccount {
-                        balance: self.balance,
-                        ..Default::default()
-                    },
-                ))
+        // Save EVM state to allocation
+        let evm_state = evm.ctx_mut().journaled_state.evm_state();
+        let genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
+            .iter()
+            .map(|(address, account)| {
+                let genesis_account = GenesisAccount {
+                    balance: self.balance,
+                    nonce: Some(account.info.nonce),
+                    code: account
+                        .info
+                        .code
+                        .as_ref()
+                        .map(|c| c.original_bytes().into()),
+                    storage: None,
+                    ..Default::default()
+                };
+                (*address, genesis_account)
             })
-            .collect::<eyre::Result<BTreeMap<Address, GenesisAccount>>>()?;
+            .collect();
 
         let chain_config = ChainConfig {
             chain_id: self.chain_id,
@@ -119,7 +141,7 @@ impl GenesisArgs {
             .with_extra_data(Bytes::from_static(b"tempo-genesis"))
             .with_coinbase(Address::ZERO);
 
-        genesis.alloc = alloc;
+        genesis.alloc = genesis_alloc;
         genesis.config = chain_config;
 
         let json = serde_json::to_string_pretty(&genesis)?;
