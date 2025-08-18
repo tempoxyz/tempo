@@ -14,6 +14,7 @@ members = [
   "crates/precompiles",
   "crates/reth-malachite",
   "crates/telemetry-util",
+  "crates/transaction-pool",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -73,6 +74,7 @@ tempo-chainspec = { path = "crates/chainspec" }
 tempo-evm = { path = "crates/evm" }
 tempo-precompiles = { path = "crates/precompiles" }
 tempo-telemetry-util = { path = "crates/telemetry-util" }
+tempo-transaction-pool = { path = "crates/transaction-pool" }
 reth = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-chainspec" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-cli" }
