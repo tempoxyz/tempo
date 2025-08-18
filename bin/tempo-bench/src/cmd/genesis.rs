@@ -98,11 +98,21 @@ impl GenesisArgs {
         let genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
             .iter()
             .map(|(address, account)| {
+                let storage = if !account.storage.is_empty() {
+                    Some(
+                        account
+                            .storage
+                            .iter()
+                            .map(|(key, val)| ((*key).into(), val.present_value.into()))
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
                 let genesis_account = GenesisAccount {
-                    balance: self.balance,
                     nonce: Some(account.info.nonce),
                     code: account.info.code.as_ref().map(|c| c.original_bytes()),
-                    storage: None,
+                    storage,
                     ..Default::default()
                 };
                 (*address, genesis_account)
@@ -193,7 +203,7 @@ fn create_and_mint_token(
     let result = token.set_supply_cap(
         &admin,
         ITIP20::setSupplyCapCall {
-            newSupplyCap: U256::from(u64::MAX),
+            newSupplyCap: U256::MAX,
         },
     );
     assert!(result.is_ok());
