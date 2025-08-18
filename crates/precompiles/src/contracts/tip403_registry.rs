@@ -11,12 +11,11 @@ use crate::{
 };
 
 mod slots {
-    use crate::contracts::storage::slots::to_u256;
-    use alloy::primitives::U256;
+    use alloy::primitives::{U256, uint};
 
-    pub const POLICY_ID_COUNTER: U256 = to_u256(0);
-    pub const POLICY_DATA: U256 = to_u256(1);
-    pub const POLICY_SET: U256 = to_u256(2);
+    pub const POLICY_ID_COUNTER: U256 = uint!(0_U256);
+    pub const POLICY_DATA: U256 = uint!(1_U256);
+    pub const POLICY_SET: U256 = uint!(2_U256);
 }
 
 #[derive(Debug)]
