@@ -101,11 +101,7 @@ impl GenesisArgs {
                 let genesis_account = GenesisAccount {
                     balance: self.balance,
                     nonce: Some(account.info.nonce),
-                    code: account
-                        .info
-                        .code
-                        .as_ref()
-                        .map(|c| c.original_bytes().into()),
+                    code: account.info.code.as_ref().map(|c| c.original_bytes()),
                     storage: None,
                     ..Default::default()
                 };
