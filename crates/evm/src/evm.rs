@@ -276,7 +276,7 @@ where
         // All fee tokens are denominated in 6 decimals. Since gas is 9 decimals, the fee is
         // adjusted for decimals and rounded up.
         let gas_fee = tx.gas_limit * tx.gas_price as u64;
-        let adjusted_fee = (gas_fee / 1000) + 1;
+        let adjusted_fee = gas_fee.div_ceil(1000);
 
         if adjusted_fee > balance {
             return Err(EVMError::Transaction(
@@ -667,7 +667,7 @@ mod tests {
 
         assert_eq!(
             final_fee_balance,
-            initial_fee_balance - ((result.result.gas_used() / 1000) + 1)
+            initial_fee_balance - result.result.gas_used().div_ceil(1000)
         );
         assert_eq!(final_transfer_balance, initial_transfer_balance - 1);
         assert_eq!(recipient_balance, 1);
@@ -766,7 +766,7 @@ mod tests {
                 fee,
                 balance,
             })) => {
-                let expected_adjusted_fee = U256::from((gas_limit / 1000) + 1);
+                let expected_adjusted_fee = U256::from(gas_limit.div_ceil(1000));
                 assert_eq!(*fee, expected_adjusted_fee);
                 assert_eq!(*balance, U256::from(10));
             }
