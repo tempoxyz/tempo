@@ -13,7 +13,7 @@ use reth::revm::{
     inspector::{JournalExt, NoOpInspector},
 };
 use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
-use simple_tqdm::ParTqdm;
+use simple_tqdm::{Tqdm, ParTqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
 use tempo_precompiles::{
@@ -54,8 +54,7 @@ pub struct GenesisArgs {
 
 impl GenesisArgs {
     pub async fn run(self) -> eyre::Result<()> {
-        println!("Generating {:?} accounts...", self.accounts);
-
+        println!("Generating {:?} accounts", self.accounts);
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
             .tqdm()
@@ -81,8 +80,12 @@ impl GenesisArgs {
             &mut evm,
         )?;
 
+        println!("Minting TestUSD to all addresses");
         // Mint TestUSD to all addresses
-        for address in addresses.iter() {
+        for address in addresses
+            .iter()
+            .tqdm()
+        {
             let mint_call = ITIP20::mintCall {
                 to: *address,
                 amount: U256::from(u64::MAX),
@@ -94,9 +97,11 @@ impl GenesisArgs {
         }
 
         // Save EVM state to allocation
+        println!("Saving EVM state to allocation");
         let evm_state = evm.ctx_mut().journaled_state.evm_state();
         let genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
             .iter()
+            .tqdm()
             .map(|(address, account)| {
                 let storage = if !account.storage.is_empty() {
                     Some(
