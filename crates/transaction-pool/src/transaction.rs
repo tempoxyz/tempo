@@ -199,14 +199,14 @@ where
     <Pooled as TryFrom<Cons>>::Error: core::error::Error,
 {
     fn take_blob(&mut self) -> EthBlobTransactionSidecar {
-        self.inner.take_blob()
+        todo!()
     }
 
     fn try_into_pooled_eip4844(
         self,
-        sidecar: Arc<BlobTransactionSidecarVariant>,
+        _sidecar: Arc<BlobTransactionSidecarVariant>,
     ) -> Option<Recovered<Self::Pooled>> {
-        self.inner.try_into_pooled_eip4844(sidecar)
+        todo!()
     }
 
     fn try_from_eip4844(
@@ -218,9 +218,9 @@ where
 
     fn validate_blob(
         &self,
-        sidecar: &BlobTransactionSidecarVariant,
-        settings: &KzgSettings,
+        _sidecar: &BlobTransactionSidecarVariant,
+        _settings: &KzgSettings,
     ) -> Result<(), BlobTransactionValidationError> {
-        self.inner.validate_blob(sidecar, settings)
+        todo!()
     }
 }
