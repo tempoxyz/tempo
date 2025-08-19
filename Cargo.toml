@@ -87,21 +87,15 @@ reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "6
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-ethereum-engine-primitives" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-evm" }
 reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-ethereum-forks" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-ethereum-primitives", features = [
-  "serde-bincode-compat",
-] }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-ethereum-primitives" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-execution-types" }
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-node-builder" }
 reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-node-core" }
 reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-node-ethereum" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-payload-builder" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-payload-primitives" }
-reth-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-primitives", features = [
-  "serde-bincode-compat",
-] }
-reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-primitives-traits", features = [
-  "serde-bincode-compat",
-] }
+reth-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-primitives" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-primitives-traits" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-provider" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-rpc-builder" }
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-rpc-eth-api" }
