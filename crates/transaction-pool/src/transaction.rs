@@ -1,6 +1,6 @@
 use std::{fmt::Debug, sync::Arc};
 
-use alloy_consensus::{BlobTransactionValidationError, TxEnvelope};
+use alloy_consensus::{BlobTransactionValidationError, error::ValueError};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718, WithEncoded},
     eip2930::AccessList,
@@ -9,53 +9,44 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
-use reth_ethereum_primitives::TransactionSigned;
-use reth_primitives_traits::{InMemorySize, Recovered, SignedTransaction};
+use reth_ethereum_primitives::{PooledTransactionVariant, TransactionSigned};
+use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
 };
 
+/// Tempo pooled transaction representation.
+///
+/// This is a wrapper around the regular ethereum [`EthPooledTransaction`], but with tempo specific implementations.
 #[derive(Debug, Clone)]
-pub struct TempoPooledTransaction<Cons = TransactionSigned, Pooled = TxEnvelope> {
-    pub inner: EthPooledTransaction<Cons>,
-    /// The pooled transaction type.
-    _pd: core::marker::PhantomData<Pooled>,
+pub struct TempoPooledTransaction {
+    inner: EthPooledTransaction,
 }
 
-impl<Cons: SignedTransaction, Pooled> TempoPooledTransaction<Cons, Pooled> {
-    /// Create new instance of [Self].
-    pub fn new(transaction: Recovered<Cons>, encoded_length: usize) -> Self {
-        Self {
-            inner: EthPooledTransaction::new(transaction, encoded_length),
-            _pd: core::marker::PhantomData,
-        }
+impl TempoPooledTransaction {
+    /// Create new instance of [Self] from the given consensus transactions and the encoded size.
+    pub fn new(transaction: Recovered<TransactionSigned>, encoded_length: usize) -> Self {
+        Self::from_eth(EthPooledTransaction::new(transaction, encoded_length))
+    }
+
+    fn from_eth(eth_pooled: EthPooledTransaction) -> Self {
+        Self { inner: eth_pooled }
     }
 }
 
-impl<Cons, Pooled> InMemorySize for TempoPooledTransaction<Cons, Pooled>
-where
-    Cons: InMemorySize,
-    Pooled: InMemorySize,
-{
+impl InMemorySize for TempoPooledTransaction {
     fn size(&self) -> usize {
         self.inner.size()
     }
 }
 
-impl<Cons, Pooled> Typed2718 for TempoPooledTransaction<Cons, Pooled>
-where
-    Cons: Typed2718,
-{
+impl Typed2718 for TempoPooledTransaction {
     fn ty(&self) -> u8 {
         self.inner.transaction.ty()
     }
 }
 
-impl<Cons, Pooled> Encodable2718 for TempoPooledTransaction<Cons, Pooled>
-where
-    Cons: Encodable2718,
-    Pooled: Send + Sync,
-{
+impl Encodable2718 for TempoPooledTransaction {
     fn type_flag(&self) -> Option<u8> {
         self.inner.transaction.type_flag()
     }
@@ -69,17 +60,13 @@ where
     }
 }
 
-impl<Cons, Pooled> PoolTransaction for TempoPooledTransaction<Cons, Pooled>
-where
-    Cons: SignedTransaction + From<Pooled> + InMemorySize,
-    Pooled: SignedTransaction + TryFrom<Cons, Error: core::error::Error> + InMemorySize,
-{
-    type TryFromConsensusError = <Pooled as TryFrom<Cons>>::Error;
-    type Consensus = Cons;
-    type Pooled = Pooled;
+impl PoolTransaction for TempoPooledTransaction {
+    type TryFromConsensusError = ValueError<TransactionSigned>;
+    type Consensus = TransactionSigned;
+    type Pooled = PooledTransactionVariant;
 
     fn clone_into_consensus(&self) -> Recovered<Self::Consensus> {
-        self.inner.transaction().clone()
+        self.inner.clone_into_consensus()
     }
 
     fn into_consensus(self) -> Recovered<Self::Consensus> {
@@ -87,14 +74,11 @@ where
     }
 
     fn into_consensus_with2718(self) -> WithEncoded<Recovered<Self::Consensus>> {
-        let mut buf = Vec::new();
-        self.inner.transaction.encode_2718(&mut buf);
-        self.inner.transaction.into_encoded_with(buf)
+        self.inner.into_consensus_with2718()
     }
 
     fn from_pooled(tx: Recovered<Self::Pooled>) -> Self {
-        let encoded_len = tx.encode_2718_len();
-        Self::new(tx.convert(), encoded_len)
+        Self::from_eth(EthPooledTransaction::from_pooled(tx))
     }
 
     fn hash(&self) -> &TxHash {
@@ -118,11 +102,7 @@ where
     }
 }
 
-impl<Cons, Pooled> alloy_consensus::Transaction for TempoPooledTransaction<Cons, Pooled>
-where
-    Cons: alloy_consensus::Transaction + InMemorySize,
-    Pooled: Debug + Send + Sync + 'static + InMemorySize,
-{
+impl alloy_consensus::Transaction for TempoPooledTransaction {
     fn chain_id(&self) -> Option<u64> {
         self.inner.chain_id()
     }
@@ -192,38 +172,30 @@ where
     }
 }
 
-impl<Cons, Pooled> EthPoolTransaction for TempoPooledTransaction<Cons, Pooled>
-where
-    Cons: SignedTransaction + From<Pooled> + InMemorySize,
-    Pooled: SignedTransaction + TryFrom<Cons> + InMemorySize,
-    <Pooled as TryFrom<Cons>>::Error: core::error::Error,
-{
+impl EthPoolTransaction for TempoPooledTransaction {
     fn take_blob(&mut self) -> EthBlobTransactionSidecar {
-        todo!()
+        self.inner.take_blob()
     }
 
     fn try_into_pooled_eip4844(
         self,
-        _sidecar: Arc<BlobTransactionSidecarVariant>,
+        sidecar: Arc<BlobTransactionSidecarVariant>,
     ) -> Option<Recovered<Self::Pooled>> {
-        // TODO:
-        None
+        self.inner.try_into_pooled_eip4844(sidecar)
     }
 
     fn try_from_eip4844(
-        _tx: Recovered<Self::Consensus>,
-        _sidecar: BlobTransactionSidecarVariant,
+        tx: Recovered<Self::Consensus>,
+        sidecar: BlobTransactionSidecarVariant,
     ) -> Option<Self> {
-        // TODO:
-        None
+        EthPooledTransaction::try_from_eip4844(tx, sidecar).map(Self::from_eth)
     }
 
     fn validate_blob(
         &self,
-        _sidecar: &BlobTransactionSidecarVariant,
-        _settings: &KzgSettings,
+        sidecar: &BlobTransactionSidecarVariant,
+        settings: &KzgSettings,
     ) -> Result<(), BlobTransactionValidationError> {
-        // TODO:
-        Ok(())
+        self.inner.validate_blob(sidecar, settings)
     }
 }
