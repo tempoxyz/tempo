@@ -1,0 +1,16 @@
+
+[package]
+name = "tempo-transaction-pool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# [lints]
+# workspace = true
+
+[dependencies]
+reth-transaction-pool.workspace = true
+reth-chainspec.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-primitives-traits.workspace = true
+reth-storage-api.workspace = true

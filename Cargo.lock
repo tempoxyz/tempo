@@ -12116,6 +12116,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-transaction-pool"
+version = "0.1.0"
+dependencies = [
+ "reth-chainspec",
+ "reth-ethereum-primitives",
+ "reth-primitives-traits",
+ "reth-storage-api",
+ "reth-transaction-pool",
+]
+
+[[package]]
 name = "thin-vec"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
