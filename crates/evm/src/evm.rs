@@ -4,7 +4,7 @@ use reth_evm::{Database, EthEvm, Evm, EvmEnv, precompiles::PrecompilesMap};
 use reth_revm::{
     Context, Inspector,
     context::{
-        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
+        BlockEnv, CfgEnv, ContextTr, JournalTr, Transaction, TxEnv,
         result::{
             EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
             ResultAndState,
@@ -275,8 +275,8 @@ where
 
         // All fee tokens are denominated in 6 decimals. Since gas is 9 decimals, the fee is
         // adjusted for decimals and rounded up.
-        let gas_fee = tx.gas_limit * tx.gas_price as u64;
-        let adjusted_fee = gas_fee.div_ceil(1000);
+        let gas_fee = tx.max_balance_spending()?;
+        let adjusted_fee = gas_fee.div_ceil(U256::from(1000));
 
         if adjusted_fee > balance {
             return Err(EVMError::Transaction(
@@ -440,6 +440,78 @@ mod tests {
         Ok(balance.to::<u64>())
     }
 
+    fn transfer_tokens(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
+        from: Address,
+        to: Address,
+        token: Address,
+        amount: U256,
+    ) -> eyre::Result<()> {
+        let result = evm.transact_system_call(
+            from,
+            token,
+            ITIP20::transferCall { to, amount }.abi_encode().into(),
+        )?;
+        assert!(result.result.is_success(), "Token transfer failed");
+        evm.journal_state(result.state)?;
+        Ok(())
+    }
+
+    fn set_user_fee_token(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
+        user: Address,
+        token: Address,
+    ) -> eyre::Result<()> {
+        let set_fee_token_call = IFeeManager::setUserTokenCall { token };
+        let result = evm.transact_system_call(
+            user,
+            TIP_FEE_MANAGER_ADDRESS,
+            set_fee_token_call.abi_encode().into(),
+        )?;
+        assert!(result.result.is_success(), "Setting user fee token failed");
+        evm.journal_state(result.state)?;
+        Ok(())
+    }
+
+    fn set_validator_fee_token(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
+        validator: Address,
+        token: Address,
+    ) -> eyre::Result<()> {
+        let set_validator_fee_token_call = IFeeManager::setValidatorTokenCall { token };
+        let result = evm.transact_system_call(
+            validator,
+            TIP_FEE_MANAGER_ADDRESS,
+            set_validator_fee_token_call.abi_encode().into(),
+        )?;
+        assert!(
+            result.result.is_success(),
+            "Setting validator fee token failed"
+        );
+        evm.journal_state(result.state)?;
+        Ok(())
+    }
+
+    fn approve_fee_manager(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
+        user: Address,
+        token: Address,
+    ) -> eyre::Result<()> {
+        let result = evm.transact_system_call(
+            user,
+            token,
+            ITIP20::approveCall {
+                spender: TIP_FEE_MANAGER_ADDRESS,
+                amount: U256::MAX,
+            }
+            .abi_encode()
+            .into(),
+        )?;
+        assert!(result.result.is_success(), "Fee manager approval failed");
+        evm.journal_state(result.state)?;
+        Ok(())
+    }
+
     #[test]
     fn test_get_gas_fee_token_balance() -> eyre::Result<()> {
         let mut evm = setup_tempo_evm();
@@ -460,27 +532,10 @@ mod tests {
         assert_eq!(user_fee_token, Address::ZERO);
         assert_eq!(balance, 0);
 
-        // Set fee token
-        let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
-        let result = evm.transact_system_call(
-            sender,
-            TIP_FEE_MANAGER_ADDRESS,
-            set_fee_token_call.abi_encode().into(),
-        )?;
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)?;
+        set_user_fee_token(&mut evm, sender, fee_token)?;
 
         let fee_balance = 1000;
-        let transfer_call = ITIP20::transferCall {
-            to: sender,
-            amount: U256::from(fee_balance),
-        };
-
-        let result =
-            evm.transact_system_call(admin, fee_token, transfer_call.abi_encode().into())?;
-
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)?;
+        transfer_tokens(&mut evm, admin, sender, fee_token, U256::from(fee_balance))?;
 
         let (token_address, balance) = evm.get_fee_token_balance(sender)?;
         assert_eq!(fee_token, token_address);
@@ -504,22 +559,7 @@ mod tests {
 
         let caller = Address::random();
 
-        // Transfer initial balance of the fee token to the caller
-        let result = evm.transact_system_call(
-            admin,
-            fee_token,
-            ITIP20::transferCall {
-                to: caller,
-                amount: U256::from(1000),
-            }
-            .abi_encode()
-            .into(),
-        )?;
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
-
-        // Check initial balance
+        transfer_tokens(&mut evm, admin, caller, fee_token, U256::from(1000))?;
         let initial_balance = balance_of_call(&mut evm, caller, fee_token)?;
 
         // Decrement gas fee
@@ -566,73 +606,11 @@ mod tests {
             &mut evm,
         )?;
 
-        // Transfer tokens to user
-        let result = evm.transact_system_call(
-            validator,
-            fee_token,
-            ITIP20::transferCall {
-                to: user,
-                amount: mint_amount,
-            }
-            .abi_encode()
-            .into(),
-        )?;
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
-
-        // Transfer mint amount to user
-        let result = evm.transact_system_call(
-            validator,
-            transfer_token,
-            ITIP20::transferCall {
-                to: user,
-                amount: mint_amount,
-            }
-            .abi_encode()
-            .into(),
-        )?;
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
-
-        // Set fee token for user
-        let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
-        let result = evm.transact_system_call(
-            user,
-            TIP_FEE_MANAGER_ADDRESS,
-            set_fee_token_call.abi_encode().into(),
-        )?;
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
-
-        // Set fee token for validator
-        let set_validator_fee_token_call = IFeeManager::setValidatorTokenCall { token: fee_token };
-        let result = evm.transact_system_call(
-            validator,
-            TIP_FEE_MANAGER_ADDRESS,
-            set_validator_fee_token_call.abi_encode().into(),
-        )?;
-
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
-
-        // Approve allowance for fee manager to spend fee_token
-        let result = evm.transact_system_call(
-            user,
-            fee_token,
-            ITIP20::approveCall {
-                spender: TIP_FEE_MANAGER_ADDRESS,
-                amount: U256::MAX,
-            }
-            .abi_encode()
-            .into(),
-        )?;
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
+        transfer_tokens(&mut evm, validator, user, fee_token, mint_amount)?;
+        transfer_tokens(&mut evm, validator, user, transfer_token, mint_amount)?;
+        set_user_fee_token(&mut evm, user, fee_token)?;
+        set_validator_fee_token(&mut evm, validator, fee_token)?;
+        approve_fee_manager(&mut evm, user, fee_token)?;
 
         // Check initial balances
         let initial_fee_balance = balance_of_call(&mut evm, user, fee_token)?;
@@ -702,45 +680,9 @@ mod tests {
             &mut evm,
         )?;
 
-        // Transfer tokens to the user with insufficient fee token amount
-        let result = evm.transact_system_call(
-            admin,
-            fee_token,
-            ITIP20::transferCall {
-                to: user,
-                amount: U256::from(10),
-            }
-            .abi_encode()
-            .into(),
-        )?;
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
-
-        let result = evm.transact_system_call(
-            admin,
-            transfer_token,
-            ITIP20::transferCall {
-                to: user,
-                amount: mint_amount,
-            }
-            .abi_encode()
-            .into(),
-        )?;
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
-
-        // Set fee token for user
-        let set_fee_token_call = IFeeManager::setUserTokenCall { token: fee_token };
-        let result = evm.transact_system_call(
-            user,
-            TIP_FEE_MANAGER_ADDRESS,
-            set_fee_token_call.abi_encode().into(),
-        )?;
-        assert!(result.result.is_success());
-        evm.journal_state(result.state)
-            .expect("Failed to journal state");
+        transfer_tokens(&mut evm, admin, user, fee_token, U256::from(10))?;
+        transfer_tokens(&mut evm, admin, user, transfer_token, mint_amount)?;
+        set_user_fee_token(&mut evm, user, fee_token)?;
 
         // Create tx with gas limit higher than fee balance
         let gas_limit = 50000;
@@ -772,6 +714,44 @@ mod tests {
             }
             _ => panic!("Expected LackOfFundForMaxFee error, got: {:?}", result),
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transact_raw_overflow_payment() -> eyre::Result<()> {
+        let mut evm = setup_tempo_evm();
+        let admin = Address::random();
+        let user = Address::random();
+
+        let fee_token = create_and_mint_token(
+            "F".to_string(),
+            "FeeToken".to_string(),
+            "USD".to_string(),
+            admin,
+            U256::from(u64::MAX),
+            &mut evm,
+        )?;
+
+        transfer_tokens(&mut evm, admin, user, fee_token, U256::from(u64::MAX))?;
+        set_user_fee_token(&mut evm, user, fee_token)?;
+
+        // Create a transaction with values that would cause overflow in max_balance_spending calculation
+        let tx = TxEnv {
+            caller: user,
+            kind: fee_token.into(),
+            gas_limit: u64::MAX,
+            gas_price: u128::MAX,
+            value: U256::MAX,
+            data: Bytes::default(),
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(matches!(
+            result.err().unwrap(),
+            EVMError::Transaction(InvalidTransaction::OverflowPaymentInTransaction)
+        ));
 
         Ok(())
     }
