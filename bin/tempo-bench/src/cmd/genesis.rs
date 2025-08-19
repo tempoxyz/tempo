@@ -18,10 +18,7 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS,
-    contracts::{
-        EvmStorageProvider, ITIP20, ITIP20Factory, TIP20Token, tip20::ISSUER_ROLE,
-        token_id_to_address,
-    },
+    contracts::{EvmStorageProvider, ITIP20, ITIP20Factory, TIP20Token, tip20::ISSUER_ROLE},
 };
 
 /// Generate genesis allocation file for testing
