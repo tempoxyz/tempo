@@ -375,6 +375,7 @@ where
             });
         }
 
+        // TODO: custom tempo tx validation
         let transaction_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;
