@@ -17,8 +17,11 @@ use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
 use tempo_precompiles::{
-    TIP20_FACTORY_ADDRESS,
-    contracts::{EvmStorageProvider, ITIP20, ITIP20Factory, TIP20Token, tip20::ISSUER_ROLE},
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    contracts::{
+        EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Token, TipFeeManager,
+        tip20::ISSUER_ROLE,
+    },
 };
 
 /// Generate genesis allocation file for testing
@@ -82,7 +85,7 @@ impl GenesisArgs {
             let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
             let mut provider = EvmStorageProvider::new(evm_internals, 1);
             let mut token = TIP20Token::new(fee_token_id, &mut provider);
-
+            let fee_token = token.token_address;
             println!("Minting TestUSD to all addresses");
             // Mint TestUSD to all addresses
             for address in addresses.iter().tqdm() {
@@ -96,6 +99,14 @@ impl GenesisArgs {
                     )
                     .expect("Could not mint fee token");
             }
+            let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, token.storage);
+
+            fee_manager
+                .set_user_token(
+                    &Address::ZERO,
+                    IFeeManager::setUserTokenCall { token: fee_token },
+                )
+                .expect("Could not 0x00 validator fee token");
         }
 
         // Save EVM state to allocation
