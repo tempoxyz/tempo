@@ -1,12 +1,16 @@
 use std::{fmt::Debug, sync::Arc};
 
-use alloy_consensus::TxEnvelope;
+use alloy_consensus::{BlobTransactionValidationError, TxEnvelope};
 use alloy_eips::{
-    eip2930::AccessList, eip7594::BlobTransactionSidecarVariant, eip7702::SignedAuthorization,
+    eip2718::{Encodable2718, Typed2718, WithEncoded},
+    eip2930::AccessList,
+    eip4844::env_settings::KzgSettings,
+    eip7594::BlobTransactionSidecarVariant,
+    eip7702::SignedAuthorization,
 };
-use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
 use reth_ethereum_primitives::TransactionSigned;
-use reth_primitives_traits::{Recovered, SignedTransaction};
+use reth_primitives_traits::{InMemorySize, Recovered, SignedTransaction};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
 };
@@ -28,10 +32,47 @@ impl<Cons: SignedTransaction, Pooled> TempoPooledTransaction<Cons, Pooled> {
     }
 }
 
+impl<Cons, Pooled> InMemorySize for TempoPooledTransaction<Cons, Pooled>
+where
+    Cons: InMemorySize,
+    Pooled: InMemorySize,
+{
+    fn size(&self) -> usize {
+        self.inner.size()
+    }
+}
+
+impl<Cons, Pooled> Typed2718 for TempoPooledTransaction<Cons, Pooled>
+where
+    Cons: Typed2718,
+{
+    fn ty(&self) -> u8 {
+        self.inner.transaction.ty()
+    }
+}
+
+impl<Cons, Pooled> Encodable2718 for TempoPooledTransaction<Cons, Pooled>
+where
+    Cons: Encodable2718,
+    Pooled: Send + Sync,
+{
+    fn type_flag(&self) -> Option<u8> {
+        self.inner.transaction.type_flag()
+    }
+
+    fn encode_2718_len(&self) -> usize {
+        self.inner.transaction.encode_2718_len()
+    }
+
+    fn encode_2718(&self, out: &mut dyn bytes::BufMut) {
+        self.inner.transaction.encode_2718(out)
+    }
+}
+
 impl<Cons, Pooled> PoolTransaction for TempoPooledTransaction<Cons, Pooled>
 where
-    Cons: SignedTransaction + From<Pooled>,
-    Pooled: SignedTransaction + TryFrom<Cons, Error: core::error::Error>,
+    Cons: SignedTransaction + From<Pooled> + InMemorySize,
+    Pooled: SignedTransaction + TryFrom<Cons, Error: core::error::Error> + InMemorySize,
 {
     type TryFromConsensusError = <Pooled as TryFrom<Cons>>::Error;
     type Consensus = Cons;
@@ -46,8 +87,9 @@ where
     }
 
     fn into_consensus_with2718(self) -> WithEncoded<Recovered<Self::Consensus>> {
-        let encoding = self.encoded_2718().clone();
-        self.inner.transaction.into_encoded_with(encoding)
+        let mut buf = Vec::new();
+        self.inner.transaction.encode_2718(&mut buf);
+        self.inner.transaction.into_encoded_with(buf)
     }
 
     fn from_pooled(tx: Recovered<Self::Pooled>) -> Self {
@@ -78,8 +120,8 @@ where
 
 impl<Cons, Pooled> alloy_consensus::Transaction for TempoPooledTransaction<Cons, Pooled>
 where
-    Cons: alloy_consensus::Transaction,
-    Pooled: Debug + Send + Sync + 'static,
+    Cons: alloy_consensus::Transaction + InMemorySize,
+    Pooled: Debug + Send + Sync + 'static + InMemorySize,
 {
     fn chain_id(&self) -> Option<u64> {
         self.inner.chain_id()
@@ -152,35 +194,33 @@ where
 
 impl<Cons, Pooled> EthPoolTransaction for TempoPooledTransaction<Cons, Pooled>
 where
-    Cons: SignedTransaction + From<Pooled>,
-    Pooled: SignedTransaction + TryFrom<Cons>,
+    Cons: SignedTransaction + From<Pooled> + InMemorySize,
+    Pooled: SignedTransaction + TryFrom<Cons> + InMemorySize,
     <Pooled as TryFrom<Cons>>::Error: core::error::Error,
 {
     fn take_blob(&mut self) -> EthBlobTransactionSidecar {
-        EthBlobTransactionSidecar::None
+        self.inner.take_blob()
     }
 
     fn try_into_pooled_eip4844(
         self,
-        _sidecar: Arc<BlobTransactionSidecarVariant>,
+        sidecar: Arc<BlobTransactionSidecarVariant>,
     ) -> Option<Recovered<Self::Pooled>> {
-        None
+        self.inner.try_into_pooled_eip4844(sidecar)
     }
 
     fn try_from_eip4844(
         _tx: Recovered<Self::Consensus>,
         _sidecar: BlobTransactionSidecarVariant,
     ) -> Option<Self> {
-        None
+        todo!()
     }
 
     fn validate_blob(
         &self,
-        _sidecar: &BlobTransactionSidecarVariant,
-        _settings: &KzgSettings,
+        sidecar: &BlobTransactionSidecarVariant,
+        settings: &KzgSettings,
     ) -> Result<(), BlobTransactionValidationError> {
-        Err(BlobTransactionValidationError::NotBlobTransaction(
-            self.ty(),
-        ))
+        self.inner.validate_blob(sidecar, settings)
     }
 }
