@@ -4,7 +4,7 @@ use reth_evm::{Database, EthEvm, Evm, EvmEnv, precompiles::PrecompilesMap};
 use reth_revm::{
     Context, Inspector,
     context::{
-        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
+        BlockEnv, CfgEnv, ContextTr, JournalTr, Transaction, TxEnv,
         result::{
             EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
             ResultAndState,
@@ -275,8 +275,8 @@ where
 
         // All fee tokens are denominated in 6 decimals. Since gas is 9 decimals, the fee is
         // adjusted for decimals and rounded up.
-        let gas_fee = tx.gas_limit * tx.gas_price as u64;
-        let adjusted_fee = gas_fee.div_ceil(1000);
+        let gas_fee = tx.max_balance_spending()?;
+        let adjusted_fee = gas_fee.div_ceil(U256::from(1000));
 
         if adjusted_fee > balance {
             return Err(EVMError::Transaction(
