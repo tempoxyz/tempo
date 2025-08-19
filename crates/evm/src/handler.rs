@@ -1,10 +1,10 @@
 //! Tempo EVM Handler implementation.
 
 use alloy_primitives::U256;
-use reth::revm::context::{Block, Cfg, Transaction};
-use reth::revm::context::result::InvalidTransaction;
-use reth::revm::handler::MainnetHandler;
-use reth::revm::handler::pre_execution::validate_account_nonce_and_code;
+use reth::revm::{
+    context::{Block, Cfg, Transaction, result::InvalidTransaction},
+    handler::{MainnetHandler, pre_execution::validate_account_nonce_and_code},
+};
 use reth_evm::EvmInternals;
 use reth_revm::{
     context::{ContextTr, JournalTr, result::HaltReason},
@@ -12,10 +12,12 @@ use reth_revm::{
     interpreter::interpreter_action::FrameInit,
     state::EvmState,
 };
-use tempo_precompiles::contracts::{EvmStorageProvider, TipFeeManager};
-use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
+use tempo_precompiles::{
+    TIP_FEE_MANAGER_ADDRESS,
+    contracts::{EvmStorageProvider, TipFeeManager},
+};
 
-/// Optimism handler extends the [`Handler`] with Tempo specific logic:
+/// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug, Clone)]
@@ -109,7 +111,7 @@ where
                 fee: Box::new(max_balance_spending),
                 balance: Box::new(account_balance),
             }
-                .into());
+            .into());
         } else {
             // deduct balance from the fee account's balance by transferring it over to the fee manager
             let gas_balance_spending = effective_balance_spending - value;
@@ -122,7 +124,11 @@ where
         Ok(())
     }
 
-    fn reimburse_caller(&self, evm: &mut Self::Evm, exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult) -> Result<(), Self::Error> {
+    fn reimburse_caller(
+        &self,
+        evm: &mut Self::Evm,
+        exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+    ) -> Result<(), Self::Error> {
         let context = evm.ctx();
         let basefee = context.block().basefee() as u128;
         let caller = context.tx().caller();
