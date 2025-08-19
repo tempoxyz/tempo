@@ -1,11 +1,5 @@
 use alloy::primitives::{U256, keccak256};
 
-pub const fn to_u256(x: u64) -> U256 {
-    let mut limbs = [0; 4];
-    limbs[0] = x;
-    U256::from_limbs(limbs)
-}
-
 pub const fn pad_to_32(x: &[u8]) -> [u8; 32] {
     let mut buf = [0u8; 32];
     let mut i = 0;
