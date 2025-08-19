@@ -110,7 +110,7 @@ where
     }
 
     fn cost(&self) -> &U256 {
-        &self.inner.cost
+        &U256::ZERO
     }
 
     fn encoded_length(&self) -> usize {

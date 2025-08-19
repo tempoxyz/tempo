@@ -12011,6 +12011,7 @@ dependencies = [
  "reth-transaction-pool",
  "reth-trie-db",
  "tempo-evm",
+ "tempo-transaction-pool",
 ]
 
 [[package]]
