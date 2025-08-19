@@ -1,9 +1,11 @@
 //! Tempo EVM Handler implementation.
 
+use alloy_primitives::U256;
 use reth::revm::context::{Block, Cfg, Transaction};
 use reth::revm::context::result::InvalidTransaction;
 use reth::revm::handler::MainnetHandler;
 use reth::revm::handler::pre_execution::validate_account_nonce_and_code;
+use reth_evm::EvmInternals;
 use reth_revm::{
     context::{ContextTr, JournalTr, result::HaltReason},
     handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler},
@@ -62,6 +64,8 @@ where
         let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
+        let caller = context.tx().caller();
+        let value = context.tx().value();
 
         let (tx, journal) = context.tx_journal_mut();
 
@@ -83,44 +87,53 @@ where
         // fetch the token balance
         let fee_manager = TipFeeManager::new(
             TIP_FEE_MANAGER_ADDRESS,
-            &mut EvmStorageProvider::new(input.internals, chain_id),
-        )
+            &mut EvmStorageProvider::new(EvmInternals::new(journal, context.block()), chain_id),
+        );
 
-        // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
-        // Transfer will be done inside `*_inner` functions.
-        if max_balance_spending > caller_account.info.balance && !is_balance_check_disabled {
-            return Err(InvalidTransaction::LackOfFundForMaxFee {
-                fee: Box::new(max_balance_spending),
-                balance: Box::new(caller_account.info.balance),
-            }
-                .into());
-        }
-
-        // subtracting max balance spending with value that is going to be deducted later in the call.
-        let gas_balance_spending = effective_balance_spending - tx.value();
-
-        let mut new_balance = caller_account
-            .info
-            .balance
-            .saturating_sub(gas_balance_spending);
-
-        if is_balance_check_disabled {
-            // Make sure the caller's balance is at least the value of the transaction.
-            new_balance = new_balance.max(tx.value());
-        }
-
-        let old_balance = caller_account.info.balance;
-        // Touch account so we know it is changed.
-        caller_account.mark_touch();
-        caller_account.info.balance = new_balance;
+        // TODO load fee token balance from fee manager contract storage
+        let account_balance = U256::ZERO;
 
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
         if tx.kind().is_call() {
-            // Nonce is already checked
             caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
         }
+        // Ensure caller account is touched.
+        caller_account.mark_touch();
 
-        journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
+        // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
+        // Transfer will be done inside `*_inner` functions.
+        if is_balance_check_disabled {
+            // ignore balance check.
+        } else if account_balance < max_balance_spending {
+            return Err(InvalidTransaction::LackOfFundForMaxFee {
+                fee: Box::new(max_balance_spending),
+                balance: Box::new(account_balance),
+            }
+                .into());
+        } else {
+            // deduct balance from the fee account's balance by transferring it over to the fee manager
+            let gas_balance_spending = effective_balance_spending - value;
+
+            // TODO transfer from caller to fee manager
+        }
+
+        //
+        // journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
+        Ok(())
+    }
+
+    fn reimburse_caller(&self, evm: &mut Self::Evm, exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult) -> Result<(), Self::Error> {
+        let context = evm.ctx();
+        let basefee = context.block().basefee() as u128;
+        let caller = context.tx().caller();
+        let effective_gas_price = context.tx().effective_gas_price(basefee);
+        let gas = exec_result.gas();
+
+        let reimbursement =
+            effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128);
+
+        // TODO transfer reimbursement from fee manager to caller
+
         Ok(())
     }
 
@@ -130,6 +143,23 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
-        self.mainnet.reward_beneficiary(evm, exec_result)
+        let context = evm.ctx();
+        let tx = context.tx();
+        let beneficiary = context.block().beneficiary();
+        let basefee = context.block().basefee() as u128;
+        let effective_gas_price = tx.effective_gas_price(basefee);
+        let gas = exec_result.gas();
+
+        let coinbase_gas_price = if context.cfg().spec().into().is_enabled_in(SpecId::LONDON) {
+            effective_gas_price.saturating_sub(basefee)
+        } else {
+            effective_gas_price
+        };
+
+        let reward = coinbase_gas_price.saturating_mul(gas.used() as u128);
+
+        // TODO collect fee
+
+        Ok(())
     }
 }
