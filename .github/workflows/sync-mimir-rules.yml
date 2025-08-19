@@ -1,0 +1,57 @@
+name: Sync Mimir Alerting Rules
+
+on:
+  push:
+    paths:
+      - 'contrib/infra/monitoring/mimir/**/*.yaml'
+      - 'contrib/infra/monitoring/mimir/**/*.yml'
+    branches:
+      - main
+  pull_request:
+    paths:
+      - 'contrib/infra/monitoring/mimir/**/*.yaml'
+      - 'contrib/infra/monitoring/mimir/**/*.yml'
+  workflow_dispatch:
+
+jobs:
+  validate-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install mimirtool
+        run: |
+          curl -fLo mimirtool https://github.com/grafana/mimir/releases/latest/download/mimirtool-linux-amd64
+          chmod +x mimirtool
+          sudo mv mimirtool /usr/local/bin/
+
+      - name: Validate alerting rules
+        run: |
+          mimirtool rules lint contrib/infra/monitoring/mimir/*.yaml
+
+  sync-to-grafana-cloud:
+    needs: validate-rules
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install mimirtool
+        run: |
+          curl -fLo mimirtool https://github.com/grafana/mimir/releases/latest/download/mimirtool-linux-amd64
+          chmod +x mimirtool
+          sudo mv mimirtool /usr/local/bin/
+
+      - name: Sync rules to Grafana Cloud
+        env:
+          GRAFANA_CLOUD_API_KEY: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
+          GRAFANA_CLOUD_URL: ${{ secrets.GRAFANA_CLOUD_URL }}
+          GRAFANA_CLOUD_USER: ${{ secrets.GRAFANA_CLOUD_USER }}
+        run: |
+          mimirtool rules load \
+            --address="$GRAFANA_CLOUD_URL" \
+            --id="$GRAFANA_CLOUD_USER" \
+            --key="$GRAFANA_CLOUD_API_KEY" \
+            contrib/infra/monitoring/mimir/*.yaml
