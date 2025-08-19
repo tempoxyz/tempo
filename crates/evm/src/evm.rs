@@ -347,7 +347,7 @@ mod tests {
         db::{CacheDB, EmptyDB},
         inspector::NoOpInspector,
     };
-    use reth_evm::{EvmEnv, EvmError, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
+    use reth_evm::{EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
     use reth_revm::DatabaseCommit;
     use tempo_precompiles::{
         TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
