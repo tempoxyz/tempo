@@ -102,9 +102,9 @@ impl GenesisArgs {
             let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, token.storage);
 
             fee_manager
-                .set_user_token(
+                .set_validator_token(
                     &Address::ZERO,
-                    IFeeManager::setUserTokenCall { token: fee_token },
+                    IFeeManager::setValidatorTokenCall { token: fee_token },
                 )
                 .expect("Could not 0x00 validator fee token");
         }
