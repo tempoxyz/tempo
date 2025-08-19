@@ -1,6 +1,9 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::TxEnvelope;
+use alloy_eips::{
+    eip2930::AccessList, eip7594::BlobTransactionSidecarVariant, eip7702::SignedAuthorization,
+};
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
 use reth_ethereum_primitives::TransactionSigned;
 use reth_primitives_traits::{Recovered, SignedTransaction};
