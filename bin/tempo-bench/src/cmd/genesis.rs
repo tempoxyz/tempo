@@ -13,7 +13,7 @@ use reth::revm::{
     inspector::{JournalExt, NoOpInspector},
 };
 use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
-use simple_tqdm::{Tqdm, ParTqdm};
+use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
 use tempo_precompiles::{
@@ -71,7 +71,7 @@ impl GenesisArgs {
         // Deploy TestUSD fee token
         let admin = addresses[0];
         let mut evm = setup_tempo_evm();
-        let fee_token = create_and_mint_token(
+        let fee_token_id = create_and_mint_token(
             "TestUSD",
             "TestUSD",
             "USD",
@@ -80,20 +80,25 @@ impl GenesisArgs {
             &mut evm,
         )?;
 
-        println!("Minting TestUSD to all addresses");
-        // Mint TestUSD to all addresses
-        for address in addresses
-            .iter()
-            .tqdm()
         {
-            let mint_call = ITIP20::mintCall {
-                to: *address,
-                amount: U256::from(u64::MAX),
-            };
-            let result =
-                evm.transact_system_call(admin, fee_token, mint_call.abi_encode().into())?;
-            assert!(result.result.is_success(), "TestUSD minting failed");
-            evm.journal_state(result.state)?;
+            let block = evm.block.clone();
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+            let mut provider = EvmStorageProvider::new(evm_internals, 1);
+            let mut token = TIP20Token::new(fee_token_id, &mut provider);
+
+            println!("Minting TestUSD to all addresses");
+            // Mint TestUSD to all addresses
+            for address in addresses.iter().tqdm() {
+                token
+                    .mint(
+                        &admin,
+                        ITIP20::mintCall {
+                            to: *address,
+                            amount: U256::from(u64::MAX),
+                        },
+                    )
+                    .expect("Could not mint fee token");
+            }
         }
 
         // Save EVM state to allocation
@@ -176,7 +181,7 @@ fn create_and_mint_token(
     admin: Address,
     mint_amount: U256,
     evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
-) -> eyre::Result<Address> {
+) -> eyre::Result<u64> {
     let create_token_call = ITIP20Factory::createTokenCall {
         name: name.into(),
         symbol: symbol.into(),
@@ -223,5 +228,5 @@ fn create_and_mint_token(
         )
         .expect("Token minting failed");
 
-    Ok(token_address)
+    Ok(token_id)
 }
