@@ -1,4 +1,5 @@
 use crate::args::TempoArgs;
+use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
@@ -11,11 +12,13 @@ use reth_evm::{
 use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
     AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
-    PayloadAttributesBuilder, PayloadTypes,
+    PayloadAttributesBuilder, PayloadTypes, TxTy,
 };
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
-    components::{BasicPayloadServiceBuilder, ComponentsBuilder, ExecutorBuilder},
+    components::{
+        BasicPayloadServiceBuilder, ComponentsBuilder, ExecutorBuilder, PoolBuilder, TxPoolBuilder,
+    },
     rpc::{
         BasicEngineApiBuilder, BasicEngineValidatorBuilder, EngineApiBuilder, EngineValidatorAddOn,
         EngineValidatorBuilder, EthApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
@@ -23,14 +26,19 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::{
     EthEngineTypes, EthEvmConfig, EthereumEngineValidator, EthereumEngineValidatorBuilder,
-    EthereumEthApiBuilder, EthereumNetworkBuilder, EthereumPayloadBuilder, EthereumPoolBuilder,
+    EthereumEthApiBuilder, EthereumNetworkBuilder, EthereumPayloadBuilder,
 };
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
 use reth_rpc_eth_api::FromEvmError;
 use reth_rpc_eth_types::EthApiError;
+use reth_tracing::tracing::{debug, info};
+use reth_transaction_pool::{
+    EthPoolTransaction, EthPooledTransaction, EthTransactionPool, PoolTransaction,
+    TransactionValidationTaskExecutor, blobstore::DiskFileBlobStore,
+};
 use reth_trie_db::MerklePatriciaTrie;
-use std::{default::Default, sync::Arc};
+use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_evm::TempoEvmFactory;
 
 /// Type configuration for a regular Ethereum node.
@@ -49,7 +57,7 @@ impl TempoNode {
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
     pub fn components<Node>() -> ComponentsBuilder<
         Node,
-        EthereumPoolBuilder,
+        TempoPoolBuilder,
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
@@ -70,7 +78,7 @@ impl TempoNode {
     {
         ComponentsBuilder::default()
             .node_types::<Node>()
-            .pool(EthereumPoolBuilder::default())
+            .pool(TempoPoolBuilder::default())
             .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
@@ -217,7 +225,7 @@ where
 {
     type ComponentsBuilder = ComponentsBuilder<
         N,
-        EthereumPoolBuilder,
+        TempoPoolBuilder,
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
@@ -273,8 +281,6 @@ where
     }
 }
 
-// TODO: TempoPoolBuilder
-
 /// Builder for [`EthereumEngineValidator`].
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
@@ -294,5 +300,87 @@ where
 
     async fn build(self, ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
         Ok(EthereumEngineValidator::new(ctx.config.chain.clone()))
+    }
+}
+
+/// A basic optimism transaction pool.
+///
+/// This contains various settings that can be configured and take precedence over the node's
+/// config.
+#[derive(Debug, Clone)]
+pub struct TempoPoolBuilder<T = EthPooledTransaction> {
+    /// Marker for the pooled transaction type.
+    _pd: core::marker::PhantomData<T>,
+}
+
+impl<T> Default for TempoPoolBuilder<T> {
+    fn default() -> Self {
+        Self {
+            _pd: Default::default(),
+        }
+    }
+}
+
+impl<Node, T> PoolBuilder<Node> for TempoPoolBuilder<T>
+where
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: EthereumHardforks>>,
+    T: EthPoolTransaction<Consensus = TxTy<Node::Types>> + PoolTransaction,
+{
+    type Pool = EthTransactionPool<Node::Provider, DiskFileBlobStore, T>;
+
+    async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
+        let pool_config = ctx.pool_config();
+
+        let blob_cache_size = if let Some(blob_cache_size) = pool_config.blob_cache_size {
+            Some(blob_cache_size)
+        } else {
+            // get the current blob params for the current timestamp, fallback to default Cancun
+            // params
+            let current_timestamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)?
+                .as_secs();
+            let blob_params = ctx
+                .chain_spec()
+                .blob_params_at_timestamp(current_timestamp)
+                .unwrap_or_else(BlobParams::cancun);
+
+            // Derive the blob cache size from the target blob count, to auto scale it by
+            // multiplying it with the slot count for 2 epochs: 384 for pectra
+            Some((blob_params.target_blob_count * EPOCH_SLOTS * 2) as u32)
+        };
+
+        let blob_store =
+            reth_node_builder::components::create_blob_store_with_cache(ctx, blob_cache_size)?;
+
+        let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
+            .with_head_timestamp(ctx.head().timestamp)
+            .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
+            .kzg_settings(ctx.kzg_settings()?)
+            .with_local_transactions_config(pool_config.local_transactions_config.clone())
+            .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
+            .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
+            .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
+            .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
+            .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
+
+        if validator.validator().eip4844() {
+            // initializing the KZG settings can be expensive, this should be done upfront so that
+            // it doesn't impact the first block or the first gossiped blob transaction, so we
+            // initialize this in the background
+            let kzg_settings = validator.validator().kzg_settings().clone();
+            ctx.task_executor().spawn_blocking(async move {
+                let _ = kzg_settings.get();
+                debug!(target: "reth::cli", "Initialized KZG settings");
+            });
+        }
+
+        let transaction_pool = TxPoolBuilder::new(ctx)
+            .with_validator(validator)
+            .build_and_spawn_maintenance_task(blob_store, pool_config)?;
+
+        info!(target: "reth::cli", "Transaction pool initialized");
+        debug!(target: "reth::cli", "Spawned txpool maintenance task");
+
+        Ok(transaction_pool)
     }
 }
