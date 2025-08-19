@@ -347,7 +347,7 @@ mod tests {
         db::{CacheDB, EmptyDB},
         inspector::NoOpInspector,
     };
-    use reth_evm::{EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
+    use reth_evm::{EvmEnv, EvmError, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
     use reth_revm::DatabaseCommit;
     use tempo_precompiles::{
         TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
@@ -718,17 +718,41 @@ mod tests {
         Ok(())
     }
 
-    // TODO: test tx.max_balance_spending assert OverflowPaymentInTransaction
-    //
-    // let mut max_balance_spending = (self.gas_limit() as u128)
-    //     .checked_mul(self.max_fee_per_gas())
-    //     .and_then(|gas_cost| U256::from(gas_cost).checked_add(self.value()))
-    //     .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
-    //
-    // // add blob fee
-    // if self.tx_type() == TransactionType::Eip4844 {
-    //     let data_fee = self.calc_max_data_fee();
-    //     max_balance_spending = max_balance_spending
-    //         .checked_add(data_fee)
-    //         .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
+    #[test]
+    fn test_transact_raw_overflow_payment() -> eyre::Result<()> {
+        let mut evm = setup_tempo_evm();
+        let admin = Address::random();
+        let user = Address::random();
+
+        let fee_token = create_and_mint_token(
+            "F".to_string(),
+            "FeeToken".to_string(),
+            "USD".to_string(),
+            admin,
+            U256::from(u64::MAX),
+            &mut evm,
+        )?;
+
+        transfer_tokens(&mut evm, admin, user, fee_token, U256::from(u64::MAX))?;
+        set_user_fee_token(&mut evm, user, fee_token)?;
+
+        // Create a transaction with values that would cause overflow in max_balance_spending calculation
+        let tx = TxEnv {
+            caller: user,
+            kind: fee_token.into(),
+            gas_limit: u64::MAX,
+            gas_price: u128::MAX,
+            value: U256::MAX,
+            data: Bytes::default(),
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(matches!(
+            result.err().unwrap(),
+            EVMError::Transaction(InvalidTransaction::OverflowPaymentInTransaction)
+        ));
+
+        Ok(())
+    }
 }
