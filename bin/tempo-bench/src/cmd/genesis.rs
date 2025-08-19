@@ -199,8 +199,6 @@ fn create_and_mint_token(
 
     let output = result.result.output().unwrap_or_default();
     let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?.to::<u64>();
-    let token_address = token_id_to_address(token_id);
-
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmStorageProvider::new(evm_internals, 1);
