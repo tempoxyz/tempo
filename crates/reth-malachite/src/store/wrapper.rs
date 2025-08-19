@@ -66,7 +66,7 @@ impl Store {
     pub async fn store_undecided_proposal(
         &self,
         proposal: ProposedValue<MalachiteContext>,
-        block: reth_primitives::Block,
+        block: reth_ethereum_primitives::Block,
     ) -> Result<()> {
         // Store the block first
         self.inner.store_block(block).await?;
@@ -92,12 +92,12 @@ impl Store {
     }
 
     /// Store a block indexed by its hash
-    pub async fn store_block(&self, block: reth_primitives::Block) -> Result<()> {
+    pub async fn store_block(&self, block: reth_ethereum_primitives::Block) -> Result<()> {
         self.inner.store_block(block).await
     }
 
     /// Get a block by its hash
-    pub async fn get_block(&self, hash: &B256) -> Result<Option<reth_primitives::Block>> {
+    pub async fn get_block(&self, hash: &B256) -> Result<Option<reth_ethereum_primitives::Block>> {
         self.inner.get_block(hash).await
     }
 
@@ -168,19 +168,16 @@ trait StoreOps {
     // Block storage operations:
 
     /// Store a block by its hash
-    async fn store_block(&self, block: reth_primitives::Block) -> Result<()>;
+    async fn store_block(&self, block: reth_ethereum_primitives::Block) -> Result<()>;
 
     /// Get a block by its hash
-    async fn get_block(
-        &self,
-        hash: &alloy_primitives::B256,
-    ) -> Result<Option<reth_primitives::Block>>;
+    async fn get_block(&self, hash: &B256) -> Result<Option<reth_ethereum_primitives::Block>>;
 
     /// Check if a block exists
-    async fn has_block(&self, hash: &alloy_primitives::B256) -> Result<bool>;
+    async fn has_block(&self, hash: &B256) -> Result<bool>;
 
     /// Remove a block by its hash
-    async fn remove_block(&self, hash: &alloy_primitives::B256) -> Result<()>;
+    async fn remove_block(&self, hash: &B256) -> Result<()>;
 }
 
 #[async_trait::async_trait]
@@ -190,14 +187,6 @@ where
     P::Provider: Send,
     P::ProviderRW: Send,
 {
-    async fn max_decided_value_height(&self) -> Option<Height> {
-        self.max_decided_value_height().await
-    }
-
-    async fn get_decided_value(&self, height: Height) -> Result<Option<super::DecidedValue>> {
-        self.get_decided_value(height).await.map_err(Into::into)
-    }
-
     async fn store_decided_value(
         &self,
         certificate: &CommitCertificate<MalachiteContext>,
@@ -208,14 +197,8 @@ where
             .map_err(Into::into)
     }
 
-    async fn get_undecided_proposals(
-        &self,
-        height: Height,
-        round: Round,
-    ) -> Result<Vec<ProposedValue<MalachiteContext>>> {
-        self.get_undecided_proposals(height, round)
-            .await
-            .map_err(Into::into)
+    async fn get_decided_value(&self, height: Height) -> Result<Option<super::DecidedValue>> {
+        self.get_decided_value(height).await.map_err(Into::into)
     }
 
     async fn store_undecided_proposal(
@@ -242,11 +225,25 @@ where
         self.verify_tables().await.map_err(Into::into)
     }
 
-    async fn store_block(&self, block: reth_primitives::Block) -> Result<()> {
+    async fn max_decided_value_height(&self) -> Option<Height> {
+        self.max_decided_value_height().await
+    }
+
+    async fn get_undecided_proposals(
+        &self,
+        height: Height,
+        round: Round,
+    ) -> Result<Vec<ProposedValue<MalachiteContext>>> {
+        self.get_undecided_proposals(height, round)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn store_block(&self, block: reth_ethereum_primitives::Block) -> Result<()> {
         BlockStore::store_block(self, block)
     }
 
-    async fn get_block(&self, hash: &B256) -> Result<Option<reth_primitives::Block>> {
+    async fn get_block(&self, hash: &B256) -> Result<Option<reth_ethereum_primitives::Block>> {
         BlockStore::get_block(self, hash)
     }
 

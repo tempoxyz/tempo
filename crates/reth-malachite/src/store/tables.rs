@@ -288,7 +288,7 @@ impl From<B256> for BlockKey {
 /// Stored block data
 #[derive(Debug, Clone)]
 pub struct StoredBlock {
-    pub block: reth_primitives::Block,
+    pub block: reth_ethereum_primitives::Block,
 }
 
 // Manual serde implementation for StoredBlock (required by tables! macro but not used)

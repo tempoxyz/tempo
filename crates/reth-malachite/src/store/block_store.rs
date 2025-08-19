@@ -7,7 +7,7 @@
 
 use alloy_primitives::B256;
 use eyre::Result;
-use reth_primitives::Block;
+use reth_ethereum_primitives::Block;
 
 /// Trait for storing and retrieving blocks by their hash.
 ///
