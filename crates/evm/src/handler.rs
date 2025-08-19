@@ -10,8 +10,12 @@ use reth_revm::{
     interpreter::interpreter_action::FrameInit,
     state::EvmState,
 };
+use tempo_precompiles::contracts::{EvmStorageProvider, TipFeeManager};
+use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 
-/// Optimism handler extends the [`Handler`] with Optimism specific logic.
+/// Optimism handler extends the [`Handler`] with Tempo specific logic:
+///
+/// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug, Clone)]
 pub struct TempoEvmHandler<EVM, ERROR, FRAME> {
     /// The regular ethereum handler implementation, used to forward equivalent logic.
@@ -72,8 +76,15 @@ where
         )?;
 
         let max_balance_spending = tx.max_balance_spending()?;
+        let effective_balance_spending = tx
+            .effective_balance_spending(basefee, blob_price)
+            .expect("effective balance is always smaller than max balance so it can't overflow");
 
-        // TODO: get_fee_token_balance
+        // fetch the token balance
+        let fee_manager = TipFeeManager::new(
+            TIP_FEE_MANAGER_ADDRESS,
+            &mut EvmStorageProvider::new(input.internals, chain_id),
+        )
 
         // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
         // Transfer will be done inside `*_inner` functions.
@@ -84,10 +95,6 @@ where
             }
                 .into());
         }
-
-        let effective_balance_spending = tx
-            .effective_balance_spending(basefee, blob_price)
-            .expect("effective balance is always smaller than max balance so it can't overflow");
 
         // subtracting max balance spending with value that is going to be deducted later in the call.
         let gas_balance_spending = effective_balance_spending - tx.value();
