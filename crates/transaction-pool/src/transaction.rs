@@ -206,14 +206,16 @@ where
         self,
         _sidecar: Arc<BlobTransactionSidecarVariant>,
     ) -> Option<Recovered<Self::Pooled>> {
-        todo!()
+        // TODO:
+        None
     }
 
     fn try_from_eip4844(
         _tx: Recovered<Self::Consensus>,
         _sidecar: BlobTransactionSidecarVariant,
     ) -> Option<Self> {
-        todo!()
+        // TODO:
+        None
     }
 
     fn validate_blob(
@@ -221,6 +223,7 @@ where
         _sidecar: &BlobTransactionSidecarVariant,
         _settings: &KzgSettings,
     ) -> Result<(), BlobTransactionValidationError> {
-        todo!()
+        // TODO:
+        Ok(())
     }
 }
