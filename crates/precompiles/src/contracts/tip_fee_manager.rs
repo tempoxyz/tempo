@@ -513,7 +513,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             .into_address();
 
         if token.is_zero() {
-            let validator_slot = self.get_validator_token_slot(&call.sender);
+            let validator_slot = self.get_validator_token_slot(&call.validator);
             let validator_token = self
                 .storage
                 .sload(self.contract_address, validator_slot)
@@ -694,7 +694,10 @@ mod tests {
             .unwrap();
 
         let initial_balance = fee_manager
-            .get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall { sender: user })
+            .get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall {
+                validator: Address::ZERO,
+                sender: user,
+            })
             ._1;
 
         // Collect fee and verify balances
@@ -708,8 +711,10 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        let result =
-            fee_manager.get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall { sender: user });
+        let result = fee_manager.get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall {
+            validator: Address::ZERO,
+            sender: user,
+        });
         assert_eq!(result._0, token);
         assert_eq!(result._1, initial_balance - amount);
     }
