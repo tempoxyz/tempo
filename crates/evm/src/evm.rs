@@ -528,7 +528,7 @@ mod tests {
 
         // Assert that the fee token is not set
         let sender = Address::random();
-        let (user_fee_token, balance) = evm.get_fee_token_balance(evm.block.beneficiary, sender)?;
+        let (user_fee_token, balance) = evm.get_fee_token_balance(sender, evm.block.beneficiary)?;
 
         assert_eq!(user_fee_token, Address::ZERO);
         assert_eq!(balance, 0);
@@ -538,7 +538,7 @@ mod tests {
         let fee_balance = 1000;
         transfer_tokens(&mut evm, admin, sender, fee_token, U256::from(fee_balance))?;
 
-        let (token_address, balance) = evm.get_fee_token_balance(evm.block.beneficiary, sender)?;
+        let (token_address, balance) = evm.get_fee_token_balance(sender, evm.block.beneficiary)?;
         assert_eq!(fee_token, token_address);
         assert_eq!(balance, fee_balance);
 
