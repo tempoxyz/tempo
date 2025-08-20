@@ -41,3 +41,9 @@ alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 eyre.workspace = true
 clap.workspace = true
+
+[dev-dependencies]
+tempo-precompiles.workspace = true
+reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"]}
