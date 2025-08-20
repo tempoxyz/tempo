@@ -125,14 +125,7 @@ where
             // deduct balance from the fee account's balance by transferring it over to the fee manager
             let gas_balance_spending = effective_balance_spending - value;
 
-            // Transfer fee token from caller to validator
-            transfer_token(
-                journal,
-                fee_token,
-                tx.caller(),
-                beneficiary,
-                effective_balance_spending,
-            )?;
+            // TODO transfer from caller to fee manager
         }
 
         //
@@ -262,4 +255,92 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, U256};
+    use reth::revm::db::{CacheDB, EmptyDB};
+    use reth_revm::{Journal, interpreter::instructions::utility::IntoU256};
+
+    fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
+        let db = CacheDB::new(EmptyDB::default());
+        Journal::new(db)
+    }
+
+    #[test]
+    fn test_get_token_balance() {
+        let mut journal = create_test_journal();
+        let token = Address::random();
+        let account = Address::random();
+        let expected_balance = U256::random();
+
+        // Set up initial balance
+        let balance_slot = mapping_slot(account, tip20::slots::BALANCES);
+        journal
+            .sstore(token, balance_slot, expected_balance)
+            .unwrap();
+
+        let balance = get_token_balance(&mut journal, token, account).unwrap();
+        assert_eq!(balance, expected_balance);
+    }
+
+    #[test]
+    fn test_transfer_token() {
+        let mut journal = create_test_journal();
+        let token = Address::random();
+        let sender = Address::random();
+        let recipient = Address::random();
+        let initial_balance = U256::random();
+
+        let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
+        journal.sstore(token, sender_slot, initial_balance).unwrap();
+        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
+        assert_eq!(sender_balance, initial_balance);
+
+        transfer_token(&mut journal, token, sender, recipient, initial_balance).unwrap();
+
+        // Verify balances after transfer
+        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
+        let recipient_balance = get_token_balance(&mut journal, token, recipient).unwrap();
+
+        assert_eq!(sender_balance, 0);
+        assert_eq!(recipient_balance, initial_balance);
+    }
+
+    #[test]
+    fn test_get_fee_token() {
+        let mut journal = create_test_journal();
+        let user = Address::random();
+        let validator = Address::random();
+        let user_fee_token = Address::random();
+        let validator_fee_token = Address::random();
+
+        // Set validator token
+        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+        journal
+            .sstore(
+                TIP_FEE_MANAGER_ADDRESS,
+                validator_slot,
+                validator_fee_token.into_u256(),
+            )
+            .unwrap();
+
+        let fee_token = get_fee_token(&mut journal, user, validator).unwrap();
+        assert_eq!(validator_fee_token, fee_token);
+
+        // Set user token
+        let user_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
+        journal
+            .sstore(
+                TIP_FEE_MANAGER_ADDRESS,
+                user_slot,
+                user_fee_token.into_u256(),
+            )
+            .unwrap();
+
+        let fee_token = get_fee_token(&mut journal, user, validator).unwrap();
+        assert_eq!(user_fee_token, fee_token);
+    }
 }
