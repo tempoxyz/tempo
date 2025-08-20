@@ -87,7 +87,7 @@ where
         validator: Address,
         sender: Address,
     ) -> Result<(Address, u64), EVMError<DB::Error>> {
-        let call_data = IFeeManager::getFeeTokenBalanceCall { validator, sender }
+        let call_data = IFeeManager::getFeeTokenBalanceCall { sender, validator }
             .abi_encode()
             .into();
 
