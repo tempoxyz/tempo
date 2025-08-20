@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use alloy_primitives::{Address, U256};
 use reth::revm::{
     context::{Block, Cfg, Transaction, result::InvalidTransaction},
-    handler::{MainnetHandler, pre_execution::validate_account_nonce_and_code},
+    handler::pre_execution::validate_account_nonce_and_code,
     primitives::hardfork::SpecId,
 };
 use reth_revm::{
