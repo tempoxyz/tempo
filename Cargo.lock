@@ -111,11 +111,19 @@ version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48dff4dd98e17de00203f851800bbc8b76eb29a4d4e3e44074614338b7a3308d"
 dependencies = [
+ "alloy-consensus 1.0.24",
  "alloy-core",
+ "alloy-eips 1.0.24",
  "alloy-genesis",
  "alloy-network 1.0.24",
+ "alloy-provider",
+ "alloy-rpc-client",
+ "alloy-rpc-types",
+ "alloy-serde 1.0.24",
  "alloy-signer 1.0.24",
  "alloy-signer-local 1.0.24",
+ "alloy-transport",
+ "alloy-transport-http",
 ]
 
 [[package]]
@@ -9036,7 +9044,6 @@ dependencies = [
  "reth-node-ethereum",
  "reth-payload-builder",
  "reth-payload-primitives",
- "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-rpc-builder",
@@ -9579,7 +9586,6 @@ version = "1.6.0"
 source = "git+https://github.com/paradigmxyz/reth?rev=61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b#61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b"
 dependencies = [
  "alloy-consensus 1.0.24",
- "c-kzg",
  "once_cell",
  "reth-ethereum-forks",
  "reth-ethereum-primitives",
@@ -11828,7 +11834,6 @@ dependencies = [
  "reth-node-ethereum",
  "reth-payload-builder",
  "reth-payload-primitives",
- "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-rpc-builder",
@@ -11950,7 +11955,6 @@ dependencies = [
  "reth-node-ethereum",
  "reth-payload-builder",
  "reth-payload-primitives",
- "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
@@ -12007,6 +12011,7 @@ dependencies = [
  "reth-transaction-pool",
  "reth-trie-db",
  "tempo-evm",
+ "tempo-transaction-pool",
 ]
 
 [[package]]
@@ -12064,7 +12069,6 @@ dependencies = [
  "reth-node-ethereum",
  "reth-payload-builder",
  "reth-payload-primitives",
- "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-rpc-builder",
@@ -12084,6 +12088,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-sidecar"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "alloy-rpc-types-engine",
+ "anyhow",
+ "clap",
+ "jsonwebtoken",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shellexpand",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.19",
+]
+
+[[package]]
 name = "tempo-telemetry-util"
 version = "0.1.0"
 dependencies = [
@@ -12091,6 +12113,20 @@ dependencies = [
  "jiff",
  "tracing",
  "tracing-core",
+]
+
+[[package]]
+name = "tempo-transaction-pool"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus 1.0.24",
+ "alloy-eips 1.0.24",
+ "alloy-primitives",
+ "reth-chainspec",
+ "reth-ethereum-primitives",
+ "reth-primitives-traits",
+ "reth-storage-api",
+ "reth-transaction-pool",
 ]
 
 [[package]]

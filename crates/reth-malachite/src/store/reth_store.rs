@@ -456,7 +456,7 @@ where
     Provider::Provider: Send,
     Provider::ProviderRW: Send,
 {
-    fn store_block(&self, block: reth_primitives::Block) -> Result<()> {
+    fn store_block(&self, block: reth_ethereum_primitives::Block) -> Result<()> {
         let hash = block.header.hash_slow();
         debug!("Storing block with hash: {}", hash);
 
@@ -473,7 +473,10 @@ where
         Ok(())
     }
 
-    fn get_block(&self, hash: &alloy_primitives::B256) -> Result<Option<reth_primitives::Block>> {
+    fn get_block(
+        &self,
+        hash: &alloy_primitives::B256,
+    ) -> Result<Option<reth_ethereum_primitives::Block>> {
         trace!("Getting block with hash: {}", hash);
 
         let provider = self.provider()?;

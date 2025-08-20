@@ -10,16 +10,15 @@ use alloy::{
 use reth::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 mod slots {
-    use crate::contracts::storage::slots::to_u256;
-    use alloy::primitives::U256;
+    use alloy::primitives::{U256, uint};
 
-    pub const POOLS: U256 = to_u256(0);
-    pub const POOL_EXISTS: U256 = to_u256(2);
-    pub const VALIDATOR_TOKENS: U256 = to_u256(4);
-    pub const USER_TOKENS: U256 = to_u256(5);
-    pub const COLLECTED_FEES: U256 = to_u256(6);
-    pub const TOKENS_WITH_FEES_LENGTH: U256 = to_u256(11);
-    pub const TOKEN_IN_FEES_ARRAY: U256 = to_u256(15);
+    pub const POOLS: U256 = uint!(0_U256);
+    pub const POOL_EXISTS: U256 = uint!(2_U256);
+    pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
+    pub const USER_TOKENS: U256 = uint!(5_U256);
+    pub const COLLECTED_FEES: U256 = uint!(6_U256);
+    pub const TOKENS_WITH_FEES_LENGTH: U256 = uint!(11_U256);
+    pub const TOKEN_IN_FEES_ARRAY: U256 = uint!(15_U256);
 }
 
 #[derive(Debug, Clone)]

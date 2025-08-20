@@ -1,0 +1,28 @@
+[package]
+name = "tempo-sidecar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Tempo mock consensus sidecar"
+default-run = "tempo-sidecar"
+
+# [lints]
+# workspace = true
+
+[dependencies]
+alloy = { workspace = true, default-features = false, features = ["network", "rpc", "rpc-types", "transports", "providers", "reqwest-rustls-tls"] }
+alloy-rpc-types-engine.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
+jsonwebtoken = "9.3"
+shellexpand = "3.1"
+
+[[bin]]
+name = "tempo-sidecar"
+path = "src/main.rs"
