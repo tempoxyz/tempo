@@ -10,7 +10,7 @@ use reth_revm::{
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 
-/// Tempo EVM extends the [`revm::Evm`] type with Tempo specific types and logic.
+/// Tempo EVM extends the [`reth_revm::Evm`] type with Tempo specific types and logic.
 #[derive(Debug, Clone)]
 pub struct TempoEvm<
     CTX,
