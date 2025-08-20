@@ -21,7 +21,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
     let executor = tasks.executor();
 
     let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/genesis.json"
+        "../assets/test-genesis.json"
     ))?);
     let node_config = NodeConfig::test()
         .with_chain(Arc::new(chain_spec))
