@@ -12007,6 +12007,7 @@ dependencies = [
  "reth-transaction-pool",
  "reth-trie-db",
  "tempo-evm",
+ "tempo-transaction-pool",
 ]
 
 [[package]]
@@ -12114,6 +12115,9 @@ dependencies = [
 name = "tempo-transaction-pool"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus 1.0.24",
+ "alloy-eips 1.0.24",
+ "alloy-primitives",
  "reth-chainspec",
  "reth-ethereum-primitives",
  "reth-primitives-traits",

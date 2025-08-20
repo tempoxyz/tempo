@@ -34,12 +34,13 @@ use reth_rpc_eth_api::FromEvmError;
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{
-    EthPoolTransaction, EthPooledTransaction, EthTransactionPool, PoolTransaction,
-    TransactionValidationTaskExecutor, blobstore::DiskFileBlobStore,
+    EthPoolTransaction, EthTransactionPool, PoolTransaction, TransactionValidationTaskExecutor,
+    blobstore::DiskFileBlobStore,
 };
 use reth_trie_db::MerklePatriciaTrie;
 use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_evm::TempoEvmFactory;
+use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
@@ -308,7 +309,7 @@ where
 /// This contains various settings that can be configured and take precedence over the node's
 /// config.
 #[derive(Debug, Clone)]
-pub struct TempoPoolBuilder<T = EthPooledTransaction> {
+pub struct TempoPoolBuilder<T = TempoPooledTransaction> {
     /// Marker for the pooled transaction type.
     _pd: core::marker::PhantomData<T>,
 }
@@ -374,6 +375,7 @@ where
             });
         }
 
+        // TODO: custom tempo tx validation
         let transaction_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;

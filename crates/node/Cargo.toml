@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 tempo-evm.workspace = true
+tempo-transaction-pool.workspace = true
 reth-malachite.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-ethereum-primitives.workspace = true
