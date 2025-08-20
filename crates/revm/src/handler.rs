@@ -3,7 +3,8 @@
 use reth_revm::{
     context::{ContextTr, JournalTr, result::HaltReason},
     handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler, MainnetHandler},
-    interpreter::interpreter_action::FrameInit,
+    inspector::{Inspector, InspectorEvmTr, InspectorHandler},
+    interpreter::{interpreter::EthInterpreter, interpreter_action::FrameInit},
     state::EvmState,
 };
 
@@ -59,4 +60,17 @@ where
     ) -> Result<(), Self::Error> {
         self.mainnet.reward_beneficiary(evm, exec_result)
     }
+}
+
+impl<EVM, ERROR> InspectorHandler
+    for TempoEvmHandler<EVM, ERROR, reth_revm::handler::EthFrame<EthInterpreter>>
+where
+    EVM: InspectorEvmTr<
+            Context: ContextTr<Journal: JournalTr<State = EvmState>>,
+            Frame = reth_revm::handler::EthFrame<EthInterpreter>,
+            Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
+        >,
+    ERROR: EvmTrError<EVM>,
+{
+    type IT = EthInterpreter;
 }
