@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_token_balance() {
+    fn test_get_token_balance() -> eyre::Result<()> {
         let mut journal = create_test_journal();
         let token = Address::random();
         let account = Address::random();
@@ -278,16 +278,19 @@ mod tests {
 
         // Set up initial balance
         let balance_slot = mapping_slot(account, tip20::slots::BALANCES);
+        journal.warm_account(token)?;
         journal
             .sstore(token, balance_slot, expected_balance)
             .unwrap();
 
         let balance = get_token_balance(&mut journal, token, account).unwrap();
         assert_eq!(balance, expected_balance);
+
+        Ok(())
     }
 
     #[test]
-    fn test_transfer_token() {
+    fn test_transfer_token() -> eyre::Result<()> {
         let mut journal = create_test_journal();
         let token = Address::random();
         let sender = Address::random();
@@ -295,6 +298,7 @@ mod tests {
         let initial_balance = U256::random();
 
         let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
+        journal.warm_account(token)?;
         journal.sstore(token, sender_slot, initial_balance).unwrap();
         let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
         assert_eq!(sender_balance, initial_balance);
@@ -307,10 +311,12 @@ mod tests {
 
         assert_eq!(sender_balance, 0);
         assert_eq!(recipient_balance, initial_balance);
+
+        Ok(())
     }
 
     #[test]
-    fn test_get_fee_token() {
+    fn test_get_fee_token() -> eyre::Result<()> {
         let mut journal = create_test_journal();
         let user = Address::random();
         let validator = Address::random();
@@ -319,6 +325,7 @@ mod tests {
 
         // Set validator token
         let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+        journal.warm_account(TIP_FEE_MANAGER_ADDRESS)?;
         journal
             .sstore(
                 TIP_FEE_MANAGER_ADDRESS,
@@ -342,5 +349,7 @@ mod tests {
 
         let fee_token = get_fee_token(&mut journal, user, validator).unwrap();
         assert_eq!(user_fee_token, fee_token);
+
+        Ok(())
     }
 }
