@@ -188,7 +188,6 @@ where
     ) -> Result<(), Self::Error> {
         let context = evm.ctx();
         let tx = context.tx();
-        let caller = context.tx().caller();
         let beneficiary = context.block().beneficiary();
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
@@ -266,7 +265,8 @@ where
     JOURNAL: JournalTr,
 {
     // Load sender's current balance
-    // NOTE: it is important to note that this expects the token to be a tip20 token
+    // NOTE: it is important to note that this expects the token to be a tip20 token with BALANCES
+    // slot at slot 10
     let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
     let sender_balance = journal.sload(token, sender_slot)?.data;
 
