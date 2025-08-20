@@ -73,6 +73,7 @@ tempo-node = { path = "crates/node" }
 reth-malachite = { path = "crates/reth-malachite" }
 tempo-chainspec = { path = "crates/chainspec" }
 tempo-evm = { path = "crates/evm" }
+tempo-revm = { path = "crates/revm" }
 tempo-precompiles = { path = "crates/precompiles" }
 tempo-telemetry-util = { path = "crates/telemetry-util" }
 tempo-transaction-pool = { path = "crates/transaction-pool" }

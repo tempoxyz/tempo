@@ -24,6 +24,19 @@ pub struct TempoEvm<
     pub Evm<CTX, INSP, I, P, F>,
 );
 
+impl<CTX: ContextTr, INSP> TempoEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>> {
+    /// Create a new Optimism EVM.
+    pub fn new(ctx: CTX, inspector: INSP) -> Self {
+        Self(Evm {
+            ctx,
+            inspector,
+            instruction: EthInstructions::new_mainnet(),
+            precompiles: EthPrecompiles::default(),
+            frame_stack: FrameStack::new(),
+        })
+    }
+}
+
 impl<CTX, INSP, I, P> TempoEvm<CTX, INSP, I, P> {
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<CTX, OINSP, I, P> {

@@ -10,6 +10,7 @@ description = "TODO:"
 
 [dependencies]
 tempo-precompiles.workspace = true
+tempo-revm.workspace = true
 reth.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true

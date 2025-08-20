@@ -11969,6 +11969,7 @@ dependencies = [
  "sha3",
  "tempfile",
  "tempo-precompiles",
+ "tempo-revm",
  "thiserror 2.0.15",
  "tokio",
  "toml",

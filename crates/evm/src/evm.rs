@@ -1,18 +1,26 @@
 use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, Bytes, U256};
-use reth_evm::{Database, EthEvm, Evm, EvmEnv, precompiles::PrecompilesMap};
-use reth_revm::{
-    Context, Inspector,
+use reth::revm::{
+    Inspector,
     context::{
-        BlockEnv, CfgEnv, ContextTr, JournalTr, Transaction, TxEnv,
-        result::{
-            EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
-            ResultAndState,
-        },
+        TxEnv,
+        result::{EVMError, HaltReason},
     },
-    handler::{EthPrecompiles, PrecompileProvider},
-    interpreter::InterpreterResult,
+    inspector::NoOpInspector,
     primitives::hardfork::SpecId,
+};
+use reth_evm::{
+    Database, EthEvm, EthEvmFactory, Evm, EvmEnv, EvmFactory, eth::EthEvmContext,
+    precompiles::PrecompilesMap,
+};
+use reth_revm::{
+    Context,
+    context::{
+        BlockEnv, CfgEnv, ContextTr, JournalTr, Transaction,
+        result::{ExecResultAndState, ExecutionResult, InvalidTransaction, ResultAndState},
+    },
+    handler::{EthPrecompiles, EvmTr, PrecompileProvider},
+    interpreter::InterpreterResult,
     state::EvmState,
 };
 use std::ops::{Deref, DerefMut};
@@ -22,11 +30,56 @@ use tempo_precompiles::{
         ITIP20,
         types::IFeeManager::{self},
     },
-    precompiles,
 };
 
 /// The Tempo EVM context type.
-pub type TempoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
+pub type TempoContext<DB> = reth_revm::Context<BlockEnv, TxEnv, CfgEnv, DB>;
+
+#[derive(Debug, Default, Clone, Copy)]
+#[non_exhaustive]
+pub struct TempoEvmFactory {
+    inner: EthEvmFactory,
+}
+
+impl EvmFactory for TempoEvmFactory {
+    type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I, PrecompilesMap>;
+    type Context<DB: Database> = EthEvmContext<DB>;
+    type Tx = TxEnv;
+    type Error<DBError: std::error::Error + Send + Sync + 'static> = EVMError<DBError>;
+    type HaltReason = HaltReason;
+    type Spec = SpecId;
+    type Precompiles = PrecompilesMap;
+
+    fn create_evm<DB: Database>(
+        &self,
+        db: DB,
+        input: EvmEnv<Self::Spec>,
+    ) -> Self::Evm<DB, NoOpInspector> {
+        let spec_id = input.cfg_env.spec;
+        // TempoEvm {
+        //     inner: Context::mainnet()
+        //         .with_db(db)
+        //         .with_block(input.block_env)
+        //         .with_cfg(input.cfg_env)
+        //         .build_op_with_inspector(NoOpInspector {})
+        //         .with_precompiles(PrecompilesMap::from_static(
+        //             OpPrecompiles::new_with_spec(spec_id).precompiles(),
+        //         )),
+        //     inspect: false,
+        // }
+        todo!()
+    }
+
+    fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
+        &self,
+        db: DB,
+        input: EvmEnv<Self::Spec>,
+        inspector: I,
+    ) -> Self::Evm<DB, I> {
+        let evm = self.inner.create_evm_with_inspector(db, input, inspector);
+        TempoEvm::new(evm, true)
+    }
+}
 
 /// Tempo EVM implementation.
 ///
@@ -35,52 +88,49 @@ pub type TempoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
 /// `RevmEvm` type.
 #[expect(missing_debug_implementations)]
 pub struct TempoEvm<DB: Database, I, PRECOMPILE = EthPrecompiles> {
-    inner: EthEvm<DB, I, PRECOMPILE>,
+    inner: tempo_revm::TempoEvm<DB, I, PRECOMPILE>,
     inspect: bool,
 }
 
-impl<DB: Database, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE>
-where
-    DB: Database,
-    I: Inspector<TempoEvmContext<DB>>,
-{
+impl<DB: Database, I, P> TempoEvm<DB, I, P> {
     /// Provides a reference to the EVM context.
-    pub const fn ctx(&self) -> &TempoEvmContext<DB> {
-        self.inner.ctx()
+    pub const fn ctx(&self) -> &TempoContext<DB> {
+        &self.inner.0.ctx
     }
 
     /// Provides a mutable reference to the EVM context.
-    pub fn ctx_mut(&mut self) -> &mut TempoEvmContext<DB> {
-        self.inner.ctx_mut()
+    pub fn ctx_mut(&mut self) -> &mut TempoContext<DB> {
+        &mut self.inner.0.ctx
     }
 }
 
 impl<DB, I> TempoEvm<DB, I, PrecompilesMap>
 where
     DB: Database,
-    I: Inspector<TempoEvmContext<DB>>,
+    I: Inspector<TempoContext<DB>>,
 {
     /// Creates a new Tempo EVM instance.
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// `RevmEvm` should be invoked on [`Evm::transact`].
     pub fn new(mut evm: EthEvm<DB, I, PrecompilesMap>, inspect: bool) -> Self {
-        evm.cfg.disable_balance_check = true;
-        let chain_id = evm.chain_id();
-        precompiles::extend_tempo_precompiles(evm.precompiles_mut(), chain_id);
-
-        Self {
-            inner: evm,
-            inspect,
-        }
+        todo!()
+        // evm.cfg.disable_balance_check = true;
+        // let chain_id = evm.chain_id();
+        // precompiles::extend_tempo_precompiles(evm.precompiles_mut(), chain_id);
+        //
+        // Self {
+        //     inner: tempo_revm::TempoEvm(evm),
+        //     inspect,
+        // }
     }
 }
 
 impl<DB, I, PRECOMPILE> TempoEvm<DB, I, PRECOMPILE>
 where
     DB: Database,
-    I: Inspector<TempoEvmContext<DB>>,
-    PRECOMPILE: PrecompileProvider<TempoEvmContext<DB>, Output = InterpreterResult>,
+    I: Inspector<TempoContext<DB>>,
+    PRECOMPILE: PrecompileProvider<TempoContext<DB>, Output = InterpreterResult>,
 {
     pub fn get_fee_token_balance(
         &mut self,
@@ -90,7 +140,6 @@ where
         let call_data = IFeeManager::getFeeTokenBalanceCall { sender, validator }
             .abi_encode()
             .into();
-
         let balance_result =
             self.inner
                 .transact_system_call(Address::ZERO, TIP_FEE_MANAGER_ADDRESS, call_data)?;
@@ -224,9 +273,9 @@ where
 impl<DB: Database, I, PRECOMPILE> Deref for TempoEvm<DB, I, PRECOMPILE>
 where
     DB: Database,
-    I: Inspector<TempoEvmContext<DB>>,
+    I: Inspector<TempoContext<DB>>,
 {
-    type Target = TempoEvmContext<DB>;
+    type Target = TempoContext<DB>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -237,7 +286,7 @@ where
 impl<DB: Database, I, PRECOMPILE> DerefMut for TempoEvm<DB, I, PRECOMPILE>
 where
     DB: Database,
-    I: Inspector<TempoEvmContext<DB>>,
+    I: Inspector<TempoContext<DB>>,
 {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -248,8 +297,8 @@ where
 impl<DB, I, PRECOMPILE> Evm for TempoEvm<DB, I, PRECOMPILE>
 where
     DB: Database,
-    I: Inspector<TempoEvmContext<DB>>,
-    PRECOMPILE: PrecompileProvider<TempoEvmContext<DB>, Output = InterpreterResult>,
+    I: Inspector<TempoContext<DB>>,
+    PRECOMPILE: PrecompileProvider<TempoContext<DB>, Output = InterpreterResult>,
 {
     type DB = DB;
     type Tx = TxEnv;
