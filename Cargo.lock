@@ -9044,7 +9044,6 @@ dependencies = [
  "reth-node-ethereum",
  "reth-payload-builder",
  "reth-payload-primitives",
- "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-rpc-builder",
@@ -9587,7 +9586,6 @@ version = "1.6.0"
 source = "git+https://github.com/paradigmxyz/reth?rev=61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b#61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b"
 dependencies = [
  "alloy-consensus 1.0.24",
- "c-kzg",
  "once_cell",
  "reth-ethereum-forks",
  "reth-ethereum-primitives",
@@ -11836,7 +11834,6 @@ dependencies = [
  "reth-node-ethereum",
  "reth-payload-builder",
  "reth-payload-primitives",
- "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-rpc-builder",
@@ -11881,11 +11878,15 @@ dependencies = [
  "rand 0.8.5",
  "ratelimit",
  "rayon",
+ "reth",
  "reth-chainspec",
+ "reth-evm",
  "rlimit",
  "serde",
  "serde_json",
  "simple-tqdm",
+ "tempo-evm",
+ "tempo-precompiles",
  "thousands",
  "tokio",
  "tokio-metrics",
@@ -11954,7 +11955,6 @@ dependencies = [
  "reth-node-ethereum",
  "reth-payload-builder",
  "reth-payload-primitives",
- "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
@@ -12011,6 +12011,7 @@ dependencies = [
  "reth-transaction-pool",
  "reth-trie-db",
  "tempo-evm",
+ "tempo-transaction-pool",
 ]
 
 [[package]]
@@ -12068,7 +12069,6 @@ dependencies = [
  "reth-node-ethereum",
  "reth-payload-builder",
  "reth-payload-primitives",
- "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-rpc-builder",
@@ -12085,6 +12085,13 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "tempo-revm"
+version = "0.1.0"
+dependencies = [
+ "reth-revm",
 ]
 
 [[package]]
@@ -12119,6 +12126,9 @@ dependencies = [
 name = "tempo-transaction-pool"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus 1.0.24",
+ "alloy-eips 1.0.24",
+ "alloy-primitives",
  "reth-chainspec",
  "reth-ethereum-primitives",
  "reth-primitives-traits",

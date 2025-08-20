@@ -875,7 +875,7 @@ mod tests {
     use alloy_primitives::B256;
     use malachitebft_codec::Codec;
     use malachitebft_signing_ed25519::Signature;
-    use reth_primitives::Block;
+    use reth_ethereum_primitives::Block;
 
     fn test_address() -> Address {
         Address::new([1u8; 20])
@@ -1062,7 +1062,7 @@ mod tests {
         use reth_primitives_traits::serde_bincode_compat::{BincodeReprFor, SerdeBincodeCompat};
 
         // Test with bincode-compatible representation
-        let block: reth_primitives::Block = Block::default();
+        let block = Block::default();
 
         // Convert block to its bincode-compatible representation
         let block_repr: BincodeReprFor<'_, Block> = block.as_repr();

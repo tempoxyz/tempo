@@ -302,7 +302,10 @@ mod tests {
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify fee balance was updated
-        let balance_call = IFeeManager::getFeeTokenBalanceCall { sender: user };
+        let balance_call = IFeeManager::getFeeTokenBalanceCall {
+            validator: Address::ZERO,
+            sender: user,
+        };
         let balance_calldata = balance_call.abi_encode();
         let result = fee_manager.call(&Bytes::from(balance_calldata), &user)?;
         let balance_result =

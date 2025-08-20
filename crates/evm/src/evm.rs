@@ -85,8 +85,9 @@ where
     pub fn get_fee_token_balance(
         &mut self,
         sender: Address,
+        validator: Address,
     ) -> Result<(Address, u64), EVMError<DB::Error>> {
-        let call_data = IFeeManager::getFeeTokenBalanceCall { sender }
+        let call_data = IFeeManager::getFeeTokenBalanceCall { sender, validator }
             .abi_encode()
             .into();
 
@@ -178,7 +179,7 @@ where
         Ok(exec_result)
     }
 
-    fn journal_state(&mut self, state: EvmState) -> Result<(), EVMError<DB::Error>> {
+    pub fn journal_state(&mut self, state: EvmState) -> Result<(), EVMError<DB::Error>> {
         let journal = self.inner.ctx_mut().journal_mut();
         for (address, account) in state.iter() {
             if !account.is_touched() {
@@ -271,7 +272,8 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let caller = tx.caller;
-        let (fee_token, balance) = self.get_fee_token_balance(caller)?;
+        let coinbase = self.inner.ctx().block.beneficiary;
+        let (fee_token, balance) = self.get_fee_token_balance(caller, coinbase)?;
 
         // All fee tokens are denominated in 6 decimals. Since gas is 9 decimals, the fee is
         // adjusted for decimals and rounded up.
@@ -300,7 +302,6 @@ where
 
         // Adjust gas to 6 decimals and collect fees
         let adjusted_gas_spent = (res.result.gas_used() / 1000) + 1;
-        let coinbase = self.inner.ctx().block.beneficiary;
         let exec_result = self.collect_fee(caller, coinbase, U256::from(adjusted_gas_spent))?;
 
         if !exec_result.result.is_success() {
@@ -527,7 +528,7 @@ mod tests {
 
         // Assert that the fee token is not set
         let sender = Address::random();
-        let (user_fee_token, balance) = evm.get_fee_token_balance(sender)?;
+        let (user_fee_token, balance) = evm.get_fee_token_balance(sender, evm.block.beneficiary)?;
 
         assert_eq!(user_fee_token, Address::ZERO);
         assert_eq!(balance, 0);
@@ -537,7 +538,7 @@ mod tests {
         let fee_balance = 1000;
         transfer_tokens(&mut evm, admin, sender, fee_token, U256::from(fee_balance))?;
 
-        let (token_address, balance) = evm.get_fee_token_balance(sender)?;
+        let (token_address, balance) = evm.get_fee_token_balance(sender, evm.block.beneficiary)?;
         assert_eq!(fee_token, token_address);
         assert_eq!(balance, fee_balance);
 

@@ -4,7 +4,7 @@ use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::eth::spec::EthExecutorSpec;
 use reth_execution_types::BlockExecutionResult;
 use reth_node_builder::{Block, BuilderContext, FullNodeTypes, components::ConsensusBuilder};
-use reth_primitives::{SealedBlock, SealedHeader};
+use reth_primitives_traits::{SealedBlock, SealedHeader};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
