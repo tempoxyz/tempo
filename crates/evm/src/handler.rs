@@ -12,7 +12,7 @@ use reth_evm::EvmInternals;
 use reth_revm::{
     Database,
     context::{
-        ContextTr, JournalTr,
+        ContextTr, Host, JournalTr,
         result::{HaltReason, InvalidHeader},
     },
     handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler},
@@ -125,7 +125,14 @@ where
             // deduct balance from the fee account's balance by transferring it over to the fee manager
             let gas_balance_spending = effective_balance_spending - value;
 
-            // TODO transfer from caller to fee manager
+            // Transfer from caller to fee manager
+            transfer_token(
+                journal,
+                fee_token,
+                tx.caller(),
+                TIP_FEE_MANAGER_ADDRESS,
+                gas_balance_spending,
+            )?;
         }
 
         //
@@ -142,12 +149,24 @@ where
         let basefee = context.block().basefee() as u128;
         let caller = context.tx().caller();
         let effective_gas_price = context.tx().effective_gas_price(basefee);
+        let beneficiary = context.beneficiary();
         let gas = exec_result.gas();
 
         let reimbursement =
             effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128);
 
-        // TODO: transfer reimbursement from fee manager to caller
+        let journal = evm.ctx().journal_mut();
+        // NOTE: is it possible for a user to change their fee token in the tx, causing them to
+        // reimburse in a separate token?
+        let fee_token = get_fee_token(journal, caller, beneficiary)?;
+
+        transfer_token(
+            journal,
+            fee_token,
+            TIP_FEE_MANAGER_ADDRESS,
+            caller,
+            U256::from(reimbursement),
+        )?;
 
         Ok(())
     }
@@ -219,6 +238,7 @@ where
 
     Ok(balance)
 }
+
 pub fn transfer_token<JOURNAL>(
     journal: &mut JOURNAL,
     token: Address,
@@ -230,6 +250,7 @@ where
     JOURNAL: JournalTr,
 {
     // Load sender's current balance
+    // NOTE: it is important to note that this expects the token to be a tip20 token
     let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
     let sender_balance = journal.sload(token, sender_slot)?.data;
 
