@@ -241,7 +241,7 @@ where
     // Update sender balance
     let new_sender_balance = sender_balance
         .checked_sub(amount)
-        .expect("TODO: hanlde err");
+        .expect("TODO: handle err");
     journal.sstore(token, sender_slot, new_sender_balance)?;
 
     // Update recipient balance or burn
