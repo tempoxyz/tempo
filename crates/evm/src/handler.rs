@@ -238,6 +238,7 @@ pub fn get_token_balance<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
+    journal.load_account(token)?;
     let balance_slot = mapping_slot(sender, tip20::slots::BALANCES);
     let balance = journal.sload(token, balance_slot)?.data;
 
@@ -254,6 +255,7 @@ pub fn transfer_token<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
+    journal.touch_account(token)?;
     // Load sender's current balance
     // NOTE: it is important to note that this expects the token to be a tip20 token with BALANCES
     // slot at slot 10
