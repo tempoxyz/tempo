@@ -8,23 +8,16 @@ use reth::revm::{
     handler::{MainnetHandler, pre_execution::validate_account_nonce_and_code},
     primitives::hardfork::SpecId,
 };
-use reth_evm::EvmInternals;
 use reth_revm::{
     Database,
-    context::{
-        ContextTr, Host, JournalTr,
-        result::{HaltReason, InvalidHeader},
-    },
+    context::{ContextTr, Host, JournalTr, result::HaltReason},
     handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler},
     interpreter::{instructions::utility::IntoAddress, interpreter_action::FrameInit},
     state::EvmState,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        EvmStorageProvider, IFeeManager, TipFeeManager, storage::slots::mapping_slot,
-        tip_fee_manager, tip20,
-    },
+    contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20},
 };
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
@@ -33,8 +26,6 @@ use tempo_precompiles::{
 #[derive(Debug, Clone)]
 pub struct TempoEvmHandler<EVM, ERROR, FRAME> {
     fee_token: Address,
-    /// The regular ethereum handler implementation, used to forward equivalent logic.
-    mainnet: MainnetHandler<EVM, ERROR, FRAME>,
     /// Phantom data to avoid type inference issues.
     _phantom: core::marker::PhantomData<(EVM, ERROR, FRAME)>,
 }
@@ -44,7 +35,6 @@ impl<EVM, ERROR, FRAME> TempoEvmHandler<EVM, ERROR, FRAME> {
     pub fn new() -> Self {
         Self {
             fee_token: Address::default(),
-            mainnet: MainnetHandler::default(),
             _phantom: core::marker::PhantomData,
         }
     }
