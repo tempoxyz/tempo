@@ -201,8 +201,6 @@ where
             U256::from(reward),
         )?;
 
-        // TODO collect fee
-
         Ok(())
     }
 }
