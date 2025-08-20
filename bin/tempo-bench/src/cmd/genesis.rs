@@ -83,6 +83,7 @@ impl GenesisArgs {
             &mut evm,
         )?;
 
+        let coinbase = self.coinbase.unwrap_or_default();
         {
             let block = evm.block.clone();
             let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
@@ -106,7 +107,7 @@ impl GenesisArgs {
 
             fee_manager
                 .set_validator_token(
-                    &Address::ZERO,
+                    &coinbase,
                     IFeeManager::setValidatorTokenCall { token: fee_token },
                 )
                 .expect("Could not 0x00 validator fee token");
