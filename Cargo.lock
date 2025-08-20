@@ -12088,6 +12088,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-revm"
+version = "0.1.0"
+dependencies = [
+ "reth-revm",
+]
+
+[[package]]
 name = "tempo-sidecar"
 version = "0.1.0"
 dependencies = [

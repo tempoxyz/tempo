@@ -1,0 +1,8 @@
+[package]
+name = "tempo-revm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+reth-revm.workspace = true

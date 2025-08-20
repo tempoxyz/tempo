@@ -15,6 +15,7 @@ members = [
   "crates/reth-malachite",
   "crates/telemetry-util",
   "crates/transaction-pool",
+  "crates/revm",
 ]
 
 # Resolver 3 is available with edition 2024
