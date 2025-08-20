@@ -17,7 +17,7 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             // View functions
             IFeeManager::userTokensCall::SELECTOR => view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call)),
             IFeeManager::validatorTokensCall::SELECTOR => view::<IFeeManager::validatorTokensCall>(calldata, |call| self.validator_tokens(call)),
-            IFeeManager::getFeeTokenBalanceCall::SELECTOR => view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| self.get_fee_token_balance( call )),
+            IFeeManager::getFeeTokenBalanceCall::SELECTOR => view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| self.get_fee_token_balance(call)),
             IFeeManager::getPoolIdCall::SELECTOR => view::<IFeeManager::getPoolIdCall>(calldata, |call| self.get_pool_id(call)),
             IFeeManager::getPoolCall::SELECTOR => view::<IFeeManager::getPoolCall>(calldata, |call| self.get_pool(call)),
             IFeeManager::poolsCall::SELECTOR => view::<IFeeManager::poolsCall>(calldata, |call| self.pools(call)),
