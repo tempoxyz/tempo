@@ -1,20 +1,30 @@
 //! Tempo EVM Handler implementation.
 
-use alloy_primitives::U256;
+use std::fmt::Debug;
+
+use alloy_primitives::{Address, U256};
 use reth::revm::{
     context::{Block, Cfg, Transaction, result::InvalidTransaction},
     handler::{MainnetHandler, pre_execution::validate_account_nonce_and_code},
+    primitives::hardfork::SpecId,
 };
 use reth_evm::EvmInternals;
 use reth_revm::{
-    context::{ContextTr, JournalTr, result::HaltReason},
+    Database,
+    context::{
+        ContextTr, JournalTr,
+        result::{HaltReason, InvalidHeader},
+    },
     handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler},
-    interpreter::interpreter_action::FrameInit,
+    interpreter::{instructions::utility::IntoAddress, interpreter_action::FrameInit},
     state::EvmState,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{EvmStorageProvider, TipFeeManager},
+    contracts::{
+        EvmStorageProvider, IFeeManager, TipFeeManager, storage::slots::mapping_slot,
+        tip_fee_manager, tip20,
+    },
 };
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
@@ -46,9 +56,11 @@ impl<EVM, ERROR, FRAME> Default for TempoEvmHandler<EVM, ERROR, FRAME> {
 
 impl<EVM, ERROR, FRAME> Handler for TempoEvmHandler<EVM, ERROR, FRAME>
 where
-    EVM: EvmTr<Context: ContextTr<Journal: JournalTr<State = EvmState>>, Frame = FRAME>,
+    EVM: EvmTr<Context: ContextTr<Journal: JournalTr<State = EvmState> + Debug>, Frame = FRAME>,
     ERROR: EvmTrError<EVM>,
     FRAME: FrameTr<FrameResult = FrameResult, FrameInit = FrameInit>,
+    <<EVM as EvmTr>::Context as ContextTr>::Db: reth_evm::Database + Debug,
+    <<<EVM as EvmTr>::Context as ContextTr>::Db as reth_revm::Database>::Error: Send + Sync,
 {
     type Evm = EVM;
     type Error = ERROR;
@@ -66,10 +78,16 @@ where
         let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
-        let caller = context.tx().caller();
+        // let caller = context.tx().caller();
         let value = context.tx().value();
+        let chain_id = context.tx().chain_id().unwrap_or_default();
+        let beneficiary = context.block().beneficiary();
 
         let (tx, journal) = context.tx_journal_mut();
+
+        // Load the fee token balance
+        let fee_token = get_fee_token(journal, tx.caller(), beneficiary)?;
+        let account_balance = get_token_balance(journal, tx.caller(), fee_token)?;
 
         // Load caller's account.
         let caller_account = journal.load_account_code(tx.caller())?.data;
@@ -85,15 +103,6 @@ where
         let effective_balance_spending = tx
             .effective_balance_spending(basefee, blob_price)
             .expect("effective balance is always smaller than max balance so it can't overflow");
-
-        // fetch the token balance
-        let fee_manager = TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            &mut EvmStorageProvider::new(EvmInternals::new(journal, context.block()), chain_id),
-        );
-
-        // TODO load fee token balance from fee manager contract storage
-        let account_balance = U256::ZERO;
 
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
         if tx.kind().is_call() {
@@ -116,7 +125,13 @@ where
             // deduct balance from the fee account's balance by transferring it over to the fee manager
             let gas_balance_spending = effective_balance_spending - value;
 
-            // TODO transfer from caller to fee manager
+            // TODO: transfer from caller to fee manager
+            // fetch the token balance
+
+            // let fee_manager = TipFeeManager::new(
+            //     TIP_FEE_MANAGER_ADDRESS,
+            //     &mut EvmStorageProvider::new(EvmInternals::new(journal, block_env), chain_id),
+            // );
         }
 
         //
@@ -138,7 +153,7 @@ where
         let reimbursement =
             effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128);
 
-        // TODO transfer reimbursement from fee manager to caller
+        // TODO: transfer reimbursement from fee manager to caller
 
         Ok(())
     }
@@ -168,4 +183,45 @@ where
 
         Ok(())
     }
+}
+
+pub fn get_fee_token<JOURNAL>(
+    journal: &mut JOURNAL,
+    sender: Address,
+    validator: Address,
+) -> Result<Address, <JOURNAL::Database as Database>::Error>
+where
+    JOURNAL: JournalTr,
+{
+    let user_slot = mapping_slot(sender, tip_fee_manager::slots::USER_TOKENS);
+    let user_fee_token = journal
+        .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
+        .data
+        .into_address();
+
+    if user_fee_token.is_zero() {
+        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+        let validator_fee_token = journal
+            .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
+            .data
+            .into_address();
+
+        Ok(validator_fee_token)
+    } else {
+        Ok(user_fee_token)
+    }
+}
+
+pub fn get_token_balance<JOURNAL>(
+    journal: &mut JOURNAL,
+    sender: Address,
+    token: Address,
+) -> Result<U256, <JOURNAL::Database as Database>::Error>
+where
+    JOURNAL: JournalTr,
+{
+    let balance_slot = mapping_slot(sender, tip20::slots::BALANCES);
+    let balance = journal.sload(token, balance_slot)?.data;
+
+    Ok(balance)
 }
