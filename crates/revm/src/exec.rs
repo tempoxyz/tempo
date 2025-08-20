@@ -1,17 +1,29 @@
 use reth_revm::{
-    context::{result::{ExecResultAndState, HaltReason, InvalidTransaction}, ContextSetters}, context_interface::{
-        result::{EVMError, ExecutionResult}, Cfg, ContextTr, Database, JournalTr
-    }, handler::{
-        instructions::EthInstructions, system_call::SystemCallEvm, EthFrame, Handler, PrecompileProvider, SystemCallTx
-    }, inspector::{
+    DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
+    context::{
+        ContextSetters,
+        result::{ExecResultAndState, HaltReason, InvalidTransaction},
+    },
+    context_interface::{
+        Cfg, ContextTr, Database, JournalTr,
+        result::{EVMError, ExecutionResult},
+    },
+    handler::{
+        EthFrame, Handler, PrecompileProvider, SystemCallTx, instructions::EthInstructions,
+        system_call::SystemCallEvm,
+    },
+    inspector::{
         InspectCommitEvm, InspectEvm, InspectSystemCallEvm, Inspector, InspectorHandler, JournalExt,
-    }, interpreter::{interpreter::EthInterpreter, InterpreterResult}, primitives::{Address, Bytes}, state::EvmState, DatabaseCommit, ExecuteCommitEvm, ExecuteEvm
+    },
+    interpreter::{InterpreterResult, interpreter::EthInterpreter},
+    primitives::{Address, Bytes},
+    state::EvmState,
 };
 
-use crate::evm::TempoEvm;
+use crate::{evm::TempoEvm, handler::TempoEvmHandler};
 
 /// Type alias for the error type of the TempoEvm
-type TempoEVMError<CTX> = EVMError<<<CTX as ContextTr>::Db as Database>::Error, InvalidTransaction;
+type TempoEvmError<CTX> = EVMError<<<CTX as ContextTr>::Db as Database>::Error, InvalidTransaction>;
 
 impl<CTX, INSP, PRECOMPILE> ExecuteEvm
     for TempoEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
@@ -22,7 +34,7 @@ where
     type Tx = <CTX as ContextTr>::Tx;
     type Block = <CTX as ContextTr>::Block;
     type State = EvmState;
-    type Error = TempoEVMError<CTX>;
+    type Error = TempoEvmError<CTX>;
     type ExecutionResult = ExecutionResult<HaltReason>;
 
     fn set_block(&mut self, block: Self::Block) {
@@ -31,7 +43,7 @@ where
 
     fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.0.ctx.set_tx(tx);
-        let mut h = OpHandler::<_, _, EthFrame<EthInterpreter>>::new();
+        let mut h = TempoEvmHandler::<_, _, EthFrame<EthInterpreter>>::new();
         h.run(self)
     }
 
@@ -42,7 +54,7 @@ where
     fn replay(
         &mut self,
     ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
-        let mut h = OpHandler::<_, _, EthFrame<EthInterpreter>>::new();
+        let mut h = TempoEvmHandler::<_, _, EthFrame<EthInterpreter>>::new();
         h.run(self).map(|result| {
             let state = self.finalize();
             ExecResultAndState::new(result, state)
@@ -51,9 +63,9 @@ where
 }
 
 impl<CTX, INSP, PRECOMPILE> ExecuteCommitEvm
-    for OpEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
+    for TempoEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
 where
-    CTX: OpContextTr<Db: DatabaseCommit> + ContextSetters,
+    CTX: ContextTr<Db: DatabaseCommit> + ContextSetters,
     PRECOMPILE: PrecompileProvider<CTX, Output = InterpreterResult>,
 {
     fn commit(&mut self, state: Self::State) {
@@ -62,9 +74,9 @@ where
 }
 
 impl<CTX, INSP, PRECOMPILE> InspectEvm
-    for OpEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
+    for TempoEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
 where
-    CTX: OpContextTr<Journal: JournalExt> + ContextSetters,
+    CTX: ContextTr<Journal: JournalExt> + ContextSetters,
     INSP: Inspector<CTX, EthInterpreter>,
     PRECOMPILE: PrecompileProvider<CTX, Output = InterpreterResult>,
 {
@@ -76,24 +88,24 @@ where
 
     fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.0.ctx.set_tx(tx);
-        let mut h = OpHandler::<_, _, EthFrame<EthInterpreter>>::new();
+        let mut h = TempoEvmHandler::<_, _, EthFrame<EthInterpreter>>::new();
         h.inspect_run(self)
     }
 }
 
 impl<CTX, INSP, PRECOMPILE> InspectCommitEvm
-    for OpEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
+    for TempoEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
 where
-    CTX: OpContextTr<Journal: JournalExt, Db: DatabaseCommit> + ContextSetters,
+    CTX: ContextTr<Journal: JournalExt, Db: DatabaseCommit> + ContextSetters,
     INSP: Inspector<CTX, EthInterpreter>,
     PRECOMPILE: PrecompileProvider<CTX, Output = InterpreterResult>,
 {
 }
 
 impl<CTX, INSP, PRECOMPILE> SystemCallEvm
-    for OpEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
+    for TempoEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
 where
-    CTX: OpContextTr<Tx: SystemCallTx> + ContextSetters,
+    CTX: ContextTr<Tx: SystemCallTx> + ContextSetters,
     PRECOMPILE: PrecompileProvider<CTX, Output = InterpreterResult>,
 {
     fn system_call_one_with_caller(
@@ -107,15 +119,15 @@ where
             system_contract_address,
             data,
         ));
-        let mut h = OpHandler::<_, _, EthFrame<EthInterpreter>>::new();
+        let mut h = TempoEvmHandler::<_, _, EthFrame<EthInterpreter>>::new();
         h.run_system_call(self)
     }
 }
 
 impl<CTX, INSP, PRECOMPILE> InspectSystemCallEvm
-    for OpEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
+    for TempoEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PRECOMPILE>
 where
-    CTX: OpContextTr<Journal: JournalExt, Tx: SystemCallTx> + ContextSetters,
+    CTX: ContextTr<Journal: JournalExt, Tx: SystemCallTx> + ContextSetters,
     INSP: Inspector<CTX, EthInterpreter>,
     PRECOMPILE: PrecompileProvider<CTX, Output = InterpreterResult>,
 {
@@ -130,7 +142,8 @@ where
             system_contract_address,
             data,
         ));
-        let mut h = OpHandler::<_, _, EthFrame<EthInterpreter>>::new();
+        let mut h = TempoEvmHandler::<_, _, EthFrame<EthInterpreter>>::new();
         h.inspect_run_system_call(self)
     }
 }
+

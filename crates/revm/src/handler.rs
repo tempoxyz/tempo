@@ -1,4 +1,5 @@
 //! Tempo EVM Handler implementation.
+
 use reth_revm::{
     context::{ContextTr, JournalTr, result::HaltReason},
     handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler, MainnetHandler},
