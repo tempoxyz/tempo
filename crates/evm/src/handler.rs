@@ -159,7 +159,6 @@ where
         // NOTE: is it possible for a user to change their fee token in the tx, causing them to
         // reimburse in a separate token?
         let fee_token = get_fee_token(journal, caller, beneficiary)?;
-
         transfer_token(
             journal,
             fee_token,
@@ -179,6 +178,7 @@ where
     ) -> Result<(), Self::Error> {
         let context = evm.ctx();
         let tx = context.tx();
+        let caller = context.tx().caller();
         let beneficiary = context.block().beneficiary();
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
@@ -191,6 +191,15 @@ where
         };
 
         let reward = coinbase_gas_price.saturating_mul(gas.used() as u128);
+        let journal = evm.ctx().journal_mut();
+        let fee_token = get_fee_token(journal, caller, beneficiary)?;
+        transfer_token(
+            journal,
+            fee_token,
+            TIP_FEE_MANAGER_ADDRESS,
+            beneficiary,
+            U256::from(reward),
+        )?;
 
         // TODO collect fee
 
