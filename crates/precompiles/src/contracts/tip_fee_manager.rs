@@ -9,7 +9,7 @@ use alloy::{
 };
 use reth::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
-mod slots {
+pub mod slots {
     use alloy::primitives::{U256, uint};
 
     pub const POOLS: U256 = uint!(0_U256);

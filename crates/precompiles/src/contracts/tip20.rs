@@ -15,7 +15,7 @@ use crate::{
     tip20_err,
 };
 
-mod slots {
+pub mod slots {
     use alloy::primitives::{U256, uint};
 
     // Variables

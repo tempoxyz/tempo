@@ -1,20 +1,23 @@
 //! Tempo EVM Handler implementation.
 
-use alloy_primitives::U256;
+use std::fmt::Debug;
+
+use alloy_primitives::{Address, U256};
 use reth::revm::{
     context::{Block, Cfg, Transaction, result::InvalidTransaction},
-    handler::{MainnetHandler, pre_execution::validate_account_nonce_and_code},
+    handler::pre_execution::validate_account_nonce_and_code,
+    primitives::hardfork::SpecId,
 };
-use reth_evm::EvmInternals;
 use reth_revm::{
-    context::{ContextTr, JournalTr, result::HaltReason},
+    Database,
+    context::{ContextTr, Host, JournalTr, result::HaltReason},
     handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler},
-    interpreter::interpreter_action::FrameInit,
+    interpreter::{instructions::utility::IntoAddress, interpreter_action::FrameInit},
     state::EvmState,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{EvmStorageProvider, TipFeeManager},
+    contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20},
 };
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
@@ -22,8 +25,7 @@ use tempo_precompiles::{
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug, Clone)]
 pub struct TempoEvmHandler<EVM, ERROR, FRAME> {
-    /// The regular ethereum handler implementation, used to forward equivalent logic.
-    mainnet: MainnetHandler<EVM, ERROR, FRAME>,
+    fee_token: Address,
     /// Phantom data to avoid type inference issues.
     _phantom: core::marker::PhantomData<(EVM, ERROR, FRAME)>,
 }
@@ -32,7 +34,7 @@ impl<EVM, ERROR, FRAME> TempoEvmHandler<EVM, ERROR, FRAME> {
     /// Create a new [`TempoEvmHandler`] handler instance
     pub fn new() -> Self {
         Self {
-            mainnet: MainnetHandler::default(),
+            fee_token: Address::default(),
             _phantom: core::marker::PhantomData,
         }
     }
@@ -46,13 +48,31 @@ impl<EVM, ERROR, FRAME> Default for TempoEvmHandler<EVM, ERROR, FRAME> {
 
 impl<EVM, ERROR, FRAME> Handler for TempoEvmHandler<EVM, ERROR, FRAME>
 where
-    EVM: EvmTr<Context: ContextTr<Journal: JournalTr<State = EvmState>>, Frame = FRAME>,
+    EVM: EvmTr<Context: ContextTr<Journal: JournalTr<State = EvmState> + Debug>, Frame = FRAME>,
     ERROR: EvmTrError<EVM>,
     FRAME: FrameTr<FrameResult = FrameResult, FrameInit = FrameInit>,
+    <<EVM as EvmTr>::Context as ContextTr>::Db: reth_evm::Database + Debug,
+    <<<EVM as EvmTr>::Context as ContextTr>::Db as reth_revm::Database>::Error: Send + Sync,
 {
     type Evm = EVM;
     type Error = ERROR;
     type HaltReason = HaltReason;
+
+    fn run(
+        &mut self,
+        evm: &mut Self::Evm,
+    ) -> Result<reth_revm::context::result::ExecutionResult<Self::HaltReason>, Self::Error> {
+        let caller = evm.ctx().caller();
+        let beneficiary = evm.ctx().beneficiary();
+        let fee_token = get_fee_token(evm.ctx_mut().journal_mut(), caller, beneficiary)?;
+        self.fee_token = fee_token;
+
+        // Run inner handler and catch all errors to handle cleanup.
+        match self.run_without_catch_error(evm) {
+            Ok(output) => Ok(output),
+            Err(e) => self.catch_error(evm, e),
+        }
+    }
 
     #[inline]
     fn validate_against_state_and_deduct_caller(
@@ -66,10 +86,12 @@ where
         let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
-        let caller = context.tx().caller();
         let value = context.tx().value();
 
         let (tx, journal) = context.tx_journal_mut();
+
+        // Load the fee token balance
+        let account_balance = get_token_balance(journal, self.fee_token, tx.caller())?;
 
         // Load caller's account.
         let caller_account = journal.load_account_code(tx.caller())?.data;
@@ -85,15 +107,6 @@ where
         let effective_balance_spending = tx
             .effective_balance_spending(basefee, blob_price)
             .expect("effective balance is always smaller than max balance so it can't overflow");
-
-        // fetch the token balance
-        let fee_manager = TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            &mut EvmStorageProvider::new(EvmInternals::new(journal, context.block()), chain_id),
-        );
-
-        // TODO load fee token balance from fee manager contract storage
-        let account_balance = U256::ZERO;
 
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
         if tx.kind().is_call() {
@@ -116,7 +129,14 @@ where
             // deduct balance from the fee account's balance by transferring it over to the fee manager
             let gas_balance_spending = effective_balance_spending - value;
 
-            // TODO transfer from caller to fee manager
+            // Transfer from caller to fee manager
+            transfer_token(
+                journal,
+                self.fee_token,
+                tx.caller(),
+                TIP_FEE_MANAGER_ADDRESS,
+                gas_balance_spending,
+            )?;
         }
 
         //
@@ -138,7 +158,14 @@ where
         let reimbursement =
             effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128);
 
-        // TODO transfer reimbursement from fee manager to caller
+        let journal = evm.ctx().journal_mut();
+        transfer_token(
+            journal,
+            self.fee_token,
+            TIP_FEE_MANAGER_ADDRESS,
+            caller,
+            U256::from(reimbursement),
+        )?;
 
         Ok(())
     }
@@ -163,8 +190,194 @@ where
         };
 
         let reward = coinbase_gas_price.saturating_mul(gas.used() as u128);
+        let journal = evm.ctx().journal_mut();
+        transfer_token(
+            journal,
+            self.fee_token,
+            TIP_FEE_MANAGER_ADDRESS,
+            beneficiary,
+            U256::from(reward),
+        )?;
 
-        // TODO collect fee
+        Ok(())
+    }
+}
+
+pub fn get_fee_token<JOURNAL>(
+    journal: &mut JOURNAL,
+    sender: Address,
+    validator: Address,
+) -> Result<Address, <JOURNAL::Database as Database>::Error>
+where
+    JOURNAL: JournalTr,
+{
+    let user_slot = mapping_slot(sender, tip_fee_manager::slots::USER_TOKENS);
+    let user_fee_token = journal
+        .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
+        .data
+        .into_address();
+
+    if user_fee_token.is_zero() {
+        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+        let validator_fee_token = journal
+            .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
+            .data
+            .into_address();
+
+        Ok(validator_fee_token)
+    } else {
+        Ok(user_fee_token)
+    }
+}
+
+pub fn get_token_balance<JOURNAL>(
+    journal: &mut JOURNAL,
+    token: Address,
+    sender: Address,
+) -> Result<U256, <JOURNAL::Database as Database>::Error>
+where
+    JOURNAL: JournalTr,
+{
+    journal.load_account(token)?;
+    let balance_slot = mapping_slot(sender, tip20::slots::BALANCES);
+    let balance = journal.sload(token, balance_slot)?.data;
+
+    Ok(balance)
+}
+
+pub fn transfer_token<JOURNAL>(
+    journal: &mut JOURNAL,
+    token: Address,
+    sender: Address,
+    recipient: Address,
+    amount: U256,
+) -> Result<(), <JOURNAL::Database as Database>::Error>
+where
+    JOURNAL: JournalTr,
+{
+    journal.touch_account(token);
+    // Load sender's current balance
+    // NOTE: it is important to note that this expects the token to be a tip20 token with BALANCES
+    // slot at slot 10
+    let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
+    let sender_balance = journal.sload(token, sender_slot)?.data;
+
+    // Check sender has sufficient balance
+    if amount > sender_balance {
+        todo!()
+    }
+
+    // Update sender balance
+    let new_sender_balance = sender_balance
+        .checked_sub(amount)
+        .expect("TODO: handle err");
+    journal.sstore(token, sender_slot, new_sender_balance)?;
+
+    // Update recipient balance or burn
+    if recipient != Address::ZERO {
+        let recipient_slot = mapping_slot(recipient, tip20::slots::BALANCES);
+        let recipient_balance = journal.sload(token, recipient_slot)?.data;
+        let new_recipient_balance = recipient_balance
+            .checked_add(amount)
+            .expect("TODO: handle error");
+        journal.sstore(token, recipient_slot, new_recipient_balance)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, U256};
+    use reth::revm::db::{CacheDB, EmptyDB};
+    use reth_revm::{Journal, interpreter::instructions::utility::IntoU256};
+
+    fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
+        let db = CacheDB::new(EmptyDB::default());
+        Journal::new(db)
+    }
+
+    #[test]
+    fn test_get_token_balance() -> eyre::Result<()> {
+        let mut journal = create_test_journal();
+        let token = Address::random();
+        let account = Address::random();
+        let expected_balance = U256::random();
+
+        // Set up initial balance
+        let balance_slot = mapping_slot(account, tip20::slots::BALANCES);
+        journal.warm_account(token)?;
+        journal
+            .sstore(token, balance_slot, expected_balance)
+            .unwrap();
+
+        let balance = get_token_balance(&mut journal, token, account).unwrap();
+        assert_eq!(balance, expected_balance);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_token() -> eyre::Result<()> {
+        let mut journal = create_test_journal();
+        let token = Address::random();
+        let sender = Address::random();
+        let recipient = Address::random();
+        let initial_balance = U256::random();
+
+        let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
+        journal.warm_account(token)?;
+        journal.sstore(token, sender_slot, initial_balance).unwrap();
+        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
+        assert_eq!(sender_balance, initial_balance);
+
+        transfer_token(&mut journal, token, sender, recipient, initial_balance).unwrap();
+
+        // Verify balances after transfer
+        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
+        let recipient_balance = get_token_balance(&mut journal, token, recipient).unwrap();
+
+        assert_eq!(sender_balance, 0);
+        assert_eq!(recipient_balance, initial_balance);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token() -> eyre::Result<()> {
+        let mut journal = create_test_journal();
+        let user = Address::random();
+        let validator = Address::random();
+        let user_fee_token = Address::random();
+        let validator_fee_token = Address::random();
+
+        // Set validator token
+        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+        journal.warm_account(TIP_FEE_MANAGER_ADDRESS)?;
+        journal
+            .sstore(
+                TIP_FEE_MANAGER_ADDRESS,
+                validator_slot,
+                validator_fee_token.into_u256(),
+            )
+            .unwrap();
+
+        let fee_token = get_fee_token(&mut journal, user, validator).unwrap();
+        assert_eq!(validator_fee_token, fee_token);
+
+        // Set user token
+        let user_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
+        journal
+            .sstore(
+                TIP_FEE_MANAGER_ADDRESS,
+                user_slot,
+                user_fee_token.into_u256(),
+            )
+            .unwrap();
+
+        let fee_token = get_fee_token(&mut journal, user, validator).unwrap();
+        assert_eq!(user_fee_token, fee_token);
 
         Ok(())
     }
