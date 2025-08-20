@@ -32,6 +32,7 @@ use tempo_precompiles::{
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug, Clone)]
 pub struct TempoEvmHandler<EVM, ERROR, FRAME> {
+    fee_token: Address,
     /// The regular ethereum handler implementation, used to forward equivalent logic.
     mainnet: MainnetHandler<EVM, ERROR, FRAME>,
     /// Phantom data to avoid type inference issues.
@@ -42,6 +43,7 @@ impl<EVM, ERROR, FRAME> TempoEvmHandler<EVM, ERROR, FRAME> {
     /// Create a new [`TempoEvmHandler`] handler instance
     pub fn new() -> Self {
         Self {
+            fee_token: Address::default(),
             mainnet: MainnetHandler::default(),
             _phantom: core::marker::PhantomData,
         }
@@ -66,6 +68,22 @@ where
     type Error = ERROR;
     type HaltReason = HaltReason;
 
+    fn run(
+        &mut self,
+        evm: &mut Self::Evm,
+    ) -> Result<reth_revm::context::result::ExecutionResult<Self::HaltReason>, Self::Error> {
+        let caller = evm.ctx().caller();
+        let beneficiary = evm.ctx().beneficiary();
+        let fee_token = get_fee_token(evm.ctx_mut().journal_mut(), caller, beneficiary)?;
+        self.fee_token = fee_token;
+
+        // Run inner handler and catch all errors to handle cleanup.
+        match self.run_without_catch_error(evm) {
+            Ok(output) => Ok(output),
+            Err(e) => self.catch_error(evm, e),
+        }
+    }
+
     #[inline]
     fn validate_against_state_and_deduct_caller(
         &self,
@@ -78,16 +96,12 @@ where
         let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
-        // let caller = context.tx().caller();
         let value = context.tx().value();
-        let chain_id = context.tx().chain_id().unwrap_or_default();
-        let beneficiary = context.block().beneficiary();
 
         let (tx, journal) = context.tx_journal_mut();
 
         // Load the fee token balance
-        let fee_token = get_fee_token(journal, tx.caller(), beneficiary)?;
-        let account_balance = get_token_balance(journal, fee_token, tx.caller())?;
+        let account_balance = get_token_balance(journal, self.fee_token, tx.caller())?;
 
         // Load caller's account.
         let caller_account = journal.load_account_code(tx.caller())?.data;
@@ -128,7 +142,7 @@ where
             // Transfer from caller to fee manager
             transfer_token(
                 journal,
-                fee_token,
+                self.fee_token,
                 tx.caller(),
                 TIP_FEE_MANAGER_ADDRESS,
                 gas_balance_spending,
@@ -149,19 +163,15 @@ where
         let basefee = context.block().basefee() as u128;
         let caller = context.tx().caller();
         let effective_gas_price = context.tx().effective_gas_price(basefee);
-        let beneficiary = context.beneficiary();
         let gas = exec_result.gas();
 
         let reimbursement =
             effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128);
 
         let journal = evm.ctx().journal_mut();
-        // NOTE: is it possible for a user to change their fee token in the tx, causing them to
-        // reimburse in a separate token?
-        let fee_token = get_fee_token(journal, caller, beneficiary)?;
         transfer_token(
             journal,
-            fee_token,
+            self.fee_token,
             TIP_FEE_MANAGER_ADDRESS,
             caller,
             U256::from(reimbursement),
@@ -192,10 +202,9 @@ where
 
         let reward = coinbase_gas_price.saturating_mul(gas.used() as u128);
         let journal = evm.ctx().journal_mut();
-        let fee_token = get_fee_token(journal, caller, beneficiary)?;
         transfer_token(
             journal,
-            fee_token,
+            self.fee_token,
             TIP_FEE_MANAGER_ADDRESS,
             beneficiary,
             U256::from(reward),
