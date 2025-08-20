@@ -51,7 +51,7 @@ pub struct GenesisArgs {
     #[arg(long, short, default_value = "1337")]
     pub chain_id: u64,
 
-    #[arg(long, short)]
+    #[arg(long)]
     pub coinbase: Option<Address>,
 }
 
