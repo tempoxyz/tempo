@@ -87,7 +87,7 @@ where
 
         // Load the fee token balance
         let fee_token = get_fee_token(journal, tx.caller(), beneficiary)?;
-        let account_balance = get_token_balance(journal, tx.caller(), fee_token)?;
+        let account_balance = get_token_balance(journal, fee_token, tx.caller())?;
 
         // Load caller's account.
         let caller_account = journal.load_account_code(tx.caller())?.data;
@@ -125,13 +125,14 @@ where
             // deduct balance from the fee account's balance by transferring it over to the fee manager
             let gas_balance_spending = effective_balance_spending - value;
 
-            // TODO: transfer from caller to fee manager
-            // fetch the token balance
-
-            // let fee_manager = TipFeeManager::new(
-            //     TIP_FEE_MANAGER_ADDRESS,
-            //     &mut EvmStorageProvider::new(EvmInternals::new(journal, block_env), chain_id),
-            // );
+            // Transfer fee token from caller to validator
+            transfer_token(
+                journal,
+                fee_token,
+                tx.caller(),
+                beneficiary,
+                effective_balance_spending,
+            )?;
         }
 
         //
@@ -214,8 +215,8 @@ where
 
 pub fn get_token_balance<JOURNAL>(
     journal: &mut JOURNAL,
-    sender: Address,
     token: Address,
+    sender: Address,
 ) -> Result<U256, <JOURNAL::Database as Database>::Error>
 where
     JOURNAL: JournalTr,
@@ -224,4 +225,41 @@ where
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)
+}
+pub fn transfer_token<JOURNAL>(
+    journal: &mut JOURNAL,
+    token: Address,
+    sender: Address,
+    recipient: Address,
+    amount: U256,
+) -> Result<(), <JOURNAL::Database as Database>::Error>
+where
+    JOURNAL: JournalTr,
+{
+    // Load sender's current balance
+    let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
+    let sender_balance = journal.sload(token, sender_slot)?.data;
+
+    // Check sender has sufficient balance
+    if amount > sender_balance {
+        todo!()
+    }
+
+    // Update sender balance
+    let new_sender_balance = sender_balance
+        .checked_sub(amount)
+        .expect("TODO: hanlde err");
+    journal.sstore(token, sender_slot, new_sender_balance)?;
+
+    // Update recipient balance or burn
+    if recipient != Address::ZERO {
+        let recipient_slot = mapping_slot(recipient, tip20::slots::BALANCES);
+        let recipient_balance = journal.sload(token, recipient_slot)?.data;
+        let new_recipient_balance = recipient_balance
+            .checked_add(amount)
+            .expect("TODO: handle error");
+        journal.sstore(token, recipient_slot, new_recipient_balance)?;
+    }
+
+    Ok(())
 }
