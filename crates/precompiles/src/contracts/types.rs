@@ -168,7 +168,7 @@ sol! {
         // User preferences
         function userTokens(address user) external view returns (address);
         function validatorTokens(address validator) external view returns (address);
-        function getFeeTokenBalance(address sender) external view returns (address, uint256);
+        function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function setUserToken(address token) external;
 
         // Core functions
