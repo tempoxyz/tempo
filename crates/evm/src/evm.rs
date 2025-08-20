@@ -84,8 +84,8 @@ where
 {
     pub fn get_fee_token_balance(
         &mut self,
-        validator: Address,
         sender: Address,
+        validator: Address,
     ) -> Result<(Address, u64), EVMError<DB::Error>> {
         let call_data = IFeeManager::getFeeTokenBalanceCall { sender, validator }
             .abi_encode()
@@ -273,7 +273,7 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let caller = tx.caller;
         let coinbase = self.inner.ctx().block.beneficiary;
-        let (fee_token, balance) = self.get_fee_token_balance(coinbase, caller)?;
+        let (fee_token, balance) = self.get_fee_token_balance(caller, coinbase)?;
 
         // All fee tokens are denominated in 6 decimals. Since gas is 9 decimals, the fee is
         // adjusted for decimals and rounded up.
