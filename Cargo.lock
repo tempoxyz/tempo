@@ -112,6 +112,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48dff4dd98e17de00203f851800bbc8b76eb29a4d4e3e44074614338b7a3308d"
 dependencies = [
  "alloy-consensus 1.0.24",
+ "alloy-contract",
  "alloy-core",
  "alloy-eips 1.0.24",
  "alloy-genesis",
@@ -218,11 +219,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloy-contract"
+version = "1.0.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "944085cf3ac8f32d96299aa26c03db7c8ca6cdaafdbc467910b889f0328e6b70"
+dependencies = [
+ "alloy-consensus 1.0.24",
+ "alloy-dyn-abi",
+ "alloy-json-abi",
+ "alloy-network 1.0.24",
+ "alloy-network-primitives 1.0.24",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types-eth 1.0.24",
+ "alloy-sol-types",
+ "alloy-transport",
+ "futures",
+ "futures-util",
+ "serde_json",
+ "thiserror 2.0.15",
+]
+
+[[package]]
 name = "alloy-core"
 version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfe6c56d58fbfa9f0f6299376e8ce33091fc6494239466814c3f54b55743cb09"
 dependencies = [
+ "alloy-dyn-abi",
+ "alloy-json-abi",
  "alloy-primitives",
  "alloy-sol-types",
 ]
@@ -930,6 +955,7 @@ version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b74e91b0b553c115d14bd0ed41898309356dc85d0e3d4b9014c4e7715e48c8ad"
 dependencies = [
+ "alloy-json-abi",
  "alloy-sol-macro-input",
  "const-hex",
  "heck",
@@ -948,12 +974,14 @@ version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84194d31220803f5f62d0a00f583fd3a062b36382e2bea446f1af96727754565"
 dependencies = [
+ "alloy-json-abi",
  "const-hex",
  "dunce",
  "heck",
  "macro-string",
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn 2.0.106",
  "syn-solidity",
 ]

@@ -15,7 +15,10 @@ use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use tempo_node::node::TempoNode;
-use tempo_precompiles::contracts::IFeeManager;
+use tempo_precompiles::{
+    TIP_FEE_MANAGER_ADDRESS,
+    contracts::{IFeeManager, TipFeeManager},
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
@@ -48,29 +51,14 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         .unwrap()
         .parse()
         .unwrap();
-    let provider = ProviderBuilder::new().connect_http(http_url);
 
-    // Generate account from same mnemonic as generate-genesis
-    let mnemonic = "test test test test test test test test test test test junk";
-    let signer = MnemonicBuilder::<English>::default()
-        .phrase(mnemonic)
-        .index(0)?
-        .build()?;
+    let wallet = MnemonicBuilder::<English>::default().build()?;
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
-    let account = secret_key_to_address(signer.credential());
-    let input = TransactionInput::new(
-        IFeeManager::userTokensCall { user: account }
-            .abi_encode()
-            .into(),
-    );
-    let output = provider
-        .call(TransactionRequest::default().input(input))
-        .await?;
-    let user_token = IFeeManager::userTokensCall::abi_decode_returns(&output)?;
-
-    dbg!(user_token);
-    // TODO: craft tip20 tx
-    let tx = TransactionRequest::default();
+    // dbg!(user_token);
+    // // TODO: craft tip20 tx
+    // let tx = TransactionRequest::default();
 
     // provider.send_transaction(tx);
     //

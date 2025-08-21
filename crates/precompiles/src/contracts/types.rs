@@ -135,6 +135,7 @@ sol! {
     }
 
     #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
     interface IFeeManager {
         // Structs (represented as tuples in Solidity interface)
         struct Pool {
