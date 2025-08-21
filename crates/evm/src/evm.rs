@@ -1,5 +1,5 @@
 use alloy::sol_types::SolCall;
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, Bytes};
 use reth::revm::{
     Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
     context::{
@@ -17,21 +17,13 @@ use reth_revm::{
     MainBuilder, MainContext,
     context::{
         BlockEnv, CfgEnv, ContextTr, JournalTr, Transaction,
-        result::{ExecResultAndState, ExecutionResult, InvalidTransaction, ResultAndState},
+        result::ResultAndState,
     },
     handler::{EthPrecompiles, EvmTr, PrecompileProvider, instructions::EthInstructions},
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
-    state::EvmState,
 };
 use std::ops::{Deref, DerefMut};
-use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        ITIP20,
-        types::IFeeManager::{self},
-    },
-    precompiles::extend_tempo_precompiles,
-};
+use tempo_precompiles::precompiles::extend_tempo_precompiles;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = reth_revm::Context<BlockEnv, TxEnv, CfgEnv, DB>;
@@ -122,7 +114,7 @@ where
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// `RevmEvm` should be invoked on [`Evm::transact`].
-    pub fn new(mut evm: EthEvm<DB, I, PrecompilesMap>, inspect: bool) -> Self {
+    pub fn new(evm: EthEvm<DB, I, PrecompilesMap>, inspect: bool) -> Self {
         todo!()
         // evm.cfg.disable_balance_check = true;
         // let chain_id = evm.chain_id();
