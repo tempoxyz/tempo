@@ -10,6 +10,7 @@ use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use dashmap::DashMap;
 use rayon::prelude::*;
+use tempo_precompiles::contracts::ITIP20;
 use thousands::Separable;
 
 use crate::crescendo::{config, tx_queue::TX_QUEUE};
@@ -87,7 +88,7 @@ pub fn tx_gen_worker(_worker_id: u32) {
                 gas_limit: config.gas_limit,
                 to: TxKind::Call(config.token_contract_address.parse::<Address>().unwrap()),
                 value: U256::ZERO,
-                input: ERC20::transferCall {
+                input: ITIP20::transferCall {
                     to: recipient_addr,
                     amount: U256::from(fastrand::u64(1..=config.max_transfer_amount)),
                 }
