@@ -4,16 +4,21 @@ use std::fmt::Debug;
 
 use alloy_primitives::{Address, U256};
 use reth_revm::{
-    context::{Block, Cfg, Transaction, result::InvalidTransaction},
-    handler::pre_execution::validate_account_nonce_and_code,
-    primitives::hardfork::SpecId,
-};
-use reth_revm::{
     Database,
-    context::{ContextTr, Host, JournalTr, result::HaltReason},
-    handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler, EthFrame},
+    context::{
+        Block, Cfg, ContextTr, Host, JournalTr, Transaction,
+        result::{HaltReason, InvalidTransaction},
+    },
+    handler::{
+        EthFrame, EvmTr, EvmTrError, FrameResult, FrameTr, Handler,
+        pre_execution::validate_account_nonce_and_code,
+    },
     inspector::{Inspector, InspectorEvmTr, InspectorHandler},
-    interpreter::{instructions::utility::IntoAddress, interpreter_action::FrameInit, interpreter::EthInterpreter},
+    interpreter::{
+        instructions::utility::IntoAddress, interpreter::EthInterpreter,
+        interpreter_action::FrameInit,
+    },
+    primitives::hardfork::SpecId,
     state::EvmState,
 };
 use tempo_precompiles::{
@@ -288,10 +293,10 @@ where
 impl<EVM, ERROR> InspectorHandler for TempoEvmHandler<EVM, ERROR, EthFrame<EthInterpreter>>
 where
     EVM: InspectorEvmTr<
-        Context: ContextTr<Journal: JournalTr<State = EvmState>>,
-        Frame = EthFrame<EthInterpreter>,
-        Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
-    >,
+            Context: ContextTr<Journal: JournalTr<State = EvmState>>,
+            Frame = EthFrame<EthInterpreter>,
+            Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
+        >,
     ERROR: EvmTrError<EVM>,
 {
     type IT = EthInterpreter;
@@ -301,8 +306,11 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::{Address, U256};
-    use reth_revm::db::{CacheDB, EmptyDB};
-    use reth_revm::{Journal, interpreter::instructions::utility::IntoU256};
+    use reth_revm::{
+        Journal,
+        db::{CacheDB, EmptyDB},
+        interpreter::instructions::utility::IntoU256,
+    };
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
