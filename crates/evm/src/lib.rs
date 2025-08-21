@@ -1,4 +1,3 @@
-use reth_evm::precompiles::PrecompilesMap;
 use reth_revm::{
     Context, Database,
     context::{Block, Cfg, JournalTr},

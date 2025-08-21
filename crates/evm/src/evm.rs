@@ -1,4 +1,3 @@
-use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, Bytes};
 use reth::revm::{
     Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
@@ -10,17 +9,16 @@ use reth::revm::{
     primitives::hardfork::SpecId,
 };
 use reth_evm::{
-    Database, EthEvm, EthEvmFactory, Evm, EvmEnv, EvmFactory, eth::EthEvmContext,
-    precompiles::PrecompilesMap,
+    Database, Evm, EvmEnv, EvmFactory, eth::EthEvmContext, precompiles::PrecompilesMap,
 };
 use reth_revm::{
-    MainBuilder, MainContext,
-    context::{BlockEnv, CfgEnv, ContextTr, Host, JournalTr, Transaction, result::ResultAndState},
+    MainContext,
+    context::{BlockEnv, CfgEnv, Host, result::ResultAndState},
     handler::{EthPrecompiles, EvmTr, PrecompileProvider, instructions::EthInstructions},
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 use std::ops::{Deref, DerefMut};
-use tempo_precompiles::precompiles::{self, extend_tempo_precompiles};
+use tempo_precompiles::precompiles::extend_tempo_precompiles;
 
 use crate::TempoEvmBuilder;
 
@@ -29,9 +27,7 @@ pub type TempoContext<DB> = reth_revm::Context<BlockEnv, TxEnv, CfgEnv, DB>;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoEvmFactory {
-    inner: EthEvmFactory,
-}
+pub struct TempoEvmFactory;
 
 impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I, PrecompilesMap>;
