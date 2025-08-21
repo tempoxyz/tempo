@@ -1,23 +1,18 @@
-use std::{sync::Arc, time::Duration};
-
 use alloy::{
-    primitives::{Address, U256},
-    providers::{Provider, ProviderBuilder, WalletProvider},
-    signers::{
-        local::{MnemonicBuilder, coins_bip39::English},
-        utils::secret_key_to_address,
-    },
-    sol_types::{SolCall, SolType},
+    primitives::U256,
+    providers::{Provider, ProviderBuilder},
+    signers::local::{MnemonicBuilder, coins_bip39::English},
 };
-use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
+use alloy_rpc_types_eth::TransactionRequest;
 use reth_chainspec::ChainSpec;
-use reth_ethereum::{provider::db, tasks::TaskManager};
+use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
-use reth_node_core::args::{DevArgs, RpcServerArgs};
+use reth_node_core::args::RpcServerArgs;
+use std::sync::Arc;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager, ITIP20, TipFeeManager},
+    contracts::{IFeeManager, ITIP20},
 };
 
 #[tokio::test(flavor = "multi_thread")]
