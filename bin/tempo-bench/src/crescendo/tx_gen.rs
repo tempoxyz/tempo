@@ -10,8 +10,8 @@ use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use dashmap::DashMap;
 use rayon::prelude::*;
-use thousands::Separable;
 use tempo_precompiles::contracts::ITIP20;
+use thousands::Separable;
 
 use crate::crescendo::{config, tx_queue::TX_QUEUE};
 
