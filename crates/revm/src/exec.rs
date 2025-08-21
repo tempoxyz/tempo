@@ -146,6 +146,6 @@ where
             data,
         ));
         let mut h = TempoEvmHandler::<_, _, EthFrame<EthInterpreter>>::new();
-        h.inspect_run_system_call(self)
+        h.inspect_run(self)
     }
 }

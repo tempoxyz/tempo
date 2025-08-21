@@ -11,8 +11,9 @@ use reth_revm::{
 use reth_revm::{
     Database,
     context::{ContextTr, Host, JournalTr, result::HaltReason},
-    handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler},
-    interpreter::{instructions::utility::IntoAddress, interpreter_action::FrameInit},
+    handler::{EvmTr, EvmTrError, FrameResult, FrameTr, Handler, EthFrame},
+    inspector::{Inspector, InspectorEvmTr, InspectorHandler},
+    interpreter::{instructions::utility::IntoAddress, interpreter_action::FrameInit, interpreter::EthInterpreter},
     state::EvmState,
 };
 use tempo_precompiles::{
@@ -48,11 +49,9 @@ impl<EVM, ERROR, FRAME> Default for TempoEvmHandler<EVM, ERROR, FRAME> {
 
 impl<EVM, ERROR, FRAME> Handler for TempoEvmHandler<EVM, ERROR, FRAME>
 where
-    EVM: EvmTr<Context: ContextTr<Journal: JournalTr<State = EvmState> + Debug>, Frame = FRAME>,
+    EVM: EvmTr<Context: ContextTr<Journal: JournalTr<State = EvmState>>, Frame = FRAME>,
     ERROR: EvmTrError<EVM>,
     FRAME: FrameTr<FrameResult = FrameResult, FrameInit = FrameInit>,
-    <<EVM as EvmTr>::Context as ContextTr>::Db: reth_revm::Database + Debug,
-    <<<EVM as EvmTr>::Context as ContextTr>::Db as reth_revm::Database>::Error: Send + Sync,
 {
     type Evm = EVM;
     type Error = ERROR;
@@ -284,6 +283,18 @@ where
     }
 
     Ok(())
+}
+
+impl<EVM, ERROR> InspectorHandler for TempoEvmHandler<EVM, ERROR, EthFrame<EthInterpreter>>
+where
+    EVM: InspectorEvmTr<
+        Context: ContextTr<Journal: JournalTr<State = EvmState>>,
+        Frame = EthFrame<EthInterpreter>,
+        Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
+    >,
+    ERROR: EvmTrError<EVM>,
+{
+    type IT = EthInterpreter;
 }
 
 #[cfg(test)]
