@@ -1,5 +1,6 @@
 //! Tempo EVM Handler implementation.
 
+use core::fmt;
 use std::fmt::Debug;
 
 use alloy_primitives::{Address, U256};
@@ -25,6 +26,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20},
 };
+use tracing::trace;
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
@@ -55,7 +57,7 @@ impl<EVM, ERROR, FRAME> Default for TempoEvmHandler<EVM, ERROR, FRAME> {
 impl<EVM, ERROR, FRAME> Handler for TempoEvmHandler<EVM, ERROR, FRAME>
 where
     EVM: EvmTr<Context: ContextTr<Journal: JournalTr<State = EvmState>>, Frame = FRAME>,
-    ERROR: EvmTrError<EVM>,
+    ERROR: EvmTrError<EVM> + fmt::Debug,
     FRAME: FrameTr<FrameResult = FrameResult, FrameInit = FrameInit>,
 {
     type Evm = EVM;
@@ -69,12 +71,16 @@ where
         let caller = evm.ctx().caller();
         let beneficiary = evm.ctx().beneficiary();
         let fee_token = get_fee_token(evm.ctx_mut().journal_mut(), caller, beneficiary)?;
+        trace!(%fee_token, %caller, %beneficiary, "loaded fee token");
         self.fee_token = fee_token;
 
         // Run inner handler and catch all errors to handle cleanup.
         match self.run_without_catch_error(evm) {
             Ok(output) => Ok(output),
-            Err(e) => self.catch_error(evm, e),
+            Err(err) => {
+                trace!(?err, %caller,  "failed to transact");
+                self.catch_error(evm, err)
+            }
         }
     }
 
@@ -207,6 +213,9 @@ where
     }
 }
 
+/// Looks up the user's fee token in the `TipManager` contract.
+///
+/// If no fee token is set for the user, or the fee token is the zero address, the returned fee token will be the validator's fee token.
 pub fn get_fee_token<JOURNAL>(
     journal: &mut JOURNAL,
     sender: Address,
@@ -216,6 +225,8 @@ where
     JOURNAL: JournalTr,
 {
     let user_slot = mapping_slot(sender, tip_fee_manager::slots::USER_TOKENS);
+    // ensure TIP_FEE_MANAGER_ADDRESS is loaded
+    journal.load_account(TIP_FEE_MANAGER_ADDRESS)?;
     let user_fee_token = journal
         .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
         .data
@@ -227,6 +238,7 @@ where
             .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
             .data
             .into_address();
+        trace!(%sender, %validator, %validator_fee_token, "loaded validator fee token");
 
         Ok(validator_fee_token)
     } else {
@@ -249,6 +261,9 @@ where
     Ok(balance)
 }
 
+/// Transfers `amount` from the sender's to the receivers balance inside the token contract.
+///
+/// Caution: assumes the `token` address is already loaded
 pub fn transfer_token<JOURNAL>(
     journal: &mut JOURNAL,
     token: Address,
@@ -259,6 +274,7 @@ pub fn transfer_token<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
+    // Ensure the token account is touched
     journal.touch_account(token);
     // Load sender's current balance
     // NOTE: it is important to note that this expects the token to be a tip20 token with BALANCES
@@ -297,7 +313,7 @@ where
             Frame = EthFrame<EthInterpreter>,
             Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
         >,
-    ERROR: EvmTrError<EVM>,
+    ERROR: EvmTrError<EVM> + fmt::Debug,
 {
     type IT = EthInterpreter;
 }

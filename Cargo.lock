@@ -12094,10 +12094,9 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "eyre",
- "reth",
- "reth-evm",
  "reth-revm",
  "tempo-precompiles",
+ "tracing",
 ]
 
 [[package]]
