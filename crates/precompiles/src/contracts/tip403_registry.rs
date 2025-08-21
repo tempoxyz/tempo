@@ -1,5 +1,3 @@
-use alloy::primitives::{Address, IntoLogData, U256};
-use alloy_evm::revm::interpreter::instructions::utility::{IntoU256, IntoAddress};
 use crate::{
     TIP403_REGISTRY_ADDRESS,
     contracts::{
@@ -9,6 +7,8 @@ use crate::{
     },
     tip403_err,
 };
+use alloy::primitives::{Address, IntoLogData, U256};
+use alloy_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 mod slots {
     use alloy::primitives::{U256, uint};
@@ -143,13 +143,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
 
         // Store policy data
 
-        self.set_policy_data(
-            new_policy_id,
-            &PolicyData {
-                policy_type,
-                admin,
-            },
-        );
+        self.set_policy_data(new_policy_id, &PolicyData { policy_type, admin });
 
         // Set initial accounts
         for account in call.accounts.iter() {
