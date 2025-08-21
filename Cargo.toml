@@ -86,7 +86,6 @@ reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "61662098a
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-db" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-db-api" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-engine-primitives" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-ethereum" }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-ethereum-engine-primitives" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-evm" }
 reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-ethereum-forks" }
@@ -116,6 +115,8 @@ reth-network = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-transaction-pool" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-engine-local" }
 reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-ethereum-consensus" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-ethereum" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-e2e-test-utils" }
 alloy-network = { version = "1.0.12" }
 alloy-rpc-types-eth = { version = "1.0.12" }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", features = [
