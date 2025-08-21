@@ -1,10 +1,8 @@
 use alloy::{
-    network::ReceiptResponse,
     primitives::U256,
-    providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
+    providers::ProviderBuilder,
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
-use alloy_rpc_types_eth::TransactionRequest;
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
@@ -12,8 +10,8 @@ use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    contracts::{IFeeManager, ITIP20, ITIP20Factory, token_id_to_address},
+    TIP20_FACTORY_ADDRESS,
+    contracts::{ITIP20, ITIP20Factory, token_id_to_address},
 };
 
 #[tokio::test(flavor = "multi_thread")]
