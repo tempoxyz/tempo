@@ -56,7 +56,6 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        let spec_id = input.cfg_env.spec;
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -64,10 +63,8 @@ impl EvmFactory for TempoEvmFactory {
 
         let mut precompiles_map =
             PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
-
         // Get chain_id from context to extend with Tempo precompiles
         extend_tempo_precompiles(&mut precompiles_map, ctx.cfg.chain_id);
-
         let evm =
             tempo_revm::TempoEvm::new(ctx, NoOpInspector {}).with_precompiles(precompiles_map);
 

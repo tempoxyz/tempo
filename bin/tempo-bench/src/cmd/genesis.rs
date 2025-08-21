@@ -2,7 +2,6 @@ use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
     primitives::{Address, Bytes, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
-    sol_types::SolCall,
 };
 use alloy_signer_local::coins_bip39::English;
 use clap::Parser;
@@ -17,7 +16,7 @@ use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
         TipFeeManager, tip20::ISSUER_ROLE,
