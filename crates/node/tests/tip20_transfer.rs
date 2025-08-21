@@ -1,4 +1,5 @@
 use alloy::{
+    network::ReceiptResponse,
     primitives::U256,
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
@@ -70,14 +71,14 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         .to(caller)
         .gas_price(1);
     let pending_tx = provider.send_transaction(tx).await?;
+
     let receipt = pending_tx.get_receipt().await?;
 
     // Assert that the fee token balance has decreased by gas spent
     let balance_after = fee_token.balanceOf(caller).call().await?;
-    assert_eq!(
-        balance_after,
-        initial_balance - U256::from(receipt.gas_used)
-    );
+
+    let cost = receipt.effective_gas_price() * receipt.gas_used as u128;
+    assert_eq!(balance_after, initial_balance - U256::from(cost));
 
     Ok(())
 }
