@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, IntoLogData, U256};
-
+use alloy_evm::revm::interpreter::instructions::utility::{IntoU256, IntoAddress};
 use crate::{
     TIP403_REGISTRY_ADDRESS,
     contracts::{
@@ -26,7 +26,7 @@ pub struct TIP403Registry<'a, S: StorageProvider> {
 #[derive(Debug, Clone)]
 pub struct PolicyData {
     pub policy_type: ITIP403Registry::PolicyType,
-    pub admin_policy_id: u64,
+    pub admin: Address,
 }
 
 impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
@@ -61,7 +61,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let data = self.get_policy_data(call.policyId);
         ITIP403Registry::policyDataReturn {
             policyType: data.policy_type,
-            adminPolicyId: data.admin_policy_id,
+            admin: data.admin,
         }
     }
 
@@ -91,7 +91,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
             new_policy_id,
             &PolicyData {
                 policy_type: call.policyType,
-                admin_policy_id: call.adminPolicyId,
+                admin: call.admin,
             },
         );
 
@@ -114,7 +114,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
                     policyId: new_policy_id,
                     updater: *msg_sender,
-                    adminPolicyId: call.adminPolicyId,
+                    admin: call.admin,
                 })
                 .into_log_data(),
             )
@@ -128,17 +128,9 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         msg_sender: &Address,
         call: ITIP403Registry::createPolicyWithAccountsCall,
     ) -> Result<u64, TIP403RegistryError> {
-        let mut admin_policy_id = call.adminPolicyId;
+        let admin = call.admin;
         let policy_type = call.policyType;
         let new_policy_id = self.policy_id_counter();
-
-        // Handle special case for self-owned policy (type(uint64).max)
-        if admin_policy_id == u64::MAX {
-            if policy_type != ITIP403Registry::PolicyType::WHITELIST {
-                return Err(tip403_err!(SelfOwnedPolicyMustBeWhitelist));
-            }
-            admin_policy_id = new_policy_id;
-        }
 
         // Increment counter
         self.storage
@@ -155,7 +147,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
             new_policy_id,
             &PolicyData {
                 policy_type,
-                admin_policy_id,
+                admin,
             },
         );
 
@@ -221,7 +213,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
                     policyId: new_policy_id,
                     updater: *msg_sender,
-                    adminPolicyId: admin_policy_id,
+                    admin,
                 })
                 .into_log_data(),
             )
@@ -238,7 +230,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let data = self.get_policy_data(call.policyId);
 
         // Check authorization
-        if !self.is_authorized_internal(data.admin_policy_id, msg_sender) {
+        if !data.admin.eq(msg_sender) {
             return Err(tip403_err!(Unauthorized));
         }
 
@@ -246,7 +238,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         self.set_policy_data(
             call.policyId,
             &PolicyData {
-                admin_policy_id: call.adminPolicyId,
+                admin: call.admin,
                 ..data
             },
         );
@@ -257,7 +249,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
                 TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
                     policyId: call.policyId,
                     updater: *msg_sender,
-                    adminPolicyId: call.adminPolicyId,
+                    admin: call.admin,
                 })
                 .into_log_data(),
             )
@@ -274,7 +266,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let data = self.get_policy_data(call.policyId);
 
         // Check authorization
-        if !self.is_authorized_internal(data.admin_policy_id, msg_sender) {
+        if !data.admin.eq(msg_sender) {
             return Err(tip403_err!(Unauthorized));
         }
 
@@ -309,7 +301,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let data = self.get_policy_data(call.policyId);
 
         // Check authorization
-        if !self.is_authorized_internal(data.admin_policy_id, msg_sender) {
+        if !data.admin.eq(msg_sender) {
             return Err(tip403_err!(Unauthorized));
         }
 
@@ -345,12 +337,12 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
             .expect("TODO: handle error");
 
         // Extract policy type (low 128 bits) and admin policy ID (high 128 bits)
-        let policy_type = (value.to::<u128>() & 0xFF) as u8;
-        let admin_policy_id = (value.to::<u128>() >> 64) as u64;
+        let policy_type = (value.to::<U256>() & U256::from(0xFF)).byte(0);
+        let admin: U256 = value.to::<U256>() >> 8;
 
         PolicyData {
             policy_type: policy_type.try_into().unwrap(),
-            admin_policy_id,
+            admin: admin.into_address(),
         }
     }
 
@@ -358,7 +350,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let slot = mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA);
 
         // Pack policy type and admin policy ID into single U256
-        let value = U256::from(data.policy_type as u128) | (U256::from(data.admin_policy_id) << 64);
+        let value = U256::from(data.admin.into_u256() << 8) | (U256::from(data.policy_type as u8));
 
         self.storage
             .sstore(TIP403_REGISTRY_ADDRESS, slot, value)
@@ -420,7 +412,7 @@ mod tests {
         let result = registry.create_policy(
             &admin,
             ITIP403Registry::createPolicyCall {
-                adminPolicyId: 1, // Always-allow admin
+                admin,
                 policyType: ITIP403Registry::PolicyType::WHITELIST,
             },
         );
@@ -433,7 +425,7 @@ mod tests {
         // Check policy data
         let data = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 2 });
         assert_eq!(data.policyType, ITIP403Registry::PolicyType::WHITELIST);
-        assert_eq!(data.adminPolicyId, 1);
+        assert_eq!(data.admin, admin);
     }
 
     #[test]
@@ -461,7 +453,7 @@ mod tests {
             .create_policy(
                 &admin,
                 ITIP403Registry::createPolicyCall {
-                    adminPolicyId: 1,
+                    admin,
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
                 },
             )
@@ -504,7 +496,7 @@ mod tests {
             .create_policy(
                 &admin,
                 ITIP403Registry::createPolicyCall {
-                    adminPolicyId: 1,
+                    admin,
                     policyType: ITIP403Registry::PolicyType::BLACKLIST,
                 },
             )
