@@ -12,9 +12,9 @@ use alloy::{
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
-use reth_malachite::app::node::TempoNode;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
+use tempo_node::node::TempoNode;
 use tempo_precompiles::contracts::IFeeManager;
 
 #[tokio::test(flavor = "multi_thread")]
