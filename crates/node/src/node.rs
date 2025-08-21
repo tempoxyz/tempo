@@ -3,11 +3,17 @@ use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadBuilderAttributes};
+use reth_ethereum_engine_primitives::{
+    EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes,
+};
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
-    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes, eth::spec::EthExecutorSpec,
-    revm::context::TxEnv,
+    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
+    eth::spec::EthExecutorSpec,
+    revm::{
+        context::TxEnv,
+        primitives::{Address},
+    },
 };
 use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
@@ -255,7 +261,36 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
     fn local_payload_attributes_builder(
         chain_spec: &Self::ChainSpec,
     ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes> {
-        LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
+        TempoPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
+    }
+}
+
+/// The attributes builder with a restricted set of validators
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct TempoPayloadAttributesBuilder<ChainSpec> {
+    /// The vanilla eth payload attributes builder
+    inner: LocalPayloadAttributesBuilder<ChainSpec>,
+}
+
+impl<ChainSpec> TempoPayloadAttributesBuilder<ChainSpec> {
+    /// Creates a new instance of the builder.
+    pub const fn new(chain_spec: Arc<ChainSpec>) -> Self {
+        Self {
+            inner: LocalPayloadAttributesBuilder::new(chain_spec),
+        }
+    }
+}
+
+impl<ChainSpec> PayloadAttributesBuilder<EthPayloadAttributes>
+    for TempoPayloadAttributesBuilder<ChainSpec>
+where
+    ChainSpec: Send + Sync + EthereumHardforks + 'static,
+{
+    fn build(&self, timestamp: u64) -> EthPayloadAttributes {
+        let mut attributes = self.inner.build(timestamp);
+        attributes.suggested_fee_recipient = Address::ZERO;
+        attributes
     }
 }
 
