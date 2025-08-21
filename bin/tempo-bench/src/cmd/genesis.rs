@@ -98,7 +98,13 @@ impl GenesisArgs {
                     )
                     .expect("Could not mint fee token");
             }
+
             let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, token.storage);
+            for address in addresses.iter().tqdm() {
+                fee_manager
+                    .set_user_token(address, IFeeManager::setUserTokenCall { token: fee_token })
+                    .expect("Could not set fee token");
+            }
 
             fee_manager
                 .set_validator_token(
