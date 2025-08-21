@@ -10,10 +10,7 @@ use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
     ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
     eth::spec::EthExecutorSpec,
-    revm::{
-        context::TxEnv,
-        primitives::{Address},
-    },
+    revm::{context::TxEnv, primitives::Address},
 };
 use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
