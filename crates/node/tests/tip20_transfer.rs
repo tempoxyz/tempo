@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy::{
-    primitives::Address,
+    primitives::{Address, U256},
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{
         local::{MnemonicBuilder, coins_bip39::English},
@@ -43,7 +43,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     } = NodeBuilder::new(node_config.clone())
         .testing_node(executor.clone())
         .node(TempoNode::default())
-        .launch()
+        .launch_with_debug_capabilities()
         .await?;
 
     let http_url = node
@@ -58,24 +58,28 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         .build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Ensure the native account balance is 0
+    let account_balance = provider.get_balance(caller).await?;
+    assert_eq!(account_balance, U256::ZERO);
+
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let fee_token_address = fee_manager.userTokens(caller).call().await?;
 
-    // TODO: get balance of fee token before
-    //
+    // Get the balance of the fee token before the tx
     let fee_token = ITIP20::new(fee_token_address, provider.clone());
-
     let initial_balance = fee_token.balanceOf(caller).call().await?;
-    dbg!(initial_balance);
 
     let tx = TransactionRequest::default().from(caller).to(caller);
     let pending_tx = provider.send_transaction(tx).await?;
     let receipt = pending_tx.get_receipt().await?;
-    dbg!(receipt);
 
+    // Assert that the fee token balance has decreased by gas spent
     let balance_after = fee_token.balanceOf(caller).call().await?;
-    dbg!(balance_after);
-    // TODO: assert state changes, gas spent in fee token
+    assert_eq!(
+        balance_after,
+        initial_balance - U256::from(receipt.gas_used)
+    );
 
     Ok(())
 }
