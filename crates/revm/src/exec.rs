@@ -1,3 +1,4 @@
+use crate::{evm::TempoEvm, handler::TempoEvmHandler};
 use reth_revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
     context::{
@@ -20,11 +21,8 @@ use reth_revm::{
     state::EvmState,
 };
 
-use crate::{evm::TempoEvm, handler::TempoEvmHandler};
-
 /// Type alias for Tempo context
 pub trait TempoContextTr: ContextTr<Journal: JournalTr<State = EvmState>> {}
-
 impl<T> TempoContextTr for T where T: ContextTr<Journal: JournalTr<State = EvmState>> {}
 
 /// Type alias for the error type of the TempoEvm
