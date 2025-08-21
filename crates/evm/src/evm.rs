@@ -20,8 +20,6 @@ use reth_revm::{
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
 
-use crate::TempoEvmBuilder;
-
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = reth_revm::Context<BlockEnv, TxEnv, CfgEnv, DB>;
 
@@ -43,12 +41,12 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        let mut evm_inner = Context::mainnet()
+        let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
-            .with_cfg(input.cfg_env)
-            .build_tempo_with_inspector(NoOpInspector {});
+            .with_cfg(input.cfg_env);
 
+        let mut evm_inner = tempo_revm::TempoEvm::new(ctx, NoOpInspector {});
         let chain_id = evm_inner.ctx().chain_id().to::<u64>();
         let mut precompiles_map =
             PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
@@ -68,12 +66,12 @@ impl EvmFactory for TempoEvmFactory {
         input: EvmEnv<Self::Spec>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        let mut evm_inner = Context::mainnet()
+        let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
-            .with_cfg(input.cfg_env)
-            .build_tempo_with_inspector(inspector);
+            .with_cfg(input.cfg_env);
 
+        let mut evm_inner = tempo_revm::TempoEvm::new(ctx, inspector);
         let chain_id = evm_inner.ctx().chain_id().to::<u64>();
         let mut precompiles_map =
             PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
