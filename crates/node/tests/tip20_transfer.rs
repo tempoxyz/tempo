@@ -66,10 +66,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let fee_token = ITIP20::new(fee_token_address, provider.clone());
     let initial_balance = fee_token.balanceOf(caller).call().await?;
 
-    let tx = TransactionRequest::default()
-        .from(caller)
-        .to(caller)
-        .gas_price(1);
+    let tx = TransactionRequest::default().from(caller).to(caller);
     let pending_tx = provider.send_transaction(tx).await?;
 
     let receipt = pending_tx.get_receipt().await?;

@@ -115,9 +115,6 @@ where
         )?;
 
         let max_balance_spending = tx.max_balance_spending()?;
-
-        dbg!(max_balance_spending);
-
         let effective_balance_spending = tx
             .effective_balance_spending(basefee, blob_price)
             .expect("effective balance is always smaller than max balance so it can't overflow");
