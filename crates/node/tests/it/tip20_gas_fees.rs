@@ -24,7 +24,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let executor = tasks.executor();
 
     let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "./assets/test-genesis.json"
+        "../assets/test-genesis.json"
     ))?);
 
     let node_config = NodeConfig::test()
