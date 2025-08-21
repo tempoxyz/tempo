@@ -1,7 +1,7 @@
 use alloy::{
     network::ReceiptResponse,
     primitives::U256,
-    providers::{Provider, ProviderBuilder},
+    providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
 use alloy_rpc_types_eth::TransactionRequest;
@@ -12,19 +12,19 @@ use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager, ITIP20},
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    contracts::{IFeeManager, ITIP20, ITIP20Factory, token_id_to_address},
 };
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_transfer() -> eyre::Result<()> {
+async fn test_create_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let tasks = TaskManager::current();
     let executor = tasks.executor();
 
     let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "./assets/test-genesis.json"
+        "../assets/test-genesis.json"
     ))?);
 
     let node_config = NodeConfig::test()
@@ -55,27 +55,35 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Ensure the native account balance is 0
-    let account_balance = provider.get_balance(caller).await?;
-    assert_eq!(account_balance, U256::ZERO);
+    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
 
-    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let fee_token_address = fee_manager.userTokens(caller).call().await?;
+    let initial_token_id = factory.tokenIdCounter().call().await?;
+    let name = "Test".to_string();
+    let symbol = "TEST".to_string();
+    let currency = "USD".to_string();
+    factory
+        .createToken(
+            "Test".to_string(),
+            "TEST".to_string(),
+            "USD".to_string(),
+            caller,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
-    // Get the balance of the fee token before the tx
-    let fee_token = ITIP20::new(fee_token_address, provider.clone());
-    let initial_balance = fee_token.balanceOf(caller).call().await?;
+    let token_id = factory.tokenIdCounter().call().await?;
+    assert_eq!(token_id, initial_token_id + U256::ONE);
 
-    let tx = TransactionRequest::default().from(caller).to(caller);
-    let pending_tx = provider.send_transaction(tx).await?;
+    let token_addr = token_id_to_address(token_id.to::<u64>());
 
-    let receipt = pending_tx.get_receipt().await?;
-
-    // Assert that the fee token balance has decreased by gas spent
-    let balance_after = fee_token.balanceOf(caller).call().await?;
-
-    let cost = receipt.effective_gas_price() * receipt.gas_used as u128;
-    assert_eq!(balance_after, initial_balance - U256::from(cost));
+    let token = ITIP20::new(token_addr, provider);
+    assert_eq!(token.name().call().await?, name);
+    assert_eq!(token.symbol().call().await?, symbol);
+    assert_eq!(token.currency().call().await?, currency);
+    assert_eq!(token.supplyCap().call().await?, U256::MAX);
+    assert_eq!(token.transferPolicyId().call().await?, 1);
 
     Ok(())
 }
