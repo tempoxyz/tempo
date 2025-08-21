@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::U256,
+    primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
@@ -54,14 +54,6 @@ async fn test_create_token() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
-
-    let initial_token_id = factory.tokenIdCounter().call().await?;
-    let name = "Test".to_string();
-    let symbol = "TEST".to_string();
-    let currency = "USD".to_string();
-
-    // Ensure the native account balance is 0
-    assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
     factory
         .createToken(
             "Test".to_string(),
@@ -75,16 +67,33 @@ async fn test_create_token() -> eyre::Result<()> {
         .await?;
 
     let token_id = factory.tokenIdCounter().call().await?;
-    assert_eq!(token_id, initial_token_id + U256::ONE);
-
     let token_addr = token_id_to_address(token_id.to::<u64>());
+    let token = ITIP20::new(token_addr, provider.clone());
 
-    let token = ITIP20::new(token_addr, provider);
-    assert_eq!(token.name().call().await?, name);
-    assert_eq!(token.symbol().call().await?, symbol);
-    assert_eq!(token.currency().call().await?, currency);
-    assert_eq!(token.supplyCap().call().await?, U256::MAX);
-    assert_eq!(token.transferPolicyId().call().await?, 1);
+    let caller_initial_balance = token.balanceOf(caller).call().await?;
+    let recipient = Address::random();
+    let recipient_initial_balance = token.balanceOf(recipient).call().await?;
+    let transfer_amount = U256::random();
+
+    assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
+    token
+        .transfer(recipient, transfer_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let caller_balance_after = token.balanceOf(caller).call().await?;
+    let recipient_balance_after = token.balanceOf(recipient).call().await?;
+
+    assert_eq!(
+        caller_balance_after,
+        caller_initial_balance - transfer_amount
+    );
+    assert_eq!(
+        recipient_balance_after,
+        recipient_initial_balance + transfer_amount
+    );
 
     Ok(())
 }
