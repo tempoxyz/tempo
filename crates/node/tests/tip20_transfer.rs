@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use alloy::{
     primitives::Address,
-    providers::{Provider, ProviderBuilder},
+    providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{
         local::{MnemonicBuilder, coins_bip39::English},
         utils::secret_key_to_address,
@@ -11,7 +11,7 @@ use alloy::{
 };
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
 use reth_chainspec::ChainSpec;
-use reth_ethereum::tasks::TaskManager;
+use reth_ethereum::{provider::db, tasks::TaskManager};
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use tempo_node::node::TempoNode;
@@ -52,10 +52,14 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         .parse()
         .unwrap();
 
-    let wallet = MnemonicBuilder::<English>::default().build()?;
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
-
+    let user_fee_token = fee_manager.userTokens(caller).call().await?;
+    dbg!(user_fee_token);
     // dbg!(user_token);
     // // TODO: craft tip20 tx
     // let tx = TransactionRequest::default();
