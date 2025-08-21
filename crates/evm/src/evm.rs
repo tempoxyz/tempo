@@ -15,15 +15,14 @@ use reth_evm::{
 };
 use reth_revm::{
     MainBuilder, MainContext,
-    context::{
-        BlockEnv, CfgEnv, ContextTr, JournalTr, Transaction,
-        result::ResultAndState,
-    },
+    context::{BlockEnv, CfgEnv, ContextTr, Host, JournalTr, Transaction, result::ResultAndState},
     handler::{EthPrecompiles, EvmTr, PrecompileProvider, instructions::EthInstructions},
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 use std::ops::{Deref, DerefMut};
-use tempo_precompiles::precompiles::extend_tempo_precompiles;
+use tempo_precompiles::precompiles::{self, extend_tempo_precompiles};
+
+use crate::TempoEvmBuilder;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = reth_revm::Context<BlockEnv, TxEnv, CfgEnv, DB>;
@@ -48,20 +47,21 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        let ctx = Context::mainnet()
+        let mut evm_inner = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
-            .with_cfg(input.cfg_env);
+            .with_cfg(input.cfg_env)
+            .build_tempo_with_inspector(NoOpInspector {});
 
+        let chain_id = evm_inner.ctx().chain_id().to::<u64>();
         let mut precompiles_map =
             PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
         // Get chain_id from context to extend with Tempo precompiles
-        extend_tempo_precompiles(&mut precompiles_map, ctx.cfg.chain_id);
-        let evm =
-            tempo_revm::TempoEvm::new(ctx, NoOpInspector {}).with_precompiles(precompiles_map);
+        extend_tempo_precompiles(&mut precompiles_map, chain_id);
 
+        let evm_inner = evm_inner.with_precompiles(precompiles_map);
         TempoEvm {
-            inner: evm,
+            inner: evm_inner,
             inspect: false,
         }
     }
@@ -72,8 +72,20 @@ impl EvmFactory for TempoEvmFactory {
         input: EvmEnv<Self::Spec>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        let evm = self.inner.create_evm_with_inspector(db, input, inspector);
-        TempoEvm::new(evm, true)
+        let mut evm_inner = Context::mainnet()
+            .with_db(db)
+            .with_block(input.block_env)
+            .with_cfg(input.cfg_env)
+            .build_tempo_with_inspector(inspector);
+
+        let chain_id = evm_inner.ctx().chain_id().to::<u64>();
+        let mut precompiles_map =
+            PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
+        // Get chain_id from context to extend with Tempo precompiles
+        extend_tempo_precompiles(&mut precompiles_map, chain_id);
+        let evm_inner = evm_inner.with_precompiles(precompiles_map);
+
+        TempoEvm::new(evm_inner, true)
     }
 }
 
@@ -110,20 +122,19 @@ where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
-    /// Creates a new Tempo EVM instance.
-    ///
-    /// The `inspect` argument determines whether the configured [`Inspector`] of the given
-    /// `RevmEvm` should be invoked on [`Evm::transact`].
-    pub fn new(evm: EthEvm<DB, I, PrecompilesMap>, inspect: bool) -> Self {
-        todo!()
-        // evm.cfg.disable_balance_check = true;
-        // let chain_id = evm.chain_id();
-        // precompiles::extend_tempo_precompiles(evm.precompiles_mut(), chain_id);
-        //
-        // Self {
-        //     inner: tempo_revm::TempoEvm(evm),
-        //     inspect,
-        // }
+    pub const fn new(
+        evm: tempo_revm::TempoEvm<
+            TempoContext<DB>,
+            I,
+            EthInstructions<EthInterpreter, TempoContext<DB>>,
+            PrecompilesMap,
+        >,
+        inspect: bool,
+    ) -> Self {
+        Self {
+            inner: evm,
+            inspect,
+        }
     }
 }
 
