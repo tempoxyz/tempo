@@ -213,7 +213,7 @@ where
     }
 }
 
-/// Looks up the user's fee token in the `TipManager` contract.
+/// Looks up the user's fee token in the `TIPFeemanager` contract.
 ///
 /// If no fee token is set for the user, or the fee token is the zero address, the returned fee token will be the validator's fee token.
 pub fn get_fee_token<JOURNAL>(
