@@ -14,6 +14,7 @@ use reth_evm::{
     precompiles::PrecompilesMap,
 };
 use reth_revm::{
+    MainBuilder, MainContext,
     context::{
         BlockEnv, CfgEnv, ContextTr, JournalTr, Transaction,
         result::{ExecResultAndState, ExecutionResult, InvalidTransaction, ResultAndState},
@@ -29,6 +30,7 @@ use tempo_precompiles::{
         ITIP20,
         types::IFeeManager::{self},
     },
+    precompiles::extend_tempo_precompiles,
 };
 
 /// The Tempo EVM context type.
@@ -55,18 +57,24 @@ impl EvmFactory for TempoEvmFactory {
         input: EvmEnv<Self::Spec>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
-        // TempoEvm {
-        //     inner: Context::mainnet()
-        //         .with_db(db)
-        //         .with_block(input.block_env)
-        //         .with_cfg(input.cfg_env)
-        //         .build_op_with_inspector(NoOpInspector {})
-        //         .with_precompiles(PrecompilesMap::from_static(
-        //             OpPrecompiles::new_with_spec(spec_id).precompiles(),
-        //         )),
-        //     inspect: false,
-        // }
-        todo!()
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(input.block_env)
+            .with_cfg(input.cfg_env);
+
+        let mut precompiles_map =
+            PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
+
+        // Get chain_id from context to extend with Tempo precompiles
+        extend_tempo_precompiles(&mut precompiles_map, ctx.cfg.chain_id);
+
+        let evm =
+            tempo_revm::TempoEvm::new(ctx, NoOpInspector {}).with_precompiles(precompiles_map);
+
+        TempoEvm {
+            inner: evm,
+            inspect: false,
+        }
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(

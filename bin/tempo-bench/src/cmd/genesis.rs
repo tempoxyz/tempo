@@ -15,12 +15,12 @@ use reth::revm::{
 use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
 use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
-use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
+use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     contracts::{
-        EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Token, TipFeeManager,
-        tip20::ISSUER_ROLE,
+        EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
+        TipFeeManager, tip20::ISSUER_ROLE,
     },
 };
 
@@ -190,26 +190,26 @@ fn create_and_mint_token(
     mint_amount: U256,
     evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
 ) -> eyre::Result<u64> {
-    let create_token_call = ITIP20Factory::createTokenCall {
-        name: name.into(),
-        symbol: symbol.into(),
-        currency: currency.into(),
-        admin,
-    };
-
-    let result = evm.transact_system_call(
-        admin,
-        TIP20_FACTORY_ADDRESS,
-        create_token_call.abi_encode().into(),
-    )?;
-    assert!(result.result.is_success(), "Token creation failed");
-    evm.journal_state(result.state)?;
-
-    let output = result.result.output().unwrap_or_default();
-    let token_id = ITIP20Factory::createTokenCall::abi_decode_returns(output)?.to::<u64>();
+    let chain_id = evm.chain_id();
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmStorageProvider::new(evm_internals, chain_id);
+
+    let token_id = {
+        let mut factory = TIP20Factory::new(&mut provider);
+        factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: name.into(),
+                    symbol: symbol.into(),
+                    currency: currency.into(),
+                    admin,
+                },
+            )
+            .expect("Could not create token")
+            .to::<u64>()
+    };
 
     let mut token = TIP20Token::new(token_id, &mut provider);
     token

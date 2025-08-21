@@ -17,7 +17,7 @@ mod slots {
 
 #[derive(Debug)]
 pub struct TIP20Factory<'a, S: StorageProvider> {
-    storage: &'a mut S,
+    pub storage: &'a mut S,
 }
 
 // Precompile functions

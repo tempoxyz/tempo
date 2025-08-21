@@ -34,7 +34,7 @@ use reth_node_ethereum::{
 };
 use reth_trie_db::MerklePatriciaTrie;
 
-use tempo_evm::TempoEvmFactory;
+use tempo_evm::evm::TempoEvmFactory;
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 

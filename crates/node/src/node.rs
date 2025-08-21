@@ -39,7 +39,7 @@ use reth_transaction_pool::{
 };
 use reth_trie_db::MerklePatriciaTrie;
 use std::{default::Default, sync::Arc, time::SystemTime};
-use tempo_evm::TempoEvmFactory;
+use tempo_evm::evm::TempoEvmFactory;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
 /// Type configuration for a regular Ethereum node.
