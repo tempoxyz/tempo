@@ -17,7 +17,7 @@ use reth_node_core::args::{DevArgs, RpcServerArgs};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager, TipFeeManager},
+    contracts::{IFeeManager, ITIP20, TipFeeManager},
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -58,16 +58,23 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         .build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
-    let user_fee_token = fee_manager.userTokens(caller).call().await?;
-    dbg!(user_fee_token);
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_token_address = fee_manager.userTokens(caller).call().await?;
 
     // TODO: get balance of fee token before
+    //
+    let fee_token = ITIP20::new(fee_token_address, provider.clone());
+
+    let initial_balance = fee_token.balanceOf(caller).call().await?;
+    dbg!(initial_balance);
 
     let tx = TransactionRequest::default().from(caller).to(caller);
-    let tx_hash = fee_manager.provider().send_transaction(tx).await?;
+    let pending_tx = provider.send_transaction(tx).await?;
+    let receipt = pending_tx.get_receipt().await?;
+    dbg!(receipt);
 
-    dbg!(tx_hash);
+    let balance_after = fee_token.balanceOf(caller).call().await?;
+    dbg!(balance_after);
     // TODO: assert state changes, gas spent in fee token
 
     Ok(())

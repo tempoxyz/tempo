@@ -20,6 +20,7 @@ sol! {
     }
 
     #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
     interface ITIP20 {
         // Standard token functions
         function name() external view returns (string);
