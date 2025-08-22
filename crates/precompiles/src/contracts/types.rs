@@ -2,6 +2,7 @@ use alloy::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
     interface IRolesAuth {
         // Role Management Functions
         function grantRole(bytes32 role, address account) external;
@@ -53,6 +54,8 @@ sol! {
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
+        function add_issuer(address account) external;
+        function remove_issuer(address account) external;
 
         // EIP-712 Permit
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;

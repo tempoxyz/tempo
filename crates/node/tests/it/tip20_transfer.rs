@@ -12,7 +12,9 @@ use std::sync::Arc;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS,
-    contracts::{ITIP20, ITIP20Factory, token_id_to_address},
+    contracts::{
+        ITIP20, ITIP20Factory, tip20::ISSUER_ROLE, token_id_to_address, types::IRolesAuth,
+    },
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -68,17 +70,32 @@ async fn test_create_token_transfer() -> eyre::Result<()> {
         .await?;
     let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
 
+    // Init the token and grant the caller the issuer role
     let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
+    let roles = IRolesAuth::new(*token.address(), provider.clone());
+    roles
+        .grantRole(*ISSUER_ROLE, caller)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
+    let transfer_amount = U256::random();
+    token
+        .mint(caller, transfer_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Transfer tokens and assert balances
     let caller_initial_balance = token.balanceOf(caller).call().await?;
     let recipient = Address::random();
     let recipient_initial_balance = token.balanceOf(recipient).call().await?;
-    let transfer_amount = U256::random();
 
     assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
 
-    // TODO: this currently fails because caller's caller_initial_balance is 0
     token
         .transfer(recipient, transfer_amount)
         .send()
