@@ -21,6 +21,8 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::decimalsCall::SELECTOR => metadata::<ITIP20::decimalsCall>(self.decimals()),
             ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(self.currency()),
             ITIP20::totalSupplyCall::SELECTOR => metadata::<ITIP20::totalSupplyCall>(self.total_supply()),
+            ITIP20::supplyCapCall::SELECTOR => metadata::<ITIP20::supplyCapCall>(self.supply_cap()),
+            ITIP20::transferPolicyIdCall::SELECTOR => metadata::<ITIP20::transferPolicyIdCall>(self.transfer_policy_id()),
 
             // View functions
             ITIP20::balanceOfCall::SELECTOR => view::<ITIP20::balanceOfCall>(calldata, |call| self.balance_of(call)),
