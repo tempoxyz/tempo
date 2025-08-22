@@ -10,6 +10,7 @@ members = [
   "bin/tempo-sidecar",
   "crates/chainspec",
   "crates/evm",
+  "crates/faucet",
   "crates/node",
   "crates/precompiles",
   "crates/reth-malachite",
@@ -72,6 +73,7 @@ codegen-units = 1
 tempo-node = { path = "crates/node" }
 reth-malachite = { path = "crates/reth-malachite" }
 tempo-chainspec = { path = "crates/chainspec" }
+tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }
 tempo-revm = { path = "crates/revm" }
 tempo-precompiles = { path = "crates/precompiles" }
@@ -130,6 +132,7 @@ alloy-eips = { version = "1.0.12", features = ["serde"] }
 alloy-genesis = "1.0.12"
 alloy-primitives = "1.2.0"
 alloy-rpc-types-engine = "1.0.12"
+alloy-signer = "1.0.12"
 alloy-trie = "0.9.0"
 malachitebft-app = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app" }
 malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app-channel" }
@@ -166,3 +169,4 @@ prost = "0.13"
 prost-build = "0.13"
 protox = "0.7"
 criterion = "0.7.0"
+jsonrpsee = { version = "0.25.1", features = ["server", "client", "macros"] }
