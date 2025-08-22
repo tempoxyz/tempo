@@ -19,10 +19,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
         with:
           cache-on-failure: true
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo nextest run --verbose
 
   build:
     name: build
