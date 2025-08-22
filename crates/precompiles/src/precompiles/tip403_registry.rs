@@ -104,7 +104,7 @@ mod tests {
         let admin = Address::from([1u8; 20]);
 
         let call = ITIP403Registry::createPolicyCall {
-            adminPolicyId: 1,
+            admin,
             policyType: ITIP403Registry::PolicyType::WHITELIST,
         };
         let calldata = call.abi_encode();
@@ -141,7 +141,7 @@ mod tests {
 
         let accounts = vec![account1, account2];
         let call = ITIP403Registry::createPolicyWithAccountsCall {
-            adminPolicyId: 1,
+            admin,
             policyType: ITIP403Registry::PolicyType::WHITELIST,
             accounts: accounts.clone(),
         };
@@ -194,7 +194,7 @@ mod tests {
 
         // Create blacklist policy
         let call = ITIP403Registry::createPolicyCall {
-            adminPolicyId: 1,
+            admin,
             policyType: ITIP403Registry::PolicyType::BLACKLIST,
         };
         let calldata = call.abi_encode();
@@ -271,7 +271,7 @@ mod tests {
 
         // Create whitelist policy
         let call = ITIP403Registry::createPolicyCall {
-            adminPolicyId: 1,
+            admin,
             policyType: ITIP403Registry::PolicyType::WHITELIST,
         };
         let calldata = call.abi_encode();
@@ -352,7 +352,7 @@ mod tests {
 
         // Create a policy
         let call = ITIP403Registry::createPolicyCall {
-            adminPolicyId: 1,
+            admin,
             policyType: ITIP403Registry::PolicyType::WHITELIST,
         };
         let calldata = call.abi_encode();
@@ -368,13 +368,13 @@ mod tests {
         let result = precompile.call(&calldata, &admin).unwrap();
         let policy_data =
             ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
-        assert_eq!(policy_data.adminPolicyId, 1);
+        assert_eq!(policy_data.admin, admin);
 
         // Change policy admin
-        let new_admin_policy_id = 3;
+        let new_admin = Address::from([2u8; 20]);
         let set_admin_call = ITIP403Registry::setPolicyAdminCall {
             policyId: policy_id,
-            adminPolicyId: new_admin_policy_id,
+            admin: new_admin,
         };
         let calldata = set_admin_call.abi_encode();
         precompile.call(&calldata, &admin).unwrap();
@@ -387,7 +387,7 @@ mod tests {
         let result = precompile.call(&calldata, &admin).unwrap();
         let policy_data =
             ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
-        assert_eq!(policy_data.adminPolicyId, new_admin_policy_id);
+        assert_eq!(policy_data.admin, new_admin);
     }
 
     #[test]
@@ -440,7 +440,7 @@ mod tests {
 
         // Create multiple policies with different types
         let whitelist_call = ITIP403Registry::createPolicyCall {
-            adminPolicyId: 1,
+            admin,
             policyType: ITIP403Registry::PolicyType::WHITELIST,
         };
         let calldata = whitelist_call.abi_encode();
@@ -449,7 +449,7 @@ mod tests {
             ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
 
         let blacklist_call = ITIP403Registry::createPolicyCall {
-            adminPolicyId: 1,
+            admin,
             policyType: ITIP403Registry::PolicyType::BLACKLIST,
         };
         let calldata = blacklist_call.abi_encode();

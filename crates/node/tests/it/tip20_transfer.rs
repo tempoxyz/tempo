@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::U256,
+    primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
@@ -12,11 +12,13 @@ use std::sync::Arc;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS,
-    contracts::{ITIP20, ITIP20Factory, token_id_to_address},
+    contracts::{
+        ITIP20, ITIP20Factory, tip20::ISSUER_ROLE, token_id_to_address, types::IRolesAuth,
+    },
 };
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_create_token() -> eyre::Result<()> {
+async fn test_create_token_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let tasks = TaskManager::current();
@@ -55,14 +57,6 @@ async fn test_create_token() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
-
-    let initial_token_id = factory.tokenIdCounter().call().await?;
-    let name = "Test".to_string();
-    let symbol = "TEST".to_string();
-    let currency = "USD".to_string();
-
-    // Ensure the native account balance is 0
-    assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
     let receipt = factory
         .createToken(
             "Test".to_string(),
@@ -74,22 +68,52 @@ async fn test_create_token() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
-
     let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
-    assert_eq!(event.tokenId, initial_token_id);
 
-    // next id is +1
-    let token_id = factory.tokenIdCounter().call().await?;
-    assert_eq!(token_id, initial_token_id + U256::ONE);
-
+    // Init the token and grant the caller the issuer role
     let token_addr = token_id_to_address(event.tokenId.to());
+    let token = ITIP20::new(token_addr, provider.clone());
+    let roles = IRolesAuth::new(*token.address(), provider.clone());
+    roles
+        .grantRole(*ISSUER_ROLE, caller)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
-    let token = ITIP20::new(token_addr, provider);
-    assert_eq!(token.name().call().await?, name);
-    assert_eq!(token.symbol().call().await?, symbol);
-    assert_eq!(token.currency().call().await?, currency);
-    assert_eq!(token.supplyCap().call().await?, U256::MAX);
-    assert_eq!(token.transferPolicyId().call().await?, 1);
+    let transfer_amount = U256::random();
+    token
+        .mint(caller, transfer_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Transfer tokens and assert balances
+    let caller_initial_balance = token.balanceOf(caller).call().await?;
+    let recipient = Address::random();
+    let recipient_initial_balance = token.balanceOf(recipient).call().await?;
+
+    assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
+
+    token
+        .transfer(recipient, transfer_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let caller_balance_after = token.balanceOf(caller).call().await?;
+    let recipient_balance_after = token.balanceOf(recipient).call().await?;
+
+    assert_eq!(
+        caller_balance_after,
+        caller_initial_balance - transfer_amount
+    );
+    assert_eq!(
+        recipient_balance_after,
+        recipient_initial_balance + transfer_amount
+    );
 
     Ok(())
 }

@@ -56,8 +56,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Ensure the native account balance is 0
-    let account_balance = provider.get_balance(caller).await?;
-    assert_eq!(account_balance, U256::ZERO);
+    assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
 
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let fee_token_address = fee_manager.userTokens(caller).call().await?;
@@ -68,7 +67,6 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
 
     let tx = TransactionRequest::default().from(caller).to(caller);
     let pending_tx = provider.send_transaction(tx).await?;
-
     let receipt = pending_tx.get_receipt().await?;
 
     // Assert that the fee token balance has decreased by gas spent

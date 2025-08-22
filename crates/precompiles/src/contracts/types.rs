@@ -2,6 +2,7 @@ use alloy::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
     interface IRolesAuth {
         // Role Management Functions
         function grantRole(bytes32 role, address account) external;
@@ -53,6 +54,8 @@ sol! {
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
+        function add_issuer(address account) external;
+        function remove_issuer(address account) external;
 
         // EIP-712 Permit
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
@@ -110,18 +113,18 @@ sol! {
 
         // View Functions
         function policyIdCounter() external view returns (uint64);
-        function policyData(uint64 policyId) external view returns (PolicyType policyType, uint64 adminPolicyId);
+        function policyData(uint64 policyId) external view returns (PolicyType policyType, address admin);
         function isAuthorized(uint64 policyId, address user) external view returns (bool);
 
         // State-Changing Functions
-        function createPolicy(uint64 adminPolicyId, PolicyType policyType) external returns (uint64);
-        function createPolicyWithAccounts(uint64 adminPolicyId, PolicyType policyType, address[] accounts) external returns (uint64);
-        function setPolicyAdmin(uint64 policyId, uint64 adminPolicyId) external;
+        function createPolicy(address admin, PolicyType policyType) external returns (uint64);
+        function createPolicyWithAccounts(address admin, PolicyType policyType, address[] accounts) external returns (uint64);
+        function setPolicyAdmin(uint64 policyId, address admin) external;
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
 
         // Events
-        event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, uint64 indexed adminPolicyId);
+        event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);
         event PolicyCreated(uint64 indexed policyId, address indexed updater, PolicyType policyType);
         event WhitelistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
         event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
