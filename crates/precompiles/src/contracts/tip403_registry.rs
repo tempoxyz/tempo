@@ -224,7 +224,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let data = self.get_policy_data(call.policyId);
 
         // Check authorization
-        if !data.admin.eq(msg_sender) {
+        if data.admin != *msg_sender {
             return Err(tip403_err!(Unauthorized));
         }
 
@@ -260,7 +260,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let data = self.get_policy_data(call.policyId);
 
         // Check authorization
-        if !data.admin.eq(msg_sender) {
+        if data.admin != *msg_sender {
             return Err(tip403_err!(Unauthorized));
         }
 
@@ -295,7 +295,7 @@ impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
         let data = self.get_policy_data(call.policyId);
 
         // Check authorization
-        if !data.admin.eq(msg_sender) {
+        if data.admin != *msg_sender {
             return Err(tip403_err!(Unauthorized));
         }
 
