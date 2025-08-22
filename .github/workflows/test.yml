@@ -22,7 +22,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo nextest run --verbose
 
   build:
     name: build
