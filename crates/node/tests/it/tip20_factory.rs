@@ -2,6 +2,7 @@ use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
+    sol_types::SolEvent,
 };
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
@@ -62,7 +63,7 @@ async fn test_create_token() -> eyre::Result<()> {
 
     // Ensure the native account balance is 0
     assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
-    factory
+    let receipt = factory
         .createToken(
             "Test".to_string(),
             "TEST".to_string(),
@@ -74,10 +75,14 @@ async fn test_create_token() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
+    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
+    assert_eq!(event.tokenId, initial_token_id);
+
+    // next id is +1
     let token_id = factory.tokenIdCounter().call().await?;
     assert_eq!(token_id, initial_token_id + U256::ONE);
 
-    let token_addr = token_id_to_address(token_id.to::<u64>());
+    let token_addr = token_id_to_address(event.tokenId.to());
 
     let token = ITIP20::new(token_addr, provider);
     assert_eq!(token.name().call().await?, name);
