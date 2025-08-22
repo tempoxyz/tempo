@@ -1,5 +1,3 @@
-use alloy::primitives::{Address, IntoLogData, U256};
-
 use crate::{
     TIP20_FACTORY_ADDRESS,
     contracts::{
@@ -8,6 +6,8 @@ use crate::{
         types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
     },
 };
+use alloy::primitives::{Address, IntoLogData, U256};
+use tracing::trace;
 
 mod slots {
     use alloy::primitives::U256;
@@ -26,12 +26,26 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
         Self { storage }
     }
 
+    /// Initializes the TIP20 factory contract.
+    ///
+    /// This ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
+    pub fn initialize(&mut self) -> Result<(), TIP20Error> {
+        // must ensure the account is not empty, by setting some code
+        self.storage
+            .set_code(TIP20_FACTORY_ADDRESS, vec![0xef])
+            .expect("TODO: handle error");
+        Ok(())
+    }
+
     pub fn create_token(
         &mut self,
-        _sender: &Address,
+        sender: &Address,
         call: ITIP20Factory::createTokenCall,
     ) -> Result<U256, TIP20Error> {
         let token_id = self.token_id_counter();
+        trace!(%sender, %token_id, ?call, "Create token");
+
+        // increase the token counter
         self.storage
             .sstore(
                 TIP20_FACTORY_ADDRESS,

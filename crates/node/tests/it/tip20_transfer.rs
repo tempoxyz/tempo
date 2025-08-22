@@ -2,6 +2,7 @@ use alloy::{
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
+    sol_types::SolEvent,
 };
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
@@ -15,7 +16,7 @@ use tempo_precompiles::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_create_token() -> eyre::Result<()> {
+async fn test_create_token_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let tasks = TaskManager::current();
@@ -54,7 +55,7 @@ async fn test_create_token() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
-    factory
+    let receipt = factory
         .createToken(
             "Test".to_string(),
             "TEST".to_string(),
@@ -65,9 +66,9 @@ async fn test_create_token() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
+    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
 
-    let token_id = factory.tokenIdCounter().call().await?;
-    let token_addr = token_id_to_address(token_id.to::<u64>());
+    let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
 
     let caller_initial_balance = token.balanceOf(caller).call().await?;
@@ -76,6 +77,8 @@ async fn test_create_token() -> eyre::Result<()> {
     let transfer_amount = U256::random();
 
     assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
+
+    // TODO: this currently fails because caller's caller_initial_balance is 0
     token
         .transfer(recipient, transfer_amount)
         .send()
