@@ -1,26 +1,28 @@
+use crate::faucet::FaucetError::ParseUrlError;
 use alloy::{
-    primitives::{Address, U256, B256},
+    consensus::{TxEnvelope, transaction::SignerRecoverable},
     network::EthereumWallet,
+    primitives::{Address, B256, U256},
     providers::ProviderBuilder,
+    rpc::types::{TransactionInput, TransactionRequest},
     sol_types::SolCall,
 };
-use alloy::consensus::TxEnvelope;
 use async_trait::async_trait;
-use reth::transaction_pool::{TransactionOrigin, TransactionPool};
 use jsonrpsee::{
-    core::{RpcResult, Error as RpcError},
+    core::RpcResult,
     proc_macros::rpc,
-    types::ErrorCode,
+    types::{
+        ErrorObjectOwned,
+        error::{INTERNAL_ERROR_CODE, INTERNAL_ERROR_MSG},
+    },
 };
-use reth::core::primitives::SignedTransaction;
-use reth::rpc::types::{TransactionInput, TransactionRequest};
+use reth::transaction_pool::{TransactionOrigin, TransactionPool};
 use tempo_precompiles::contracts::ITIP20;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
-#[cfg_attr(not(test), rpc(server, namespace = "tempo"))]
-#[cfg_attr(test, rpc(server, client, namespace = "tempo"))]
+#[rpc(server, namespace = "tempo")]
 pub trait TempoFaucetExtApi {
-    #[method(name="fundAddress")]
+    #[method(name = "fundAddress")]
     async fn fund_address(&self, address: Address) -> RpcResult<B256>;
 }
 
@@ -28,47 +30,85 @@ pub struct TempoFaucetExt<Pool> {
     pool: Pool,
     signer: EthereumWallet,
     tip20_address: Address,
+    funding_amount: U256,
 }
 
-impl <Pool> TempoFaucetExt<Pool>{
-    pub fn new(pool: Pool, signer: EthereumWallet, tip20_address: Address) -> Self {
-        Self { pool, signer, tip20_address }
+impl<Pool> TempoFaucetExt<Pool> {
+    pub fn new(
+        pool: Pool,
+        signer: EthereumWallet,
+        tip20_address: Address,
+        funding_amount: U256,
+    ) -> Self {
+        Self {
+            pool,
+            signer,
+            tip20_address,
+            funding_amount,
+        }
     }
 }
 
-#[cfg(not(test))]
+pub enum FaucetError {
+    ParseUrlError,
+    FillError,
+    ConversionError,
+    TxPoolError,
+}
+
+impl From<FaucetError> for ErrorObjectOwned {
+    fn from(err: FaucetError) -> Self {
+        let message = match err {
+            ParseUrlError => "failed to parse the provider url",
+            FaucetError::FillError => "failed to fill the transaction details",
+            FaucetError::ConversionError => "failed to convert the transaction",
+            FaucetError::TxPoolError => "failed to add transaction into the pool",
+        };
+
+        ErrorObjectOwned::owned(INTERNAL_ERROR_CODE, INTERNAL_ERROR_MSG, Some(message))
+    }
+}
+
 #[async_trait]
 impl<Pool> TempoFaucetExtApiServer for TempoFaucetExt<Pool>
 where
     Pool: TransactionPool<Transaction = TempoPooledTransaction> + Clone + 'static,
 {
     async fn fund_address(&self, address: Address) -> RpcResult<B256> {
-        let url = "http://localhost:8545".parse().unwrap();
+        let url = "http://localhost:8545".parse().map_err(|_| ParseUrlError)?;
         let provider = ProviderBuilder::new()
             .wallet(&self.signer)
             .connect_http(url);
 
         let transfer_call_data = ITIP20::transferCall {
             to: address,
-            amount: U256::from(10000000000u64),
-        }.abi_encode();
+            amount: self.funding_amount,
+        }
+        .abi_encode();
 
-        let request= TransactionRequest::default()
+        let request = TransactionRequest::default()
             .to(self.tip20_address)
             .input(TransactionInput::from(transfer_call_data));
 
-        let tx: TxEnvelope = provider.fill(request).await.unwrap().try_into_envelope().unwrap();
+        let filled_tx = provider
+            .fill(request)
+            .await
+            .map_err(|_| FaucetError::FillError)?;
+
+        let tx: TxEnvelope = filled_tx
+            .try_into_envelope()
+            .map_err(|_| FaucetError::ConversionError)?;
+
         let tx_hash = *tx.hash();
 
-        let tx = tx.try_into_recovered().unwrap();
+        let tx = tx
+            .try_into_recovered()
+            .map_err(|_| FaucetError::ConversionError)?;
 
         self.pool
-            .add_consensus_transaction(
-                tx.convert(),
-                TransactionOrigin::Local,
-            )
+            .add_consensus_transaction(tx.convert(), TransactionOrigin::Local)
             .await
-            .unwrap();
+            .map_err(|_| FaucetError::TxPoolError)?;
 
         Ok(tx_hash)
     }

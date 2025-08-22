@@ -12,14 +12,11 @@ description = "TODO:"
 reth.workspace = true
 tempo-precompiles.workspace = true
 tempo-transaction-pool.workspace = true
-alloy = {workspace = true, features = ["signers"]}
-alloy-primitives.workspace = true
-alloy-signer.workspace = true
+alloy = {workspace = true, features = ["signers", "signer-local", "signer-mnemonic-all-languages"]}
 async-trait.workspace = true
 jsonrpsee.workspace = true
 serde.workspace = true
-tracing.workspace = true
-anyhow.workspace = true
+clap.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
