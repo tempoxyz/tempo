@@ -1,8 +1,5 @@
 use std::sync::LazyLock;
 
-use alloy::primitives::{Address, B256, IntoLogData, Signature as EthSignature, U256, keccak256};
-use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
-
 use crate::{
     contracts::{
         ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry,
@@ -14,6 +11,9 @@ use crate::{
     },
     tip20_err,
 };
+use alloy::primitives::{Address, B256, IntoLogData, Signature as EthSignature, U256, keccak256};
+use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
+use tracing::trace;
 
 pub mod slots {
     use alloy::primitives::{U256, uint};
@@ -373,6 +373,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferCall,
     ) -> Result<bool, TIP20Error> {
+        trace!(%msg_sender, ?call, "transferring TIP20");
         self.check_not_paused()?;
         self.check_not_token_address(&call.to)?;
         self.check_transfer_authorized(msg_sender, &call.to)?;
@@ -526,6 +527,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         currency: &str,
         admin: &Address,
     ) -> Result<(), TIP20Error> {
+        trace!(%name, address=%self.token_address, "Initializing token");
+
+        // must ensure the account is not empty, by setting some code
         self.storage
             .set_code(self.token_address, vec![0xef])
             .expect("TODO: handle error");

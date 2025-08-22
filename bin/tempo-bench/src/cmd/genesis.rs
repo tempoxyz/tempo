@@ -187,6 +187,7 @@ fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap
     factory.create_evm(db, env)
 }
 
+/// Initializes the TIP20 factory contract and creates a token
 fn create_and_mint_token(
     symbol: &str,
     name: &str,
@@ -202,6 +203,9 @@ fn create_and_mint_token(
 
     let token_id = {
         let mut factory = TIP20Factory::new(&mut provider);
+        factory
+            .initialize()
+            .expect("Could not initialize tip20 factory");
         factory
             .create_token(
                 &admin,
