@@ -67,7 +67,7 @@ pub enum FaucetError {
     #[error(transparent)]
     FillError(#[from] RpcError<TransportErrorKind>),
     #[error(transparent)]
-    ConversionError(#[from] SendableTxErr<TransactionRequest>),
+    ConversionError(#[from] Box<SendableTxErr<TransactionRequest>>),
     #[error(transparent)]
     SignatureRecoveryError(#[from] RecoveryError),
     #[error(transparent)]
@@ -110,17 +110,17 @@ where
             .provider
             .fill(request)
             .await
-            .map_err(|e| FaucetError::FillError(e))?;
+            .map_err(FaucetError::FillError)?;
 
         let tx: TxEnvelope = filled_tx
             .try_into_envelope()
-            .map_err(|e| FaucetError::ConversionError(e))?;
+            .map_err(|e| FaucetError::ConversionError(Box::new(e)))?;
 
         let tx_hash = *tx.hash();
 
         let tx = tx
             .try_into_recovered()
-            .map_err(|e| FaucetError::SignatureRecoveryError(e))?;
+            .map_err(FaucetError::SignatureRecoveryError)?;
 
         self.pool
             .add_consensus_transaction(tx.convert(), TransactionOrigin::Local)
