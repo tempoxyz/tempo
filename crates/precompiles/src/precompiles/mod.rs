@@ -3,8 +3,10 @@ use alloy::{
     sol_types::{SolCall, SolInterface},
 };
 use alloy_primitives::Bytes;
-use reth::revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
-use reth_evm::precompiles::{DynPrecompile, PrecompilesMap};
+use reth_evm::{
+    precompiles::{DynPrecompile, PrecompilesMap},
+    revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
+};
 
 pub mod tip20;
 pub mod tip20_factory;
@@ -173,8 +175,8 @@ where
 {
     match result {
         Err(PrecompileError::Other(hex_string)) => {
-            let bytes =
-                hex::decode(hex_string).expect("invalid hex string in PrecompileError::Other");
+            let bytes = alloy_primitives::hex::decode(hex_string)
+                .expect("invalid hex string in PrecompileError::Other");
             let decoded: E = E::abi_decode(&bytes)
                 .expect("failed to decode precompile error as expected interface error");
             assert_eq!(decoded, expected_error);

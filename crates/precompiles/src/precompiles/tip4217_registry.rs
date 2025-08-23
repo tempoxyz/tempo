@@ -1,6 +1,6 @@
 use crate::precompiles::{Precompile, view};
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth::revm::precompile::{PrecompileError, PrecompileResult};
+use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{tip4217_registry::TIP4217Registry, types::ITIP4217Registry};
 

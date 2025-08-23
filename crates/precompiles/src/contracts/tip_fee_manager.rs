@@ -7,7 +7,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::SolValue,
 };
-use reth::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use reth_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 pub mod slots {
     use alloy::primitives::{U256, uint};

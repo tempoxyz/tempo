@@ -3,7 +3,7 @@ use crate::{
     precompiles::{Precompile, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth::revm::precompile::{PrecompileError, PrecompileResult};
+use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {

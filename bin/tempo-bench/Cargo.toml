@@ -39,11 +39,9 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 mimalloc = "0.1.47"
-num_cpus = "1.17.0"
 parking_lot = "0.12.4"
 ratelimit = "0.10"
 rayon = "1.10"
 rlimit = "0.10.2"
 simple-tqdm = { version = "0.2.0", features = ["rayon"] }
 thousands = "0.2.0"
-tokio-metrics = "0.4.3"
