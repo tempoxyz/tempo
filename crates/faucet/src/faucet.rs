@@ -1,13 +1,15 @@
 use alloy::{
     consensus::{TxEnvelope, crypto::RecoveryError, transaction::SignerRecoverable},
+    network::Ethereum,
     primitives::{Address, B256, U256},
-    providers::{Provider, SendableTxErr},
+    providers::{
+        Provider, SendableTxErr,
+        fillers::{FillProvider, TxFiller},
+    },
     rpc::types::{TransactionInput, TransactionRequest},
     sol_types::SolCall,
     transports::{RpcError, TransportErrorKind},
 };
-use alloy::network::Ethereum;
-use alloy::providers::fillers::{FillProvider, TxFiller};
 use async_trait::async_trait;
 use jsonrpsee::{
     core::RpcResult,
@@ -30,7 +32,7 @@ pub trait TempoFaucetExtApi {
 pub struct TempoFaucetExt<Pool, P, F>
 where
     P: Provider,
-    F: TxFiller<Ethereum>
+    F: TxFiller<Ethereum>,
 {
     pool: Pool,
     tip20_address: Address,
@@ -41,7 +43,7 @@ where
 impl<Pool, P, F> TempoFaucetExt<Pool, P, F>
 where
     P: Provider,
-    F: TxFiller<Ethereum>
+    F: TxFiller<Ethereum>,
 {
     pub fn new(
         pool: Pool,
@@ -104,7 +106,8 @@ where
             .to(self.tip20_address)
             .input(TransactionInput::from(transfer_call_data));
 
-        let filled_tx = self.provider
+        let filled_tx = self
+            .provider
             .fill(request)
             .await
             .map_err(|e| FaucetError::FillError(e))?;

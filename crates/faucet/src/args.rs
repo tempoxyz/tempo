@@ -1,21 +1,27 @@
 use alloy::{
-    network::EthereumWallet,
+    network::{Ethereum, EthereumWallet},
     primitives::{Address, B256, U256},
-    signers::local::{PrivateKeySigner},
+    providers::{
+        Identity, ProviderBuilder, RootProvider,
+        fillers::{
+            BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
+            WalletFiller,
+        },
+    },
+    signers::local::PrivateKeySigner,
 };
-use alloy::network::Ethereum;
 use clap::Args;
-use alloy::providers::ProviderBuilder;
-use alloy::providers::fillers::{FillProvider, WalletFiller, JoinFill, GasFiller, BlobGasFiller, NonceFiller, ChainIdFiller};
-use alloy::providers::{RootProvider, Identity};
 
 type HttpWalletFillProvider = FillProvider<
     JoinFill<
-        JoinFill<Identity, JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>>,
-        WalletFiller<EthereumWallet>
+        JoinFill<
+            Identity,
+            JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
+        >,
+        WalletFiller<EthereumWallet>,
     >,
     RootProvider<Ethereum>,
-    Ethereum
+    Ethereum,
 >;
 
 /// Faucet-specific CLI arguments
@@ -27,27 +33,43 @@ pub struct FaucetArgs {
     pub enabled: bool,
 
     /// Faucet funding mnemonic
-    #[arg(long = "faucet.private-key", requires = "enabled", required_if_eq("enabled", "true"))]
+    #[arg(
+        long = "faucet.private-key",
+        requires = "enabled",
+        required_if_eq("enabled", "true")
+    )]
     pub private_key: Option<B256>,
 
     /// Amount for each faucet funding transaction
-    #[arg(long = "faucet.amount", requires = "enabled", required_if_eq("enabled", "true"))]
+    #[arg(
+        long = "faucet.amount",
+        requires = "enabled",
+        required_if_eq("enabled", "true")
+    )]
     pub amount: Option<U256>,
 
     /// Target token address for the faucet to be funding with
-    #[arg(long = "faucet.address", requires = "enabled", required_if_eq("enabled", "true"))]
+    #[arg(
+        long = "faucet.address",
+        requires = "enabled",
+        required_if_eq("enabled", "true")
+    )]
     pub token_address: Option<Address>,
 
-    #[arg(long = "faucet.node-address", default_value = "http://localhost:8545", requires = "enabled")]
+    #[arg(
+        long = "faucet.node-address",
+        default_value = "http://localhost:8545",
+        requires = "enabled"
+    )]
     pub node_address: String,
 }
 
 impl FaucetArgs {
     pub fn wallet(&self) -> EthereumWallet {
-        let signer: PrivateKeySigner =
-            PrivateKeySigner::from_bytes(
-                &self.private_key.expect("No faucet private key provided")
-            ).expect("Failed to decode private key");
+        let signer: PrivateKeySigner = PrivateKeySigner::from_bytes(
+            &self.private_key.expect("No faucet private key provided"),
+        )
+        .expect("Failed to decode private key");
         EthereumWallet::new(signer)
     }
 
@@ -60,6 +82,10 @@ impl FaucetArgs {
     }
 
     pub fn provider(&self) -> HttpWalletFillProvider {
-        ProviderBuilder::new().wallet(self.wallet()).connect_http(self.node_address.parse().expect("Failed to parse node address"))
+        ProviderBuilder::new().wallet(self.wallet()).connect_http(
+            self.node_address
+                .parse()
+                .expect("Failed to parse node address"),
+        )
     }
 }
