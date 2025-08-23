@@ -3,10 +3,7 @@ name = "tempo-faucet"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "TODO:"
-
-# [lints]
-# workspace = true
+description = "Faucet RPC module for dispensing TIP20 tokens"
 
 [dependencies]
 reth.workspace = true
@@ -17,10 +14,5 @@ async-trait.workspace = true
 jsonrpsee.workspace = true
 serde.workspace = true
 clap.workspace = true
-
-[dev-dependencies]
-criterion.workspace = true
-
-[build-dependencies]
-prost-build.workspace = true
-protox.workspace = true
+thiserror.workspace = true
+url = "2.5.4"

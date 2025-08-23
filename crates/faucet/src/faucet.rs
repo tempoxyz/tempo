@@ -7,16 +7,19 @@ use alloy::{
     rpc::types::{TransactionInput, TransactionRequest},
     sol_types::SolCall,
 };
+use alloy::consensus::crypto::RecoveryError;
+use alloy::providers::SendableTxErr;
+use alloy::transports::{RpcError, TransportErrorKind};
 use async_trait::async_trait;
 use jsonrpsee::{
     core::RpcResult,
     proc_macros::rpc,
-    types::{
-        ErrorObjectOwned,
-        error::{INTERNAL_ERROR_CODE, INTERNAL_ERROR_MSG},
-    },
+    types::error::INTERNAL_ERROR_CODE
 };
+use jsonrpsee::types::error::INVALID_REQUEST_CODE;
+use reth::rpc::result::rpc_err;
 use reth::transaction_pool::{TransactionOrigin, TransactionPool};
+use reth::transaction_pool::error::PoolError;
 use tempo_precompiles::contracts::ITIP20;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
@@ -49,23 +52,29 @@ impl<Pool> TempoFaucetExt<Pool> {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
 pub enum FaucetError {
-    ParseUrlError,
-    FillError,
-    ConversionError,
-    TxPoolError,
+    #[error(transparent)]
+    ParseUrlError(#[from] url::ParseError),
+    #[error(transparent)]
+    FillError(#[from] RpcError<TransportErrorKind>),
+    #[error(transparent)]
+    ConversionError(#[from] SendableTxErr<TransactionRequest>),
+    #[error(transparent)]
+    SignatureRecoveryError(#[from] RecoveryError),
+    #[error(transparent)]
+    TxPoolError(#[from] PoolError),
 }
 
-impl From<FaucetError> for ErrorObjectOwned {
+impl From<FaucetError> for jsonrpsee::types::ErrorObject<'static> {
     fn from(err: FaucetError) -> Self {
-        let message = match err {
-            ParseUrlError => "failed to parse the provider url",
-            FaucetError::FillError => "failed to fill the transaction details",
-            FaucetError::ConversionError => "failed to convert the transaction",
-            FaucetError::TxPoolError => "failed to add transaction into the pool",
-        };
-
-        ErrorObjectOwned::owned(INTERNAL_ERROR_CODE, INTERNAL_ERROR_MSG, Some(message))
+        match err {
+            FaucetError::ParseUrlError(e) => rpc_err(INTERNAL_ERROR_CODE, e.to_string(), None),
+            FaucetError::FillError(e) => rpc_err(INTERNAL_ERROR_CODE, e.to_string(), None),
+            FaucetError::ConversionError(e) => rpc_err(INTERNAL_ERROR_CODE, e.to_string(), None),
+            FaucetError::SignatureRecoveryError(e) => rpc_err(INTERNAL_ERROR_CODE, e.to_string(), None),
+            FaucetError::TxPoolError(e) => rpc_err(INVALID_REQUEST_CODE, e.to_string(), None),
+        }
     }
 }
 
@@ -75,7 +84,7 @@ where
     Pool: TransactionPool<Transaction = TempoPooledTransaction> + Clone + 'static,
 {
     async fn fund_address(&self, address: Address) -> RpcResult<B256> {
-        let url = "http://localhost:8545".parse().map_err(|_| ParseUrlError)?;
+        let url = "http://localhost:8545".parse().map_err(|e| ParseUrlError(e))?;
         let provider = ProviderBuilder::new()
             .wallet(&self.signer)
             .connect_http(url);
@@ -93,22 +102,22 @@ where
         let filled_tx = provider
             .fill(request)
             .await
-            .map_err(|_| FaucetError::FillError)?;
+            .map_err(|e| FaucetError::FillError(e))?;
 
         let tx: TxEnvelope = filled_tx
             .try_into_envelope()
-            .map_err(|_| FaucetError::ConversionError)?;
+            .map_err(|e| FaucetError::ConversionError(e))?;
 
         let tx_hash = *tx.hash();
 
         let tx = tx
             .try_into_recovered()
-            .map_err(|_| FaucetError::ConversionError)?;
+            .map_err(|e| FaucetError::SignatureRecoveryError(e))?;
 
         self.pool
             .add_consensus_transaction(tx.convert(), TransactionOrigin::Local)
             .await
-            .map_err(|_| FaucetError::TxPoolError)?;
+            .map_err(FaucetError::TxPoolError)?;
 
         Ok(tx_hash)
     }

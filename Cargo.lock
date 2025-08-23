@@ -12206,14 +12206,13 @@ dependencies = [
  "alloy",
  "async-trait",
  "clap",
- "criterion",
  "jsonrpsee",
- "prost-build",
- "protox",
  "reth",
  "serde",
  "tempo-precompiles",
  "tempo-transaction-pool",
+ "thiserror 2.0.15",
+ "url",
 ]
 
 [[package]]
