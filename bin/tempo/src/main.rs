@@ -49,19 +49,18 @@ fn main() {
             } = builder
                 .node(TempoNode::new(args.clone()))
                 .extend_rpc_modules(move |ctx| {
-                    if !args.faucet_args.enabled {
-                        return Ok(());
+                    if args.faucet_args.enabled {
+                        let txpool = ctx.pool().clone();
+                        let ext = TempoFaucetExt::new(
+                            txpool,
+                            args.faucet_args.wallet(),
+                            args.faucet_args.token_address,
+                        args.faucet_args.amount,
+                        );  
+
+                        ctx.modules.merge_configured(ext.into_rpc())?;
                     }
 
-                    let txpool = ctx.pool().clone();
-                    let ext = TempoFaucetExt::new(
-                        txpool,
-                        args.faucet_args.wallet(),
-                        args.faucet_args.token_address,
-                        args.faucet_args.amount,
-                    );
-
-                    ctx.modules.merge_configured(ext.into_rpc())?;
                     Ok(())
                 })
                 .apply(|mut ctx| {
