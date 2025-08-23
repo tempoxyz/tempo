@@ -1,25 +1,23 @@
-use crate::faucet::FaucetError::ParseUrlError;
 use alloy::{
-    consensus::{TxEnvelope, transaction::SignerRecoverable},
-    network::EthereumWallet,
+    consensus::{TxEnvelope, crypto::RecoveryError, transaction::SignerRecoverable},
     primitives::{Address, B256, U256},
-    providers::ProviderBuilder,
+    providers::{Provider, SendableTxErr},
     rpc::types::{TransactionInput, TransactionRequest},
     sol_types::SolCall,
+    transports::{RpcError, TransportErrorKind},
 };
-use alloy::consensus::crypto::RecoveryError;
-use alloy::providers::SendableTxErr;
-use alloy::transports::{RpcError, TransportErrorKind};
+use alloy::network::Ethereum;
+use alloy::providers::fillers::{FillProvider, TxFiller};
 use async_trait::async_trait;
 use jsonrpsee::{
     core::RpcResult,
     proc_macros::rpc,
-    types::error::INTERNAL_ERROR_CODE
+    types::error::{INTERNAL_ERROR_CODE, INVALID_REQUEST_CODE},
 };
-use jsonrpsee::types::error::INVALID_REQUEST_CODE;
-use reth::rpc::result::rpc_err;
-use reth::transaction_pool::{TransactionOrigin, TransactionPool};
-use reth::transaction_pool::error::PoolError;
+use reth::{
+    rpc::result::rpc_err,
+    transaction_pool::{TransactionOrigin, TransactionPool, error::PoolError},
+};
 use tempo_precompiles::contracts::ITIP20;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
@@ -29,25 +27,33 @@ pub trait TempoFaucetExtApi {
     async fn fund_address(&self, address: Address) -> RpcResult<B256>;
 }
 
-pub struct TempoFaucetExt<Pool> {
+pub struct TempoFaucetExt<Pool, P, F>
+where
+    P: Provider,
+    F: TxFiller<Ethereum>
+{
     pool: Pool,
-    signer: EthereumWallet,
     tip20_address: Address,
     funding_amount: U256,
+    provider: FillProvider<F, P, Ethereum>,
 }
 
-impl<Pool> TempoFaucetExt<Pool> {
+impl<Pool, P, F> TempoFaucetExt<Pool, P, F>
+where
+    P: Provider,
+    F: TxFiller<Ethereum>
+{
     pub fn new(
         pool: Pool,
-        signer: EthereumWallet,
         tip20_address: Address,
         funding_amount: U256,
+        provider: FillProvider<F, P, Ethereum>,
     ) -> Self {
         Self {
             pool,
-            signer,
             tip20_address,
             funding_amount,
+            provider,
         }
     }
 }
@@ -72,23 +78,22 @@ impl From<FaucetError> for jsonrpsee::types::ErrorObject<'static> {
             FaucetError::ParseUrlError(e) => rpc_err(INTERNAL_ERROR_CODE, e.to_string(), None),
             FaucetError::FillError(e) => rpc_err(INTERNAL_ERROR_CODE, e.to_string(), None),
             FaucetError::ConversionError(e) => rpc_err(INTERNAL_ERROR_CODE, e.to_string(), None),
-            FaucetError::SignatureRecoveryError(e) => rpc_err(INTERNAL_ERROR_CODE, e.to_string(), None),
+            FaucetError::SignatureRecoveryError(e) => {
+                rpc_err(INTERNAL_ERROR_CODE, e.to_string(), None)
+            }
             FaucetError::TxPoolError(e) => rpc_err(INVALID_REQUEST_CODE, e.to_string(), None),
         }
     }
 }
 
 #[async_trait]
-impl<Pool> TempoFaucetExtApiServer for TempoFaucetExt<Pool>
+impl<Pool, P, F> TempoFaucetExtApiServer for TempoFaucetExt<Pool, P, F>
 where
     Pool: TransactionPool<Transaction = TempoPooledTransaction> + Clone + 'static,
+    P: Provider + Clone + 'static,
+    F: TxFiller<Ethereum> + Send + Sync + 'static,
 {
     async fn fund_address(&self, address: Address) -> RpcResult<B256> {
-        let url = "http://localhost:8545".parse().map_err(|e| ParseUrlError(e))?;
-        let provider = ProviderBuilder::new()
-            .wallet(&self.signer)
-            .connect_http(url);
-
         let transfer_call_data = ITIP20::transferCall {
             to: address,
             amount: self.funding_amount,
@@ -99,7 +104,7 @@ where
             .to(self.tip20_address)
             .input(TransactionInput::from(transfer_call_data));
 
-        let filled_tx = provider
+        let filled_tx = self.provider
             .fill(request)
             .await
             .map_err(|e| FaucetError::FillError(e))?;

@@ -53,10 +53,10 @@ fn main() {
                         let txpool = ctx.pool().clone();
                         let ext = TempoFaucetExt::new(
                             txpool,
-                            args.faucet_args.wallet(),
-                            args.faucet_args.token_address,
-                        args.faucet_args.amount,
-                        );  
+                            args.faucet_args.address(),
+                            args.faucet_args.amount(),
+                            args.faucet_args.provider(),
+                        );
 
                         ctx.modules.merge_configured(ext.into_rpc())?;
                     }

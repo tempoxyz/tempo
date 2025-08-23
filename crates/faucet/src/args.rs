@@ -1,47 +1,65 @@
 use alloy::{
     network::EthereumWallet,
-    primitives::{Address, U256},
-    signers::local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English},
+    primitives::{Address, B256, U256},
+    signers::local::{PrivateKeySigner},
 };
+use alloy::network::Ethereum;
 use clap::Args;
-use std::str::FromStr;
+use alloy::providers::ProviderBuilder;
+use alloy::providers::fillers::{FillProvider, WalletFiller, JoinFill, GasFiller, BlobGasFiller, NonceFiller, ChainIdFiller};
+use alloy::providers::{RootProvider, Identity};
+
+type HttpWalletFillProvider = FillProvider<
+    JoinFill<
+        JoinFill<Identity, JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>>,
+        WalletFiller<EthereumWallet>
+    >,
+    RootProvider<Ethereum>,
+    Ethereum
+>;
 
 /// Faucet-specific CLI arguments
 #[derive(Debug, Clone, Default, Args, PartialEq, Eq)]
 #[command(next_help_heading = "Faucet")]
 pub struct FaucetArgs {
     /// Whether the faucet is enabled
-    #[arg(long = "faucet.enabled")]
+    #[arg(long = "faucet.enabled", default_value_t = false)]
     pub enabled: bool,
 
     /// Faucet funding mnemonic
-    #[arg(
-        long = "faucet.mnemonic",
-        default_value = "test test test test test test test test test test test junk"
-    )]
-    pub mnemonic: String,
-
-    /// Faucet funding mnemonic's wallet index
-    #[arg(long = "faucet.wallet-index", default_value_t = 10000)]
-    pub wallet_index: u32,
+    #[arg(long = "faucet.private-key", requires = "enabled", required_if_eq("enabled", "true"))]
+    pub private_key: Option<B256>,
 
     /// Amount for each faucet funding transaction
-    #[arg(long = "faucet.amount", default_value_t = 100000000u64.try_into().expect(""))]
-    pub amount: U256,
+    #[arg(long = "faucet.amount", requires = "enabled", required_if_eq("enabled", "true"))]
+    pub amount: Option<U256>,
 
     /// Target token address for the faucet to be funding with
-    #[arg(long = "faucet.address", default_value_t = Address::from_str("0x20c0000000000000000000000000000000000000").expect(""))]
-    pub token_address: Address,
+    #[arg(long = "faucet.address", requires = "enabled", required_if_eq("enabled", "true"))]
+    pub token_address: Option<Address>,
+
+    #[arg(long = "faucet.node-address", default_value = "http://localhost:8545", requires = "enabled")]
+    pub node_address: String,
 }
 
 impl FaucetArgs {
     pub fn wallet(&self) -> EthereumWallet {
-        let signer: PrivateKeySigner = MnemonicBuilder::<English>::default()
-            .phrase(&self.mnemonic)
-            .index(self.wallet_index)
-            .unwrap()
-            .build()
-            .unwrap();
+        let signer: PrivateKeySigner =
+            PrivateKeySigner::from_bytes(
+                &self.private_key.expect("No faucet private key provided")
+            ).expect("Failed to decode private key");
         EthereumWallet::new(signer)
+    }
+
+    pub fn address(&self) -> Address {
+        self.token_address.expect("No TIP20 token address provided")
+    }
+
+    pub fn amount(&self) -> U256 {
+        self.amount.expect("No TIP20 token amount provided")
+    }
+
+    pub fn provider(&self) -> HttpWalletFillProvider {
+        ProviderBuilder::new().wallet(self.wallet()).connect_http(self.node_address.parse().expect("Failed to parse node address"))
     }
 }
