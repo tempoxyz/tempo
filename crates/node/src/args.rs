@@ -1,4 +1,5 @@
 use reth_malachite::cli::MalachiteArgs;
+use tempo_faucet::args::FaucetArgs;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
 pub struct TempoArgs {
@@ -8,4 +9,7 @@ pub struct TempoArgs {
 
     #[command(flatten)]
     pub malachite_args: MalachiteArgs,
+
+    #[command(flatten)]
+    pub faucet_args: FaucetArgs,
 }

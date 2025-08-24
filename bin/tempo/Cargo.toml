@@ -12,6 +12,7 @@ default-run = "tempo"
 [dependencies]
 tempo-node.workspace = true
 tempo-chainspec.workspace = true
+tempo-faucet.workspace = true
 reth-malachite.workspace = true
 reth.workspace = true
 reth-cli-util.workspace = true

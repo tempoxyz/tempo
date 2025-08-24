@@ -1,0 +1,18 @@
+[package]
+name = "tempo-faucet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Faucet RPC module for dispensing TIP20 tokens"
+
+[dependencies]
+reth.workspace = true
+tempo-precompiles.workspace = true
+tempo-transaction-pool.workspace = true
+alloy = {workspace = true, features = ["signers", "signer-local", "signer-mnemonic-all-languages"]}
+async-trait.workspace = true
+jsonrpsee.workspace = true
+serde.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+url = "2.5.4"

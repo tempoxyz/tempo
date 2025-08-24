@@ -782,7 +782,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-serde 1.0.12",
  "alloy-sol-types",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "serde",
  "serde_json",
  "thiserror 2.0.15",
@@ -12021,6 +12021,7 @@ dependencies = [
  "reth-node-builder",
  "reth-provider",
  "tempo-chainspec",
+ "tempo-faucet",
  "tempo-node",
  "tokio",
  "tracing",
@@ -12087,6 +12088,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-faucet"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "async-trait",
+ "clap",
+ "jsonrpsee",
+ "reth",
+ "serde",
+ "tempo-precompiles",
+ "tempo-transaction-pool",
+ "thiserror 2.0.15",
+ "url",
+]
+
+[[package]]
 name = "tempo-node"
 version = "0.1.0"
 dependencies = [
@@ -12118,6 +12135,7 @@ dependencies = [
  "reth-trie-db",
  "serde_json",
  "tempo-evm",
+ "tempo-faucet",
  "tempo-precompiles",
  "tempo-transaction-pool",
  "tokio",
