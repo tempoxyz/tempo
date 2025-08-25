@@ -40,7 +40,7 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    if let Err(err) = Cli::parse().run(async move |builder, args| {
+    if let Err(err) = Cli::<TempoArgs>::parse().run(async move |builder, args| {
         info!(target: "reth::cli", "Launching node");
         let NodeHandle {
             node,

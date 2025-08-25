@@ -1,5 +1,6 @@
 use crate::spec::{TempoChainSpec, TempoChainSpecParser};
 use clap::Parser;
+use core::fmt;
 use reth_cli_commands::{launcher::FnLauncher, node::NoArgs};
 use reth_cli_runner::CliRunner;
 use reth_ethereum::{
@@ -24,10 +25,10 @@ use tracing::info;
 /// This is the entrypoint to the executable.
 #[derive(Debug, Parser)]
 #[command(author, about = "Tempo node cli", long_about = None)]
-pub struct Cli {
+pub struct Cli<Ext: clap::Args + fmt::Debug = NoArgs> {
     /// The command to run
     #[command(subcommand)]
-    pub command: Commands<TempoChainSpecParser, TempoArgs>,
+    pub command: Commands<TempoChainSpecParser, Ext>,
 
     #[command(flatten)]
     logs: LogArgs,
