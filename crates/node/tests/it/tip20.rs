@@ -616,4 +616,138 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     Ok(())
 }
 
-// TODO: whitelist
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_whitelist() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
+
+    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+        "../assets/test-genesis.json"
+    ))?);
+
+    let node_config = NodeConfig::test()
+        .with_chain(Arc::new(chain_spec))
+        .with_unused_ports()
+        .dev()
+        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
+        .testing_node(executor.clone())
+        .node(TempoNode::default())
+        .launch_with_debug_capabilities()
+        .await?;
+
+    let http_url: Url = node
+        .rpc_server_handle()
+        .http_url()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let admin = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(provider.clone(), admin).await?;
+    let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
+
+    // Create a whitelist policy
+    let policy_receipt = registry
+        .createPolicy(admin, ITIP403Registry::PolicyType::WHITELIST)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let policy_id = policy_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
+        .next()
+        .expect("PolicyCreated event should be emitted")
+        .policyId;
+
+    // Update the token policy to the whitelist
+    token
+        .changeTransferPolicyId(policy_id)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let accounts: Vec<_> = (1..100)
+        .map(|i| {
+            MnemonicBuilder::<English>::default()
+                .phrase("test test test test test test test test test test test junk")
+                .index(i)
+                .unwrap()
+                .build()
+                .unwrap()
+        })
+        .collect();
+
+    let (whitelisted_accounts, non_whitelisted_accounts) = accounts.split_at(accounts.len() / 2);
+
+    // Add accounts to whitelist
+    try_join_all(whitelisted_accounts.iter().map(|account| async {
+        registry
+            .modifyPolicyWhitelist(policy_id, account.address(), true)
+            .send()
+            .await
+            .expect("Could not send tx")
+            .get_receipt()
+            .await
+    }))
+    .await?;
+
+    // Mint tokens to all accounts
+    try_join_all(accounts.iter().map(|account| async {
+        token
+            .mint(account.address(), U256::from(1000))
+            .send()
+            .await
+            .expect("Could not send tx")
+            .get_receipt()
+            .await
+    }))
+    .await?;
+
+    // Ensure non-whitelisted accounts cant send tokens
+    for account in non_whitelisted_accounts {
+        let provider = ProviderBuilder::new()
+            .wallet(account.clone())
+            .connect_http(http_url.clone());
+        let token = ITIP20::new(*token.address(), provider);
+
+        let transfer_result = token.transfer(Address::random(), U256::ONE).call().await;
+        assert!(transfer_result.is_err());
+    }
+
+    // Ensure whitelisted accounts can send tokens
+    try_join_all(whitelisted_accounts.iter().map(|account| async {
+        let provider = ProviderBuilder::new()
+            .wallet(account.clone())
+            .connect_http(http_url.clone());
+        let token = ITIP20::new(*token.address(), provider);
+
+        token
+            .transfer(Address::random(), U256::ONE)
+            .send()
+            .await
+            .expect("Could not send tx")
+            .get_receipt()
+            .await
+    }))
+    .await?;
+
+    Ok(())
+}
