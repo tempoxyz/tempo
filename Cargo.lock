@@ -12113,6 +12113,7 @@ dependencies = [
  "alloy-rpc-types-eth 1.0.24",
  "clap",
  "eyre",
+ "futures",
  "rand 0.9.2",
  "reth-chainspec",
  "reth-engine-local",

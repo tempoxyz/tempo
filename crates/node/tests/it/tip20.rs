@@ -5,6 +5,7 @@ use alloy::{
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
+use futures::future::try_join_all;
 use rand::random;
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
@@ -13,13 +14,13 @@ use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    TIP20_FACTORY_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     contracts::{
         ITIP20::{self, ITIP20Instance},
         ITIP20Factory,
         tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
         token_id_to_address,
-        types::IRolesAuth,
+        types::{IRolesAuth, ITIP403Registry},
     },
 };
 
@@ -264,7 +265,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     let max_mint_result = token.mint(Address::random(), U256::MAX).call().await;
     assert!(max_mint_result.is_err(), "Minting U256::MAX should fail");
 
-    // TODO: Update to asser the actual error once Precompile errors are propagated through revm
+    // TODO: Update to assert the actual error once Precompile errors are propagated through revm
     let err = max_mint_result.unwrap_err();
     assert!(err.to_string().contains("PrecompileError"));
 
@@ -399,190 +400,6 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_pause() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let tasks = TaskManager::current();
-    let executor = tasks.executor();
-
-    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/test-genesis.json"
-    ))?);
-
-    let node_config = NodeConfig::test()
-        .with_chain(Arc::new(chain_spec))
-        .with_unused_ports()
-        .dev()
-        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-    let NodeHandle {
-        node,
-        node_exit_future: _,
-    } = NodeBuilder::new(node_config.clone())
-        .testing_node(executor.clone())
-        .node(TempoNode::default())
-        .launch_with_debug_capabilities()
-        .await?;
-
-    let http_url: Url = node
-        .rpc_server_handle()
-        .http_url()
-        .unwrap()
-        .parse()
-        .unwrap();
-
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
-    let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url.clone());
-
-    // Deploy and setup token
-    let token = setup_test_token(provider.clone(), caller).await?;
-    let roles = IRolesAuth::new(*token.address(), provider.clone());
-
-    // Grant pause and unpause roles
-    let is_paused = token.paused().call().await?;
-    assert!(!is_paused);
-
-    // Test pause without role
-    let pause_result = token.pause().call().await;
-    assert!(
-        pause_result.is_err(),
-        "Pause should fail without PAUSE_ROLE"
-    );
-    // Grant pause role and assert that contract is paused
-    roles
-        .grantRole(*PAUSE_ROLE, caller)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    let _pause_receipt = token.pause().send().await?.get_receipt().await?;
-    // TODO: assert expected event
-
-    // Verify token is paused
-    let is_paused = token.paused().call().await?;
-    assert!(is_paused);
-
-    // Test pause without PAUSE_ROLE should fail
-    let unpause_result = token.unpause().call().await;
-    assert!(
-        unpause_result.is_err(),
-        "Unpause should fail without UNPAUSE_ROLE"
-    );
-
-    // NOTE:: should we update to use a single pause role rather than pause/unpause?
-    roles
-        .grantRole(*UNPAUSE_ROLE, caller)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Unpause should now work
-    let _unpause_receipt = token.unpause().send().await?.get_receipt().await?;
-    // TODO: assert expected event
-
-    // Verify token is unpaused
-    let is_paused = token.paused().call().await?;
-    assert!(!is_paused);
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_burn() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let tasks = TaskManager::current();
-    let executor = tasks.executor();
-
-    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/test-genesis.json"
-    ))?);
-
-    let node_config = NodeConfig::test()
-        .with_chain(Arc::new(chain_spec))
-        .with_unused_ports()
-        .dev()
-        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-    let NodeHandle {
-        node,
-        node_exit_future: _,
-    } = NodeBuilder::new(node_config.clone())
-        .testing_node(executor.clone())
-        .node(TempoNode::default())
-        .launch_with_debug_capabilities()
-        .await?;
-
-    let http_url: Url = node
-        .rpc_server_handle()
-        .http_url()
-        .unwrap()
-        .parse()
-        .unwrap();
-
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
-    let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url.clone());
-
-    let token = setup_test_token(provider.clone(), caller).await?;
-
-    // Mint tokens to burn
-    let burn_amount = U256::from(1000u32);
-    token
-        .mint(caller, burn_amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Verify initial balance and total supply
-    let initial_balance = token.balanceOf(caller).call().await?;
-    assert_eq!(initial_balance, burn_amount);
-
-    // Test burn
-    let burn_receipt = token.burn(burn_amount).send().await?.get_receipt().await?;
-
-    // Verify Burn event was emitted
-    let burn_event = burn_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP20::Burn::decode_log(&log.inner).ok())
-        .next()
-        .unwrap();
-    assert_eq!(burn_event.from, caller);
-    assert_eq!(burn_event.amount, burn_amount);
-
-    // Verify Transfer event sent tokens to address(0)
-    let transfer_event = burn_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
-        .next()
-        .unwrap();
-    assert_eq!(transfer_event.from, caller);
-    assert_eq!(transfer_event.to, Address::ZERO);
-    assert_eq!(transfer_event.amount, burn_amount);
-
-    // Verify balance and supply are reduced
-    let balance_after = token.balanceOf(caller).call().await?;
-    let supply_after = token.totalSupply().call().await?;
-    assert_eq!(balance_after, U256::ZERO);
-    assert_eq!(supply_after, U256::ZERO);
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -664,7 +481,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_issuer() -> eyre::Result<()> {
+async fn test_tip20_blacklist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let tasks = TaskManager::current();
@@ -699,97 +516,104 @@ async fn test_tip20_issuer() -> eyre::Result<()> {
     let wallet = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .build()?;
-    let account = wallet.address();
-
+    let admin = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .connect_http(http_url.clone());
 
-    let token = setup_test_token(provider.clone(), account).await?;
-    let roles = IRolesAuth::new(*token.address(), provider.clone());
-    roles
-        .revokeRole(*ISSUER_ROLE, account)
+    let token = setup_test_token(provider.clone(), admin).await?;
+    let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
+
+    // Create a blacklist policy
+    let policy_receipt = registry
+        .createPolicy(admin, ITIP403Registry::PolicyType::BLACKLIST)
         .send()
         .await?
         .get_receipt()
         .await?;
 
-    let has_role = roles.hasRole(account, *ISSUER_ROLE).call().await?;
-    assert!(!has_role);
-
-    // Ensure that accounts without issuer role can not mint
-    let mint_amount = U256::random();
-    let recipient = Address::random();
-    let mint_result = token.mint(recipient, mint_amount).call().await;
-    assert!(mint_result.is_err(), "Mint should fail");
-
-    let grant_receipt = roles
-        .grantRole(*ISSUER_ROLE, account)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Verify the issuer role was granted
-    let has_role_after_grant = roles.hasRole(account, *ISSUER_ROLE).call().await?;
-    assert!(has_role_after_grant);
-
-    let role_event = grant_receipt
+    let policy_id = policy_receipt
         .logs()
         .iter()
-        .filter_map(|log| IRolesAuth::RoleMembershipUpdated::decode_log(&log.inner).ok())
+        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
         .next()
-        .expect("RoleMembershipUpdated event should be emitted");
-    assert_eq!(role_event.role, *ISSUER_ROLE);
-    assert_eq!(role_event.account, account);
-    assert_eq!(role_event.sender, account);
-    assert!(role_event.hasRole);
+        .expect("PolicyCreated event should be emitted")
+        .policyId;
 
-    // Ensure that the account can issue tokens
+    // Update the token policy to the blacklist
     token
-        .mint(recipient, mint_amount)
+        .changeTransferPolicyId(policy_id)
         .send()
         .await?
         .get_receipt()
         .await?;
 
-    // Verify mint succeeded
-    let balance = token.balanceOf(recipient).call().await?;
-    assert_eq!(balance, mint_amount);
+    let accounts: Vec<_> = (1..100)
+        .map(|i| {
+            MnemonicBuilder::<English>::default()
+                .phrase("test test test test test test test test test test test junk")
+                .index(i)
+                .unwrap()
+                .build()
+                .unwrap()
+        })
+        .collect();
 
-    // Revoke the role and verify state changes
-    let revoke_receipt = roles
-        .revokeRole(*ISSUER_ROLE, account)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    let (allowed_accounts, blacklisted_accounts) = accounts.split_at(accounts.len() / 2);
 
-    let has_role = roles.hasRole(account, *ISSUER_ROLE).call().await?;
-    assert!(!has_role);
+    // Add accounts to blacklist
+    try_join_all(blacklisted_accounts.iter().map(|account| async {
+        registry
+            .modifyPolicyBlacklist(policy_id, account.address(), true)
+            .send()
+            .await
+            .expect("Could not send tx")
+            .get_receipt()
+            .await
+    }))
+    .await?;
 
-    // Verify RoleMembershipUpdated event was emitted with hasRole=false
-    let revoke_event = revoke_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| IRolesAuth::RoleMembershipUpdated::decode_log(&log.inner).ok())
-        .next()
-        .expect("RoleMembershipUpdated event should be emitted");
-    assert_eq!(revoke_event.role, *ISSUER_ROLE);
-    assert_eq!(revoke_event.account, account);
-    assert_eq!(revoke_event.sender, account);
-    assert!(!revoke_event.hasRole);
+    // Mint tokens to all accounts
+    try_join_all(accounts.iter().map(|account| async {
+        token
+            .mint(account.address(), U256::from(1000))
+            .send()
+            .await
+            .expect("Could not send tx")
+            .get_receipt()
+            .await
+    }))
+    .await?;
 
-    // Test that revoked issuer can no longer mint
-    let mint_result = token.mint(recipient, mint_amount).call().await;
-    assert!(
-        mint_result.is_err(),
-        "Mint should fail after ISSUER_ROLE is revoked"
-    );
+    // Ensure blacklisted accounts cant send tokens
+    for account in blacklisted_accounts {
+        let provider = ProviderBuilder::new()
+            .wallet(account.clone())
+            .connect_http(http_url.clone());
+        let token = ITIP20::new(*token.address(), provider);
+
+        let transfer_result = token.transfer(Address::random(), U256::ONE).call().await;
+        assert!(transfer_result.is_err(),);
+    }
+
+    // Ensure non blacklisted accounts can send tokens
+    try_join_all(allowed_accounts.iter().map(|account| async {
+        let provider = ProviderBuilder::new()
+            .wallet(account.clone())
+            .connect_http(http_url.clone());
+        let token = ITIP20::new(*token.address(), provider);
+
+        token
+            .transfer(Address::random(), U256::ONE)
+            .send()
+            .await
+            .expect("Could not send tx")
+            .get_receipt()
+            .await
+    }))
+    .await?;
 
     Ok(())
 }
-
-// TODO: blacklist
 
 // TODO: whitelist

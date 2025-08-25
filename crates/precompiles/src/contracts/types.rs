@@ -104,6 +104,7 @@ sol! {
     }
 
     #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
     interface ITIP403Registry {
         // Enums
         enum PolicyType {
