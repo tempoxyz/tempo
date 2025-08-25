@@ -31,6 +31,10 @@ pub struct PolicyData {
 
 impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
+        storage
+            .set_code(TIP403_REGISTRY_ADDRESS, vec![0xef])
+            .expect("TODO: handle error");
+
         Self { storage }
     }
 
