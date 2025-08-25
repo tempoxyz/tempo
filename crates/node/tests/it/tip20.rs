@@ -16,7 +16,7 @@ use tempo_precompiles::{
     contracts::{
         ITIP20::{self, ITIP20Instance},
         ITIP20Factory,
-        tip20::ISSUER_ROLE,
+        tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
         token_id_to_address,
         types::IRolesAuth,
     },
@@ -398,7 +398,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_pause_unpause() -> eyre::Result<()> {
+async fn test_tip20_pause() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let tasks = TaskManager::current();
@@ -442,73 +442,55 @@ async fn test_tip20_pause_unpause() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
     let roles = IRolesAuth::new(*token.address(), provider.clone());
 
-    // Test unpause without UNPAUSE_ROLE
+    // Grant pause and unpause roles
+    let is_paused = token.paused().call().await?;
+    assert!(!is_paused);
+    dbg!("getting here");
+
+    // Test pause without role
+    let pause_result = token.pause().call().await;
+    assert!(
+        pause_result.is_err(),
+        "Pause should fail without PAUSE_ROLE"
+    );
+    // Grant pause role and assert that contract is paused
+    roles
+        .grantRole(*PAUSE_ROLE, caller)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let _pause_receipt = token.pause().send().await?.get_receipt().await?;
+    // TODO: assert expected event
+
+    dbg!("getting here");
+    // Verify token is paused
+    let is_paused = token.paused().call().await?;
+    assert!(is_paused);
+
+    // Test pause without PAUSE_ROLE should fail
     let unpause_result = token.unpause().call().await;
     assert!(
         unpause_result.is_err(),
         "Unpause should fail without UNPAUSE_ROLE"
     );
 
-    // Grant pause and unpause roles
-    // FIXME:
-    use tempo_precompiles::contracts::tip20::{PAUSE_ROLE, UNPAUSE_ROLE};
+    // NOTE:: should we update to use a single pause role rather than pause/unpause?
+    roles
+        .grantRole(*UNPAUSE_ROLE, caller)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
+    dbg!("getting here");
+    // Unpause should now work
+    let _unpause_receipt = token.unpause().send().await?.get_receipt().await?;
+    // TODO: assert expected event
+
+    // Verify token is unpaused
     let is_paused = token.paused().call().await?;
     assert!(!is_paused);
-
-    // Test pause without PAUSE_ROLE should fail
-    let pause_result = token.pause().call().await;
-    assert!(
-        pause_result.is_err(),
-        "Pause should fail without PAUSE_ROLE"
-    );
-
-    // // Grant pause role and assert that contract is paused
-    // roles
-    //     .grantRole(*PAUSE_ROLE, caller)
-    //     .send()
-    //     .await?
-    //     .get_receipt()
-    //     .await?;
-    //
-    // // Send pause tx and verify event emission
-    // let pause_receipt = token.pause().send().await?.get_receipt().await?;
-    // let pause_event: Vec<_> = pause_receipt
-    //     .logs()
-    //     .iter()
-    //     .filter_map(|log| ITIP20::Paused::decode_log(&log.inner).ok())
-    //     .collect();
-    //
-    // // TODO: assert values
-    //
-    // // Verify token is paused
-    // let is_paused = token.paused().call().await?;
-    // assert!(is_paused);
-    //
-    // // NOTE:: should we update to use a single pause role rather than pause/unpause?
-    // roles
-    //     .grantRole(*UNPAUSE_ROLE, caller)
-    //     .send()
-    //     .await?
-    //     .get_receipt()
-    //     .await?;
-    // // Unpause should now work
-    // let unpause_receipt = token.unpause().send().await?.get_receipt().await?;
-    //
-    // // Verify Unpaused event was emitted
-    // let unpaused_events: Vec<_> = unpause_receipt
-    //     .logs()
-    //     .iter()
-    //     .filter_map(|log| ITIP20::Unpaused::decode_log(&log.inner).ok())
-    //     .collect();
-    // assert!(
-    //     !unpaused_events.is_empty(),
-    //     "Unpaused event should be emitted"
-    // );
-    //
-    // // Verify token is unpaused
-    // let is_paused = token.paused().call().await?;
-    // assert!(!is_paused);
 
     Ok(())
 }
