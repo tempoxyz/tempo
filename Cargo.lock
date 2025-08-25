@@ -12138,6 +12138,7 @@ dependencies = [
  "reth-transaction-pool",
  "reth-trie-db",
  "serde_json",
+ "tempo-chainspec",
  "tempo-evm",
  "tempo-faucet",
  "tempo-precompiles",

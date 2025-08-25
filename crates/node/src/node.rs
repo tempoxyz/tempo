@@ -42,6 +42,7 @@ use reth_transaction_pool::{
 };
 use reth_trie_db::MerklePatriciaTrie;
 use std::{default::Default, sync::Arc, time::SystemTime};
+use tempo_chainspec::spec::TempoChainSpec;
 use tempo_evm::evm::TempoEvmFactory;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
@@ -96,7 +97,7 @@ impl TempoNode {
 
 impl NodeTypes for TempoNode {
     type Primitives = EthPrimitives;
-    type ChainSpec = ChainSpec;
+    type ChainSpec = TempoChainSpec;
     type StateCommitment = MerklePatriciaTrie;
     type Storage = EthStorage;
     type Payload = EthEngineTypes;

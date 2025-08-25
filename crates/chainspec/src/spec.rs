@@ -3,7 +3,7 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use reth_chainspec::{
-    BaseFeeParams, Chain, ChainHardforks, ChainSpec, DEV, DepositContract, EthChainSpec,
+    BaseFeeParams, Chain, ChainHardforks, ChainSpec, DepositContract, EthChainSpec,
     EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks,
     Head,
 };
@@ -23,25 +23,28 @@ pub const SUPPORTED_CHAINS: &[&str] = &["adagio"];
 ///
 /// The value parser matches either a known chain, the path
 /// to a json file, or a json formatted string in-memory. The json needs to be a Genesis struct.
-pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>> {
+pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
         "adagio" => ADAGIO.clone(),
         "dev" => DEV.clone(),
-        _ => Arc::new(parse_genesis(s)?.into()),
+        _ => {
+            let spec: ChainSpec = parse_genesis(s)?.into();
+            TempoChainSpec { inner: spec }.into()
+        }
     })
 }
 
 impl ChainSpecParser for TempoChainSpecParser {
-    type ChainSpec = ChainSpec;
+    type ChainSpec = TempoChainSpec;
 
     const SUPPORTED_CHAINS: &'static [&'static str] = SUPPORTED_CHAINS;
 
-    fn parse(s: &str) -> eyre::Result<Arc<ChainSpec>> {
+    fn parse(s: &str) -> eyre::Result<Arc<Self::ChainSpec>> {
         chain_value_parser(s)
     }
 }
 
-pub static ADAGIO: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
+pub static ADAGIO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let _genesis: Genesis = serde_json::from_str(include_str!("./genesis/adagio.json"))
         .expect("`../res/genesis/adagio.json` must be present and deserializable");
     let hardforks: ChainHardforks = EthereumHardfork::mainnet().into();
@@ -52,22 +55,24 @@ pub static ADAGIO: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
         ..Default::default()
     };
     spec.genesis.config.dao_fork_support = true;
-    spec.into()
+    TempoChainSpec { inner: spec }.into()
 });
 
-/// OP stack chain spec type.
+pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
+    let spec = reth_chainspec::DEV.clone();
+
+    TempoChainSpec {
+        inner: (*spec).clone(),
+    }
+    .into()
+});
+
+/// Tempo chain spec type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TempoChainSpec {
     /// [`ChainSpec`].
     pub inner: ChainSpec,
 }
-
-// impl TempoChainSpec {
-//     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
-//     pub fn from_genesis(genesis: Genesis) -> Self {
-//         genesis.into()
-//     }
-// }
 
 impl Hardforks for TempoChainSpec {
     fn fork<H: Hardfork>(&self, fork: H) -> ForkCondition {
