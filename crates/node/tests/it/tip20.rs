@@ -1,10 +1,11 @@
 use alloy::{
-    primitives::{Address, U256},
+    primitives::{Address, FixedBytes, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
+use rand::random;
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
@@ -581,7 +582,86 @@ async fn test_tip20_burn() -> eyre::Result<()> {
     Ok(())
 }
 
-// TODO: test transfer with memo
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
+
+    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+        "../assets/test-genesis.json"
+    ))?);
+
+    let node_config = NodeConfig::test()
+        .with_chain(Arc::new(chain_spec))
+        .with_unused_ports()
+        .dev()
+        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
+        .testing_node(executor.clone())
+        .node(TempoNode::default())
+        .launch_with_debug_capabilities()
+        .await?;
+
+    let http_url: Url = node
+        .rpc_server_handle()
+        .http_url()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(provider.clone(), caller).await?;
+
+    let transfer_amount = U256::from(500u32);
+    let recipient = Address::random();
+    token
+        .mint(caller, transfer_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Test transfer with memo
+    let memo = FixedBytes::<32>::random();
+    let receipt = token
+        .transferWithMemo(recipient, transfer_amount, memo)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Verify TransferWithMemo event was emitted
+    let memo_event = receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::TransferWithMemo::decode_log(&log.inner).ok())
+        .next()
+        .unwrap();
+    assert_eq!(memo_event.from, caller);
+    assert_eq!(memo_event.to, recipient);
+    assert_eq!(memo_event.amount, transfer_amount);
+    assert_eq!(memo_event.memo, memo);
+
+    let sender_balance = token.balanceOf(caller).call().await?;
+    let recipient_balance = token.balanceOf(recipient).call().await?;
+    assert_eq!(sender_balance, U256::ZERO);
+    assert_eq!(recipient_balance, transfer_amount);
+
+    Ok(())
+}
 
 // TODO: test add issuer
 
