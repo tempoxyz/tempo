@@ -13,7 +13,7 @@
 //! Configuration can be provided via command-line arguments or configuration files.
 
 use clap::Parser;
-use reth::{chainspec::EthChainSpec, cli::Cli};
+use reth::chainspec::EthChainSpec;
 use reth_malachite::{
     app::{Config, Genesis, State, ValidatorInfo},
     cli::MalachiteArgs,
@@ -27,7 +27,7 @@ use reth_node_builder::{
 };
 use reth_provider::DatabaseProviderFactory;
 use std::{fs, future, sync::Arc};
-use tempo_chainspec::spec::TempoChainSpecParser;
+use tempo_chainspec::{cli::Cli, spec::TempoChainSpecParser};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 use tempo_node::{args::TempoArgs, node::TempoNode};
 use tracing::info;
@@ -40,61 +40,59 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    if let Err(err) =
-        Cli::<TempoChainSpecParser, TempoArgs>::parse().run(async move |builder, args| {
-            info!(target: "reth::cli", "Launching node");
-            let NodeHandle {
-                node,
-                node_exit_future,
-            } = builder
-                .node(TempoNode::new(args.clone()))
-                .extend_rpc_modules(move |ctx| {
-                    if args.faucet_args.enabled {
-                        let txpool = ctx.pool().clone();
-                        let ext = TempoFaucetExt::new(
-                            txpool,
-                            args.faucet_args.address(),
-                            args.faucet_args.amount(),
-                            args.faucet_args.provider(),
-                        );
+    if let Err(err) = Cli::parse().run(async move |builder, args| {
+        info!(target: "reth::cli", "Launching node");
+        let NodeHandle {
+            node,
+            node_exit_future,
+        } = builder
+            .node(TempoNode::new(args.clone()))
+            .extend_rpc_modules(move |ctx| {
+                if args.faucet_args.enabled {
+                    let txpool = ctx.pool().clone();
+                    let ext = TempoFaucetExt::new(
+                        txpool,
+                        args.faucet_args.address(),
+                        args.faucet_args.amount(),
+                        args.faucet_args.provider(),
+                    );
 
-                        ctx.modules.merge_configured(ext.into_rpc())?;
-                    }
-
-                    Ok(())
-                })
-                .apply(|mut ctx| {
-                    let db = ctx.db_mut();
-                    db.create_tables_for::<reth_malachite::store::tables::Tables>()
-                        .expect("Failed to create consensus tables");
-                    ctx
-                })
-                .launch_with_debug_capabilities()
-                .await?;
-
-            let malachite_handle = if node.config.dev.dev || args.no_consensus {
-                tokio::spawn(async move { future::pending::<()>().await })
-            } else {
-                spawn_malachite(node.clone(), args.malachite_args)
-                    .await?
-                    .app
-            };
-
-            tokio::select! {
-                _ = node_exit_future => {
-                    tracing::info!("Reth node exited");
+                    ctx.modules.merge_configured(ext.into_rpc())?;
                 }
-                _ = malachite_handle => {
-                    tracing::info!("Consensus engine exited");
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("Received shutdown signal");
-                }
+
+                Ok(())
+            })
+            .apply(|mut ctx| {
+                let db = ctx.db_mut();
+                db.create_tables_for::<reth_malachite::store::tables::Tables>()
+                    .expect("Failed to create consensus tables");
+                ctx
+            })
+            .launch_with_debug_capabilities()
+            .await?;
+
+        let malachite_handle = if node.config.dev.dev || args.no_consensus {
+            tokio::spawn(async move { future::pending::<()>().await })
+        } else {
+            spawn_malachite(node.clone(), args.malachite_args)
+                .await?
+                .app
+        };
+
+        tokio::select! {
+            _ = node_exit_future => {
+                tracing::info!("Reth node exited");
             }
+            _ = malachite_handle => {
+                tracing::info!("Consensus engine exited");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Received shutdown signal");
+            }
+        }
 
-            Ok(())
-        })
-    {
+        Ok(())
+    }) {
         eprintln!("Error: {err:?}");
         std::process::exit(1);
     }
