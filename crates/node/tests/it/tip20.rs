@@ -445,7 +445,6 @@ async fn test_tip20_pause() -> eyre::Result<()> {
     // Grant pause and unpause roles
     let is_paused = token.paused().call().await?;
     assert!(!is_paused);
-    dbg!("getting here");
 
     // Test pause without role
     let pause_result = token.pause().call().await;
@@ -463,7 +462,6 @@ async fn test_tip20_pause() -> eyre::Result<()> {
     let _pause_receipt = token.pause().send().await?.get_receipt().await?;
     // TODO: assert expected event
 
-    dbg!("getting here");
     // Verify token is paused
     let is_paused = token.paused().call().await?;
     assert!(is_paused);
@@ -483,7 +481,6 @@ async fn test_tip20_pause() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    dbg!("getting here");
     // Unpause should now work
     let _unpause_receipt = token.unpause().send().await?.get_receipt().await?;
     // TODO: assert expected event
@@ -502,3 +499,7 @@ async fn test_tip20_pause() -> eyre::Result<()> {
 // TODO: test add issuer
 
 // TODO: test remove issuer
+
+// TODO: blacklist
+
+// TODO: whitelist

@@ -3,6 +3,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
+    transports::http::reqwest::Url,
 };
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
@@ -17,8 +18,6 @@ use tempo_precompiles::{
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_token() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
     let tasks = TaskManager::current();
     let executor = tasks.executor();
 
@@ -41,7 +40,7 @@ async fn test_create_token() -> eyre::Result<()> {
         .launch_with_debug_capabilities()
         .await?;
 
-    let http_url = node
+    let http_url: Url = node
         .rpc_server_handle()
         .http_url()
         .unwrap()
@@ -52,7 +51,9 @@ async fn test_create_token() -> eyre::Result<()> {
         .phrase("test test test test test test test test test test test junk")
         .build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
 
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
 
