@@ -152,6 +152,22 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
 
     for (pending_tx, sender_balance, recipient, receipient_balance) in tx_data.into_iter() {
         let receipt = pending_tx.get_receipt().await?;
+
+        // Verify Transfer event was emitted
+        let transfer_events: Vec<_> = receipt
+            .logs()
+            .iter()
+            .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+            .collect();
+        assert!(
+            !transfer_events.is_empty(),
+            "Transfer event should be emitted"
+        );
+        let transfer_event = &transfer_events[0];
+        assert_eq!(transfer_event.from, receipt.from);
+        assert_eq!(transfer_event.to, recipient);
+        assert_eq!(transfer_event.amount, sender_balance);
+
         // Check balances after transfer
         let sender_balance_after = token.balanceOf(receipt.from).call().await?;
         let recipient_balance_after = token.balanceOf(recipient).call().await?;
@@ -222,8 +238,19 @@ async fn test_tip20_mint() -> eyre::Result<()> {
         pending_txs.push(token.mint(*account, *balance).send().await?);
     }
 
-    for tx in pending_txs.drain(..) {
-        tx.get_receipt().await?;
+    for (tx, (account, expected_balance)) in pending_txs.drain(..).zip(account_data.iter()) {
+        let receipt = tx.get_receipt().await?;
+
+        // Verify Mint event was emitted
+        let mint_events: Vec<_> = receipt
+            .logs()
+            .iter()
+            .filter_map(|log| ITIP20::Mint::decode_log(&log.inner).ok())
+            .collect();
+
+        let mint_event = &mint_events[0];
+        assert_eq!(mint_event.to, *account);
+        assert_eq!(mint_event.amount, *expected_balance);
     }
 
     // Verify balances after minting
@@ -369,3 +396,13 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 
     Ok(())
 }
+
+// TODO: test pause/unpause
+
+// TODO: test burn
+
+// TODO: test transfer with memo
+
+// TODO: test add issuer
+
+// TODO: test remove issuer
