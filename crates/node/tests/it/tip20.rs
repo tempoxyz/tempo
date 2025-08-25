@@ -1,24 +1,23 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
-    providers::{Provider, ProviderBuilder},
+    providers::ProviderBuilder,
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
 use futures::future::try_join_all;
-use rand::random;
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
-use std::{ops::Add, sync::Arc};
+use std::sync::Arc;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     contracts::{
         ITIP20::{self, ITIP20Instance},
         ITIP20Factory,
-        tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+        tip20::ISSUER_ROLE,
         token_id_to_address,
         types::{IRolesAuth, ITIP403Registry},
     },
