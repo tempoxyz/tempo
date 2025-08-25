@@ -584,7 +584,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     }))
     .await?;
 
-    // Ensure blacklisted accounts cant send tokens
+    // Ensure blacklisted accounts can't send tokens
     for account in blacklisted_accounts {
         let provider = ProviderBuilder::new()
             .wallet(account.clone())
@@ -604,7 +604,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
                 .connect_http(http_url.clone());
             let token = ITIP20::new(*token.address(), provider);
 
-            // Ensure that blacklisted accounts can not recieve tokens
+            // Ensure that blacklisted accounts can not receive tokens
             let transfer_result = token
                 .transfer(blacklisted.address(), U256::ONE)
                 .call()
@@ -706,14 +706,14 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         .collect();
 
     let (whitelisted_senders, non_whitelisted_accounts) = accounts.split_at(accounts.len() / 2);
-    let whitelisted_recievers: Vec<Address> = (0..whitelisted_senders.len())
+    let whitelisted_receivers: Vec<Address> = (0..whitelisted_senders.len())
         .map(|_| Address::random())
         .collect();
 
     let whitelisted_accounts: Vec<Address> = whitelisted_senders
         .iter()
         .map(|acct| acct.address())
-        .chain(whitelisted_recievers.iter().copied())
+        .chain(whitelisted_receivers.iter().copied())
         .collect();
 
     // Add senders and recipients to whitelist
@@ -751,7 +751,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         })
         .collect();
 
-    // Ensure non-whitelisted accounts cant send tokens
+    // Ensure non-whitelisted accounts can't send tokens
     for account in non_whitelisted_accounts {
         let provider = ProviderBuilder::new()
             .wallet(account.clone())
@@ -762,7 +762,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         assert!(transfer_result.is_err());
     }
 
-    // Ensure whitelisted accounts cant send to non-whitelisted recievers
+    // Ensure whitelisted accounts can't send to non-whitelisted receivers
     for sender in whitelisted_senders.iter() {
         let transfer_result = sender.transfer(Address::random(), U256::ONE).call().await;
         // TODO: assert the actual error once PrecompileError is propagated through revm
@@ -773,7 +773,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     try_join_all(
         whitelisted_senders
             .iter()
-            .zip(whitelisted_recievers.iter())
+            .zip(whitelisted_receivers.iter())
             .map(|(token, recipient)| async {
                 token
                     .transfer(*recipient, U256::ONE)
