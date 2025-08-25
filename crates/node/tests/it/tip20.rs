@@ -11,7 +11,7 @@ use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
-use std::sync::Arc;
+use std::{ops::Add, sync::Arc};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -695,12 +695,21 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         })
         .collect();
 
-    let (whitelisted_accounts, non_whitelisted_accounts) = accounts.split_at(accounts.len() / 2);
+    let (whitelisted_senders, non_whitelisted_accounts) = accounts.split_at(accounts.len() / 2);
+    let whitelisted_recievers: Vec<Address> = (0..whitelisted_senders.len())
+        .map(|_| Address::random())
+        .collect();
 
-    // Add accounts to whitelist
+    let whitelisted_accounts: Vec<Address> = whitelisted_senders
+        .iter()
+        .map(|acct| acct.address())
+        .chain(whitelisted_recievers.iter().copied())
+        .collect();
+
+    // Add senders and recipients to whitelist
     try_join_all(whitelisted_accounts.iter().map(|account| async {
         registry
-            .modifyPolicyWhitelist(policy_id, account.address(), true)
+            .modifyPolicyWhitelist(policy_id, *account, true)
             .send()
             .await
             .expect("Could not send tx")
@@ -732,21 +741,28 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         assert!(transfer_result.is_err());
     }
 
-    // Ensure whitelisted accounts can send tokens
-    try_join_all(whitelisted_accounts.iter().map(|account| async {
-        let provider = ProviderBuilder::new()
-            .wallet(account.clone())
-            .connect_http(http_url.clone());
-        let token = ITIP20::new(*token.address(), provider);
+    // TODO: Ensure whitelisted senders can not send to non-whitelisted accounts
 
-        token
-            .transfer(Address::random(), U256::ONE)
-            .send()
-            .await
-            .expect("Could not send tx")
-            .get_receipt()
-            .await
-    }))
+    // Ensure whitelisted accounts can send tokens to whitelisted recipients
+    try_join_all(
+        whitelisted_senders
+            .iter()
+            .zip(whitelisted_recievers.iter())
+            .map(|(account, recipient)| async {
+                let provider = ProviderBuilder::new()
+                    .wallet(account.clone())
+                    .connect_http(http_url.clone());
+                let token = ITIP20::new(*token.address(), provider);
+
+                token
+                    .transfer(*recipient, U256::ONE)
+                    .send()
+                    .await
+                    .expect("Could not send tx")
+                    .get_receipt()
+                    .await
+            }),
+    )
     .await?;
 
     Ok(())
