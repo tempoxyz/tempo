@@ -11,6 +11,7 @@ use reth_ethereum_primitives::TransactionSigned;
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_transaction_pool::{TransactionOrigin, pool::AddedTransactionState};
 use std::sync::Arc;
+use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::{args::TempoArgs, node::TempoNode};
 use tempo_precompiles::contracts::{storage::slots, tip_fee_manager};
 
@@ -20,11 +21,11 @@ async fn submit_pending_tx() -> eyre::Result<()> {
     let tasks = TaskManager::current();
     let executor = tasks.executor();
 
-    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+    let spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
-    let node_config = NodeConfig::test()
-        .with_chain(Arc::new(chain_spec))
+    let chain_spec = TempoChainSpec { inner: spec };
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
 

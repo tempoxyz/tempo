@@ -9,7 +9,7 @@ description = "Faucet RPC module for dispensing TIP20 tokens"
 reth.workspace = true
 tempo-precompiles.workspace = true
 tempo-transaction-pool.workspace = true
-alloy = {workspace = true, features = ["signers", "signer-local", "signer-mnemonic-all-languages"]}
+alloy = {workspace = true, features = ["signers", "signer-local", "signer-mnemonic-all-languages", "rpc-types"]}
 async-trait.workspace = true
 jsonrpsee.workspace = true
 serde.workspace = true

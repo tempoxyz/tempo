@@ -10,6 +10,7 @@ use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
+use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -23,14 +24,12 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let tasks = TaskManager::current();
     let executor = tasks.executor();
 
-    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+    let spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
-
-    let node_config = NodeConfig::test()
-        .with_chain(Arc::new(chain_spec))
+    let chain_spec = TempoChainSpec { inner: spec };
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
-        .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
 
     let NodeHandle {
