@@ -99,16 +99,12 @@ impl Hardforks for TempoChainSpec {
 impl EthChainSpec for TempoChainSpec {
     type Header = Header;
 
-    fn base_fee_params_at_block(&self, block_number: u64) -> BaseFeeParams {
-        self.inner.base_fee_params_at_block(block_number)
+    fn base_fee_params_at_timestamp(&self, timestamp: u64) -> BaseFeeParams {
+        self.inner.base_fee_params_at_timestamp(timestamp)
     }
 
     fn blob_params_at_timestamp(&self, timestamp: u64) -> Option<BlobParams> {
         self.inner.blob_params_at_timestamp(timestamp)
-    }
-
-    fn base_fee_params_at_timestamp(&self, timestamp: u64) -> BaseFeeParams {
-        self.inner.base_fee_params_at_timestamp(timestamp)
     }
 
     fn bootnodes(&self) -> Option<Vec<NodeRecord>> {

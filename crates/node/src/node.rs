@@ -1,7 +1,7 @@
 use crate::args::TempoArgs;
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
-use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
+use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum_engine_primitives::{
     EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes,
@@ -40,7 +40,6 @@ use reth_transaction_pool::{
     EthPoolTransaction, EthTransactionPool, PoolTransaction, TransactionValidationTaskExecutor,
     blobstore::DiskFileBlobStore,
 };
-use reth_trie_db::MerklePatriciaTrie;
 use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_evm::evm::TempoEvmFactory;
@@ -98,7 +97,6 @@ impl TempoNode {
 impl NodeTypes for TempoNode {
     type Primitives = EthPrimitives;
     type ChainSpec = TempoChainSpec;
-    type StateCommitment = MerklePatriciaTrie;
     type Storage = EthStorage;
     type Payload = EthEngineTypes;
 }
