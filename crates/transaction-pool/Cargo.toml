@@ -17,3 +17,4 @@ reth-storage-api.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
+tempo-precompiles.workspace = true

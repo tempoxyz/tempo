@@ -12207,6 +12207,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-storage-api",
  "reth-transaction-pool",
+ "tempo-precompiles",
 ]
 
 [[package]]
