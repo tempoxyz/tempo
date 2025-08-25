@@ -1,6 +1,6 @@
 use alloy::{
     primitives::{Address, U256},
-    providers::{Provider, ProviderBuilder, WalletProvider},
+    providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
     transports::http::reqwest::Url,
@@ -276,21 +276,16 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
         .parse()
         .unwrap();
 
-    let wallet = MnemonicBuilder::<English>::default()
+    let owner = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .build()?;
-    let caller = wallet.address();
+    let caller = owner.address();
     let provider = ProviderBuilder::new()
-        .wallet(wallet)
+        .wallet(owner)
         .connect_http(http_url.clone());
 
     // Deploy and setup token
     let token = setup_test_token(provider.clone(), caller).await?;
-    let owner = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?
-        .address();
-
     let account_data: Vec<_> = (1..20)
         .map(|i| {
             let signer = MnemonicBuilder::<English>::default()
@@ -299,42 +294,50 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
                 .unwrap()
                 .build()
                 .unwrap();
-            let account = signer.address();
             let balance = U256::from(rand::random::<u32>());
-            (account, signer, balance)
+            (signer, balance)
         })
         .collect();
 
-    // Update allowance for each account
+    // Mint the total balance for the caller
+    let total_balance: U256 = account_data.iter().map(|(_, balance)| *balance).sum();
+    token
+        .mint(caller, total_balance)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Update allowance for each sender account
     let mut pending_txs = vec![];
-    for (account, _, balance) in account_data.iter() {
-        pending_txs.push(token.approve(*account, *balance).send().await?);
+    for (signer, balance) in account_data.iter() {
+        let allowance = token.allowance(caller, signer.address()).call().await?;
+        assert_eq!(allowance, U256::ZERO);
+        pending_txs.push(token.approve(signer.address(), *balance).send().await?);
     }
 
     for tx in pending_txs.drain(..) {
         tx.get_receipt().await?;
     }
 
-    // Verify initial balances
-    for (account, _, expected_balance) in account_data.iter() {
-        let balance = token.allowance(owner, *account).call().await?;
-        assert_eq!(balance, *expected_balance);
+    // Verify allowances are set
+    for (account, expected_balance) in account_data.iter() {
+        let allowance = token.allowance(caller, account.address()).call().await?;
+        assert_eq!(allowance, *expected_balance);
     }
 
-    let mut pending_tx_data = vec![];
-
     // Test transferFrom for each account
-    for (_, wallet, allowance) in account_data.iter() {
+    let mut pending_tx_data = vec![];
+    for (wallet, allowance) in account_data.iter() {
         let recipient = Address::random();
-
         let spender_provider = ProviderBuilder::new()
             .wallet(wallet.clone())
             .connect_http(http_url.clone());
         let spender_token = ITIP20::new(*token.address(), spender_provider);
 
-        // Try to transfer more than allowance (should fail)
+        // Expect transferFrom to fail if it exceeds balance
         let excess_result = spender_token
-            .transferFrom(owner, recipient, *allowance + U256::ONE)
+            .transferFrom(caller, recipient, *allowance + U256::ONE)
             .call()
             .await;
 
@@ -345,7 +348,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
         );
 
         let pending_tx = spender_token
-            .transferFrom(owner, recipient, *allowance)
+            .transferFrom(caller, recipient, *allowance)
             .send()
             .await?;
 
@@ -355,8 +358,8 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     for (tx, recipient, allowance) in pending_tx_data {
         let receipt = tx.get_receipt().await?;
 
-        // Verify allowance is consumed
-        let remaining_allowance = token.allowance(owner, receipt.from).call().await?;
+        // Verify allowance is decremented
+        let remaining_allowance = token.allowance(caller, receipt.from).call().await?;
         assert_eq!(remaining_allowance, U256::ZERO);
 
         // Verify recipient received tokens
