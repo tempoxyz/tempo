@@ -1,6 +1,15 @@
+use alloy_consensus::Header;
+use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
-use reth_chainspec::{Chain, ChainHardforks, ChainSpec, DEV, EthereumHardfork};
+use alloy_primitives::{Address, B256, U256};
+use reth_chainspec::{
+    BaseFeeParams, Chain, ChainHardforks, ChainSpec, DEV, DepositContract, EthChainSpec,
+    EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks,
+    Head,
+};
 use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
+use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
+use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 
 /// Tempo chain specification parser.
@@ -45,3 +54,107 @@ pub static ADAGIO: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
     spec.genesis.config.dao_fork_support = true;
     spec.into()
 });
+
+/// OP stack chain spec type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TempoChainSpec {
+    /// [`ChainSpec`].
+    pub inner: ChainSpec,
+}
+
+// impl TempoChainSpec {
+//     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
+//     pub fn from_genesis(genesis: Genesis) -> Self {
+//         genesis.into()
+//     }
+// }
+
+impl Hardforks for TempoChainSpec {
+    fn fork<H: Hardfork>(&self, fork: H) -> ForkCondition {
+        self.inner.fork(fork)
+    }
+
+    fn forks_iter(&self) -> impl Iterator<Item = (&dyn Hardfork, ForkCondition)> {
+        self.inner.forks_iter()
+    }
+
+    fn fork_id(&self, head: &Head) -> ForkId {
+        self.inner.fork_id(head)
+    }
+
+    fn latest_fork_id(&self) -> ForkId {
+        self.inner.latest_fork_id()
+    }
+
+    fn fork_filter(&self, head: Head) -> ForkFilter {
+        self.inner.fork_filter(head)
+    }
+}
+
+impl EthChainSpec for TempoChainSpec {
+    type Header = Header;
+
+    fn base_fee_params_at_block(&self, block_number: u64) -> BaseFeeParams {
+        self.inner.base_fee_params_at_block(block_number)
+    }
+
+    fn blob_params_at_timestamp(&self, timestamp: u64) -> Option<BlobParams> {
+        self.inner.blob_params_at_timestamp(timestamp)
+    }
+
+    fn base_fee_params_at_timestamp(&self, timestamp: u64) -> BaseFeeParams {
+        self.inner.base_fee_params_at_timestamp(timestamp)
+    }
+
+    fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
+        self.inner.bootnodes()
+    }
+
+    fn chain(&self) -> Chain {
+        self.inner.chain()
+    }
+
+    fn deposit_contract(&self) -> Option<&DepositContract> {
+        self.inner.deposit_contract()
+    }
+
+    fn display_hardforks(&self) -> Box<dyn std::fmt::Display> {
+        EthChainSpec::display_hardforks(&self.inner)
+    }
+
+    fn prune_delete_limit(&self) -> usize {
+        self.inner.prune_delete_limit()
+    }
+
+    fn genesis(&self) -> &Genesis {
+        self.inner.genesis()
+    }
+
+    fn genesis_hash(&self) -> B256 {
+        self.inner.genesis_hash()
+    }
+
+    fn genesis_header(&self) -> &Self::Header {
+        self.inner.genesis_header()
+    }
+
+    fn final_paris_total_difficulty(&self) -> Option<U256> {
+        self.inner.get_final_paris_total_difficulty()
+    }
+
+    fn next_block_base_fee(&self, _parent: &Header, _target_timestamp: u64) -> Option<u64> {
+        Some(0)
+    }
+}
+
+impl EthereumHardforks for TempoChainSpec {
+    fn ethereum_fork_activation(&self, fork: EthereumHardfork) -> ForkCondition {
+        self.inner.ethereum_fork_activation(fork)
+    }
+}
+
+impl EthExecutorSpec for TempoChainSpec {
+    fn deposit_contract_address(&self) -> Option<Address> {
+        self.inner.deposit_contract_address()
+    }
+}

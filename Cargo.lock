@@ -12068,10 +12068,15 @@ dependencies = [
 name = "tempo-chainspec"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus 1.0.24",
+ "alloy-eips 1.0.24",
  "alloy-genesis",
+ "alloy-primitives",
  "eyre",
  "reth-chainspec",
  "reth-cli",
+ "reth-ethereum",
+ "reth-network-peers",
  "serde_json",
 ]
 

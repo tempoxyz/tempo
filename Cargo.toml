@@ -82,6 +82,7 @@ tempo-transaction-pool = { path = "crates/transaction-pool" }
 reth = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-chainspec" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-cli" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-network-peers" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-cli-commands" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-cli-util" }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "61662098aa7acb110a78d8fc8dfc0f6e6ed7de3b", package = "reth-consensus" }
@@ -170,3 +171,4 @@ prost-build = "0.13"
 protox = "0.7"
 criterion = "0.7.0"
 jsonrpsee = { version = "0.25.1", features = ["server", "client", "macros"] }
+
