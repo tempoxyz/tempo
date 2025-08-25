@@ -593,24 +593,35 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         let token = ITIP20::new(*token.address(), provider);
 
         let transfer_result = token.transfer(Address::random(), U256::ONE).call().await;
+        // TODO: assert the actual error once PrecompileError is propagated through revm
         assert!(transfer_result.is_err(),);
     }
 
     // Ensure non blacklisted accounts can send tokens
-    try_join_all(allowed_accounts.iter().map(|account| async {
-        let provider = ProviderBuilder::new()
-            .wallet(account.clone())
-            .connect_http(http_url.clone());
-        let token = ITIP20::new(*token.address(), provider);
+    try_join_all(allowed_accounts.iter().zip(blacklisted_accounts).map(
+        |(allowed, blacklisted)| async {
+            let provider = ProviderBuilder::new()
+                .wallet(allowed.clone())
+                .connect_http(http_url.clone());
+            let token = ITIP20::new(*token.address(), provider);
 
-        token
-            .transfer(Address::random(), U256::ONE)
-            .send()
-            .await
-            .expect("Could not send tx")
-            .get_receipt()
-            .await
-    }))
+            // Ensure that blacklisted accounts can not recieve tokens
+            let transfer_result = token
+                .transfer(blacklisted.address(), U256::ONE)
+                .call()
+                .await;
+            // TODO: assert the actual error once PrecompileError is propagated through revm
+            assert!(transfer_result.is_err(),);
+
+            token
+                .transfer(Address::random(), U256::ONE)
+                .send()
+                .await
+                .expect("Could not send tx")
+                .get_receipt()
+                .await
+        },
+    ))
     .await?;
 
     Ok(())
@@ -730,6 +741,17 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     }))
     .await?;
 
+    // Create providers and tokens for whitelisted senders
+    let whitelisted_senders: Vec<_> = whitelisted_senders
+        .iter()
+        .map(|account| {
+            let provider = ProviderBuilder::new()
+                .wallet(account.clone())
+                .connect_http(http_url.clone());
+            ITIP20::new(*token.address(), provider)
+        })
+        .collect();
+
     // Ensure non-whitelisted accounts cant send tokens
     for account in non_whitelisted_accounts {
         let provider = ProviderBuilder::new()
@@ -741,19 +763,19 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         assert!(transfer_result.is_err());
     }
 
-    // TODO: Ensure whitelisted senders can not send to non-whitelisted accounts
+    // Ensure whitelisted accounts cant send to non-whitelisted recievers
+    for sender in whitelisted_senders.iter() {
+        let transfer_result = sender.transfer(Address::random(), U256::ONE).call().await;
+        // TODO: assert the actual error once PrecompileError is propagated through revm
+        assert!(transfer_result.is_err());
+    }
 
     // Ensure whitelisted accounts can send tokens to whitelisted recipients
     try_join_all(
         whitelisted_senders
             .iter()
             .zip(whitelisted_recievers.iter())
-            .map(|(account, recipient)| async {
-                let provider = ProviderBuilder::new()
-                    .wallet(account.clone())
-                    .connect_http(http_url.clone());
-                let token = ITIP20::new(*token.address(), provider);
-
+            .map(|(token, recipient)| async {
                 token
                     .transfer(*recipient, U256::ONE)
                     .send()
