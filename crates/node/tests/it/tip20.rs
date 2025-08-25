@@ -242,13 +242,13 @@ async fn test_tip20_mint() -> eyre::Result<()> {
         let receipt = tx.get_receipt().await?;
 
         // Verify Mint event was emitted
-        let mint_events: Vec<_> = receipt
+        let mint_event = receipt
             .logs()
             .iter()
             .filter_map(|log| ITIP20::Mint::decode_log(&log.inner).ok())
-            .collect();
+            .next()
+            .expect("Mint event should be emitted");
 
-        let mint_event = &mint_events[0];
         assert_eq!(mint_event.to, *account);
         assert_eq!(mint_event.amount, *expected_balance);
     }
@@ -397,7 +397,121 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     Ok(())
 }
 
-// TODO: test pause/unpause
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_pause_unpause() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
+
+    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+        "../assets/test-genesis.json"
+    ))?);
+
+    let node_config = NodeConfig::test()
+        .with_chain(Arc::new(chain_spec))
+        .with_unused_ports()
+        .dev()
+        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
+        .testing_node(executor.clone())
+        .node(TempoNode::default())
+        .launch_with_debug_capabilities()
+        .await?;
+
+    let http_url: Url = node
+        .rpc_server_handle()
+        .http_url()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    // Deploy and setup token
+    let token = setup_test_token(provider.clone(), caller).await?;
+    let roles = IRolesAuth::new(*token.address(), provider.clone());
+
+    // Test unpause without UNPAUSE_ROLE
+    let unpause_result = token.unpause().call().await;
+    assert!(
+        unpause_result.is_err(),
+        "Unpause should fail without UNPAUSE_ROLE"
+    );
+
+    // Grant pause and unpause roles
+    // FIXME:
+    use tempo_precompiles::contracts::tip20::{PAUSE_ROLE, UNPAUSE_ROLE};
+
+    let is_paused = token.paused().call().await?;
+    assert!(!is_paused);
+
+    // Test pause without PAUSE_ROLE should fail
+    let pause_result = token.pause().call().await;
+    assert!(
+        pause_result.is_err(),
+        "Pause should fail without PAUSE_ROLE"
+    );
+
+    // // Grant pause role and assert that contract is paused
+    // roles
+    //     .grantRole(*PAUSE_ROLE, caller)
+    //     .send()
+    //     .await?
+    //     .get_receipt()
+    //     .await?;
+    //
+    // // Send pause tx and verify event emission
+    // let pause_receipt = token.pause().send().await?.get_receipt().await?;
+    // let pause_event: Vec<_> = pause_receipt
+    //     .logs()
+    //     .iter()
+    //     .filter_map(|log| ITIP20::Paused::decode_log(&log.inner).ok())
+    //     .collect();
+    //
+    // // TODO: assert values
+    //
+    // // Verify token is paused
+    // let is_paused = token.paused().call().await?;
+    // assert!(is_paused);
+    //
+    // // NOTE:: should we update to use a single pause role rather than pause/unpause?
+    // roles
+    //     .grantRole(*UNPAUSE_ROLE, caller)
+    //     .send()
+    //     .await?
+    //     .get_receipt()
+    //     .await?;
+    // // Unpause should now work
+    // let unpause_receipt = token.unpause().send().await?.get_receipt().await?;
+    //
+    // // Verify Unpaused event was emitted
+    // let unpaused_events: Vec<_> = unpause_receipt
+    //     .logs()
+    //     .iter()
+    //     .filter_map(|log| ITIP20::Unpaused::decode_log(&log.inner).ok())
+    //     .collect();
+    // assert!(
+    //     !unpaused_events.is_empty(),
+    //     "Unpaused event should be emitted"
+    // );
+    //
+    // // Verify token is unpaused
+    // let is_paused = token.paused().call().await?;
+    // assert!(!is_paused);
+
+    Ok(())
+}
 
 // TODO: test burn
 
