@@ -2,6 +2,7 @@ use crate::args::TempoArgs;
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
+use reth_cli_commands::common::{CliNodeComponents, CliNodeTypes};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum_engine_primitives::{
     EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes,
@@ -42,7 +43,7 @@ use reth_transaction_pool::{
 };
 use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_evm::evm::TempoEvmFactory;
+use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
 /// Type configuration for a regular Ethereum node.

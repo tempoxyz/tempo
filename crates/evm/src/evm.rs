@@ -9,7 +9,8 @@ use reth::revm::{
     primitives::hardfork::SpecId,
 };
 use reth_evm::{
-    Database, Evm, EvmEnv, EvmFactory, eth::EthEvmContext, precompiles::PrecompilesMap,
+    ConfigureEvm, Database, Evm, EvmEnv, EvmFactory, eth::EthEvmContext,
+    precompiles::PrecompilesMap,
 };
 use reth_revm::{
     MainContext,

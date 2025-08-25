@@ -20,6 +20,7 @@ reth-cli.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-node-builder.workspace = true
 reth-provider.workspace = true
+reth-node-ethereum.workspace = true
 alloy-rpc-types-engine.workspace = true
 clap.workspace = true
 eyre.workspace = true
