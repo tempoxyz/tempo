@@ -663,9 +663,132 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     Ok(())
 }
 
-// TODO: test add issuer
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_issuer() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
 
-// TODO: test remove issuer
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
+
+    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+        "../assets/test-genesis.json"
+    ))?);
+
+    let node_config = NodeConfig::test()
+        .with_chain(Arc::new(chain_spec))
+        .with_unused_ports()
+        .dev()
+        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
+        .testing_node(executor.clone())
+        .node(TempoNode::default())
+        .launch_with_debug_capabilities()
+        .await?;
+
+    let http_url: Url = node
+        .rpc_server_handle()
+        .http_url()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let account = wallet.address();
+
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(provider.clone(), account).await?;
+    let roles = IRolesAuth::new(*token.address(), provider.clone());
+    roles
+        .revokeRole(*ISSUER_ROLE, account)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let has_role = roles.hasRole(account, *ISSUER_ROLE).call().await?;
+    assert!(!has_role);
+
+    // Ensure that accounts without issuer role can not mint
+    let mint_amount = U256::random();
+    let recipient = Address::random();
+    let mint_result = token.mint(recipient, mint_amount).call().await;
+    assert!(mint_result.is_err(), "Mint should fail");
+
+    let grant_receipt = roles
+        .grantRole(*ISSUER_ROLE, account)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Verify the issuer role was granted
+    let has_role_after_grant = roles.hasRole(account, *ISSUER_ROLE).call().await?;
+    assert!(has_role_after_grant);
+
+    let role_event = grant_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| IRolesAuth::RoleMembershipUpdated::decode_log(&log.inner).ok())
+        .next()
+        .expect("RoleMembershipUpdated event should be emitted");
+    assert_eq!(role_event.role, *ISSUER_ROLE);
+    assert_eq!(role_event.account, account);
+    assert_eq!(role_event.sender, account);
+    assert!(role_event.hasRole);
+
+    // Ensure that the account can issue tokens
+    token
+        .mint(recipient, mint_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Verify mint succeeded
+    let balance = token.balanceOf(recipient).call().await?;
+    assert_eq!(balance, mint_amount);
+
+    // Revoke the role and verify state changes
+    let revoke_receipt = roles
+        .revokeRole(*ISSUER_ROLE, account)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let has_role = roles.hasRole(account, *ISSUER_ROLE).call().await?;
+    assert!(!has_role);
+
+    // Verify RoleMembershipUpdated event was emitted with hasRole=false
+    let revoke_event = revoke_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| IRolesAuth::RoleMembershipUpdated::decode_log(&log.inner).ok())
+        .next()
+        .expect("RoleMembershipUpdated event should be emitted");
+    assert_eq!(revoke_event.role, *ISSUER_ROLE);
+    assert_eq!(revoke_event.account, account);
+    assert_eq!(revoke_event.sender, account);
+    assert!(!revoke_event.hasRole);
+
+    // Test that revoked issuer can no longer mint
+    let mint_result = token.mint(recipient, mint_amount).call().await;
+    assert!(
+        mint_result.is_err(),
+        "Mint should fail after ISSUER_ROLE is revoked"
+    );
+
+    Ok(())
+}
 
 // TODO: blacklist
 
