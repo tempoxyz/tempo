@@ -492,7 +492,94 @@ async fn test_tip20_pause() -> eyre::Result<()> {
     Ok(())
 }
 
-// TODO: test burn
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_burn() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
+
+    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+        "../assets/test-genesis.json"
+    ))?);
+
+    let node_config = NodeConfig::test()
+        .with_chain(Arc::new(chain_spec))
+        .with_unused_ports()
+        .dev()
+        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
+        .testing_node(executor.clone())
+        .node(TempoNode::default())
+        .launch_with_debug_capabilities()
+        .await?;
+
+    let http_url: Url = node
+        .rpc_server_handle()
+        .http_url()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(provider.clone(), caller).await?;
+
+    // Mint tokens to burn
+    let burn_amount = U256::from(1000u32);
+    token
+        .mint(caller, burn_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Verify initial balance and total supply
+    let initial_balance = token.balanceOf(caller).call().await?;
+    assert_eq!(initial_balance, burn_amount);
+
+    // Test burn
+    let burn_receipt = token.burn(burn_amount).send().await?.get_receipt().await?;
+
+    // Verify Burn event was emitted
+    let burn_event = burn_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::Burn::decode_log(&log.inner).ok())
+        .next()
+        .unwrap();
+    assert_eq!(burn_event.from, caller);
+    assert_eq!(burn_event.amount, burn_amount);
+
+    // Verify Transfer event sent tokens to address(0)
+    let transfer_event = burn_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .next()
+        .unwrap();
+    assert_eq!(transfer_event.from, caller);
+    assert_eq!(transfer_event.to, Address::ZERO);
+    assert_eq!(transfer_event.amount, burn_amount);
+
+    // Verify balance and supply are reduced
+    let balance_after = token.balanceOf(caller).call().await?;
+    let supply_after = token.totalSupply().call().await?;
+    assert_eq!(balance_after, U256::ZERO);
+    assert_eq!(supply_after, U256::ZERO);
+
+    Ok(())
+}
 
 // TODO: test transfer with memo
 
