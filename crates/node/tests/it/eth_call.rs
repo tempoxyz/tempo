@@ -178,14 +178,14 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let slot = mapping_slot(caller, tip20::slots::BALANCES);
     let sender_balance = token_storage_diff
         .get(&B256::from(slot))
-        .expect("Could not get receipient balance delta");
+        .expect("Could not get recipient balance delta");
     assert!(sender_balance.is_changed());
 
     // Assert recipient token balance is changed
     let slot = mapping_slot(recipient, tip20::slots::BALANCES);
     let recipient_balance = token_storage_diff
         .get(&B256::from(slot))
-        .expect("Could not get receipient balance delta");
+        .expect("Could not get recipient balance delta");
     assert!(recipient_balance.is_changed());
 
     let fee_token_diff = state_diff
@@ -200,7 +200,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let slot = mapping_slot(caller, tip20::slots::BALANCES);
     let sender_balance = fee_token_storage_diff
         .get(&B256::from(slot))
-        .expect("Could not get receipient balance delta");
+        .expect("Could not get recipient balance delta");
     assert!(sender_balance.is_changed());
 
     Ok(())
