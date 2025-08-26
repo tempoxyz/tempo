@@ -153,6 +153,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let recipient = Address::random();
     let calldata = token.transfer(recipient, mint_amount).calldata().clone();
     let tx = TransactionRequest::default()
+        .from(caller)
         .to(*token.address())
         .gas_price(0)
         .input(TransactionInput::new(calldata));
@@ -161,9 +162,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let success = transferCall::abi_decode_returns(&res)?;
     assert!(success);
 
-    let trace_res = provider.trace_call(&tx).await?;
-
-    dbg!(&trace_res);
+    let trace_res = provider.trace_call(&tx).state_diff().await?;
 
     let success = transferCall::abi_decode_returns(&trace_res.output)?;
     assert!(success);
