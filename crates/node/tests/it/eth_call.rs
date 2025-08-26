@@ -1,9 +1,9 @@
 use alloy::{
     primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
-    rpc::types::TransactionRequest,
+    rpc::types::{Filter, TransactionRequest},
     signers::local::{MnemonicBuilder, coins_bip39::English},
-    sol_types::SolCall,
+    sol_types::{SolCall, SolEvent},
     transports::http::reqwest::Url,
 };
 use alloy_rpc_types_eth::TransactionInput;
@@ -15,7 +15,12 @@ use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager, ITIP20::transferCall, storage::slots::mapping_slot, tip20},
+    contracts::{
+        IFeeManager,
+        ITIP20::{self, transferCall},
+        storage::slots::mapping_slot,
+        tip20,
+    },
 };
 
 use crate::utils::setup_test_token;
@@ -197,6 +202,94 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
         .get(&B256::from(slot))
         .expect("Could not get receipient balance delta");
     assert!(sender_balance.is_changed());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_get_logs() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
+    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
+        "../assets/test-genesis.json"
+    ))?);
+
+    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+        .with_unused_ports()
+        .dev()
+        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+    node_config.txpool.minimal_protocol_basefee = 0;
+
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
+        .testing_node(executor.clone())
+        .node(TempoNode::default())
+        .launch_with_debug_capabilities()
+        .await?;
+
+    let http_url: Url = node
+        .rpc_server_handle()
+        .http_url()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    // Setup test token
+    let token = setup_test_token(provider.clone(), caller).await?;
+
+    // First, mint some tokens to generate logs
+    let mint_amount = U256::random();
+    let mint_receipt = token
+        .mint(caller, mint_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let recipient = Address::random();
+    let transfer_receipt = token
+        .transfer(recipient, mint_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let filter = Filter::new().address(*token.address()).from_block(0);
+    let logs = provider.get_logs(&filter).await?;
+    assert_eq!(logs.len(), 2);
+
+    // Decode and verify mint event
+    let mint_log = logs
+        .iter()
+        .find(|log| log.block_hash == mint_receipt.block_hash)
+        .expect("Mint transaction log not found");
+
+    let mint_event = ITIP20::Mint::decode_log(&mint_log.inner)?;
+    assert_eq!(mint_event.to, caller);
+    assert_eq!(mint_event.amount, mint_amount);
+
+    // Decode and verify transfer event
+    let transfer_log = logs
+        .iter()
+        .find(|log| log.block_hash == transfer_receipt.block_hash)
+        .expect("Transfer transaction log not found");
+
+    let transfer_event = ITIP20::Transfer::decode_log(&transfer_log.inner)?;
+    assert_eq!(transfer_event.from, caller);
+    assert_eq!(transfer_event.to, recipient);
+    assert_eq!(transfer_event.amount, mint_amount,);
 
     Ok(())
 }
