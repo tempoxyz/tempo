@@ -103,6 +103,14 @@ async fn test_base_fee() -> eyre::Result<()> {
             .await?
             .expect("Could not get block");
 
+        // Check gas usage vs gas limit
+        let gas_used = block.header.gas_used;
+        let gas_limit = block.header.gas_limit;
+        let utilization = (gas_used as f64 / gas_limit as f64) * 100.0;
+        println!(
+            "Block {block_num}: gas_used={gas_used}, gas_limit={gas_limit}, utilization={utilization}%",
+        );
+
         // Assert that base fee is 0
         let base_fee = block
             .header
