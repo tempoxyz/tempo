@@ -157,7 +157,13 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
         .gas_price(0)
         .input(TransactionInput::new(calldata));
 
+    let res = provider.call(tx.clone()).await?;
+    let success = transferCall::abi_decode_returns(&res)?;
+    assert!(success);
+
     let trace_res = provider.trace_call(&tx).await?;
+
+    dbg!(&trace_res);
 
     let success = transferCall::abi_decode_returns(&trace_res.output)?;
     assert!(success);
