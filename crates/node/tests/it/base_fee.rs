@@ -22,7 +22,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     let executor = tasks.executor();
 
     let spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/fixed-gas-limit.json"
+        "../assets/base-fee-test.json"
     ))?);
     let chain_spec = TempoChainSpec { inner: spec };
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
