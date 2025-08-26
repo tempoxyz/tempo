@@ -9,7 +9,12 @@ use reth_transaction_pool::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{tip_fee_manager::TipFeeManager, types::IFeeManager},
+    contracts::{
+        storage::slots::mapping_slot,
+        tip_fee_manager::{self, TipFeeManager},
+        tip20,
+        types::IFeeManager,
+    },
 };
 
 /// Validator for Tempo transactions.
@@ -28,14 +33,43 @@ where
         Self { inner }
     }
 
-    // async fn ensure_sufficient_balance(
-    //     &self,
-    //     transaction: &Tx,
-    // ) -> TransactionValidationOutcome<> {
-    //     let state_provider = self.inner.client().latest().expect("TODO: handle error ");
-    //
-    //     todo!()
-    // }
+    async fn ensure_sufficient_balance(
+        &self,
+        transaction: &Tx,
+    ) -> TransactionValidationOutcome<Tx> {
+        let state_provider = self.inner.client().latest().expect("TODO: handle error ");
+
+        let user_token_slot =
+            mapping_slot(transaction.sender(), tip_fee_manager::slots::USER_TOKENS);
+        // let fee_token = state_provider
+        //     .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot.into())
+        //     .expect("TODO:")
+        //     .unwrap_or_default()
+        //     .into_address();
+        let fee_token = Address::ZERO;
+
+        if fee_token.is_zero() {
+            // TODO: how to handle getting validator fee token?
+        }
+
+        let balance_slot = mapping_slot(transaction.sender(), tip20::slots::BALANCES);
+        let balance = state_provider
+            .storage(fee_token, balance_slot.into())
+            .expect("TODO:")
+            .unwrap_or_default();
+
+        // Get the tx cost and adjust for fee token decimals
+        let cost = transaction.cost().div_ceil(U256::from(1000));
+        if balance < cost {
+            // return TransactionValidationOutcome::Invalid(
+            //     transaction.clone(),
+            //     PoolTransactionError
+            //     ValidationError::InsufficientFunds.into(),
+            // );
+        }
+
+        todo!()
+    }
 }
 
 impl<Client, Tx> TransactionValidator for TempoTransactionValidator<Client, Tx>
