@@ -74,6 +74,14 @@ pub struct TempoChainSpec {
     pub inner: ChainSpec,
 }
 
+impl TempoChainSpec {
+    /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
+    pub fn from_genesis(genesis: Genesis) -> Self {
+        let inner: ChainSpec = genesis.into();
+        TempoChainSpec { inner }
+    }
+}
+
 impl Hardforks for TempoChainSpec {
     fn fork<H: Hardfork>(&self, fork: H) -> ForkCondition {
         self.inner.fork(fork)
