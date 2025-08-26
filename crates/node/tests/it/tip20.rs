@@ -16,11 +16,8 @@ use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP403_REGISTRY_ADDRESS,
     contracts::{
-        ITIP20::{self, ITIP20Instance},
-        ITIP20Factory,
-        tip20::ISSUER_ROLE,
-        token_id_to_address,
-        types::{IRolesAuth, ITIP403Registry},
+        ITIP20::{self},
+        types::ITIP403Registry,
     },
 };
 
