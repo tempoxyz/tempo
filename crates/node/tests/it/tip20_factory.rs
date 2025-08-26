@@ -72,6 +72,7 @@ async fn test_create_token() -> eyre::Result<()> {
             "USD".to_string(),
             caller,
         )
+        .gas_price(0)
         .send()
         .await?
         .get_receipt()
