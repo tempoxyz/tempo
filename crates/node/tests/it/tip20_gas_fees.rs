@@ -25,7 +25,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
 
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
-    ))?;
+    ))?);
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()

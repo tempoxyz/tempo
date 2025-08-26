@@ -28,10 +28,10 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
 
     let tasks = TaskManager::current();
     let executor = tasks.executor();
-
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
-    ))?)?;
+    ))?);
+
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
@@ -154,10 +154,10 @@ async fn test_tip20_mint() -> eyre::Result<()> {
 
     let tasks = TaskManager::current();
     let executor = tasks.executor();
-
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
-    ))?)?;
+    ))?);
+
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
@@ -244,10 +244,10 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 
     let tasks = TaskManager::current();
     let executor = tasks.executor();
-
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
-    ))?)?;
+    ))?);
+
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
@@ -378,10 +378,10 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
 
     let tasks = TaskManager::current();
     let executor = tasks.executor();
-
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
-    ))?)?;
+    ))?);
+
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
@@ -460,10 +460,10 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 
     let tasks = TaskManager::current();
     let executor = tasks.executor();
-
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
-    ))?)?;
+    ))?);
+
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
@@ -611,10 +611,10 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
 
     let tasks = TaskManager::current();
     let executor = tasks.executor();
-
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
-    ))?)?;
+    ))?);
+
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()

@@ -19,10 +19,10 @@ async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let tasks = TaskManager::current();
     let executor = tasks.executor();
-
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
-    )))?;
+    ))?);
+
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
