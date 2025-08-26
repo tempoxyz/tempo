@@ -3,6 +3,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
+    transports::http::reqwest::Url,
 };
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
@@ -17,8 +18,6 @@ use tempo_precompiles::{
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_token() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
     let tasks = TaskManager::current();
     let executor = tasks.executor();
 
@@ -41,7 +40,7 @@ async fn test_create_token() -> eyre::Result<()> {
         .launch_with_debug_capabilities()
         .await?;
 
-    let http_url = node
+    let http_url: Url = node
         .rpc_server_handle()
         .http_url()
         .unwrap()
@@ -52,7 +51,9 @@ async fn test_create_token() -> eyre::Result<()> {
         .phrase("test test test test test test test test test test test junk")
         .build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
 
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
 
@@ -77,16 +78,20 @@ async fn test_create_token() -> eyre::Result<()> {
 
     let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
     assert_eq!(event.tokenId, initial_token_id);
+    assert_eq!(event.address, TIP20_FACTORY_ADDRESS);
+    assert_eq!(event.name, "Test");
+    assert_eq!(event.symbol, "TEST");
+    assert_eq!(event.currency, "USD");
+    assert_eq!(event.admin, caller);
 
-    // next id is +1
     let token_id = factory.tokenIdCounter().call().await?;
     assert_eq!(token_id, initial_token_id + U256::ONE);
 
     let token_addr = token_id_to_address(event.tokenId.to());
-
     let token = ITIP20::new(token_addr, provider);
     assert_eq!(token.name().call().await?, name);
     assert_eq!(token.symbol().call().await?, symbol);
+    assert_eq!(token.decimals().call().await?, 6);
     assert_eq!(token.currency().call().await?, currency);
     assert_eq!(token.supplyCap().call().await?, U256::MAX);
     assert_eq!(token.transferPolicyId().call().await?, 1);

@@ -35,7 +35,7 @@ sol! {
         function allowance(address owner, address spender) external view returns (uint256);
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
 
-        // TIP20 Extensions
+        // TIP20 Extension
         function currency() external view returns (string);
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
@@ -104,6 +104,7 @@ sol! {
     }
 
     #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
     interface ITIP403Registry {
         // Enums
         enum PolicyType {
