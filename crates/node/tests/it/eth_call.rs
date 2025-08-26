@@ -249,7 +249,6 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
 
-    // First, mint some tokens to generate logs
     let mint_amount = U256::random();
     let mint_receipt = token
         .mint(caller, mint_amount)
@@ -259,37 +258,34 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
         .await?;
 
     let recipient = Address::random();
-    let transfer_receipt = token
+    token
         .transfer(recipient, mint_amount)
         .send()
         .await?
         .get_receipt()
         .await?;
 
-    let filter = Filter::new().address(*token.address()).from_block(0);
+    let filter = Filter::new()
+        .address(*token.address())
+        .from_block(mint_receipt.block_number.unwrap());
     let logs = provider.get_logs(&filter).await?;
-    assert_eq!(logs.len(), 2);
+    assert_eq!(logs.len(), 3);
 
-    // Decode and verify mint event
-    let mint_log = logs
-        .iter()
-        .find(|log| log.block_hash == mint_receipt.block_hash)
-        .expect("Mint transaction log not found");
+    // NOTE: this currently reflects the event emission from the reference contract. Double check
+    // this is the expected behavior
+    let transfer_event = ITIP20::Transfer::decode_log(&logs[0].inner)?;
+    assert_eq!(transfer_event.from, Address::ZERO);
+    assert_eq!(transfer_event.to, caller);
+    assert_eq!(transfer_event.amount, mint_amount);
 
-    let mint_event = ITIP20::Mint::decode_log(&mint_log.inner)?;
+    let mint_event = ITIP20::Mint::decode_log(&logs[1].inner)?;
     assert_eq!(mint_event.to, caller);
     assert_eq!(mint_event.amount, mint_amount);
 
-    // Decode and verify transfer event
-    let transfer_log = logs
-        .iter()
-        .find(|log| log.block_hash == transfer_receipt.block_hash)
-        .expect("Transfer transaction log not found");
-
-    let transfer_event = ITIP20::Transfer::decode_log(&transfer_log.inner)?;
+    let transfer_event = ITIP20::Transfer::decode_log(&logs[2].inner)?;
     assert_eq!(transfer_event.from, caller);
     assert_eq!(transfer_event.to, recipient);
-    assert_eq!(transfer_event.amount, mint_amount,);
+    assert_eq!(transfer_event.amount, mint_amount);
 
     Ok(())
 }
