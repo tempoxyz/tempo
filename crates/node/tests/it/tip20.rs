@@ -67,13 +67,12 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/test-genesis.json"
-    ))?);
     let chain_spec = TempoChainSpec { inner: spec };
-    let node_config = NodeConfig::new(Arc::new(chain_spec))
+    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+    // FIXME: this causes the tx to hang
+    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
