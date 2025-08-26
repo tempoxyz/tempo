@@ -1,17 +1,21 @@
 use alloy::{
     primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
-    rpc::types::{Filter, TransactionRequest},
+    rpc::types::{
+        Filter, TransactionRequest,
+        trace::parity::{ChangedType, Delta},
+    },
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::{SolCall, SolEvent},
     transports::http::reqwest::Url,
 };
 use alloy_rpc_types_eth::TransactionInput;
 use reth_ethereum::tasks::TaskManager;
+use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
-use std::sync::Arc;
+use std::{ptr::dangling, sync::Arc};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::{TEMPO_BASE_FEE, TempoNode};
 use tempo_precompiles::{
@@ -137,6 +141,9 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let fee_token = fee_manager.userTokens(caller).call().await?;
+    let val_token = fee_manager.validatorTokens(Address::ZERO).call().await?;
+    dbg!(fee_token);
+    dbg!(val_token);
 
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -181,21 +188,37 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     assert!(token_diff.balance.is_unchanged());
     assert!(token_diff.code.is_unchanged());
     assert!(token_diff.nonce.is_unchanged());
+    dbg!(token_diff.clone());
 
     let token_storage_diff = token_diff.storage.clone();
     // Assert sender token balance has changed
     let slot = mapping_slot(caller, tip20::slots::BALANCES);
+    dbg!(slot);
     let sender_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
+
     assert!(sender_balance.is_changed());
+
+    let Delta::Changed(ChangedType { from, to }) = sender_balance else {
+        panic!("Unexpected delta");
+    };
+    assert_eq!(from.into_u256(), mint_amount);
+    assert_eq!(to.into_u256(), U256::ZERO);
 
     // Assert recipient token balance is changed
     let slot = mapping_slot(recipient, tip20::slots::BALANCES);
+    dbg!(slot);
     let recipient_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
     assert!(recipient_balance.is_changed());
+
+    let Delta::Changed(ChangedType { from, to }) = recipient_balance else {
+        panic!("Unexpected delta");
+    };
+    assert_eq!(from.into_u256(), U256::ZERO);
+    assert_eq!(to.into_u256(), mint_amount);
 
     let fee_token_diff = state_diff
         .get(&fee_token)
