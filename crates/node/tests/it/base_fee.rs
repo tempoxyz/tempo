@@ -92,8 +92,7 @@ async fn test_base_fee() -> eyre::Result<()> {
         receipts.push(receipt);
     }
 
-    let final_block = receipts.last().unwrap().block_number.unwrap();
-    dbg!(final_block);
+ let final_block = receipts.iter().filter_map(|r|r.block_number).max().unwrap();
 
     // Get all blocks from 0 to this block number
     for block_num in 0..=final_block {
