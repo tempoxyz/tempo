@@ -24,11 +24,10 @@ async fn test_base_fee() -> eyre::Result<()> {
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/base-fee-test.json"
     ))?);
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,

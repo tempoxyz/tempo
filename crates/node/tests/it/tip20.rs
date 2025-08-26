@@ -32,11 +32,10 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
@@ -158,11 +157,10 @@ async fn test_tip20_mint() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
@@ -248,11 +246,10 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
@@ -382,11 +379,10 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
@@ -464,11 +460,10 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
@@ -615,11 +610,10 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
