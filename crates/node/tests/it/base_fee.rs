@@ -67,5 +67,7 @@ async fn test_base_fee() -> eyre::Result<()> {
 
     // TODO: ensure base fees stays 0
 
+    // TODO: check fee history and ensure fee stays at 0
+
     Ok(())
 }
