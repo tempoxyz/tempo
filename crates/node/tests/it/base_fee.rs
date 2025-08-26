@@ -22,7 +22,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     let executor = tasks.executor();
 
     let spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
-        "../assets/test-genesis.json"
+        "../assets/fixed-gas-limit.json"
     ))?);
     let chain_spec = TempoChainSpec { inner: spec };
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
@@ -95,6 +95,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     }
 
     let final_block = receipts.last().unwrap().block_number.unwrap();
+    dbg!(final_block);
 
     // Get all blocks from 0 to this block number
     for block_num in 0..=final_block {
@@ -123,6 +124,10 @@ async fn test_base_fee() -> eyre::Result<()> {
     let fee_history = provider
         .get_fee_history(10, BlockNumberOrTag::Latest, &[])
         .await?;
+
+    for gas_ratio in fee_history.gas_used_ratio {
+        dbg!(gas_ratio);
+    }
 
     for base_fee in fee_history.base_fee_per_gas {
         assert_eq!(base_fee, 0, "Base fee should remain 0");
