@@ -22,6 +22,7 @@ use tempo_precompiles::{
         TipFeeManager, tip20::ISSUER_ROLE,
     },
 };
+use tempo_predeployed_contracts::MULTICALL_ADDRESS;
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
@@ -117,7 +118,7 @@ impl GenesisArgs {
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
         let evm_state = evm.ctx_mut().journaled_state.evm_state();
-        let genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
+        let mut genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
             .iter()
             .tqdm()
             .map(|(address, account)| {
@@ -141,6 +142,14 @@ impl GenesisArgs {
                 (*address, genesis_account)
             })
             .collect();
+
+        genesis_alloc.insert(
+            MULTICALL_ADDRESS,
+            GenesisAccount {
+                code: Some(tempo_predeployed_contracts::Multicall::DEPLOYED_BYTECODE.clone()),
+                ..Default::default()
+            },
+        );
 
         let chain_config = ChainConfig {
             chain_id: self.chain_id,

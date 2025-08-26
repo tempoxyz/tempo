@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
+tempo-predeployed-contracts.workspace = true
 # Workspace dependencies
 alloy = { workspace = true, features = [
   "genesis",
