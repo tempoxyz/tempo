@@ -1,18 +1,18 @@
 use alloy::{
-    network::ReceiptResponse,
-    primitives::{BlockNumber, U256},
+    primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
 use alloy_eips::BlockNumberOrTag;
-use alloy_rpc_types_eth::TransactionRequest;
-use reth_chainspec::{BaseFeeParams, BaseFeeParamsKind, ChainSpec};
+use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
+
+use crate::utils::setup_test_token;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_base_fee() -> eyre::Result<()> {
@@ -65,11 +65,60 @@ async fn test_base_fee() -> eyre::Result<()> {
         .expect("Could not get basefee");
     assert_eq!(base_fee, 0);
 
-    // TODO: submit tx to exceed gas_target
+    // Deploy test token and mint initial supply
+    let token = setup_test_token(provider.clone(), caller).await?;
+    token
+        .mint(caller, U256::from(u64::MAX))
+        .gas_price(0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
-    // TODO: ensure base fees stays 0
+    // Gas limit is set to 200k in test-genesis.json, send 500 txs to exceed limit over multiple
+    // blocks
+    let mut pending_txs = vec![];
+    for _ in 0..500 {
+        let pending_tx = token
+            .transfer(Address::random(), U256::ONE)
+            .gas_price(0)
+            .send()
+            .await?;
+        pending_txs.push(pending_tx);
+    }
 
-    // TODO: check fee history and ensure fee stays at 0
+    // Wait for all receipts, get block number of last receipt
+    let mut receipts = vec![];
+    for pending_tx in pending_txs {
+        let receipt = pending_tx.get_receipt().await?;
+        receipts.push(receipt);
+    }
+
+    let final_block = receipts.last().unwrap().block_number.unwrap();
+
+    // Get all blocks from 0 to this block number
+    for block_num in 0..=final_block {
+        let block = provider
+            .get_block_by_number(BlockNumberOrTag::Number(block_num))
+            .await?
+            .expect("Could not get block");
+
+        // Assert that base fee is 0
+        let base_fee = block
+            .header
+            .base_fee_per_gas
+            .expect("Could not get basefee");
+        assert_eq!(base_fee, 0, "Base fee should be 0 for block {}", block_num);
+    }
+
+    // Check fee history and ensure fee stays at 0
+    let fee_history = provider
+        .get_fee_history(10, BlockNumberOrTag::Latest, &[])
+        .await?;
+
+    for base_fee in fee_history.base_fee_per_gas {
+        assert_eq!(base_fee, 0, "Base fee should remain 0");
+    }
 
     Ok(())
 }

@@ -99,9 +99,6 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .connect_http(http_url.clone());
-
-    // FIXME: setting the minimal procotol basefee to 0 causes this tx to hang
-    // Deploy and setup token
     let token = setup_test_token(provider.clone(), caller).await?;
 
     // Create accounts with random balances
@@ -151,7 +148,11 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         // Simulate the tx and send
         let success = token.transfer(recipient, sender_balance).call().await?;
         assert!(success);
-        let pending_tx = token.transfer(recipient, sender_balance).gas_price(0).send().await?;
+        let pending_tx = token
+            .transfer(recipient, sender_balance)
+            .gas_price(0)
+            .send()
+            .await?;
 
         tx_data.push((pending_tx, sender_balance, recipient, recipient_balance));
     }
@@ -347,7 +348,13 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     for (signer, balance) in account_data.iter() {
         let allowance = token.allowance(caller, signer.address()).call().await?;
         assert_eq!(allowance, U256::ZERO);
-        pending_txs.push(token.approve(signer.address(), *balance).gas_price(0).send().await?);
+        pending_txs.push(
+            token
+                .approve(signer.address(), *balance)
+                .gas_price(0)
+                .send()
+                .await?,
+        );
     }
 
     for tx in pending_txs.drain(..) {
