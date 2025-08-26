@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, U256},
+    primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
     rpc::types::TransactionRequest,
     signers::local::{MnemonicBuilder, coins_bip39::English},
@@ -13,7 +13,10 @@ use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
-use tempo_precompiles::contracts::ITIP20::transferCall;
+use tempo_precompiles::{
+    TIP_FEE_MANAGER_ADDRESS,
+    contracts::{IFeeManager, ITIP20::transferCall, storage::slots::mapping_slot, tip20},
+};
 
 use crate::utils::setup_test_token;
 
@@ -123,6 +126,9 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
         .wallet(wallet)
         .connect_http(http_url.clone());
 
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_token = fee_manager.userTokens(caller).call().await?;
+
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -148,9 +154,49 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     assert!(success);
 
     let state_diff = trace_res.state_diff.expect("Could not get state diff");
-    let token_account_diff = state_diff
+    let caller_diff = state_diff.get(&caller).expect("Could not get caller diff");
+    assert!(caller_diff.nonce.is_changed());
+    assert!(caller_diff.balance.is_unchanged());
+    assert!(caller_diff.code.is_unchanged());
+    assert!(caller_diff.storage.is_empty());
+
+    let token_diff = state_diff
         .get(token.address())
-        .expect("Could not get token from state diff");
+        .expect("Could not get token diff");
+
+    assert!(token_diff.balance.is_unchanged());
+    assert!(token_diff.code.is_unchanged());
+    assert!(token_diff.nonce.is_unchanged());
+
+    let token_storage_diff = token_diff.storage.clone();
+    // Assert sender token balance has changed
+    let slot = mapping_slot(caller, tip20::slots::BALANCES);
+    let sender_balance = token_storage_diff
+        .get(&B256::from(slot))
+        .expect("Could not get receipient balance delta");
+    assert!(sender_balance.is_changed());
+
+    // Assert recipient token balance is changed
+    let slot = mapping_slot(recipient, tip20::slots::BALANCES);
+    let recipient_balance = token_storage_diff
+        .get(&B256::from(slot))
+        .expect("Could not get receipient balance delta");
+    assert!(recipient_balance.is_changed());
+
+    let fee_token_diff = state_diff
+        .get(&fee_token)
+        .expect("Could not get fee token diff");
+    assert!(fee_token_diff.balance.is_unchanged());
+    assert!(fee_token_diff.code.is_unchanged());
+    assert!(fee_token_diff.nonce.is_unchanged());
+
+    let fee_token_storage_diff = token_diff.storage.clone();
+    // Assert sender fee token balance is changed
+    let slot = mapping_slot(caller, tip20::slots::BALANCES);
+    let sender_balance = fee_token_storage_diff
+        .get(&B256::from(slot))
+        .expect("Could not get receipient balance delta");
+    assert!(sender_balance.is_changed());
 
     Ok(())
 }
