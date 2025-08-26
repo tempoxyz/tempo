@@ -98,6 +98,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         .wallet(wallet)
         .connect_http(http_url.clone());
 
+    // FIXME: setting the minimal procotol basefee to 0 causes this tx to hang
     // Deploy and setup token
     let token = setup_test_token(provider.clone(), caller).await?;
 
