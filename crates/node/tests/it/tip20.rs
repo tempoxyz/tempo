@@ -10,8 +10,8 @@ use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
-use tempo_chainspec::spec::TempoChainSpec;
-use tempo_node::node::{TEMPO_BASE_FEE, TempoNode};
+use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
+use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     TIP403_REGISTRY_ADDRESS,
     contracts::{

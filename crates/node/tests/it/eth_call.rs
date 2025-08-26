@@ -15,17 +15,13 @@ use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
-use std::{ptr::dangling, sync::Arc};
-use tempo_chainspec::spec::TempoChainSpec;
-use tempo_node::node::{TEMPO_BASE_FEE, TempoNode};
-use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        IFeeManager,
-        ITIP20::{self, transferCall},
-        storage::slots::mapping_slot,
-        tip20,
-    },
+use std::sync::Arc;
+use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
+use tempo_node::node::TempoNode;
+use tempo_precompiles::contracts::{
+    ITIP20::{self, transferCall},
+    storage::slots::mapping_slot,
+    tip20,
 };
 
 use crate::utils::setup_test_token;
@@ -139,10 +135,6 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
         .wallet(wallet)
         .connect_http(http_url.clone());
 
-    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let fee_token = fee_manager.userTokens(caller).call().await?;
-    let val_token = fee_manager.validatorTokens(Address::ZERO).call().await?;
-
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -160,7 +152,6 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .from(caller)
         .to(*token.address())
-        .gas_price(0)
         .input(TransactionInput::new(calldata));
 
     let res = provider.call(tx.clone()).await?;
@@ -215,21 +206,6 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     assert_eq!(from.into_u256(), U256::ZERO);
     assert_eq!(to.into_u256(), mint_amount);
 
-    // let fee_token_diff = state_diff
-    //     .get(&fee_token)
-    //     .expect("Could not get fee token diff");
-    // assert!(fee_token_diff.balance.is_unchanged());
-    // assert!(fee_token_diff.code.is_unchanged());
-    // assert!(fee_token_diff.nonce.is_unchanged());
-    //
-    // let fee_token_storage_diff = token_diff.storage.clone();
-    // // Assert sender fee token balance is changed
-    // let slot = mapping_slot(caller, tip20::slots::BALANCES);
-    // let sender_balance = fee_token_storage_diff
-    //     .get(&B256::from(slot))
-    //     .expect("Could not get recipient balance delta");
-    // assert!(sender_balance.is_changed());
-    //
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 use alloy::{primitives::Address, providers::Provider, sol_types::SolEvent};
-use tempo_node::node::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS,
     contracts::{
