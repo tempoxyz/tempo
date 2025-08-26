@@ -4,6 +4,7 @@ use alloy::{
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
 use alloy_eips::BlockNumberOrTag;
+use futures::{StreamExt, future::join_all, stream};
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
@@ -86,36 +87,37 @@ async fn test_base_fee() -> eyre::Result<()> {
     }
 
     // Wait for all receipts, get block number of last receipt
-    let mut receipts = vec![];
-    for pending_tx in pending_txs {
-        let receipt = pending_tx.get_receipt().await?;
-        receipts.push(receipt);
-    }
+    let receipts = join_all(pending_txs.into_iter().map(|tx| tx.get_receipt()))
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
- let final_block = receipts.iter().filter_map(|r|r.block_number).max().unwrap();
+    let final_block = receipts
+        .iter()
+        .filter_map(|r| r.block_number)
+        .max()
+        .unwrap();
 
-    // Get all blocks from 0 to this block number
-    for block_num in 0..=final_block {
-        let block = provider
-            .get_block_by_number(BlockNumberOrTag::Number(block_num))
-            .await?
-            .expect("Could not get block");
+    // Assert that all blocks have base_fee = 0
+    stream::iter(0..=final_block)
+        .for_each(|block_num| {
+            let provider = provider.clone();
+            async move {
+                let block = provider
+                    .get_block_by_number(BlockNumberOrTag::Number(block_num))
+                    .await
+                    .unwrap()
+                    .expect("Could not get block");
 
-        // Check gas usage vs gas limit
-        let gas_used = block.header.gas_used;
-        let gas_limit = block.header.gas_limit;
-        let utilization = (gas_used as f64 / gas_limit as f64) * 100.0;
-        println!(
-            "Block {block_num}: gas_used={gas_used}, gas_limit={gas_limit}, utilization={utilization}%",
-        );
-
-        // Assert that base fee is 0
-        let base_fee = block
-            .header
-            .base_fee_per_gas
-            .expect("Could not get basefee");
-        assert_eq!(base_fee, 0, "Base fee should be 0 for block {}", block_num);
-    }
+                // Assert that base fee is 0
+                let base_fee = block
+                    .header
+                    .base_fee_per_gas
+                    .expect("Could not get basefee");
+                assert_eq!(base_fee, 0, "Base fee should be 0");
+            }
+        })
+        .await;
 
     // Check fee history and ensure fee stays at 0
     let fee_history = provider
