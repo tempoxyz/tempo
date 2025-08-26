@@ -9,7 +9,7 @@ use futures::future::try_join_all;
 use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
-use reth_node_core::args::{DevArgs, RpcServerArgs};
+use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
@@ -70,8 +70,8 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let chain_spec = TempoChainSpec { inner: spec };
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
+        .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    // FIXME: this causes the tx to hang
     node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
@@ -194,9 +194,11 @@ async fn test_tip20_mint() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
     let chain_spec = TempoChainSpec { inner: spec };
-    let node_config = NodeConfig::new(Arc::new(chain_spec))
+    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
+        .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
@@ -411,9 +413,11 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
     let chain_spec = TempoChainSpec { inner: spec };
-    let node_config = NodeConfig::new(Arc::new(chain_spec))
+    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
+        .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
@@ -490,9 +494,11 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
     let chain_spec = TempoChainSpec { inner: spec };
-    let node_config = NodeConfig::new(Arc::new(chain_spec))
+    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
+        .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
@@ -635,9 +641,11 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
     let chain_spec = TempoChainSpec { inner: spec };
-    let node_config = NodeConfig::new(Arc::new(chain_spec))
+    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
+        .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
