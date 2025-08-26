@@ -12,7 +12,7 @@ use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_node::node::TempoNode;
+use tempo_node::node::{TEMPO_BASE_FEE, TempoNode};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
@@ -252,6 +252,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     let mint_amount = U256::random();
     let mint_receipt = token
         .mint(caller, mint_amount)
+        .gas_price(TEMPO_BASE_FEE as u128)
         .send()
         .await?
         .get_receipt()
@@ -260,6 +261,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     let recipient = Address::random();
     token
         .transfer(recipient, mint_amount)
+        .gas_price(TEMPO_BASE_FEE as u128)
         .send()
         .await?
         .get_receipt()
