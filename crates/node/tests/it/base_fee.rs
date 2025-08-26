@@ -121,7 +121,7 @@ async fn test_base_fee() -> eyre::Result<()> {
 
     // Check fee history and ensure fee stays at 0
     let fee_history = provider
-        .get_fee_history(10, BlockNumberOrTag::Latest, &[])
+        .get_fee_history(final_block, BlockNumberOrTag::Number(final_block), &[])
         .await?;
 
     for (base_fee, gas_used_ratio) in fee_history
