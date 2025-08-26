@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
     contracts::{
         ITIP20::{self, ITIP20Instance},
         ITIP20Factory,
@@ -24,39 +24,7 @@ use tempo_precompiles::{
     },
 };
 
-async fn setup_test_token(
-    provider: impl Clone + alloy::providers::Provider,
-    caller: Address,
-) -> eyre::Result<ITIP20Instance<impl Clone + alloy::providers::Provider>> {
-    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
-    let receipt = factory
-        .createToken(
-            "Test".to_string(),
-            "TEST".to_string(),
-            "USD".to_string(),
-            caller,
-        )
-        .gas_price(0)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
-
-    let token_addr = token_id_to_address(event.tokenId.to());
-    let token = ITIP20::new(token_addr, provider.clone());
-    let roles = IRolesAuth::new(*token.address(), provider);
-
-    roles
-        .grantRole(*ISSUER_ROLE, caller)
-        .gas_price(0)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    Ok(token)
-}
+use crate::utils::setup_test_token;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
