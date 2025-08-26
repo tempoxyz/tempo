@@ -10,7 +10,7 @@ use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_node::node::TempoNode;
+use tempo_node::node::{TEMPO_BASE_FEE, TempoNode};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{IFeeManager, ITIP20},
@@ -66,7 +66,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .from(caller)
         .to(caller)
-        .gas_price(0);
+        .gas_price(TEMPO_BASE_FEE as u128);
 
     let pending_tx = provider.send_transaction(tx).await?;
     let receipt = pending_tx.get_receipt().await?;

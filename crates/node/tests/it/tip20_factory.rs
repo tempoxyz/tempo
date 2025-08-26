@@ -10,7 +10,7 @@ use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_node::node::TempoNode;
+use tempo_node::node::{TEMPO_BASE_FEE, TempoNode};
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS,
     contracts::{ITIP20, ITIP20Factory, token_id_to_address},
@@ -69,7 +69,7 @@ async fn test_create_token() -> eyre::Result<()> {
             "USD".to_string(),
             caller,
         )
-        .gas_price(0)
+        .gas_price(TEMPO_BASE_FEE as u128)
         .send()
         .await?
         .get_receipt()

@@ -10,7 +10,7 @@ use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_node::node::TempoNode;
+use tempo_node::node::{TEMPO_BASE_FEE, TempoNode};
 
 use crate::utils::setup_test_token;
 
@@ -67,7 +67,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
     token
         .mint(caller, U256::from(u64::MAX))
-        .gas_price(0)
+        .gas_price(TEMPO_BASE_FEE as u128)
         .send()
         .await?
         .get_receipt()
@@ -79,7 +79,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     for _ in 0..500 {
         let pending_tx = token
             .transfer(Address::random(), U256::ONE)
-            .gas_price(0)
+            .gas_price(TEMPO_BASE_FEE as u128)
             .send()
             .await?;
         pending_txs.push(pending_tx);

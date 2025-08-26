@@ -1,4 +1,5 @@
 use alloy::{primitives::Address, providers::Provider, sol_types::SolEvent};
+use tempo_node::node::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS,
     contracts::{
@@ -22,7 +23,7 @@ where
             "USD".to_string(),
             caller,
         )
-        .gas_price(0)
+        .gas_price(TEMPO_BASE_FEE as u128)
         .send()
         .await?
         .get_receipt()
@@ -35,7 +36,7 @@ where
 
     roles
         .grantRole(*ISSUER_ROLE, caller)
-        .gas_price(0)
+        .gas_price(TEMPO_BASE_FEE as u128)
         .send()
         .await?
         .get_receipt()
