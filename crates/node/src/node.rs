@@ -45,6 +45,8 @@ use tempo_chainspec::spec::TempoChainSpec;
 use tempo_evm::evm::TempoEvmFactory;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
+pub const TEMPO_BASE_FEE: u64 = 0;
+
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
@@ -361,7 +363,8 @@ where
     type Pool = EthTransactionPool<Node::Provider, DiskFileBlobStore, T>;
 
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
-        let pool_config = ctx.pool_config();
+        let mut pool_config = ctx.pool_config().clone();
+        pool_config.minimal_protocol_basefee = TEMPO_BASE_FEE;
 
         let blob_cache_size = if let Some(blob_cache_size) = pool_config.blob_cache_size {
             Some(blob_cache_size)
