@@ -18,7 +18,7 @@ use tempo_precompiles::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_transfer() -> eyre::Result<()> {
+async fn test_fee_in_stable() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let tasks = TaskManager::current();
