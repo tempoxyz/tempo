@@ -4,7 +4,6 @@ use alloy::{
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
 use alloy_eips::BlockNumberOrTag;
-use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
@@ -21,10 +20,9 @@ async fn test_base_fee() -> eyre::Result<()> {
     let tasks = TaskManager::current();
     let executor = tasks.executor();
 
-    let spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/base-fee-test.json"
     ))?);
-    let chain_spec = TempoChainSpec { inner: spec };
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()

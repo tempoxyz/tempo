@@ -1,6 +1,5 @@
 use alloy_eips::Decodable2718;
 use reth_ethereum::{
-    chainspec::ChainSpec,
     evm::revm::primitives::hex,
     node::builder::{NodeBuilder, NodeHandle},
     pool::TransactionPool,
@@ -21,10 +20,9 @@ async fn submit_pending_tx() -> eyre::Result<()> {
     let tasks = TaskManager::current();
     let executor = tasks.executor();
 
-    let spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
-    ))?);
-    let chain_spec = TempoChainSpec { inner: spec };
+    )))?;
     let mut node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
