@@ -10,6 +10,7 @@ use alloy_rpc_types_eth::TransactionInput;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
+use reth_rpc_builder::RpcModuleSelection;
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::{TEMPO_BASE_FEE, TempoNode};
@@ -35,11 +36,10 @@ async fn test_eth_call() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
@@ -101,11 +101,15 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
-        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
+        .with_rpc(
+            RpcServerArgs::default()
+                .with_unused_ports()
+                .with_http()
+                .with_http_api(RpcModuleSelection::All),
+        );
 
     let NodeHandle {
         node,
@@ -216,11 +220,10 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
         "../assets/test-genesis.json"
     ))?);
 
-    let mut node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-    node_config.txpool.minimal_protocol_basefee = 0;
 
     let NodeHandle {
         node,
