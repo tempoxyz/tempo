@@ -125,12 +125,13 @@ async fn test_base_fee() -> eyre::Result<()> {
         .get_fee_history(10, BlockNumberOrTag::Latest, &[])
         .await?;
 
-    for gas_ratio in fee_history.gas_used_ratio {
-        dbg!(gas_ratio);
-    }
-
-    for base_fee in fee_history.base_fee_per_gas {
-        assert_eq!(base_fee, 0, "Base fee should remain 0");
+    for (base_fee, gas_used_ratio) in fee_history
+        .base_fee_per_gas
+        .iter()
+        .zip(fee_history.gas_used_ratio)
+    {
+        assert_eq!(*base_fee, 0, "Base fee should remain 0");
+        println!("Gas used ratio: {gas_used_ratio}");
     }
 
     Ok(())
