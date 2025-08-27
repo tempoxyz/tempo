@@ -12,37 +12,12 @@ use reth_transaction_pool::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
+        provider::TIPFeeStorageProvider,
         storage::slots::mapping_slot,
         tip_fee_manager::{self},
         tip20,
     },
 };
-
-trait TIPFeeStorageProvider {
-    fn get_fee_token_balance(&self, user: Address) -> ProviderResult<U256>;
-}
-
-impl<T: StateProvider> TIPFeeStorageProvider for T {
-    fn get_fee_token_balance(&self, user: Address) -> ProviderResult<U256> {
-        let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
-        let fee_token = self
-            .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot.into())?
-            .unwrap_or_default()
-            .into_address();
-
-        if fee_token.is_zero() {
-            // TODO: how to handle getting validator fee token? Should we get the next validator or
-            // default to some token?
-        }
-
-        let balance_slot = mapping_slot(user, tip20::slots::BALANCES);
-        let balance = self
-            .storage(fee_token, balance_slot.into())?
-            .unwrap_or_default();
-
-        Ok(balance)
-    }
-}
 
 /// Validator for Tempo transactions.
 #[derive(Debug, Clone)]

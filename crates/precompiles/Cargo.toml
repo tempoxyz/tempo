@@ -10,6 +10,7 @@ description = "TODO:"
 
 [dependencies]
 reth-evm.workspace = true
+reth-storage-api.workspace = true
 alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
 alloy-evm.workspace = true
 alloy-consensus.workspace = true

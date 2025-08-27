@@ -12179,6 +12179,7 @@ dependencies = [
  "criterion",
  "eyre",
  "reth-evm",
+ "reth-storage-api",
  "tracing",
 ]
 

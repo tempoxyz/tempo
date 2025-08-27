@@ -1,3 +1,4 @@
+pub mod provider;
 pub mod roles;
 pub mod storage;
 pub mod tip20;
