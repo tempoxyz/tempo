@@ -41,11 +41,9 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore,
 };
 use std::{default::Default, sync::Arc, time::SystemTime};
-use tempo_chainspec::spec::TempoChainSpec;
+use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_evm::evm::TempoEvmFactory;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
-
-pub const TEMPO_BASE_FEE: u64 = 0;
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]

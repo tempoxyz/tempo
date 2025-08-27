@@ -1,4 +1,5 @@
 mod base_fee;
+mod eth_call;
 mod pool;
 mod tip20;
 mod tip20_factory;

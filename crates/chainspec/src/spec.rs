@@ -12,6 +12,8 @@ use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 
+pub const TEMPO_BASE_FEE: u64 = 0;
+
 /// Tempo chain specification parser.
 #[derive(Debug, Clone, Default)]
 pub struct TempoChainSpecParser;
