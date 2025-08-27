@@ -136,10 +136,35 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        // TODO: ensure ensure_sufficient_balance
-        self.inner
-            .validate_transactions_with_origin(origin, transactions)
-            .await
+        let transactions: Vec<_> = transactions.into_iter().collect();
+
+        let balance_checks = future::join_all(
+            transactions
+                .iter()
+                .map(|tx| self.ensure_sufficient_balance(tx)),
+        )
+        .await;
+
+        let (valid_txs, invalid_outcomes): (Vec<_>, Vec<_>) =
+            transactions.into_iter().zip(balance_checks).fold(
+                (Vec::new(), Vec::new()),
+                |(mut valid, mut invalid), (tx, result)| {
+                    match result {
+                        Ok(()) => valid.push(tx),
+                        Err(err) => {
+                            invalid.push(TransactionValidationOutcome::Invalid(tx, err.into()))
+                        }
+                    }
+                    (valid, invalid)
+                },
+            );
+
+        let mut outcomes = self
+            .inner
+            .validate_transactions_with_origin(origin, valid_txs)
+            .await;
+        outcomes.extend(invalid_outcomes);
+        outcomes
     }
 
     fn on_new_head_block<B>(&self, new_tip_block: &SealedBlock<B>)
