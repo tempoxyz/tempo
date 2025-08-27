@@ -46,12 +46,10 @@ jobs:
 
       - name: Sync rules to Grafana Cloud
         env:
-          GRAFANA_CLOUD_API_KEY: ${{ secrets.GRAFANA_CLOUD_API_KEY }}
-          GRAFANA_CLOUD_URL: ${{ secrets.GRAFANA_CLOUD_URL }}
-          GRAFANA_CLOUD_USER: ${{ secrets.GRAFANA_CLOUD_USER }}
+          MIMIR_ADDRESS: ${{ secrets.MIMIR_PROMETHEUS_URL }}
+          MIMIR_TENANT_ID: ${{ secrets.MIMIR_PROMETHEUS_USER }}
+          MIMIR_API_USER: ${{ secrets.MIMIR_PROMETHEUS_USER }}
+          MIMIR_API_KEY: ${{ secrets.MIMIR_PROMETHEUS_KEY }}
         run: |
           mimirtool rules load \
-            --address="$GRAFANA_CLOUD_URL" \
-            --id="$GRAFANA_CLOUD_USER" \
-            --key="$GRAFANA_CLOUD_API_KEY" \
             contrib/infra/monitoring/mimir/*.yaml
