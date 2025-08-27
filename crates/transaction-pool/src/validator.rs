@@ -1,11 +1,13 @@
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use futures::future;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_evm::revm::interpreter::instructions::utility::IntoAddress;
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::{AccountInfoReader, StateProvider, StateProviderFactory};
+use reth_storage_api::{
+    AccountInfoReader, StateProvider, StateProviderFactory, errors::ProviderResult,
+};
 use reth_transaction_pool::{
     EthPoolTransaction, EthTransactionValidator, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator,
@@ -18,6 +20,32 @@ use tempo_precompiles::{
         tip20,
     },
 };
+
+trait TIPFeeStorageProvider {
+    fn get_fee_token_balance(&self, user: Address) -> ProviderResult<U256>;
+}
+
+impl<T: StateProvider> TIPFeeStorageProvider for T {
+    fn get_fee_token_balance(&self, user: Address) -> ProviderResult<U256> {
+        let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
+        let fee_token = self
+            .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot.into())?
+            .unwrap_or_default()
+            .into_address();
+
+        if fee_token.is_zero() {
+            // TODO: how to handle getting validator fee token? Should we get the next validator or
+            // default to some token?
+        }
+
+        let balance_slot = mapping_slot(user, tip20::slots::BALANCES);
+        let balance = self
+            .storage(fee_token, balance_slot.into())?
+            .unwrap_or_default();
+
+        Ok(balance)
+    }
+}
 
 /// Validator for Tempo transactions.
 #[derive(Debug, Clone)]
@@ -34,46 +62,6 @@ where
     pub fn new(inner: EthTransactionValidator<Client, Tx>) -> Self {
         Self { inner }
     }
-
-    fn validate_fee_token_balance(
-        &self,
-        transaction: &Tx,
-        state_provider: &dyn StateProvider,
-    ) -> Result<(), InvalidTransactionError> {
-        let user_token_slot =
-            mapping_slot(transaction.sender(), tip_fee_manager::slots::USER_TOKENS);
-
-        let fee_token = state_provider
-            .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot.into())
-            .expect("TODO:")
-            .unwrap_or_default()
-            .into_address();
-
-        if fee_token.is_zero() {
-            // TODO: how to handle getting validator fee token? Should we get the next validator or
-            // default to some token?
-        }
-
-        let balance_slot = mapping_slot(transaction.sender(), tip20::slots::BALANCES);
-        let balance = state_provider
-            .storage(fee_token, balance_slot.into())
-            .expect("TODO:")
-            .unwrap_or_default();
-
-        // Get the tx cost and adjust for fee token decimals
-        let cost = transaction.cost().div_ceil(U256::from(1000));
-        if balance < cost {
-            return Err(InvalidTransactionError::InsufficientFunds(
-                GotExpected {
-                    got: balance,
-                    expected: cost,
-                }
-                .into(),
-            ));
-        }
-
-        Ok(())
-    }
 }
 
 impl<Client, Tx> TransactionValidator for TempoTransactionValidator<Client, Tx>
@@ -88,27 +76,84 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let state_provider = self.inner.client().latest().expect("TODO: handle error ");
-        if let Err(err) = self.validate_fee_token_balance(&transaction, state_provider.as_ref()) {
-            return TransactionValidationOutcome::Invalid(transaction, err.into());
+        let state_provider = match self.inner.client().latest() {
+            Ok(provider) => provider,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
+
+        let balance = match state_provider.get_fee_token_balance(transaction.sender()) {
+            Ok(balance) => balance,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
+
+        // Get the tx cost and adjust for fee token decimals
+        let cost = transaction.cost().div_ceil(U256::from(1000));
+        if balance < cost {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidTransactionError::InsufficientFunds(
+                    GotExpected {
+                        got: balance,
+                        expected: cost,
+                    }
+                    .into(),
+                )
+                .into(),
+            );
         }
 
         self.inner.validate_one(origin, transaction)
     }
 
+    // TODO: validate one with provider
+
     async fn validate_transactions(
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let state_provider = self.inner.client().latest().expect("TODO: handle error ");
+        let state_provider = match self.inner.client().latest() {
+            Ok(provider) => provider,
+            Err(err) => {
+                return transactions
+                    .into_iter()
+                    .map(|(_, tx)| {
+                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                    })
+                    .collect();
+            }
+        };
+
         transactions
             .into_iter()
             .map(|(origin, tx)| {
-                if let Err(err) = self.validate_fee_token_balance(&tx, state_provider.as_ref()) {
-                    TransactionValidationOutcome::Invalid(tx, err.into())
-                } else {
-                    self.inner.validate_one(origin, tx)
+                let balance = match state_provider.get_fee_token_balance(tx.sender()) {
+                    Ok(balance) => balance,
+                    Err(err) => {
+                        return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
+                    }
+                };
+
+                // Get the tx cost and adjust for fee token decimals
+                let cost = tx.cost().div_ceil(U256::from(1000));
+                if balance < cost {
+                    return TransactionValidationOutcome::Invalid(
+                        tx,
+                        InvalidTransactionError::InsufficientFunds(
+                            GotExpected {
+                                got: balance,
+                                expected: cost,
+                            }
+                            .into(),
+                        )
+                        .into(),
+                    );
                 }
+
+                self.inner.validate_one(origin, tx)
             })
             .collect()
     }
@@ -118,15 +163,45 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let state_provider = self.inner.client().latest().expect("TODO: handle error ");
+        let state_provider = match self.inner.client().latest() {
+            Ok(provider) => provider,
+            Err(err) => {
+                return transactions
+                    .into_iter()
+                    .map(|tx| {
+                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                    })
+                    .collect();
+            }
+        };
+
         transactions
             .into_iter()
             .map(|tx| {
-                if let Err(err) = self.validate_fee_token_balance(&tx, state_provider.as_ref()) {
-                    TransactionValidationOutcome::Invalid(tx, err.into())
-                } else {
-                    self.inner.validate_one(origin, tx)
+                let balance = match state_provider.get_fee_token_balance(tx.sender()) {
+                    Ok(balance) => balance,
+                    Err(err) => {
+                        return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
+                    }
+                };
+
+                // Get the tx cost and adjust for fee token decimals
+                let cost = tx.cost().div_ceil(U256::from(1000));
+                if balance < cost {
+                    return TransactionValidationOutcome::Invalid(
+                        tx,
+                        InvalidTransactionError::InsufficientFunds(
+                            GotExpected {
+                                got: balance,
+                                expected: cost,
+                            }
+                            .into(),
+                        )
+                        .into(),
+                    );
                 }
+
+                self.inner.validate_one(origin, tx)
             })
             .collect()
     }
