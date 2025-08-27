@@ -183,13 +183,21 @@ mod tests {
     use super::*;
     use alloy_consensus::Transaction;
     use alloy_eips::eip2718::Decodable2718;
-    use alloy_primitives::{Address, U256, hex};
+    use alloy_primitives::{U256, hex};
     use reth_ethereum_primitives::PooledTransactionVariant;
+    use reth_evm::revm::interpreter::instructions::utility::IntoU256;
     use reth_primitives_traits::SignedTransaction;
-    use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+    use reth_provider::{
+        StateProvider,
+        test_utils::{ExtendedAccount, MockEthProvider},
+    };
     use reth_transaction_pool::{
         EthPooledTransaction, PoolTransaction, blobstore::InMemoryBlobStore,
         error::InvalidPoolTransactionError, validate::EthTransactionValidatorBuilder,
+    };
+    use tempo_precompiles::{
+        TIP_FEE_MANAGER_ADDRESS,
+        contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20, token_id_to_address},
     };
     // use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     // use reth_transaction_pool::{
@@ -236,6 +244,27 @@ mod tests {
             panic!("Expected Invalid outcome with InsufficientFunds error");
         }
 
-        // TODO: mint balance to sender for cost, assert valid
+        // Add fee token balance for tx sender
+        let fee_token = token_id_to_address(1);
+        let storage = vec![(
+            mapping_slot(transaction.sender(), tip20::slots::BALANCES).into(),
+            transaction.cost().div_ceil(USD_DECIMAL_FACTOR),
+        )];
+        let fee_token_acct = ExtendedAccount::new(0, U256::ZERO).extend_storage(storage);
+        provider.add_account(fee_token, fee_token_acct);
+
+        // Add fee token for user
+        let storage = vec![(
+            mapping_slot(transaction.sender(), tip_fee_manager::slots::USER_TOKENS).into(),
+            fee_token.into_u256(),
+        )];
+        let fee_manager_acct = ExtendedAccount::new(0, U256::ZERO).extend_storage(storage);
+        provider.add_account(TIP_FEE_MANAGER_ADDRESS, fee_manager_acct);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        assert!(outcome.is_valid());
     }
 }
