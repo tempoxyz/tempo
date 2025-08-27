@@ -1,6 +1,6 @@
 use alloy::primitives::{Address, address};
 
-pub const MULTICALL_ADDRESS: Address = address!("0xcA11bde05977b3631167028862bE2a173976CA11");
+pub const MULTICALL_ADDRESS: Address = alloy::providers::MULTICALL3_ADDRESS;
 
 pub mod contracts {
     use alloy::sol;
@@ -13,4 +13,4 @@ pub mod contracts {
     );
 }
 
-pub use contracts::Multicall;
+pub use alloy::providers::MulticallBuilder;
