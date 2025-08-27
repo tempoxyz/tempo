@@ -1,4 +1,5 @@
 use alloy_primitives::{Address, U256};
+use futures::future;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks, ValidationError};
 use reth_evm::revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
@@ -103,8 +104,31 @@ where
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        // TODO: ensure ensure_sufficient_balance
-        self.inner.validate_transactions(transactions).await
+        let balance_checks = future::join_all(
+            transactions
+                .iter()
+                .map(|(_, tx)| self.ensure_sufficient_balance(tx)),
+        )
+        .await;
+
+        let num_txs = transactions.len();
+        let (valid_txs, invalid_outcomes): (Vec<_>, Vec<_>) =
+            transactions.into_iter().zip(balance_checks).fold(
+                (Vec::with_capacity(num_txs), Vec::with_capacity(num_txs)),
+                |(mut valid, mut invalid), ((origin, tx), result)| {
+                    if let Err(err) = result {
+                        invalid.push(TransactionValidationOutcome::Invalid(tx, err.into()))
+                    } else {
+                        valid.push((origin, tx));
+                    }
+
+                    (valid, invalid)
+                },
+            );
+
+        let mut outcomes = self.inner.validate_transactions(valid_txs).await;
+        outcomes.extend(invalid_outcomes);
+        outcomes
     }
 
     async fn validate_transactions_with_origin(

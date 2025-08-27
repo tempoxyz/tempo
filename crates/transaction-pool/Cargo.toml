@@ -9,6 +9,7 @@ rust-version.workspace = true
 # workspace = true
 
 [dependencies]
+tempo-precompiles.workspace = true
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true
 reth-ethereum-primitives.workspace = true
@@ -18,4 +19,4 @@ reth-storage-api.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-tempo-precompiles.workspace = true
+futures.workspace = true

@@ -174,3 +174,4 @@ prost-build = "0.13"
 protox = "0.7"
 criterion = "0.7.0"
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
+futures = "0.3"

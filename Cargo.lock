@@ -12212,6 +12212,7 @@ dependencies = [
  "alloy-consensus 1.0.25",
  "alloy-eips 1.0.25",
  "alloy-primitives",
+ "futures",
  "reth-chainspec",
  "reth-ethereum-primitives",
  "reth-evm",
