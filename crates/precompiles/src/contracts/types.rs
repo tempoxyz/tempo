@@ -235,11 +235,71 @@ sol! {
     }
 }
 
-#[macro_export]
-macro_rules! tip20_err {
-    ($err:ident) => {
-        $crate::contracts::types::TIP20Error::$err($crate::contracts::types::ITIP20::$err {})
-    };
+impl TIP20Error {
+    /// Creates an error for insufficient token balance.
+    pub const fn insufficient_balance() -> Self {
+        Self::InsufficientBalance(ITIP20::InsufficientBalance {})
+    }
+
+    /// Creates an error for insufficient spending allowance.
+    pub const fn insufficient_allowance() -> Self {
+        Self::InsufficientAllowance(ITIP20::InsufficientAllowance {})
+    }
+
+    /// Creates an error when minting would exceed supply cap.
+    pub const fn supply_cap_exceeded() -> Self {
+        Self::SupplyCapExceeded(ITIP20::SupplyCapExceeded {})
+    }
+
+    /// Creates an error for invalid cryptographic signature.
+    pub const fn invalid_signature() -> Self {
+        Self::InvalidSignature(ITIP20::InvalidSignature {})
+    }
+
+    /// Creates an error for invalid payload data.
+    pub const fn invalid_payload() -> Self {
+        Self::InvalidPayload(ITIP20::InvalidPayload {})
+    }
+
+    /// Creates an error for invalid or reused nonce.
+    pub const fn invalid_nonce() -> Self {
+        Self::InvalidNonce(ITIP20::InvalidNonce {})
+    }
+
+    /// Creates an error when string parameter exceeds maximum length.
+    pub const fn string_too_long() -> Self {
+        Self::StringTooLong(ITIP20::StringTooLong {})
+    }
+
+    /// Creates an error when transfer is forbidden by policy.
+    pub const fn policy_forbids() -> Self {
+        Self::PolicyForbids(ITIP20::PolicyForbids {})
+    }
+
+    /// Creates an error for invalid recipient address.
+    pub const fn invalid_recipient() -> Self {
+        Self::InvalidRecipient(ITIP20::InvalidRecipient {})
+    }
+
+    /// Creates an error when operation deadline has expired.
+    pub const fn expired() -> Self {
+        Self::Expired(ITIP20::Expired {})
+    }
+
+    /// Creates an error when salt has already been used.
+    pub const fn salt_already_used() -> Self {
+        Self::SaltAlreadyUsed(ITIP20::SaltAlreadyUsed {})
+    }
+
+    /// Creates an error when contract is paused.
+    pub const fn contract_paused() -> Self {
+        Self::ContractPaused(ITIP20::ContractPaused {})
+    }
+
+    /// Creates an error for invalid currency.
+    pub const fn invalid_currency() -> Self {
+        Self::InvalidCurrency(ITIP20::InvalidCurrency {})
+    }
 }
 
 #[macro_export]
