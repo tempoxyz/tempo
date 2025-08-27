@@ -1,10 +1,7 @@
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 use futures::future;
-use reth_chainspec::{ChainSpecProvider, EthereumHardforks, ValidationError};
-use reth_evm::revm::{
-    interpreter::instructions::utility::{IntoAddress, IntoU256},
-    primitives::hardfork::SpecId::PETERSBURG,
-};
+use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
+use reth_evm::revm::interpreter::instructions::utility::IntoAddress;
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
@@ -17,9 +14,8 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         storage::slots::mapping_slot,
-        tip_fee_manager::{self, TipFeeManager},
+        tip_fee_manager::{self},
         tip20,
-        types::IFeeManager,
     },
 };
 
