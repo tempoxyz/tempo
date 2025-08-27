@@ -43,6 +43,7 @@ reth-node-core.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 alloy = { workspace = true, features = [
+  "full",
   "providers",
   "signers",
   "signer-mnemonic-all-languages",

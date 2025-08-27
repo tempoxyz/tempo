@@ -118,6 +118,7 @@ dependencies = [
  "alloy-genesis",
  "alloy-network 1.0.25",
  "alloy-provider",
+ "alloy-pubsub",
  "alloy-rpc-client",
  "alloy-rpc-types",
  "alloy-serde 1.0.25",
@@ -125,6 +126,8 @@ dependencies = [
  "alloy-signer-local 1.0.25",
  "alloy-transport",
  "alloy-transport-http",
+ "alloy-transport-ipc",
+ "alloy-transport-ws",
  "alloy-trie",
 ]
 
@@ -232,6 +235,7 @@ dependencies = [
  "alloy-network-primitives 1.0.25",
  "alloy-primitives",
  "alloy-provider",
+ "alloy-pubsub",
  "alloy-rpc-types-eth 1.0.25",
  "alloy-sol-types",
  "alloy-transport",
@@ -250,6 +254,7 @@ dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-sol-types",
 ]
 
@@ -566,7 +571,11 @@ dependencies = [
  "alloy-primitives",
  "alloy-pubsub",
  "alloy-rpc-client",
+ "alloy-rpc-types-anvil",
+ "alloy-rpc-types-debug",
  "alloy-rpc-types-eth 1.0.25",
+ "alloy-rpc-types-trace",
+ "alloy-rpc-types-txpool",
  "alloy-signer 1.0.25",
  "alloy-sol-types",
  "alloy-transport",
@@ -670,8 +679,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d4fe522f6fc749c8afce721bdc8f73b715d317c3c02fcb9b51f7a143e4401dd"
 dependencies = [
  "alloy-primitives",
+ "alloy-rpc-types-anvil",
+ "alloy-rpc-types-debug",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth 1.0.25",
+ "alloy-rpc-types-trace",
+ "alloy-rpc-types-txpool",
  "alloy-serde 1.0.25",
  "serde",
 ]

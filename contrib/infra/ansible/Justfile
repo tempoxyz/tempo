@@ -7,7 +7,7 @@ run-playbook playbook hosts="all" extra_vars="":
     ansible-playbook --vault-id vault@scripts/vault-client.bash --extra-vars "{{extra_vars}}" -i {{hosts}} {{playbook}}.yml
 
 deploy-devnet hosts="all" extra_vars="":
-    ansible-playbook --vault-id vault@scripts/vault-client.bash --extra-vars "{{extra_vars}}" --tags devnet -i {{hosts}} devnet.yml
+    ansible-playbook --vault-id vault@scripts/vault-client.bash --extra-vars "{{extra_vars}}" --tags loadbalancer -i {{hosts}} devnet.yml
 
 run-playbook-ci playbook hosts="all" extra_vars="":
     ansible-playbook --vault-id vault@vault.key --extra-vars "{{extra_vars}}" -i {{hosts}} {{playbook}}.yml

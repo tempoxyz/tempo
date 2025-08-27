@@ -13,6 +13,12 @@ ExecStart=/usr/local/bin/tempo node --datadir {{ ansible_env.HOME }}/malachite/r
   --dev \
   --dev.block-time 1sec \
 {% endif %}
+{% if tempo_faucet_privkey is defined %}
+  --faucet.enabled \
+  --faucet.private-key 0x{{ tempo_faucet_privkey }} \
+  --faucet.amount 100000000 \
+  --faucet.address 0x20c0000000000000000000000000000000000000 \
+{% endif %}
   --chain {{ ansible_env.HOME }}/malachite/config/reth_genesis.json \
   --port 30303 \
   --discovery.port 30303 \
@@ -42,6 +48,7 @@ ExecStart=/usr/local/bin/tempo node --datadir {{ ansible_env.HOME }}/malachite/r
   --txpool.minimal-protocol-fee 0 \
   --txpool.minimum-priority-fee 0 \
   --txpool.max-batch-size 50000 \
+  --no-consensus \
   --rpc.max-connections 429496729 \
   --rpc.max-request-size 1000000 \
   --rpc.max-response-size 1000000 \
