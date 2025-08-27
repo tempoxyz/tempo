@@ -49,6 +49,10 @@ pub struct GenesisArgs {
     /// Chain ID
     #[arg(long, short, default_value = "1337")]
     pub chain_id: u64,
+
+    /// Base fee
+    #[arg(long, short, default_value = "0")]
+    pub base_fee_per_gas: u128,
 }
 
 impl GenesisArgs {
@@ -166,6 +170,7 @@ impl GenesisArgs {
 
         let mut genesis = Genesis::default()
             .with_gas_limit(0xfffffffffff)
+            .with_base_fee(Some(self.base_fee_per_gas))
             .with_nonce(0x42)
             .with_extra_data(Bytes::from_static(b"tempo-genesis"))
             .with_coinbase(Address::ZERO);
