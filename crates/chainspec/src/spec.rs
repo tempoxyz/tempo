@@ -12,7 +12,7 @@ use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 
-pub const TEMPO_BASE_FEE: u64 = 0;
+pub const TEMPO_BASE_FEE: u64 = 44;
 
 /// Tempo chain specification parser.
 #[derive(Debug, Clone, Default)]
@@ -154,7 +154,7 @@ impl EthChainSpec for TempoChainSpec {
     }
 
     fn next_block_base_fee(&self, _parent: &Header, _target_timestamp: u64) -> Option<u64> {
-        Some(0)
+        Some(TEMPO_BASE_FEE)
     }
 }
 

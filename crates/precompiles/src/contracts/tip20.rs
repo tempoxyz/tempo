@@ -1,15 +1,12 @@
 use std::sync::LazyLock;
 
-use crate::{
-    contracts::{
-        ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry,
-        TIP4217Registry, address_is_token_address,
-        roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
-        storage::slots::{double_mapping_slot, mapping_slot},
-        token_id_to_address,
-        types::{TIP20Error, TIP20Event},
-    },
-    tip20_err,
+use crate::contracts::{
+    ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry, TIP4217Registry,
+    address_is_token_address,
+    roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
+    storage::slots::{double_mapping_slot, mapping_slot},
+    token_id_to_address,
+    types::{TIP20Error, TIP20Event},
 };
 use alloy::primitives::{Address, B256, IntoLogData, Signature as EthSignature, U256, keccak256};
 use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
@@ -166,7 +163,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
         if call.newSupplyCap < self.total_supply() {
-            return Err(tip20_err!(SupplyCapExceeded));
+            return Err(TIP20Error::supply_cap_exceeded());
         }
         self.storage
             .sstore(self.token_address, slots::SUPPLY_CAP, call.newSupplyCap)
@@ -238,11 +235,11 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         let new_supply = total_supply
             .checked_add(call.amount)
-            .ok_or(tip20_err!(SupplyCapExceeded))?;
+            .ok_or(TIP20Error::supply_cap_exceeded())?;
 
         let supply_cap = self.supply_cap();
         if new_supply > supply_cap {
-            return Err(tip20_err!(SupplyCapExceeded));
+            return Err(TIP20Error::supply_cap_exceeded());
         }
 
         self.set_total_supply(new_supply);
@@ -251,7 +248,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         let new_to_balance: alloy::primitives::Uint<256, 4> =
             to_balance
                 .checked_add(call.amount)
-                .ok_or(tip20_err!(SupplyCapExceeded))?;
+                .ok_or(TIP20Error::supply_cap_exceeded())?;
         self.set_balance(&call.to, new_to_balance);
 
         self.storage
@@ -288,7 +285,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         let total_supply = self.total_supply();
         let new_supply = total_supply
             .checked_sub(call.amount)
-            .ok_or(tip20_err!(InsufficientBalance))?;
+            .ok_or(TIP20Error::insufficient_balance())?;
         self.set_total_supply(new_supply);
 
         self.storage
@@ -320,7 +317,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             user: call.from,
         }) {
             // Only allow burning from addresses that are blocked from transferring
-            return Err(tip20_err!(PolicyForbids));
+            return Err(TIP20Error::policy_forbids());
         }
 
         self._transfer(&call.from, &Address::ZERO, call.amount)?;
@@ -328,7 +325,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         let total_supply = self.total_supply();
         let new_supply = total_supply
             .checked_sub(call.amount)
-            .ok_or(tip20_err!(InsufficientBalance))?;
+            .ok_or(TIP20Error::insufficient_balance())?;
         self.set_total_supply(new_supply);
 
         self.storage
@@ -393,13 +390,13 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         // Check and update allowance
         let allowed = self.get_allowance(&call.from, msg_sender);
         if call.amount > allowed {
-            return Err(tip20_err!(InsufficientAllowance));
+            return Err(TIP20Error::insufficient_allowance());
         }
 
         if allowed != U256::MAX {
             let new_allowance = allowed
                 .checked_sub(call.amount)
-                .ok_or(tip20_err!(InsufficientAllowance))?;
+                .ok_or(TIP20Error::insufficient_allowance())?;
             self.set_allowance(&call.from, msg_sender, new_allowance);
         }
 
@@ -420,7 +417,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                     .as_secs(),
             )
         {
-            return Err(tip20_err!(Expired));
+            return Err(TIP20Error::expired());
         }
 
         // Get current nonce (increment after successful verification)
@@ -442,19 +439,19 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
             let v_norm = if call.v >= 27 { call.v - 27 } else { call.v };
             if v_norm > 1 {
-                return Err(tip20_err!(InvalidSignature));
+                return Err(TIP20Error::invalid_signature());
             }
 
             eth_secp256k1::recover_signer(
                 &EthSignature::from_scalars_and_parity(call.r, call.s, v_norm == 1),
                 digest,
             )
-            .map_err(|_| tip20_err!(InvalidSignature))?
+            .map_err(|_| TIP20Error::invalid_signature())?
         };
 
         // Verify recovered address matches owner
         if recovered_addr != call.owner {
-            return Err(tip20_err!(InvalidSignature));
+            return Err(TIP20Error::invalid_signature());
         }
 
         // Increment nonce after successful verification
@@ -540,7 +537,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // Validate currency via TIP4217 registry
         if self.decimals() == 0 {
-            return Err(tip20_err!(InvalidCurrency));
+            return Err(TIP20Error::invalid_currency());
         }
 
         // Set default values
@@ -625,12 +622,12 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         let mut roles = self.get_roles_contract();
         roles
             .check_role(account, role)
-            .map_err(|_| tip20_err!(PolicyForbids))
+            .map_err(|_| TIP20Error::policy_forbids())
     }
 
     fn check_not_paused(&mut self) -> Result<(), TIP20Error> {
         if self.paused() {
-            return Err(tip20_err!(ContractPaused));
+            return Err(TIP20Error::contract_paused());
         }
         Ok(())
     }
@@ -638,7 +635,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     fn check_not_token_address(&self, to: &Address) -> Result<(), TIP20Error> {
         // Don't allow sending to other precompiled tokens
         if address_is_token_address(to) {
-            return Err(tip20_err!(InvalidRecipient));
+            return Err(TIP20Error::invalid_recipient());
         }
         Ok(())
     }
@@ -665,7 +662,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         let to_authorized = registry.is_authorized(to_authorized_call);
 
         if !from_authorized || !to_authorized {
-            return Err(tip20_err!(PolicyForbids));
+            return Err(TIP20Error::policy_forbids());
         }
 
         Ok(())
@@ -674,12 +671,12 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     fn _transfer(&mut self, from: &Address, to: &Address, amount: U256) -> Result<(), TIP20Error> {
         let from_balance = self.get_balance(from);
         if amount > from_balance {
-            return Err(tip20_err!(InsufficientBalance));
+            return Err(TIP20Error::insufficient_balance());
         }
 
         let new_from_balance = from_balance
             .checked_sub(amount)
-            .ok_or(tip20_err!(InsufficientBalance))?;
+            .ok_or(TIP20Error::insufficient_balance())?;
 
         self.set_balance(from, new_from_balance);
 
@@ -687,7 +684,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             let to_balance = self.get_balance(to);
             let new_to_balance = to_balance
                 .checked_add(amount)
-                .ok_or(tip20_err!(SupplyCapExceeded))?;
+                .ok_or(TIP20Error::supply_cap_exceeded())?;
             self.set_balance(to, new_to_balance);
         }
 
@@ -724,7 +721,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     fn write_string(&mut self, slot: U256, value: String) -> Result<(), TIP20Error> {
         let bytes = value.as_bytes();
         if bytes.len() > 31 {
-            return Err(tip20_err!(StringTooLong));
+            return Err(TIP20Error::string_too_long());
         }
         let mut storage_bytes = [0u8; 32];
         storage_bytes[..bytes.len()].copy_from_slice(bytes);

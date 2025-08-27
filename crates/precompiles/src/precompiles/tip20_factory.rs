@@ -30,9 +30,8 @@ impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        contracts::HashMapStorageProvider,
+        contracts::{HashMapStorageProvider, types::TIP20Error},
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
-        tip20_err,
     };
     use alloy::{
         primitives::{Bytes, U256},
@@ -120,7 +119,7 @@ mod tests {
         };
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender);
-        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
+        expect_precompile_error(&result, TIP20Error::invalid_currency());
 
         // Check counter increased again
         let counter_call = ITIP20Factory::tokenIdCounterCall {};
@@ -158,7 +157,7 @@ mod tests {
         };
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &admin2);
-        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
+        expect_precompile_error(&result, TIP20Error::invalid_currency());
 
         // Create token with different unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
@@ -169,7 +168,7 @@ mod tests {
         };
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &admin1);
-        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
+        expect_precompile_error(&result, TIP20Error::invalid_currency());
     }
 
     #[test]
@@ -187,7 +186,7 @@ mod tests {
         };
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender);
-        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
+        expect_precompile_error(&result, TIP20Error::invalid_currency());
     }
 
     #[test]
@@ -242,7 +241,7 @@ mod tests {
         };
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &caller2);
-        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
+        expect_precompile_error(&result, TIP20Error::invalid_currency());
 
         // Third caller creates a token with different admin and unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
@@ -253,7 +252,7 @@ mod tests {
         };
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &caller3);
-        expect_precompile_error(&result, tip20_err!(InvalidCurrency));
+        expect_precompile_error(&result, TIP20Error::invalid_currency());
 
         // Verify only first token was created
         assert_eq!(token_id1, U256::ZERO);
