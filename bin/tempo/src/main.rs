@@ -13,10 +13,11 @@
 //! Configuration can be provided via command-line arguments or configuration files.
 
 use clap::Parser;
-use reth::chainspec::EthChainSpec;
+use reth::{chainspec::EthChainSpec, cli::Cli};
 use reth_malachite::{
+    MalachiteConsensus,
     app::{Config, Genesis, State, ValidatorInfo},
-    cli::{Cli, MalachiteArgs},
+    cli::MalachiteArgs,
     consensus::{EngineConfig, start_consensus_engine},
     context::MalachiteContext,
     types::Address,
@@ -25,9 +26,10 @@ use reth_node_builder::{
     FullNode, FullNodeComponents, FullNodeTypes, NodeHandle, NodeTypes, PayloadTypes,
     rpc::RethRpcAddOns,
 };
+use reth_node_ethereum::EthEvmConfig;
 use reth_provider::DatabaseProviderFactory;
 use std::{fs, future, sync::Arc};
-use tempo_chainspec::spec::TempoChainSpecParser;
+use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 use tempo_node::{args::TempoArgs, node::TempoNode};
 use tracing::info;
@@ -40,8 +42,15 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    if let Err(err) =
-        Cli::<TempoChainSpecParser, TempoArgs>::parse().run(async move |builder, args| {
+    let components = |spec: Arc<TempoChainSpec>| {
+        (
+            EthEvmConfig::new(spec.clone()),
+            MalachiteConsensus::new(spec),
+        )
+    };
+
+    if let Err(err) = Cli::<TempoChainSpecParser, TempoArgs>::parse()
+        .run_with_components::<TempoNode>(components, async move |builder, args| {
             info!(target: "reth::cli", "Launching node");
             let NodeHandle {
                 node,

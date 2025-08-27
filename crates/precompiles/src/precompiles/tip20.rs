@@ -23,6 +23,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::totalSupplyCall::SELECTOR => metadata::<ITIP20::totalSupplyCall>(self.total_supply()),
             ITIP20::supplyCapCall::SELECTOR => metadata::<ITIP20::supplyCapCall>(self.supply_cap()),
             ITIP20::transferPolicyIdCall::SELECTOR => metadata::<ITIP20::transferPolicyIdCall>(self.transfer_policy_id()),
+            ITIP20::pausedCall::SELECTOR => metadata::<ITIP20::pausedCall>( self.paused()),
 
             // View functions
             ITIP20::balanceOfCall::SELECTOR => view::<ITIP20::balanceOfCall>(calldata, |call| self.balance_of(call)),

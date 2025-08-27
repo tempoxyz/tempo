@@ -5,30 +5,28 @@ use alloy::{
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
 use alloy_rpc_types_eth::TransactionRequest;
-use reth_chainspec::ChainSpec;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
 use reth_node_core::args::RpcServerArgs;
 use std::sync::Arc;
-use tempo_node::node::TempoNode;
+use tempo_chainspec::spec::TempoChainSpec;
+use tempo_node::node::{TEMPO_BASE_FEE, TempoNode};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{IFeeManager, ITIP20},
 };
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_transfer() -> eyre::Result<()> {
+async fn test_fee_in_stable() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let tasks = TaskManager::current();
     let executor = tasks.executor();
 
-    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
-
-    let node_config = NodeConfig::test()
-        .with_chain(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
@@ -65,7 +63,11 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let fee_token = ITIP20::new(fee_token_address, provider.clone());
     let initial_balance = fee_token.balanceOf(caller).call().await?;
 
-    let tx = TransactionRequest::default().from(caller).to(caller);
+    let tx = TransactionRequest::default()
+        .from(caller)
+        .to(caller)
+        .gas_price(TEMPO_BASE_FEE as u128);
+
     let pending_tx = provider.send_transaction(tx).await?;
     let receipt = pending_tx.get_receipt().await?;
 

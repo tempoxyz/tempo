@@ -11,6 +11,12 @@ description = "TODO:"
 [dependencies]
 reth-cli.workspace = true
 reth-chainspec.workspace = true
+reth-network-peers.workspace = true
+reth-ethereum = { workspace = true, features = ["evm"] }
+reth-tracing.workspace = true
 eyre.workspace = true
 serde_json.workspace = true
 alloy-genesis.workspace = true
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+alloy-eips.workspace = true

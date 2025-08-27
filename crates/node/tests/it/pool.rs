@@ -1,6 +1,5 @@
 use alloy_eips::Decodable2718;
 use reth_ethereum::{
-    chainspec::ChainSpec,
     evm::revm::primitives::hex,
     node::builder::{NodeBuilder, NodeHandle},
     pool::TransactionPool,
@@ -11,6 +10,7 @@ use reth_ethereum_primitives::TransactionSigned;
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_transaction_pool::{TransactionOrigin, pool::AddedTransactionState};
 use std::sync::Arc;
+use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::{args::TempoArgs, node::TempoNode};
 use tempo_precompiles::contracts::{storage::slots, tip_fee_manager};
 
@@ -19,13 +19,13 @@ async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let tasks = TaskManager::current();
     let executor = tasks.executor();
-
-    let chain_spec = ChainSpec::from_genesis(serde_json::from_str(include_str!(
+    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
-    let node_config = NodeConfig::test()
-        .with_chain(Arc::new(chain_spec))
+
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_unused_ports()
+        .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
 
     let NodeHandle {

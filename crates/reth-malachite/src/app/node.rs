@@ -32,7 +32,6 @@ use reth_node_ethereum::{
         EthereumNetworkBuilder, EthereumPoolBuilder,
     },
 };
-use reth_trie_db::MerklePatriciaTrie;
 
 use tempo_evm::evm::TempoEvmFactory;
 use tokio::sync::{broadcast, mpsc};
@@ -91,7 +90,6 @@ where
 impl NodeTypes for TempoNode {
     type Primitives = reth_ethereum_primitives::EthPrimitives;
     type ChainSpec = ChainSpec;
-    type StateCommitment = MerklePatriciaTrie;
     type Storage = reth_provider::EthStorage;
     type Payload = reth_node_ethereum::EthEngineTypes;
 }
