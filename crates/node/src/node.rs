@@ -37,13 +37,15 @@ use reth_rpc_eth_api::FromEvmError;
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{
-    EthPoolTransaction, EthTransactionPool, PoolTransaction, TransactionValidationTaskExecutor,
+    EthPoolTransaction, PoolTransaction, TransactionValidationTaskExecutor,
     blobstore::DiskFileBlobStore,
 };
 use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_evm::evm::TempoEvmFactory;
-use tempo_transaction_pool::transaction::TempoPooledTransaction;
+use tempo_transaction_pool::{
+    TempoTransactionPool, transaction::TempoPooledTransaction, validator::TempoTransactionValidator,
+};
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
@@ -358,7 +360,7 @@ where
     Node: FullNodeTypes<Types: NodeTypes<ChainSpec: EthereumHardforks>>,
     T: EthPoolTransaction<Consensus = TxTy<Node::Types>> + PoolTransaction,
 {
-    type Pool = EthTransactionPool<Node::Provider, DiskFileBlobStore, T>;
+    type Pool = TempoTransactionPool<Node::Provider, DiskFileBlobStore, T>;
 
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
         let mut pool_config = ctx.pool_config().clone();
@@ -408,7 +410,7 @@ where
             });
         }
 
-        // TODO: custom tempo tx validation
+        let validator = validator.map(|validator| TempoTransactionValidator::new(validator));
         let transaction_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;

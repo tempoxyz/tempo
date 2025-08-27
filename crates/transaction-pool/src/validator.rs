@@ -16,7 +16,7 @@ pub const USD_DECIMAL_FACTOR: U256 = uint!(1000_U256);
 #[derive(Debug, Clone)]
 pub struct TempoTransactionValidator<Client, Tx> {
     /// Inner validator that performs default Ethereum tx validation.
-    inner: EthTransactionValidator<Client, Tx>,
+    pub(crate) inner: EthTransactionValidator<Client, Tx>,
 }
 
 impl<Client, Tx> TempoTransactionValidator<Client, Tx>
