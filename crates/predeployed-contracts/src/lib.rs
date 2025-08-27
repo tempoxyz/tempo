@@ -13,4 +13,4 @@ pub mod contracts {
     );
 }
 
-pub use alloy::providers::MulticallBuilder;
+pub use contracts::Multicall;
