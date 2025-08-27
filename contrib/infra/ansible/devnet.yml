@@ -17,6 +17,7 @@
 - name: Set up Grafana Alloy
   hosts: all
   become: true
+  tags: monitoring
   tasks:
     - name: Install Alloy
       ansible.builtin.include_role:
