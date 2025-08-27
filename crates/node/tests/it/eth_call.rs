@@ -61,9 +61,7 @@ async fn test_eth_call() -> eyre::Result<()> {
         .phrase("test test test test test test test test test test test junk")
         .build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url.clone());
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -131,9 +129,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
         .phrase("test test test test test test test test test test test junk")
         .build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url.clone());
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -244,9 +240,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
         .phrase("test test test test test test test test test test test junk")
         .build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url.clone());
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -329,9 +323,7 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
         .phrase("test test test test test test test test test test test junk")
         .build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url.clone());
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
     let calldata = token.mint(caller, U256::random()).calldata().clone();

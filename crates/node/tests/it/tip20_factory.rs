@@ -49,9 +49,7 @@ async fn test_create_token() -> eyre::Result<()> {
         .phrase("test test test test test test test test test test test junk")
         .build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url.clone());
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
 
