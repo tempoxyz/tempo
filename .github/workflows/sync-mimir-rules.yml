@@ -28,7 +28,7 @@ jobs:
 
       - name: Validate alerting rules
         run: |
-          mimirtool rules lint contrib/infra/monitoring/mimir/*.yaml
+          mimirtool rules lint contrib/infra/monitoring/mimir/*.yml
 
   sync-to-grafana-cloud:
     needs: validate-rules
