@@ -12053,9 +12053,11 @@ dependencies = [
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-primitives-traits",
+ "reth-provider",
  "reth-storage-api",
  "reth-transaction-pool",
  "tempo-precompiles",
+ "tokio",
 ]
 
 [[package]]

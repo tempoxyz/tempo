@@ -21,3 +21,9 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 futures.workspace = true
+
+[dev-dependencies]
+reth-transaction-pool.workspace = true
+alloy-eips.workspace = true
+reth-provider = { workspace = true, features = ["test-utils"] }
+tokio.workspace = true
