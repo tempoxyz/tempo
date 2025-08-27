@@ -1,0 +1,56 @@
+groups:
+  - name: reth.blockchain
+    rules:
+      - alert: RethBlockHeightNotMoving
+        expr: increase(reth_blockchain_tree_canonical_chain_height[10m]) == 0
+        for: 5m
+        labels:
+          severity: p1
+          service: reth
+          component: blockchain
+        annotations:
+          summary: "Reth blockchain height has not increased"
+          description: "The Reth blockchain height for instance {{ $labels.instance }} has not increased in the last 10 minutes. Current height: {{ $value }}"
+      - alert: RethBlockRateSlow
+        expr: increase(reth_blockchain_tree_canonical_chain_height[10m]) < 400
+        for: 5m
+        labels:
+          severity: p2
+          service: reth
+          component: blockchain
+        annotations:
+          summary: "Reth blockchain height rate has decreased below 40 blocks per minute"
+          description: "The Reth blockchain height rate for instance {{ $labels.instance }} has decreased in the last 10 minutes. Current height: {{ $value }}"
+      - alert: RethNodeDown
+        expr: up{instance=~"reth.*"} == 0 
+        for: 5m
+        labels:
+          severity: p1
+          service: reth
+          component: blockchain
+        annotations:
+          summary: "Reth node is down"
+          description: "The Reth blockchain node metrics are not accessible"
+  - name: reth.rpc
+    rules:
+      - alert: TempoRpcNotResponding
+        expr: (sum by(instance, job) (floor(increase(probe_all_success_count[5m]) - increase(probe_all_success_sum[5m]))) >= sum by (instance, job) (sm_alerts_threshold_probe_failed_executions_too_high{period="5m"})) * on (instance, job) group_right() max without(probe, region, geohash, config_version) (sm_check_info)
+        for: 5m
+        labels:
+          severity: p1
+          service: reth
+          component: blockchain
+        annotations:
+          summary: "Tempo RPC probes cannot reach the RPC loadbalancer"
+          description: "Tempo probe job {{ $labels.job }} - {{ $labels.instance }} has failed too many times in the last 5m"
+      - alert: TempoRpcHighExternalLatency
+        expr: ((sum by(instance, job)(rate(probe_all_duration_seconds_sum[5m])) / sum by(instance, job)(rate(probe_all_duration_seconds_count[5m]))) * 1000 >= sum by (instance, job) (sm_alerts_threshold_http_request_duration_too_high_avg{period="5m"})) * on (instance, job) group_right() max without(probe, region, geohash, config_version) (sm_check_info)
+        for: 5m
+        labels:
+          severity: p1
+          service: reth
+          component: blockchain
+        annotations:
+          summary: "Tempo RPC probes are seeing high latency to the RPC loadbalancer"
+          description: 'Tempo probe average latency for {{ $labels.job }} - {{ $labels.instance }} in the last 5m is more than the threshold'
+      
