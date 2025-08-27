@@ -24,7 +24,7 @@
   "timestamp": "0x0",
   "extraData": "0x74656d706f2d67656e65736973",
   "gasLimit": "0x30D40",
-  "baseFeePerGas": "0x0",
+  "baseFeePerGas": "0x2C",
   "difficulty": "0x0",
   "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "coinbase": "0x0000000000000000000000000000000000000000",

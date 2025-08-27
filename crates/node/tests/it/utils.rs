@@ -23,7 +23,8 @@ where
             "USD".to_string(),
             caller,
         )
-        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas_price(TEMPO_BASE_FEE)
+        .gas(30000)
         .send()
         .await?
         .get_receipt()
@@ -36,7 +37,8 @@ where
 
     roles
         .grantRole(*ISSUER_ROLE, caller)
-        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas_price(TEMPO_BASE_FEE)
+        .gas(30000)
         .send()
         .await?
         .get_receipt()
