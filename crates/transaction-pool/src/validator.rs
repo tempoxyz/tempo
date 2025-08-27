@@ -1,7 +1,12 @@
-use alloy_consensus::Transaction;
 use alloy_primitives::{Address, U256};
-use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
-use reth_primitives_traits::{Block, SealedBlock};
+use reth_chainspec::{ChainSpecProvider, EthereumHardforks, ValidationError};
+use reth_evm::revm::{
+    interpreter::instructions::utility::{IntoAddress, IntoU256},
+    primitives::hardfork::SpecId::PETERSBURG,
+};
+use reth_primitives_traits::{
+    Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
+};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
     EthPoolTransaction, EthTransactionValidator, TransactionOrigin, TransactionValidationOutcome,
@@ -36,20 +41,21 @@ where
     async fn ensure_sufficient_balance(
         &self,
         transaction: &Tx,
-    ) -> TransactionValidationOutcome<Tx> {
+    ) -> Result<(), InvalidTransactionError> {
         let state_provider = self.inner.client().latest().expect("TODO: handle error ");
 
         let user_token_slot =
             mapping_slot(transaction.sender(), tip_fee_manager::slots::USER_TOKENS);
-        // let fee_token = state_provider
-        //     .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot.into())
-        //     .expect("TODO:")
-        //     .unwrap_or_default()
-        //     .into_address();
-        let fee_token = Address::ZERO;
+
+        let fee_token = state_provider
+            .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot.into())
+            .expect("TODO:")
+            .unwrap_or_default()
+            .into_address();
 
         if fee_token.is_zero() {
-            // TODO: how to handle getting validator fee token?
+            // TODO: how to handle getting validator fee token? Should we get the next validator or
+            // default to some token?
         }
 
         let balance_slot = mapping_slot(transaction.sender(), tip20::slots::BALANCES);
@@ -61,14 +67,16 @@ where
         // Get the tx cost and adjust for fee token decimals
         let cost = transaction.cost().div_ceil(U256::from(1000));
         if balance < cost {
-            // return TransactionValidationOutcome::Invalid(
-            //     transaction.clone(),
-            //     PoolTransactionError
-            //     ValidationError::InsufficientFunds.into(),
-            // );
+            return Err(InvalidTransactionError::InsufficientFunds(
+                GotExpected {
+                    got: balance,
+                    expected: cost,
+                }
+                .into(),
+            ));
         }
 
-        todo!()
+        Ok(())
     }
 }
 
@@ -84,6 +92,10 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
+        if let Err(err) = self.ensure_sufficient_balance(&transaction).await {
+            return TransactionValidationOutcome::Invalid(transaction, err.into());
+        }
+
         self.inner.validate_one(origin, transaction)
     }
 
@@ -91,6 +103,7 @@ where
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        // TODO: ensure ensure_sufficient_balance
         self.inner.validate_transactions(transactions).await
     }
 
@@ -99,6 +112,7 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        // TODO: ensure ensure_sufficient_balance
         self.inner
             .validate_transactions_with_origin(origin, transactions)
             .await

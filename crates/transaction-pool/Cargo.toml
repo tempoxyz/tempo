@@ -12,6 +12,7 @@ rust-version.workspace = true
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true
 reth-ethereum-primitives.workspace = true
+reth-evm.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 alloy-consensus.workspace = true

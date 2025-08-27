@@ -12214,6 +12214,7 @@ dependencies = [
  "alloy-primitives",
  "reth-chainspec",
  "reth-ethereum-primitives",
+ "reth-evm",
  "reth-primitives-traits",
  "reth-storage-api",
  "reth-transaction-pool",
