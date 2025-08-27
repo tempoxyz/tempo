@@ -61,13 +61,13 @@ async fn test_base_fee() -> eyre::Result<()> {
         .header
         .base_fee_per_gas
         .expect("Could not get basefee");
-    assert_eq!(base_fee, TEMPO_BASE_FEE as u64);
+    assert_eq!(base_fee, TEMPO_BASE_FEE as u128 as u64);
 
     // Deploy test token and mint initial supply
     let token = setup_test_token(provider.clone(), caller).await?;
     token
         .mint(caller, U256::from(u64::MAX))
-        .gas_price(TEMPO_BASE_FEE)
+        .gas_price(TEMPO_BASE_FEE as u128)
         .gas(30000)
         .send()
         .await?
@@ -80,7 +80,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     for _ in 0..500 {
         let pending_tx = token
             .transfer(Address::random(), U256::ONE)
-            .gas_price(TEMPO_BASE_FEE)
+            .gas_price(TEMPO_BASE_FEE as u128)
             .gas(30000)
             .send()
             .await?;
@@ -99,7 +99,6 @@ async fn test_base_fee() -> eyre::Result<()> {
         .max()
         .unwrap();
 
-    // Assert that all blocks have base_fee = 0
     stream::iter(0..=final_block)
         .for_each(|block_num| {
             let provider = provider.clone();
@@ -114,7 +113,7 @@ async fn test_base_fee() -> eyre::Result<()> {
                     .header
                     .base_fee_per_gas
                     .expect("Could not get basefee");
-                assert_eq!(base_fee, TEMPO_BASE_FEE as u64);
+                assert_eq!(base_fee, TEMPO_BASE_FEE as u128 as u64);
             }
         })
         .await;
@@ -129,7 +128,7 @@ async fn test_base_fee() -> eyre::Result<()> {
         .iter()
         .zip(fee_history.gas_used_ratio)
     {
-        assert_eq!(*base_fee, TEMPO_BASE_FEE);
+        assert_eq!(*base_fee, TEMPO_BASE_FEE as u128);
         println!("Gas used ratio: {gas_used_ratio}");
     }
 
