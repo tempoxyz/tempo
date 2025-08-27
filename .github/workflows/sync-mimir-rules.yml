@@ -52,4 +52,4 @@ jobs:
           MIMIR_API_KEY: ${{ secrets.MIMIR_PROMETHEUS_KEY }}
         run: |
           mimirtool rules load \
-            contrib/infra/monitoring/mimir/*.yaml
+            contrib/infra/monitoring/mimir/*.yml
