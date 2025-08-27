@@ -5,7 +5,7 @@ use reth_evm::revm::interpreter::instructions::utility::IntoAddress;
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{AccountInfoReader, StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     EthPoolTransaction, EthTransactionValidator, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator,
@@ -35,9 +35,11 @@ where
         Self { inner }
     }
 
-    fn validate_fee_token_balance(&self, transaction: &Tx) -> Result<(), InvalidTransactionError> {
-        let state_provider = self.inner.client().latest().expect("TODO: handle error ");
-
+    fn validate_fee_token_balance(
+        &self,
+        transaction: &Tx,
+        state_provider: &dyn StateProvider,
+    ) -> Result<(), InvalidTransactionError> {
         let user_token_slot =
             mapping_slot(transaction.sender(), tip_fee_manager::slots::USER_TOKENS);
 
@@ -86,7 +88,8 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        if let Err(err) = self.validate_fee_token_balance(&transaction) {
+        let state_provider = self.inner.client().latest().expect("TODO: handle error ");
+        if let Err(err) = self.validate_fee_token_balance(&transaction, state_provider.as_ref()) {
             return TransactionValidationOutcome::Invalid(transaction, err.into());
         }
 
@@ -97,10 +100,11 @@ where
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let state_provider = self.inner.client().latest().expect("TODO: handle error ");
         transactions
             .into_iter()
             .map(|(origin, tx)| {
-                if let Err(err) = self.validate_fee_token_balance(&tx) {
+                if let Err(err) = self.validate_fee_token_balance(&tx, state_provider.as_ref()) {
                     TransactionValidationOutcome::Invalid(tx, err.into())
                 } else {
                     self.inner.validate_one(origin, tx)
@@ -114,10 +118,11 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let state_provider = self.inner.client().latest().expect("TODO: handle error ");
         transactions
             .into_iter()
             .map(|tx| {
-                if let Err(err) = self.validate_fee_token_balance(&tx) {
+                if let Err(err) = self.validate_fee_token_balance(&tx, state_provider.as_ref()) {
                     TransactionValidationOutcome::Invalid(tx, err.into())
                 } else {
                     self.inner.validate_one(origin, tx)
