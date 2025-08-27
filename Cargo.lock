@@ -12226,6 +12226,7 @@ dependencies = [
 name = "tempo-transaction-pool"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "alloy-consensus 1.0.27",
  "alloy-eips 1.0.27",
  "alloy-primitives",

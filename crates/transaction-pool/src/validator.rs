@@ -1,4 +1,4 @@
-use alloy_primitives::U256;
+use alloy::primitives::{U256, uint};
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -9,6 +9,8 @@ use reth_transaction_pool::{
     TransactionValidator,
 };
 use tempo_precompiles::contracts::provider::TIPFeeStorageProvider;
+
+pub const USD_DECIMAL_FACTOR: U256 = uint!(1000_U256);
 
 /// Validator for Tempo transactions.
 #[derive(Debug, Clone)]
@@ -54,7 +56,7 @@ where
         };
 
         // Get the tx cost and adjust for fee token decimals
-        let cost = transaction.cost().div_ceil(U256::from(1000));
+        let cost = transaction.cost().div_ceil(USD_DECIMAL_FACTOR);
         if balance < cost {
             return TransactionValidationOutcome::Invalid(
                 transaction,
@@ -99,7 +101,7 @@ where
                 };
 
                 // Get the tx cost and adjust for fee token decimals
-                let cost = tx.cost().div_ceil(U256::from(1000));
+                let cost = tx.cost().div_ceil(USD_DECIMAL_FACTOR);
                 if balance < cost {
                     return TransactionValidationOutcome::Invalid(
                         tx,
@@ -147,7 +149,7 @@ where
                 };
 
                 // Get the tx cost and adjust for fee token decimals
-                let cost = tx.cost().div_ceil(U256::from(1000));
+                let cost = tx.cost().div_ceil(USD_DECIMAL_FACTOR);
                 if balance < cost {
                     return TransactionValidationOutcome::Invalid(
                         tx,
