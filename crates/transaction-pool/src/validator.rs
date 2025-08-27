@@ -1,23 +1,14 @@
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
-use reth_evm::revm::interpreter::instructions::utility::IntoAddress;
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderResult};
+use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
     EthPoolTransaction, EthTransactionValidator, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator,
 };
-use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        provider::TIPFeeStorageProvider,
-        storage::slots::mapping_slot,
-        tip_fee_manager::{self},
-        tip20,
-    },
-};
+use tempo_precompiles::contracts::provider::TIPFeeStorageProvider;
 
 /// Validator for Tempo transactions.
 #[derive(Debug, Clone)]
