@@ -293,3 +293,54 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_estimate_gas() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
+    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
+        "../assets/test-genesis.json"
+    ))?);
+
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
+        .with_unused_ports()
+        .dev()
+        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
+        .testing_node(executor.clone())
+        .node(TempoNode::default())
+        .launch_with_debug_capabilities()
+        .await?;
+
+    let http_url: Url = node
+        .rpc_server_handle()
+        .http_url()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(provider.clone(), caller).await?;
+    let calldata = token.mint(caller, U256::random()).calldata().clone();
+    let tx = TransactionRequest::default()
+        .to(*token.address())
+        .input(TransactionInput::new(calldata));
+
+    let gas = provider.estimate_gas(tx).await?;
+    assert_eq!(gas, 23697);
+
+    Ok(())
+}
