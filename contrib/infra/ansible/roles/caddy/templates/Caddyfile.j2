@@ -8,6 +8,10 @@
 :443 {
     tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
 
+    basicauth {
+        ttest $2a$14$rSSf4Mq.sMBa8dIJ/sg5MO3hTjyY9Cd2HDTE1EaI3Ek4CTu5w/y7a
+    }
+
     reverse_proxy localhost:8545 {
         header_up Host {host}
         header_up X-Real-IP {remote}

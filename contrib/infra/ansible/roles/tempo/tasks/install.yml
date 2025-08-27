@@ -22,25 +22,6 @@
     path: /tmp/tempo.zip
     state: absent
 
-
-#- name: Download tempo binary ZIP
-#  get_url:
-#    url: "{{ tempo_download_url }}"
-#    dest: /tmp/reth.tar.gz
-#    mode: '0755'
-#
-#- name: Unarchive tempo binary
-#  unarchive:
-#    src: /tmp/reth.tar.gz
-#    dest: /usr/local/bin
-#    remote_src: yes
-#  become: yes
-#
-#- name: Delete tempo binary Zip
-#  file:
-#    path: /tmp/reth.tar.gz
-#    state: absent
-
 - name: Install tempo systemd service
   template:
     src: tempo-dev.service.j2
