@@ -30,11 +30,10 @@ use crate::utils::setup_test_token;
 async fn test_eth_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (http_url, _node, _node_exit_fut) = if let Ok(rpc_url) = env::var("RPC_URL") {
+    let tasks = TaskManager::current();
+    let (http_url, _node, _node_exit_future) = if let Ok(rpc_url) = env::var("RPC_URL") {
         (rpc_url.parse()?, None, None)
     } else {
-        let tasks = TaskManager::current();
-        let executor = tasks.executor();
         let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
             "../assets/test-genesis.json"
         ))?);
@@ -48,7 +47,7 @@ async fn test_eth_call() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = NodeBuilder::new(node_config.clone())
-            .testing_node(executor.clone())
+            .testing_node(tasks.executor())
             .node(TempoNode::default())
             .launch_with_debug_capabilities()
             .await?;
