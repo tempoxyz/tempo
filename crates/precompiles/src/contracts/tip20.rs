@@ -289,37 +289,30 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     pub fn burn(&mut self, msg_sender: &Address, call: ITIP20::burnCall) -> Result<(), TIP20Error> {
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
+        self._burn(msg_sender, call.amount)
+    }
 
-        self._transfer(msg_sender, &Address::ZERO, call.amount)?;
-
-        let total_supply = self.total_supply();
-        let new_supply = total_supply
-            .checked_sub(call.amount)
-            .ok_or(TIP20Error::insufficient_balance())?;
-        self.set_total_supply(new_supply);
+    pub fn burn_with_memo(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::burnWithMemoCall,
+    ) -> Result<(), TIP20Error> {
+        self._burn(msg_sender, call.amount)?;
 
         self.storage
             .emit_event(
                 self.token_address,
-                TIP20Event::Burn(ITIP20::Burn {
+                TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
                     from: *msg_sender,
+                    to: Address::ZERO,
                     amount: call.amount,
+                    memo: call.memo,
                 })
                 .into_log_data(),
             )
             .expect("TODO: handle error");
 
         Ok(())
-    }
-
-    // TODO:
-    pub fn burn_with_memo(
-        &mut self,
-        msg_sender: &Address,
-        call: ITIP20::burnWithMemoCall,
-    ) -> Result<(), TIP20Error> {
-        todo!()
     }
 
     pub fn burn_blocked(
@@ -354,6 +347,31 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 TIP20Event::BurnBlocked(ITIP20::BurnBlocked {
                     from: call.from,
                     amount: call.amount,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
+
+        Ok(())
+    }
+
+    pub fn _burn(&mut self, msg_sender: &Address, amount: U256) -> Result<(), TIP20Error> {
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
+
+        self._transfer(msg_sender, &Address::ZERO, amount)?;
+
+        let total_supply = self.total_supply();
+        let new_supply = total_supply
+            .checked_sub(amount)
+            .ok_or(TIP20Error::insufficient_balance())?;
+        self.set_total_supply(new_supply);
+
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::Burn(ITIP20::Burn {
+                    from: *msg_sender,
+                    amount,
                 })
                 .into_log_data(),
             )
