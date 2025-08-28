@@ -30,6 +30,7 @@ use reth_rpc_eth_types::{
 };
 use std::ops::Deref;
 use tempo_precompiles::contracts::provider::TIPFeeDatabaseProvider;
+use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
 
 pub const U256_U64_MAX: U256 = uint!(18446744073709551615_U256);
@@ -56,17 +57,12 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
         Self { inner: eth_api }
     }
 
-    pub fn caller_fee_token_allowance<DB, T>(&self, db: &mut DB, env: &T) -> Result<u64, DB::Error>
+    pub fn caller_fee_token_allowance<DB, T>(&self, db: &mut DB, env: &T) -> Result<U256, DB::Error>
     where
         DB: Database,
         T: reth_evm::revm::context_interface::Transaction,
     {
-        let balance = db
-            .get_fee_token_balance(env.caller())?
-            .min(U256_U64_MAX)
-            .to::<u64>();
-
-        Ok(balance)
+        db.get_fee_token_balance(env.caller())
     }
 }
 
@@ -217,8 +213,18 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         mut db: impl Database<Error: Into<EthApiError>>,
         env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        self.caller_fee_token_allowance(&mut db, env)
-            .map_err(Into::into)
+        let balance = self
+            .caller_fee_token_allowance(&mut db, env)
+            .map_err(Into::into)?;
+
+        // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
+        // 10**9 so we must adjust by USD_DECIMAL_FACTOR
+        let adjusted_balance = balance
+            .saturating_mul(USD_DECIMAL_FACTOR)
+            .min(U256_U64_MAX)
+            .to::<u64>();
+
+        Ok(adjusted_balance)
     }
 }
 
