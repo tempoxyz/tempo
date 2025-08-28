@@ -4,6 +4,7 @@ use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
+use reth_evm::{TxEnvFor, revm::Database};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy, PrimitivesTy, TxTy};
 use reth_node_builder::{
     NodeAdapter,
@@ -26,6 +27,8 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind,
 };
+use std::ops::Deref;
+use tempo_precompiles::contracts::provider::TIPFeeDatabaseProvider;
 use tokio::sync::Mutex;
 
 /// Tempo `Eth` API implementation.
@@ -48,6 +51,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     /// Creates a new `TempoEthApi`.
     pub fn new(eth_api: EthApi<NodeAdapter<N>, EthRpcConverterFor<NodeAdapter<N>>>) -> Self {
         Self { inner: eth_api }
+    }
+}
+
+// Delegate all methods to the inner EthApi
+impl<N: FullNodeTypes<Types = TempoNode>> Deref for TempoEthApi<N> {
+    type Target = EthApi<NodeAdapter<N>, EthRpcConverterFor<NodeAdapter<N>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
@@ -181,6 +193,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     #[inline]
     fn max_simulate_blocks(&self) -> u64 {
         self.inner.max_simulate_blocks()
+    }
+
+    /// Returns the max gas limit that the caller can afford given a transaction environment.
+    fn caller_gas_allowance(
+        &self,
+        mut db: impl Database<Error: Into<EthApiError>>,
+        env: &TxEnvFor<Self::Evm>,
+    ) -> Result<u64, Self::Error> {
+        db.get_fee_token_balance(env.caller())
     }
 }
 
