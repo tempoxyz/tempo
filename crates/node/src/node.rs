@@ -33,7 +33,7 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::{
     EthEngineTypes, EthEvmConfig, EthereumEngineValidator, EthereumEngineValidatorBuilder,
-    EthereumEthApiBuilder, EthereumNetworkBuilder, EthereumPayloadBuilder,
+    EthereumNetworkBuilder, EthereumPayloadBuilder,
 };
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
@@ -119,7 +119,7 @@ where
     }
 }
 
-impl<N> Default for TempoAddOns<N, EthereumEthApiBuilder, EthereumEngineValidatorBuilder>
+impl<N> Default for TempoAddOns<N, TempoEthApiBuilder, EthereumEngineValidatorBuilder>
 where
     N: FullNodeComponents<
         Types: NodeTypes<
@@ -129,11 +129,11 @@ where
             Primitives = EthPrimitives,
         >,
     >,
-    EthereumEthApiBuilder: EthApiBuilder<N>,
+    TempoEthApiBuilder: EthApiBuilder<N>,
 {
     fn default() -> Self {
         Self::new(RpcAddOns::new(
-            EthereumEthApiBuilder::default(),
+            TempoEthApiBuilder::default(),
             EthereumEngineValidatorBuilder::default(),
             BasicEngineApiBuilder::default(),
             BasicEngineValidatorBuilder::default(),
@@ -230,8 +230,7 @@ where
         MalachiteConsensusBuilder,
     >;
 
-    type AddOns =
-        TempoAddOns<NodeAdapter<N>, EthereumEthApiBuilder, EthereumEngineValidatorBuilder>;
+    type AddOns = TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, EthereumEngineValidatorBuilder>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components()
