@@ -1,3 +1,8 @@
+//! Test utility functions for integration tests.
+//!
+//! This module provides helper functions for setting up and managing test environments,
+//! including test token creation and node setup for integration testing.
+
 use alloy::{
     primitives::Address, providers::Provider, sol_types::SolEvent, transports::http::reqwest::Url,
 };
@@ -17,6 +22,7 @@ use tempo_precompiles::{
     },
 };
 
+/// Creates a test TIP20 token with issuer role granted to the caller
 pub async fn setup_test_token<P>(
     provider: P,
     caller: Address,
@@ -52,15 +58,19 @@ where
     Ok(token)
 }
 
+/// Node source for integration testing
 pub enum NodeSource {
     ExternalRpc(Url),
     LocalNode(String),
 }
 
+/// Type alias for a local test node and task manager
 pub type LocalTestNode = (Box<dyn TestNodeHandle>, TaskManager);
+
+/// Trait wrapper around NodeHandle to simplify function return types
 pub trait TestNodeHandle: Send {}
 
-/// Generic implementation for NodeHandle
+/// Generic [`TestNodeHandle`] implementation for NodeHandle
 impl<Node, AddOns> TestNodeHandle for NodeHandle<Node, AddOns>
 where
     Node: FullNodeComponents,
@@ -68,6 +78,7 @@ where
 {
 }
 
+/// Set up a test node from the provided source configuration
 pub async fn setup_test_node(source: NodeSource) -> eyre::Result<(Url, Option<LocalTestNode>)> {
     match source {
         NodeSource::ExternalRpc(url) => Ok((url, None)),
