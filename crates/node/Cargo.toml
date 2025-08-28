@@ -11,7 +11,6 @@ rust-version.workspace = true
 tempo-evm.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-faucet.workspace = true
-tempo-rpc.workspace = true
 tempo-chainspec.workspace = true
 reth-malachite.workspace = true
 reth-cli-commands.workspace = true

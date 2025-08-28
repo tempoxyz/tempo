@@ -11982,7 +11982,6 @@ dependencies = [
  "tempo-evm",
  "tempo-faucet",
  "tempo-precompiles",
- "tempo-rpc",
  "tempo-transaction-pool",
  "tokio",
 ]
@@ -12013,23 +12012,6 @@ dependencies = [
  "reth-evm",
  "tempo-precompiles",
  "tracing",
-]
-
-[[package]]
-name = "tempo-rpc"
-version = "0.1.0"
-dependencies = [
- "alloy",
- "reth-evm",
- "reth-node-api",
- "reth-revm",
- "reth-rpc",
- "reth-rpc-convert",
- "reth-rpc-eth-api",
- "reth-rpc-eth-types",
- "reth-storage-api",
- "reth-tasks",
- "tokio",
 ]
 
 [[package]]
