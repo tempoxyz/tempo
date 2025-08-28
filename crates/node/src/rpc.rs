@@ -1,5 +1,6 @@
 use crate::node::TempoNode;
 use alloy::{network::Ethereum, primitives::U256};
+use alloy_primitives::uint;
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -31,6 +32,8 @@ use std::ops::Deref;
 use tempo_precompiles::contracts::provider::TIPFeeDatabaseProvider;
 use tokio::sync::Mutex;
 
+pub const U256_U64_MAX: U256 = uint!(18446744073709551615_U256);
+
 /// Tempo `Eth` API implementation.
 ///
 /// This type provides the functionality for handling `eth_` related requests.
@@ -58,7 +61,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
         DB: Database,
         T: reth_evm::revm::context_interface::Transaction,
     {
-        let balance = db.get_fee_token_balance(env.caller())?.to::<u64>();
+        let balance = db
+            .get_fee_token_balance(env.caller())?
+            .min(U256_U64_MAX)
+            .to::<u64>();
+
         Ok(balance)
     }
 }
