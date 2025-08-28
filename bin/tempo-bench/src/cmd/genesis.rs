@@ -9,9 +9,9 @@ use rayon::prelude::*;
 use reth::revm::{
     context::ContextTr,
     db::{CacheDB, EmptyDB},
-    inspector::{JournalExt, NoOpInspector},
+    inspector::JournalExt,
 };
-use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals, precompiles::PrecompilesMap};
+use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals};
 use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -185,7 +185,7 @@ impl GenesisArgs {
     }
 }
 
-fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap> {
+fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
     let env = EvmEnv::default();
     let factory = TempoEvmFactory::default();
@@ -199,7 +199,7 @@ fn create_and_mint_token(
     currency: &str,
     admin: Address,
     mint_amount: U256,
-    evm: &mut TempoEvm<CacheDB<EmptyDB>, NoOpInspector, PrecompilesMap>,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<u64> {
     let chain_id = evm.chain_id();
     let block = evm.block.clone();
