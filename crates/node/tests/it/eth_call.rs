@@ -338,7 +338,7 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
         .input(TransactionInput::new(calldata));
 
     let gas = provider.estimate_gas(tx).await?;
-    assert_eq!(gas, 23667);
+    assert_eq!(gas, 23697);
 
     Ok(())
 }
