@@ -230,11 +230,40 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     // Token operations
     pub fn mint(&mut self, msg_sender: &Address, call: ITIP20::mintCall) -> Result<(), TIP20Error> {
+        self._mint(msg_sender, call.to, call.amount)
+    }
+
+    // TODO: docs
+    fn mint_with_memo(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::mintWithMemoCall,
+    ) -> Result<(), TIP20Error> {
+        self._mint(msg_sender, call.to, call.amount)?;
+
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                    from: *msg_sender,
+                    to: call.to,
+                    amount: call.amount,
+                    memo: call.memo,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
+
+        Ok(())
+    }
+
+    // TODO: docs
+    fn _mint(&mut self, msg_sender: &Address, to: Address, amount: U256) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply();
 
         let new_supply = total_supply
-            .checked_add(call.amount)
+            .checked_add(amount)
             .ok_or(TIP20Error::supply_cap_exceeded())?;
 
         let supply_cap = self.supply_cap();
@@ -244,20 +273,19 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         self.set_total_supply(new_supply);
 
-        let to_balance = self.get_balance(&call.to);
-        let new_to_balance: alloy::primitives::Uint<256, 4> =
-            to_balance
-                .checked_add(call.amount)
-                .ok_or(TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(&call.to, new_to_balance);
+        let to_balance = self.get_balance(&to);
+        let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
+            .checked_add(amount)
+            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        self.set_balance(&to, new_to_balance);
 
         self.storage
             .emit_event(
                 self.token_address,
                 TIP20Event::Transfer(ITIP20::Transfer {
                     from: Address::ZERO,
-                    to: call.to,
-                    amount: call.amount,
+                    to,
+                    amount,
                 })
                 .into_log_data(),
             )
@@ -266,33 +294,20 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.storage
             .emit_event(
                 self.token_address,
-                TIP20Event::Mint(ITIP20::Mint {
-                    to: call.to,
-                    amount: call.amount,
-                })
-                .into_log_data(),
+                TIP20Event::Mint(ITIP20::Mint { to, amount }).into_log_data(),
             )
             .expect("TODO: handle error");
 
         Ok(())
     }
 
-    // TODO:
-    pub fn mint_with_memo(
-        &mut self,
-        msg_sender: &Address,
-        call: ITIP20::mintWithMemoCall,
-    ) -> Result<(), TIP20Error> {
-        // mint
-        //       emit TransferWithMemo(address(0), to, amount, memo);
-        todo!()
-    }
-
+    // TODO: docs
     pub fn burn(&mut self, msg_sender: &Address, call: ITIP20::burnCall) -> Result<(), TIP20Error> {
         self._burn(msg_sender, call.amount)
     }
 
-    pub fn burn_with_memo(
+    // TODO: docs
+    fn burn_with_memo(
         &mut self,
         msg_sender: &Address,
         call: ITIP20::burnWithMemoCall,
@@ -355,7 +370,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    pub fn _burn(&mut self, msg_sender: &Address, amount: U256) -> Result<(), TIP20Error> {
+    fn _burn(&mut self, msg_sender: &Address, amount: U256) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
         self._transfer(msg_sender, &Address::ZERO, amount)?;
@@ -421,25 +436,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool, TIP20Error> {
-        self.check_not_paused()?;
-        self.check_not_token_address(&call.to)?;
-        self.check_transfer_authorized(&call.from, &call.to)?;
-
-        // Check and update allowance
-        let allowed = self.get_allowance(&call.from, msg_sender);
-        if call.amount > allowed {
-            return Err(TIP20Error::insufficient_allowance());
-        }
-
-        if allowed != U256::MAX {
-            let new_allowance = allowed
-                .checked_sub(call.amount)
-                .ok_or(TIP20Error::insufficient_allowance())?;
-            self.set_allowance(&call.from, msg_sender, new_allowance);
-        }
-
-        self._transfer(&call.from, &call.to, call.amount)?;
-        Ok(true)
+        self._transfer_from(msg_sender, call.from, call.to, call.amount)
     }
 
     // TODO:
@@ -448,7 +445,51 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool, TIP20Error> {
-        todo!()
+        self._transfer_from(msg_sender, call.from, call.to, call.amount)?;
+
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                    from: *msg_sender,
+                    to: call.to,
+                    amount: call.amount,
+                    memo: call.memo,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
+
+        Ok(true)
+    }
+
+    fn _transfer_from(
+        &mut self,
+        msg_sender: &Address,
+        from: Address,
+        to: Address,
+        amount: U256,
+    ) -> Result<bool, TIP20Error> {
+        self.check_not_paused()?;
+        self.check_not_token_address(&to)?;
+        self.check_transfer_authorized(&from, &to)?;
+
+        // Check and update allowance
+        let allowed = self.get_allowance(&from, msg_sender);
+        if amount > allowed {
+            return Err(TIP20Error::insufficient_allowance());
+        }
+
+        if allowed != U256::MAX {
+            let new_allowance = allowed
+                .checked_sub(amount)
+                .ok_or(TIP20Error::insufficient_allowance())?;
+            self.set_allowance(&from, msg_sender, new_allowance);
+        }
+
+        self._transfer(&from, &to, amount)?;
+
+        Ok(true)
     }
 
     pub fn permit(
