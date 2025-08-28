@@ -4,10 +4,7 @@ use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum::rpc::{
-    EthApi,
-    eth::{EthApiFor, core::EthRpcConverterFor},
-};
+use reth_ethereum::rpc::eth::core::EthRpcConverterFor;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
@@ -38,7 +35,7 @@ use reth_node_ethereum::{
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
 use reth_rpc_eth_api::{
-    FromEvmError, FullEthApiServer, RpcConvert, RpcTypes, SignableTxRequest,
+    FromEvmError, RpcConvert, RpcTypes, SignableTxRequest,
     helpers::pending_block::BuildPendingEnv,
 };
 use reth_rpc_eth_types::EthApiError;
