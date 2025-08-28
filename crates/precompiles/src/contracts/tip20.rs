@@ -277,6 +277,17 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    // TODO:
+    pub fn mint_with_memo(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::mintCall,
+    ) -> Result<(), TIP20Error> {
+        self.mint(msg_sender, call)?;
+        //       emit TransferWithMemo(address(0), to, amount, memo);
+        todo!()
+    }
+
     pub fn burn(&mut self, msg_sender: &Address, call: ITIP20::burnCall) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
@@ -300,6 +311,15 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .expect("TODO: handle error");
 
         Ok(())
+    }
+
+    // TODO:
+    pub fn burn_with_memo(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::mintCall,
+    ) -> Result<(), TIP20Error> {
+        todo!()
     }
 
     pub fn burn_blocked(
@@ -402,6 +422,14 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         self._transfer(&call.from, &call.to, call.amount)?;
         Ok(true)
+    }
+
+    pub fn transfer_from_with_memo(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::transferFromCall,
+    ) -> Result<bool, TIP20Error> {
+        todo!()
     }
 
     pub fn permit(

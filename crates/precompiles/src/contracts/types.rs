@@ -34,6 +34,8 @@ sol! {
         function approve(address spender, uint256 amount) external returns (bool);
         function allowance(address owner, address spender) external view returns (uint256);
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
+        function mint(address to, uint256 amount) external;
+        function burn(uint256 amount) external;
 
         // TIP20 Extension
         function currency() external view returns (string);
@@ -42,12 +44,11 @@ sol! {
         function transferPolicyId() external view returns (uint64);
         function nonces(address owner) external view returns (uint256);
         function salts(address owner, bytes4 salt) external view returns (bool);
-
-        // Token Management
-        function mint(address to, uint256 amount) external;
-        function burn(uint256 amount) external;
         function burnBlocked(address from, uint256 amount) external;
+        function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
+        function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
+        function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external;
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
