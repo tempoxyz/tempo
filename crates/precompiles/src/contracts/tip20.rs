@@ -234,7 +234,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // TODO: docs
-    fn mint_with_memo(
+    pub fn mint_with_memo(
         &mut self,
         msg_sender: &Address,
         call: ITIP20::mintWithMemoCall,
@@ -307,7 +307,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // TODO: docs
-    fn burn_with_memo(
+    pub fn burn_with_memo(
         &mut self,
         msg_sender: &Address,
         call: ITIP20::burnWithMemoCall,
@@ -861,6 +861,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 #[cfg(test)]
 mod tests {
     use alloy::primitives::{Address, U256, keccak256};
+    use alloy_primitives::FixedBytes;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
@@ -1113,5 +1114,171 @@ mod tests {
 
         let result = token.transfer(&from, ITIP20::transferCall { to, amount });
         assert!(matches!(result, Err(TIP20Error::InsufficientBalance(_))));
+    }
+
+    #[test]
+    fn test_mint_with_memo() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+        let to = Address::random();
+        let amount = U256::random();
+        let memo = FixedBytes::random();
+
+        token
+            .mint_with_memo(&admin, ITIP20::mintWithMemoCall { to, amount, memo })
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        assert_eq!(
+            events[0],
+            TIP20Event::Transfer(ITIP20::Transfer {
+                from: Address::ZERO,
+                to,
+                amount
+            })
+            .into_log_data()
+        );
+
+        assert_eq!(
+            events[1],
+            TIP20Event::Mint(ITIP20::Mint { to, amount }).into_log_data()
+        );
+
+        assert_eq!(
+            events[2],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: admin,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+    }
+
+    #[test]
+    fn test_burn_with_memo() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+        let amount = U256::random();
+        let memo = FixedBytes::random();
+
+        token
+            .mint(&admin, ITIP20::mintCall { to: admin, amount })
+            .unwrap();
+
+        token
+            .burn_with_memo(&admin, ITIP20::burnWithMemoCall { amount, memo })
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        assert_eq!(
+            events[2],
+            TIP20Event::Transfer(ITIP20::Transfer {
+                from: admin,
+                to: Address::ZERO,
+                amount
+            })
+            .into_log_data()
+        );
+
+        assert_eq!(
+            events[3],
+            TIP20Event::Burn(ITIP20::Burn {
+                from: admin,
+                amount
+            })
+            .into_log_data()
+        );
+
+        assert_eq!(
+            events[4],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: admin,
+                to: Address::ZERO,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+    }
+
+    #[test]
+    fn test_transfer_from_with_memo() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+        let owner = Address::random();
+        let spender = Address::random();
+        let to = Address::random();
+        let amount = U256::random();
+        let memo = FixedBytes::random();
+
+        token
+            .mint(&admin, ITIP20::mintCall { to: owner, amount })
+            .unwrap();
+
+        token
+            .approve(&owner, ITIP20::approveCall { spender, amount })
+            .unwrap();
+
+        let result = token
+            .transfer_from_with_memo(
+                &spender,
+                ITIP20::transferFromWithMemoCall {
+                    from: owner,
+                    to,
+                    amount,
+                    memo,
+                },
+            )
+            .unwrap();
+
+        assert!(result);
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        assert_eq!(
+            events[3],
+            TIP20Event::Transfer(ITIP20::Transfer {
+                from: owner,
+                to,
+                amount
+            })
+            .into_log_data()
+        );
+
+        assert_eq!(
+            events[4],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: spender,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
     }
 }
