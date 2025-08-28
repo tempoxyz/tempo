@@ -17,7 +17,6 @@ members = [
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
-  "crates/rpc",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -77,7 +76,6 @@ tempo-chainspec = { path = "crates/chainspec" }
 tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }
 tempo-revm = { path = "crates/revm" }
-tempo-rpc = { path = "crates/rpc" }
 tempo-precompiles = { path = "crates/precompiles" }
 tempo-telemetry-util = { path = "crates/telemetry-util" }
 tempo-transaction-pool = { path = "crates/transaction-pool" }

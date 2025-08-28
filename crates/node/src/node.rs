@@ -1,5 +1,4 @@
-use crate::args::TempoArgs;
-use alloy::network::Ethereum;
+use crate::{args::TempoArgs, rpc::TempoEthApiBuilder};
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
@@ -43,7 +42,6 @@ use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::DiskFi
 use std::{default::Default, marker::PhantomData, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_evm::evm::TempoEvmFactory;
-use tempo_rpc::eth::TempoEthApi;
 use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
 
 /// Type configuration for a regular Ethereum node.
@@ -115,17 +113,9 @@ where
     }
 }
 
-impl<N> Default for TempoAddOns<N, TempoEthApiBuilder, EthereumEngineValidatorBuilder>
+impl<N> Default for TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, EthereumEngineValidatorBuilder>
 where
-    N: FullNodeComponents<
-        Types: NodeTypes<
-            ChainSpec: EthereumHardforks + Clone + 'static,
-            Payload: EngineTypes<ExecutionData = ExecutionData>
-                         + PayloadTypes<PayloadAttributes = PayloadAttributes>,
-            Primitives = EthPrimitives,
-        >,
-    >,
-    TempoEthApiBuilder: EthApiBuilder<N>,
+    N: FullNodeTypes<Types = TempoNode>,
 {
     fn default() -> Self {
         Self::new(RpcAddOns::new(
@@ -396,46 +386,5 @@ where
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
 
         Ok(transaction_pool)
-    }
-}
-
-/// Builds [`TempoEthApi`]
-#[derive(Debug)]
-pub struct TempoEthApiBuilder<NetworkT = Ethereum> {
-    /// Marker for network types.
-    _nt: PhantomData<NetworkT>,
-}
-
-impl<NetworkT> Default for TempoEthApiBuilder<NetworkT> {
-    fn default() -> Self {
-        Self { _nt: PhantomData }
-    }
-}
-
-impl<N, NetworkT> EthApiBuilder<N> for TempoEthApiBuilder<NetworkT>
-where
-    N: FullNodeComponents<
-            Types: NodeTypes<ChainSpec: Hardforks + EthereumHardforks>,
-            Evm: ConfigureEvm<NextBlockEnvCtx: BuildPendingEnv<HeaderTy<N::Types>>>,
-        >,
-    NetworkT: RpcTypes<TransactionRequest: SignableTxRequest<TxTy<N::Types>>>,
-    EthRpcConverterFor<N, NetworkT>: RpcConvert<
-            Primitives = PrimitivesTy<N::Types>,
-            TxEnv = TxEnvFor<N::Evm>,
-            Error = EthApiError,
-            Network = NetworkT,
-            Spec = SpecFor<N::Evm>,
-        >,
-    EthApiError: FromEvmError<N::Evm>,
-{
-    type EthApi = TempoEthApi<N, EthRpcConverterFor<N, NetworkT>>;
-
-    async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
-        let inner = ctx
-            .eth_api_builder()
-            .map_converter(|r| r.with_network())
-            .build();
-
-        Ok(TempoEthApi::new(inner))
     }
 }
