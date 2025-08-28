@@ -4,7 +4,10 @@ use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum::rpc::eth::{EthApiFor, core::EthRpcConverterFor};
+use reth_ethereum::rpc::{
+    EthApi,
+    eth::{EthApiFor, core::EthRpcConverterFor},
+};
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
@@ -43,6 +46,7 @@ use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::DiskFi
 use std::{default::Default, marker::PhantomData, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_evm::evm::TempoEvmFactory;
+use tempo_rpc::eth::TempoEthApi;
 use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
 
 /// Type configuration for a regular Ethereum node.
@@ -428,41 +432,14 @@ where
         >,
     EthApiError: FromEvmError<N::Evm>,
 {
-    type EthApi = EthApiFor<N, NetworkT>;
+    type EthApi = TempoEthApi<N, EthRpcConverterFor<N, NetworkT>>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
-        Ok(ctx
+        let inner = ctx
             .eth_api_builder()
             .map_converter(|r| r.with_network())
-            .build())
+            .build();
+
+        Ok(TempoEthApi::new(inner))
     }
 }
-
-///// Builds [`TempoEthApi`]
-//#[derive(Debug, Default)]
-//pub struct TempoEthApiBuilder {
-//    inner: EthereumEthApiBuilder,
-//}
-//
-//impl<N> EthApiBuilder<N> for TempoEthApiBuilder
-//where
-//    N: FullNodeComponents<
-//            Types: NodeTypes<
-//                ChainSpec: EthereumHardforks + Clone + 'static,
-//                Payload: EngineTypes<ExecutionData = ExecutionData>
-//                             + PayloadTypes<PayloadAttributes = PayloadAttributes>,
-//                Primitives = EthPrimitives,
-//            >,
-//            Evm: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes>,
-//        >,
-//    EthereumEthApiBuilder: EthApiBuilder<N>,
-//    EthApiError: FromEvmError<N::Evm>,
-//    EvmFactoryFor<N::Evm>: EvmFactory<Tx = TxEnv>,
-//{
-//    type EthApi = TempoEthApi<N, EthRpcConverterFor<N>>;
-//
-//    async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
-//        let eth_api_inner = self.inner.build_eth_api(ctx).await?;
-//        Ok(TempoEthApi::new(eth_api_inner))
-//    }
-//}

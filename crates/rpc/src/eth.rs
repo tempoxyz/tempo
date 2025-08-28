@@ -1,10 +1,13 @@
 use alloy::primitives::U256;
 use reth_evm::{SpecFor, TxEnvFor};
+use reth_node_api::{FullNodeComponents, FullNodeTypes};
 use reth_rpc::{
     RpcTypes,
     eth::{DevSigner, EthApi, RpcNodeCore},
 };
-use reth_rpc_convert::{RpcConvert, SignableTxRequest};
+use reth_rpc_convert::{
+    RpcConvert, RpcConverter, SignableTxRequest, transaction::ReceiptConverter,
+};
 use reth_rpc_eth_api::{
     EthApiTypes, FromEvmError, RpcNodeCoreExt,
     helpers::{
@@ -15,7 +18,7 @@ use reth_rpc_eth_api::{
 };
 use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
-    builder::config::PendingBlockKind,
+    builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use reth_storage_api::{ProviderHeader, ProviderTx};
 use reth_tasks::{
@@ -24,6 +27,13 @@ use reth_tasks::{
 };
 use std::ops::Deref;
 use tokio::sync::Mutex;
+
+pub type TempoRpcConvert<N, NetworkT> = RpcConverter<
+    NetworkT,
+    <N as FullNodeComponents>::Evm,
+    EthReceiptConverter<<N as FullNodeTypes>::Provider>,
+    (),
+>;
 
 /// Tempo `Eth` API implementation.
 ///
