@@ -229,11 +229,12 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     }
 
     // Token operations
+    /// Mints new tokens to specified address
     pub fn mint(&mut self, msg_sender: &Address, call: ITIP20::mintCall) -> Result<(), TIP20Error> {
         self._mint(msg_sender, call.to, call.amount)
     }
 
-    // TODO: docs
+    /// Mints new tokens to specified address with memo attached
     pub fn mint_with_memo(
         &mut self,
         msg_sender: &Address,
@@ -257,7 +258,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    // TODO: docs
+    /// Internal helper to mint new tokens and update balances
     fn _mint(&mut self, msg_sender: &Address, to: Address, amount: U256) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply();
@@ -301,12 +302,12 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    // TODO: docs
+    /// Burns tokens from sender's balance and reduces total supply
     pub fn burn(&mut self, msg_sender: &Address, call: ITIP20::burnCall) -> Result<(), TIP20Error> {
         self._burn(msg_sender, call.amount)
     }
 
-    // TODO: docs
+    /// Burns tokens from sender's balance with memo attached
     pub fn burn_with_memo(
         &mut self,
         msg_sender: &Address,
@@ -330,6 +331,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// Burns tokens from blocked addresses that cannot transfer
     pub fn burn_blocked(
         &mut self,
         msg_sender: &Address,
@@ -439,7 +441,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self._transfer_from(msg_sender, call.from, call.to, call.amount)
     }
 
-    // TODO:
+    /// Transfer from `from` to `to` address with memo attached
     pub fn transfer_from_with_memo(
         &mut self,
         msg_sender: &Address,
