@@ -324,16 +324,6 @@ where
     fn max_simulate_blocks(&self) -> u64 {
         self.inner.max_simulate_blocks()
     }
-
-    /// Returns the max gas limit that the caller can afford given a transaction environment.
-    fn caller_gas_allowance(
-        &self,
-        mut db: impl Database<Error: Into<EthApiError>>,
-        env: &TxEnvFor<Self::Evm>,
-    ) -> Result<u64, Self::Error> {
-        let provider = self.provider();
-        todo!("Check fee token balance");
-    }
 }
 
 impl<N, Rpc> EstimateCall for TempoEthApi<N, Rpc>
