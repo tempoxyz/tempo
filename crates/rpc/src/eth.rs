@@ -1,12 +1,15 @@
 use alloy::primitives::U256;
 use reth_evm::{SpecFor, TxEnvFor};
-use reth_rpc::eth::{EthApi, RpcNodeCore};
-use reth_rpc_convert::RpcConvert;
+use reth_rpc::{
+    RpcTypes,
+    eth::{DevSigner, EthApi, RpcNodeCore},
+};
+use reth_rpc_convert::{RpcConvert, SignableTxRequest};
 use reth_rpc_eth_api::{
     EthApiTypes, FromEvmError, RpcNodeCoreExt,
     helpers::{
-        Call, EthApiSpec, EthCall, EthFees, EthState, FullEthApi, LoadBlock, LoadFee,
-        LoadPendingBlock, LoadState, SpawnBlocking, Trace, estimate::EstimateCall,
+        AddDevSigners, Call, EthApiSpec, EthCall, EthFees, EthState, FullEthApi, LoadBlock,
+        LoadFee, LoadPendingBlock, LoadState, SpawnBlocking, Trace, estimate::EstimateCall,
         pending_block::PendingEnvBuilder, spec::SignersForApi,
     },
 };
@@ -280,4 +283,17 @@ where
             Spec = SpecFor<N::Evm>,
         >,
 {
+}
+
+impl<N, Rpc> AddDevSigners for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    EthApiError: FromEvmError<N::Evm>,
+    Rpc: RpcConvert<
+        Network: RpcTypes<TransactionRequest: SignableTxRequest<ProviderTx<N::Provider>>>,
+    >,
+{
+    fn with_dev_accounts(&self) {
+        *self.inner.signers().write() = DevSigner::random_signers(20)
+    }
 }
