@@ -26,7 +26,6 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind,
 };
-use std::ops::Deref;
 use tokio::sync::Mutex;
 
 /// Tempo `Eth` API implementation.
