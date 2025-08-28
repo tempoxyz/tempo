@@ -1,7 +1,6 @@
 use alloy::primitives::{B256, Bytes, U256};
 use reth_evm::{SpecFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes};
-use reth_revm::Database;
 use reth_rpc::{
     RpcTypes,
     eth::{DevSigner, EthApi, RpcNodeCore},
