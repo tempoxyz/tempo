@@ -133,8 +133,7 @@ where
 {
     #[inline]
     fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
-        todo!()
-        // self.inner.signers()
+        EthTransactions::signers(&self.inner)
     }
 
     /// Decodes and recovers the transaction and submits it to the pool.
