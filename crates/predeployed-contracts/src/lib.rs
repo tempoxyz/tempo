@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, address};
+use alloy::primitives::{Address};
 
 pub const MULTICALL_ADDRESS: Address = alloy::providers::MULTICALL3_ADDRESS;
 
