@@ -12007,7 +12007,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "eyre",
- "reth-revm",
+ "reth-evm",
  "tempo-precompiles",
  "tracing",
 ]

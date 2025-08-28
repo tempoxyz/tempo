@@ -13,22 +13,19 @@ use reth_evm::{
 };
 use reth_revm::{
     MainContext,
-    context::{BlockEnv, CfgEnv, Host, result::ResultAndState},
-    handler::{EthPrecompiles, EvmTr, PrecompileProvider, instructions::EthInstructions},
-    interpreter::{InterpreterResult, interpreter::EthInterpreter},
+    context::{BlockEnv, Host, result::ResultAndState},
+    handler::{EthPrecompiles, EvmTr},
 };
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
-
-/// The Tempo EVM context type.
-pub type TempoContext<DB> = reth_revm::Context<BlockEnv, TxEnv, CfgEnv, DB>;
+use tempo_revm::evm::TempoContext;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoEvmFactory;
 
 impl EvmFactory for TempoEvmFactory {
-    type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I, PrecompilesMap>;
+    type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
     type Context<DB: Database> = EthEvmContext<DB>;
     type Tx = TxEnv;
     type Error<DBError: std::error::Error + Send + Sync + 'static> = EVMError<DBError>;
@@ -89,17 +86,12 @@ impl EvmFactory for TempoEvmFactory {
 /// support. [`Inspector`] support is configurable at runtime because it's part of the underlying
 /// `RevmEvm` type.
 #[expect(missing_debug_implementations)]
-pub struct TempoEvm<DB: Database, I, PRECOMPILE = PrecompilesMap> {
-    inner: tempo_revm::TempoEvm<
-        TempoContext<DB>,
-        I,
-        EthInstructions<EthInterpreter, TempoContext<DB>>,
-        PRECOMPILE,
-    >,
+pub struct TempoEvm<DB: Database, I = NoOpInspector> {
+    inner: tempo_revm::TempoEvm<DB, I>,
     inspect: bool,
 }
 
-impl<DB: Database, I, P> TempoEvm<DB, I, P> {
+impl<DB: Database, I> TempoEvm<DB, I> {
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &TempoContext<DB> {
         &self.inner.0.ctx
@@ -111,20 +103,12 @@ impl<DB: Database, I, P> TempoEvm<DB, I, P> {
     }
 }
 
-impl<DB, I> TempoEvm<DB, I, PrecompilesMap>
+impl<DB, I> TempoEvm<DB, I>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
-    pub const fn new(
-        evm: tempo_revm::TempoEvm<
-            TempoContext<DB>,
-            I,
-            EthInstructions<EthInterpreter, TempoContext<DB>>,
-            PrecompilesMap,
-        >,
-        inspect: bool,
-    ) -> Self {
+    pub const fn new(evm: tempo_revm::TempoEvm<DB, I>, inspect: bool) -> Self {
         Self {
             inner: evm,
             inspect,
@@ -132,7 +116,7 @@ where
     }
 }
 
-impl<DB: Database, I, PRECOMPILE> Deref for TempoEvm<DB, I, PRECOMPILE>
+impl<DB: Database, I> Deref for TempoEvm<DB, I>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
@@ -145,7 +129,7 @@ where
     }
 }
 
-impl<DB: Database, I, PRECOMPILE> DerefMut for TempoEvm<DB, I, PRECOMPILE>
+impl<DB: Database, I> DerefMut for TempoEvm<DB, I>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
@@ -156,18 +140,17 @@ where
     }
 }
 
-impl<DB, I, PRECOMPILE> Evm for TempoEvm<DB, I, PRECOMPILE>
+impl<DB, I> Evm for TempoEvm<DB, I>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
-    PRECOMPILE: PrecompileProvider<TempoContext<DB>, Output = InterpreterResult>,
 {
     type DB = DB;
     type Tx = TxEnv;
     type Error = EVMError<DB::Error>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
-    type Precompiles = PRECOMPILE;
+    type Precompiles = PrecompilesMap;
     type Inspector = I;
 
     fn block(&self) -> &BlockEnv {

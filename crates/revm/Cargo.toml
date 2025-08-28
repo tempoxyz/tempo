@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-reth-revm.workspace = true
+reth-evm.workspace = true
 alloy-primitives.workspace = true
 tempo-precompiles.workspace = true
 
