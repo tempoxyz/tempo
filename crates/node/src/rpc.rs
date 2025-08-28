@@ -52,15 +52,6 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     }
 }
 
-// Delegate all methods to the inner EthApi
-impl<N: FullNodeTypes<Types = TempoNode>> Deref for TempoEthApi<N> {
-    type Target = EthApi<NodeAdapter<N>, EthRpcConverterFor<NodeAdapter<N>>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiTypes for TempoEthApi<N> {
     type Error = EthApiError;
     type NetworkTypes = Ethereum;
