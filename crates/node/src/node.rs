@@ -3,6 +3,7 @@ use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_ethereum::rpc::eth::core::EthRpcConverterFor;
 use reth_ethereum_engine_primitives::{
     EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes,
 };
@@ -14,7 +15,7 @@ use reth_evm::{
 };
 use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
-    AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
+    AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, HeaderTy, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes, TxTy,
 };
 use reth_node_builder::{
@@ -24,7 +25,8 @@ use reth_node_builder::{
     },
     rpc::{
         BasicEngineApiBuilder, BasicEngineValidatorBuilder, EngineApiBuilder, EngineValidatorAddOn,
-        EngineValidatorBuilder, EthApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
+        EngineValidatorBuilder, EthApiBuilder, EthApiCtx, PayloadValidatorBuilder, RethRpcAddOns,
+        RpcAddOns,
     },
 };
 use reth_node_ethereum::{
@@ -33,7 +35,7 @@ use reth_node_ethereum::{
 };
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
-use reth_rpc_eth_api::FromEvmError;
+use reth_rpc_eth_api::{FromEvmError, RpcConvert, helpers::pending_block::BuildPendingEnv};
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{
@@ -43,6 +45,7 @@ use reth_transaction_pool::{
 use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_evm::evm::TempoEvmFactory;
+use tempo_rpc::eth::TempoEthApi;
 use tempo_transaction_pool::{
     TempoTransactionPool, transaction::TempoPooledTransaction, validator::TempoTransactionValidator,
 };
@@ -419,5 +422,34 @@ where
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
 
         Ok(transaction_pool)
+    }
+}
+
+/// Builds [`TempoEthApi`]
+#[derive(Debug, Default)]
+pub struct TempoEthApiBuilder;
+
+impl<N> EthApiBuilder<N> for TempoEthApiBuilder
+where
+    N: FullNodeComponents<
+            Types: NodeTypes<ChainSpec: Hardforks + EthereumHardforks>,
+            Evm: ConfigureEvm<NextBlockEnvCtx: BuildPendingEnv<HeaderTy<N::Types>>>,
+        >,
+    EthRpcConverterFor<N>: RpcConvert<
+            Primitives = PrimitivesTy<N::Types>,
+            TxEnv = TxEnvFor<N::Evm>,
+            Error = EthApiError,
+            Network = NetworkT,
+            Spec = SpecFor<N::Evm>,
+        >,
+    EthApiError: FromEvmError<N::Evm>,
+{
+    type EthApi = TempoEthApi<N, NetworkT>;
+
+    async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
+        Ok(ctx
+            .eth_api_builder()
+            .map_converter(|r| r.with_network())
+            .build())
     }
 }

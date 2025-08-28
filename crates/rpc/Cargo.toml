@@ -10,4 +10,3 @@ rust-version.workspace = true
 [dependencies]
 reth-rpc.workspace = true
 reth-rpc-convert.workspace = true
-alloy-evm = { workspace = true, features = ["overrides"] }
