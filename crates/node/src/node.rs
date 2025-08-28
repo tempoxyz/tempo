@@ -3,18 +3,17 @@ use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum::rpc::eth::core::EthRpcConverterFor;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
-    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes, SpecFor, TxEnvFor,
+    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
     eth::spec::EthExecutorSpec,
     revm::{context::TxEnv, primitives::Address},
 };
 use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
-    AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, HeaderTy, NodeAddOns, NodeTypes,
-    PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
+    AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
+    PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
@@ -23,8 +22,7 @@ use reth_node_builder::{
     },
     rpc::{
         BasicEngineApiBuilder, BasicEngineValidatorBuilder, EngineApiBuilder, EngineValidatorAddOn,
-        EngineValidatorBuilder, EthApiBuilder, EthApiCtx, PayloadValidatorBuilder, RethRpcAddOns,
-        RpcAddOns,
+        EngineValidatorBuilder, EthApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
     },
 };
 use reth_node_ethereum::{
@@ -33,13 +31,11 @@ use reth_node_ethereum::{
 };
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
-use reth_rpc_eth_api::{
-    FromEvmError, RpcConvert, RpcTypes, SignableTxRequest, helpers::pending_block::BuildPendingEnv,
-};
+use reth_rpc_eth_api::FromEvmError;
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::DiskFileBlobStore};
-use std::{default::Default, marker::PhantomData, sync::Arc, time::SystemTime};
+use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_evm::evm::TempoEvmFactory;
 use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
