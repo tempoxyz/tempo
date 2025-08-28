@@ -18,37 +18,14 @@ use tempo_precompiles::{
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_token() -> eyre::Result<()> {
-    let tasks = TaskManager::current();
-    let (http_url, _node, _node_exit_future) = if let Ok(rpc_url) = env::var("RPC_URL") {
-        (rpc_url.parse()?, None, None)
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
+        crate::utils::NodeSource::LocalNode(include_str!(
             "../assets/test-genesis.json"
-        ))?);
-
-        let node_config = NodeConfig::new(Arc::new(chain_spec))
-            .with_unused_ports()
-            .dev()
-            .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-        let NodeHandle {
-            node,
-            node_exit_future,
-        } = NodeBuilder::new(node_config.clone())
-            .testing_node(tasks.executor())
-            .node(TempoNode::default())
-            .launch_with_debug_capabilities()
-            .await?;
-
-        let http_url: Url = node
-            .rpc_server_handle()
-            .http_url()
-            .unwrap()
-            .parse()
-            .unwrap();
-
-        (http_url, Some(node), Some(node_exit_future))
+        ).to_string())
     };
+    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
     let wallet = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
