@@ -52,6 +52,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     pub fn new(eth_api: EthApi<NodeAdapter<N>, EthRpcConverterFor<NodeAdapter<N>>>) -> Self {
         Self { inner: eth_api }
     }
+
+    pub fn caller_fee_token_allowance<DB, T>(&self, db: &mut DB, env: &T) -> Result<u64, DB::Error>
+    where
+        DB: Database,
+        T: reth_evm::revm::context_interface::Transaction,
+    {
+        let balance = db.get_fee_token_balance(env.caller())?.to::<u64>();
+        Ok(balance)
+    }
 }
 
 // Delegate all methods to the inner EthApi
@@ -201,7 +210,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         mut db: impl Database<Error: Into<EthApiError>>,
         env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        db.get_fee_token_balance(env.caller())
+        self.caller_fee_token_allowance(&mut db, env)
+            .map_err(Into::into)
     }
 }
 
