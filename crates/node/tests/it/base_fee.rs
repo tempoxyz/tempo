@@ -1,3 +1,4 @@
+use crate::utils::setup_test_token;
 use alloy::{
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
@@ -5,14 +6,8 @@ use alloy::{
 };
 use alloy_eips::BlockNumberOrTag;
 use futures::{StreamExt, future::join_all, stream};
-use reth_ethereum::tasks::TaskManager;
-use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
-use reth_node_core::args::RpcServerArgs;
-use std::{env, sync::Arc};
-use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
-use tempo_node::node::TempoNode;
-
-use crate::utils::setup_test_token;
+use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_base_fee() -> eyre::Result<()> {
@@ -21,9 +16,9 @@ async fn test_base_fee() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!(
-            "../assets/base-fee-test.json"
-        ).to_string())
+        crate::utils::NodeSource::LocalNode(
+            include_str!("../assets/base-fee-test.json").to_string(),
+        )
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 

@@ -1,3 +1,4 @@
+use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
     primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
@@ -7,24 +8,16 @@ use alloy::{
     },
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::{SolCall, SolEvent},
-    transports::http::reqwest::Url,
 };
 use alloy_rpc_types_eth::TransactionInput;
-use reth_ethereum::tasks::TaskManager;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
-use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
-use reth_node_core::args::RpcServerArgs;
-use reth_rpc_builder::RpcModuleSelection;
-use std::{env, sync::Arc};
-use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
-use tempo_node::node::TempoNode;
+use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::contracts::{
     ITIP20::{self, transferCall},
     storage::slots::mapping_slot,
     tip20,
 };
-
-use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call() -> eyre::Result<()> {

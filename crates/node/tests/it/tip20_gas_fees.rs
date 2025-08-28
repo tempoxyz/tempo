@@ -5,12 +5,8 @@ use alloy::{
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
 use alloy_rpc_types_eth::TransactionRequest;
-use reth_ethereum::tasks::TaskManager;
-use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
-use reth_node_core::args::RpcServerArgs;
-use std::{env, sync::Arc};
-use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
-use tempo_node::node::TempoNode;
+use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{IFeeManager, ITIP20},
@@ -23,9 +19,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!(
-            "../assets/test-genesis.json"
-        ).to_string())
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 

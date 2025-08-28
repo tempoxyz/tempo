@@ -3,14 +3,9 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
-    transports::http::reqwest::Url,
 };
-use reth_ethereum::tasks::TaskManager;
-use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
-use reth_node_core::args::RpcServerArgs;
-use std::{env, sync::Arc};
-use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
-use tempo_node::node::TempoNode;
+use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS,
     contracts::{ITIP20, ITIP20Factory, token_id_to_address},
@@ -21,9 +16,7 @@ async fn test_create_token() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!(
-            "../assets/test-genesis.json"
-        ).to_string())
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 

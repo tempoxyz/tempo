@@ -3,15 +3,10 @@ use alloy::{
     providers::ProviderBuilder,
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
-    transports::http::reqwest::Url,
 };
 use futures::future::try_join_all;
-use reth_ethereum::tasks::TaskManager;
-use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
-use reth_node_core::args::RpcServerArgs;
-use std::{env, sync::Arc};
-use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
-use tempo_node::node::TempoNode;
+use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP403_REGISTRY_ADDRESS,
     contracts::{
@@ -29,9 +24,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!(
-            "../assets/test-genesis.json"
-        ).to_string())
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
@@ -144,9 +137,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!(
-            "../assets/test-genesis.json"
-        ).to_string())
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
@@ -220,9 +211,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!(
-            "../assets/test-genesis.json"
-        ).to_string())
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
@@ -338,9 +327,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!(
-            "../assets/test-genesis.json"
-        ).to_string())
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
@@ -401,9 +388,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!(
-            "../assets/test-genesis.json"
-        ).to_string())
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
@@ -538,9 +523,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!(
-            "../assets/test-genesis.json"
-        ).to_string())
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
