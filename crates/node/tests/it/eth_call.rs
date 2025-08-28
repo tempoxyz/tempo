@@ -24,43 +24,18 @@ use tempo_precompiles::contracts::{
     tip20,
 };
 
-use crate::utils::setup_test_token;
+use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let tasks = TaskManager::current();
-    let (http_url, _node, _node_exit_future) = if let Ok(rpc_url) = env::var("RPC_URL") {
-        (rpc_url.parse()?, None, None)
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
-            "../assets/test-genesis.json"
-        ))?);
-
-        let node_config = NodeConfig::new(Arc::new(chain_spec))
-            .with_unused_ports()
-            .dev()
-            .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-        let NodeHandle {
-            node,
-            node_exit_future,
-        } = NodeBuilder::new(node_config.clone())
-            .testing_node(tasks.executor())
-            .node(TempoNode::default())
-            .launch_with_debug_capabilities()
-            .await?;
-
-        let http_url = node
-            .rpc_server_handle()
-            .http_url()
-            .unwrap()
-            .parse()
-            .unwrap();
-
-        (http_url, Some(node), Some(node_exit_future))
+        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
+    let (http_url, _node_handle) = setup_test_node(source).await?;
 
     let wallet = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
@@ -100,42 +75,12 @@ async fn test_eth_call() -> eyre::Result<()> {
 async fn test_eth_trace_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let tasks = TaskManager::current();
-    let (http_url, _node, _node_exit_future) = if let Ok(rpc_url) = env::var("RPC_URL") {
-        (rpc_url.parse()?, None, None)
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
-            "../assets/test-genesis.json"
-        ))?);
-
-        let node_config = NodeConfig::new(Arc::new(chain_spec))
-            .with_unused_ports()
-            .dev()
-            .with_rpc(
-                RpcServerArgs::default()
-                    .with_unused_ports()
-                    .with_http()
-                    .with_http_api(RpcModuleSelection::All),
-            );
-
-        let NodeHandle {
-            node,
-            node_exit_future,
-        } = NodeBuilder::new(node_config.clone())
-            .testing_node(tasks.executor())
-            .node(TempoNode::default())
-            .launch_with_debug_capabilities()
-            .await?;
-
-        let http_url: Url = node
-            .rpc_server_handle()
-            .http_url()
-            .unwrap()
-            .parse()
-            .unwrap();
-
-        (http_url, Some(node), Some(node_exit_future))
+        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
+    let (http_url, _node_handle) = setup_test_node(source).await?;
 
     let wallet = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
@@ -223,37 +168,12 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 async fn test_eth_get_logs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let tasks = TaskManager::current();
-    let (http_url, _node, _node_exit_future) = if let Ok(rpc_url) = env::var("RPC_URL") {
-        (rpc_url.parse()?, None, None)
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
-            "../assets/test-genesis.json"
-        ))?);
-
-        let node_config = NodeConfig::new(Arc::new(chain_spec))
-            .with_unused_ports()
-            .dev()
-            .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-        let NodeHandle {
-            node,
-            node_exit_future,
-        } = NodeBuilder::new(node_config.clone())
-            .testing_node(tasks.executor())
-            .node(TempoNode::default())
-            .launch_with_debug_capabilities()
-            .await?;
-
-        let http_url: Url = node
-            .rpc_server_handle()
-            .http_url()
-            .unwrap()
-            .parse()
-            .unwrap();
-
-        (http_url, Some(node), Some(node_exit_future))
+        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
+    let (http_url, _node_handle) = setup_test_node(source).await?;
 
     let wallet = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
@@ -313,37 +233,12 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
 async fn test_eth_estimate_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let tasks = TaskManager::current();
-    let (http_url, _node, _node_exit_future) = if let Ok(rpc_url) = env::var("RPC_URL") {
-        (rpc_url.parse()?, None, None)
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
-            "../assets/test-genesis.json"
-        ))?);
-
-        let node_config = NodeConfig::new(Arc::new(chain_spec))
-            .with_unused_ports()
-            .dev()
-            .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
-
-        let NodeHandle {
-            node,
-            node_exit_future,
-        } = NodeBuilder::new(node_config.clone())
-            .testing_node(tasks.executor())
-            .node(TempoNode::default())
-            .launch_with_debug_capabilities()
-            .await?;
-
-        let http_url: Url = node
-            .rpc_server_handle()
-            .http_url()
-            .unwrap()
-            .parse()
-            .unwrap();
-
-        (http_url, Some(node), Some(node_exit_future))
+        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
+    let (http_url, _node_handle) = setup_test_node(source).await?;
 
     let wallet = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
