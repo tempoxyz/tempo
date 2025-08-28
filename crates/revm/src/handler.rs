@@ -1,26 +1,18 @@
 //! Tempo EVM Handler implementation.
 
-use core::fmt;
 use std::fmt::Debug;
 
 use alloy_primitives::{Address, U256};
-use reth_revm::{
+use reth_evm::revm::{
     Database,
     context::{
         Block, Cfg, ContextTr, Host, JournalTr, Transaction,
-        result::{HaltReason, InvalidTransaction},
+        result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
     },
-    handler::{
-        EthFrame, EvmTr, EvmTrError, FrameResult, FrameTr, Handler,
-        pre_execution::validate_account_nonce_and_code,
-    },
-    inspector::{Inspector, InspectorEvmTr, InspectorHandler},
-    interpreter::{
-        instructions::utility::IntoAddress, interpreter::EthInterpreter,
-        interpreter_action::FrameInit,
-    },
+    handler::{EvmTr, FrameTr, Handler, pre_execution::validate_account_nonce_and_code},
+    inspector::{Inspector, InspectorHandler},
+    interpreter::{instructions::utility::IntoAddress, interpreter::EthInterpreter},
     primitives::hardfork::SpecId,
-    state::EvmState,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -28,17 +20,19 @@ use tempo_precompiles::{
 };
 use tracing::trace;
 
+use crate::{TempoEvm, evm::TempoContext};
+
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug, Clone)]
-pub struct TempoEvmHandler<EVM, ERROR, FRAME> {
+pub struct TempoEvmHandler<DB, I> {
     fee_token: Address,
     /// Phantom data to avoid type inference issues.
-    _phantom: core::marker::PhantomData<(EVM, ERROR, FRAME)>,
+    _phantom: core::marker::PhantomData<(DB, I)>,
 }
 
-impl<EVM, ERROR, FRAME> TempoEvmHandler<EVM, ERROR, FRAME> {
+impl<DB, I> TempoEvmHandler<DB, I> {
     /// Create a new [`TempoEvmHandler`] handler instance
     pub fn new() -> Self {
         Self {
@@ -48,27 +42,25 @@ impl<EVM, ERROR, FRAME> TempoEvmHandler<EVM, ERROR, FRAME> {
     }
 }
 
-impl<EVM, ERROR, FRAME> Default for TempoEvmHandler<EVM, ERROR, FRAME> {
+impl<DB, I> Default for TempoEvmHandler<DB, I> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<EVM, ERROR, FRAME> Handler for TempoEvmHandler<EVM, ERROR, FRAME>
+impl<DB, I> Handler for TempoEvmHandler<DB, I>
 where
-    EVM: EvmTr<Context: ContextTr<Journal: JournalTr<State = EvmState>>, Frame = FRAME>,
-    ERROR: EvmTrError<EVM> + fmt::Debug,
-    FRAME: FrameTr<FrameResult = FrameResult, FrameInit = FrameInit>,
+    DB: reth_evm::Database,
 {
-    type Evm = EVM;
-    type Error = ERROR;
+    type Evm = TempoEvm<DB, I>;
+    type Error = EVMError<DB::Error>;
     type HaltReason = HaltReason;
 
     #[inline]
     fn run(
         &mut self,
         evm: &mut Self::Evm,
-    ) -> Result<reth_revm::context::result::ExecutionResult<Self::HaltReason>, Self::Error> {
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         let caller = evm.ctx().caller();
         let beneficiary = evm.ctx().beneficiary();
         let fee_token = get_fee_token(evm.ctx_mut().journal_mut(), caller, beneficiary)?;
@@ -194,7 +186,7 @@ where
         let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
 
-        let coinbase_gas_price = if context.cfg().spec().into().is_enabled_in(SpecId::LONDON) {
+        let coinbase_gas_price = if context.cfg().spec().is_enabled_in(SpecId::LONDON) {
             effective_gas_price.saturating_sub(basefee)
         } else {
             effective_gas_price
@@ -307,14 +299,10 @@ where
     Ok(())
 }
 
-impl<EVM, ERROR> InspectorHandler for TempoEvmHandler<EVM, ERROR, EthFrame<EthInterpreter>>
+impl<DB, I> InspectorHandler for TempoEvmHandler<DB, I>
 where
-    EVM: InspectorEvmTr<
-            Context: ContextTr<Journal: JournalTr<State = EvmState>>,
-            Frame = EthFrame<EthInterpreter>,
-            Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
-        >,
-    ERROR: EvmTrError<EVM> + fmt::Debug,
+    DB: reth_evm::Database,
+    I: Inspector<TempoContext<DB>>,
 {
     type IT = EthInterpreter;
 }
@@ -323,9 +311,9 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::{Address, U256};
-    use reth_revm::{
+    use reth_evm::revm::{
         Journal,
-        db::{CacheDB, EmptyDB},
+        database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
     };
 
