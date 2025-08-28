@@ -55,7 +55,7 @@ where
         };
 
         // Get the tx cost and adjust for fee token decimals
-        let cost = transaction.cost().div_ceil(USD_DECIMAL_FACTOR);
+        let cost = transaction.fee_token_cost().div_ceil(USD_DECIMAL_FACTOR);
         if balance < cost {
             return TransactionValidationOutcome::Invalid(
                 transaction,
@@ -100,7 +100,7 @@ where
                 };
 
                 // Get the tx cost and adjust for fee token decimals
-                let cost = tx.cost().div_ceil(USD_DECIMAL_FACTOR);
+                let cost = tx.fee_token_cost().div_ceil(USD_DECIMAL_FACTOR);
                 if balance < cost {
                     return TransactionValidationOutcome::Invalid(
                         tx,
@@ -225,7 +225,7 @@ mod tests {
             .validate_transaction(TransactionOrigin::External, transaction.clone())
             .await;
 
-        let expected_cost = transaction.cost().div_ceil(USD_DECIMAL_FACTOR);
+        let expected_cost = transaction.fee_token_cost().div_ceil(USD_DECIMAL_FACTOR);
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             assert!(matches!(
                 err,
@@ -240,7 +240,7 @@ mod tests {
         let fee_token = token_id_to_address(1);
         let storage = vec![(
             mapping_slot(transaction.sender(), tip20::slots::BALANCES).into(),
-            transaction.cost().div_ceil(USD_DECIMAL_FACTOR),
+            transaction.fee_token_cost().div_ceil(USD_DECIMAL_FACTOR),
         )];
         let fee_token_acct = ExtendedAccount::new(0, U256::ZERO).extend_storage(storage);
         provider.add_account(fee_token, fee_token_acct);
