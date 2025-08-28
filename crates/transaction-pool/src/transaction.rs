@@ -29,7 +29,7 @@ impl TempoPooledTransaction {
         Self::from_eth(EthPooledTransaction::new(transaction, encoded_length))
     }
 
-    fn from_eth(eth_pooled: EthPooledTransaction) -> Self {
+    pub fn from_eth(eth_pooled: EthPooledTransaction) -> Self {
         Self { inner: eth_pooled }
     }
 }

@@ -3,9 +3,7 @@ use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum_engine_primitives::{
-    EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes,
-};
+use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
     ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
@@ -15,7 +13,7 @@ use reth_evm::{
 use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
     AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
-    PayloadAttributesBuilder, PayloadTypes, TxTy,
+    PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
@@ -36,16 +34,11 @@ use reth_rpc_builder::Identity;
 use reth_rpc_eth_api::FromEvmError;
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing::{debug, info};
-use reth_transaction_pool::{
-    EthPoolTransaction, PoolTransaction, TransactionValidationTaskExecutor,
-    blobstore::DiskFileBlobStore,
-};
+use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::DiskFileBlobStore};
 use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_evm::evm::TempoEvmFactory;
-use tempo_transaction_pool::{
-    TempoTransactionPool, transaction::TempoPooledTransaction, validator::TempoTransactionValidator,
-};
+use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
@@ -70,17 +63,7 @@ impl TempoNode {
         MalachiteConsensusBuilder,
     >
     where
-        Node: FullNodeTypes<
-            Types: NodeTypes<
-                ChainSpec: Hardforks + EthereumHardforks + EthExecutorSpec,
-                Primitives = EthPrimitives,
-            >,
-        >,
-        <Node::Types as NodeTypes>::Payload: PayloadTypes<
-                BuiltPayload = EthBuiltPayload,
-                PayloadAttributes = PayloadAttributes,
-                PayloadBuilderAttributes = EthPayloadBuilderAttributes,
-            >,
+        Node: FullNodeTypes<Types = Self>,
     {
         ComponentsBuilder::default()
             .node_types::<Node>()
@@ -341,26 +324,15 @@ where
 ///
 /// This contains various settings that can be configured and take precedence over the node's
 /// config.
-#[derive(Debug, Clone)]
-pub struct TempoPoolBuilder<T = TempoPooledTransaction> {
-    /// Marker for the pooled transaction type.
-    _pd: core::marker::PhantomData<T>,
-}
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct TempoPoolBuilder;
 
-impl<T> Default for TempoPoolBuilder<T> {
-    fn default() -> Self {
-        Self {
-            _pd: Default::default(),
-        }
-    }
-}
-
-impl<Node, T> PoolBuilder<Node> for TempoPoolBuilder<T>
+impl<Node> PoolBuilder<Node> for TempoPoolBuilder
 where
-    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: EthereumHardforks>>,
-    T: EthPoolTransaction<Consensus = TxTy<Node::Types>> + PoolTransaction,
+    Node: FullNodeTypes<Types = TempoNode>,
 {
-    type Pool = TempoTransactionPool<Node::Provider, DiskFileBlobStore, T>;
+    type Pool = TempoTransactionPool<Node::Provider, DiskFileBlobStore>;
 
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
         let mut pool_config = ctx.pool_config().clone();
@@ -410,7 +382,7 @@ where
             });
         }
 
-        let validator = validator.map(|validator| TempoTransactionValidator::new(validator));
+        let validator = validator.map(TempoTransactionValidator::new);
         let transaction_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;
