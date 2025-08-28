@@ -12018,11 +12018,14 @@ dependencies = [
 name = "tempo-rpc"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "reth-node-api",
  "reth-rpc",
  "reth-rpc-convert",
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
+ "reth-storage-api",
+ "reth-tasks",
 ]
 
 [[package]]

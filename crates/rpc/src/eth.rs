@@ -1,7 +1,19 @@
+use alloy::primitives::U256;
 use reth_rpc::eth::{EthApi, RpcNodeCore};
 use reth_rpc_convert::RpcConvert;
-use reth_rpc_eth_api::{EthApiTypes, helpers::FullEthApi};
-use reth_rpc_eth_types::EthApiError;
+use reth_rpc_eth_api::{
+    EthApiTypes, RpcNodeCoreExt,
+    helpers::{
+        EthApiSpec, EthFees, EthState, FullEthApi, LoadFee, LoadPendingBlock, LoadState,
+        SpawnBlocking, Trace, spec::SignersForApi,
+    },
+};
+use reth_rpc_eth_types::{EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle};
+use reth_storage_api::{ProviderHeader, ProviderTx};
+use reth_tasks::{
+    TaskSpawner,
+    pool::{BlockingTaskGuard, BlockingTaskPool},
+};
 use std::ops::Deref;
 
 /// Tempo `Eth` API implementation.
@@ -48,4 +60,143 @@ where
     fn tx_resp_builder(&self) -> &Self::RpcConvert {
         self.inner.tx_resp_builder()
     }
+}
+
+impl<N, Rpc> RpcNodeCore for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    Rpc: RpcConvert<Primitives = N::Primitives>,
+{
+    type Primitives = N::Primitives;
+    type Provider = N::Provider;
+    type Pool = N::Pool;
+    type Evm = N::Evm;
+    type Network = N::Network;
+
+    #[inline]
+    fn pool(&self) -> &Self::Pool {
+        self.inner.pool()
+    }
+
+    #[inline]
+    fn evm_config(&self) -> &Self::Evm {
+        self.inner.evm_config()
+    }
+
+    #[inline]
+    fn network(&self) -> &Self::Network {
+        self.inner.network()
+    }
+
+    #[inline]
+    fn provider(&self) -> &Self::Provider {
+        self.inner.provider()
+    }
+}
+
+impl<N, Rpc> RpcNodeCoreExt for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    Rpc: RpcConvert<Primitives = N::Primitives>,
+{
+    #[inline]
+    fn cache(&self) -> &EthStateCache<N::Primitives> {
+        self.inner.cache()
+    }
+}
+
+impl<N, Rpc> EthApiSpec for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    Rpc: RpcConvert<Primitives = N::Primitives>,
+{
+    type Transaction = ProviderTx<Self::Provider>;
+    type Rpc = Rpc::Network;
+
+    #[inline]
+    fn starting_block(&self) -> U256 {
+        self.inner.starting_block()
+    }
+
+    #[inline]
+    fn signers(&self) -> &SignersForApi<Self> {
+        self.inner.signers()
+    }
+}
+
+impl<N, Rpc> SpawnBlocking for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    Rpc: RpcConvert<Primitives = N::Primitives>,
+{
+    #[inline]
+    fn io_task_spawner(&self) -> impl TaskSpawner {
+        self.inner.task_spawner()
+    }
+
+    #[inline]
+    fn tracing_task_pool(&self) -> &BlockingTaskPool {
+        self.inner.blocking_task_pool()
+    }
+
+    #[inline]
+    fn tracing_task_guard(&self) -> &BlockingTaskGuard {
+        self.inner.blocking_task_guard()
+    }
+}
+
+impl<N, Rpc> LoadFee for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
+{
+    #[inline]
+    fn gas_oracle(&self) -> &GasPriceOracle<Self::Provider> {
+        self.inner.gas_oracle()
+    }
+
+    #[inline]
+    fn fee_history_cache(&self) -> &FeeHistoryCache<ProviderHeader<N::Provider>> {
+        self.inner.fee_history_cache()
+    }
+
+    async fn suggested_priority_fee(&self) -> Result<U256, Self::Error> {
+        self.inner.suggested_priority_fee()
+    }
+}
+
+impl<N, Rpc> LoadState for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    Rpc: RpcConvert<Primitives = N::Primitives>,
+    Self: LoadPendingBlock,
+{
+}
+
+impl<N, Rpc> EthState for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    Rpc: RpcConvert<Primitives = N::Primitives>,
+    Self: LoadPendingBlock,
+{
+    #[inline]
+    fn max_proof_window(&self) -> u64 {
+        self.inner.eth_proof_window()
+    }
+}
+
+impl<N, Rpc> EthFees for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    TempoEthApiError: FromEvmError<N::Evm>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = TempoEthApiError>,
+{
+}
+
+impl<N, Rpc> Trace for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    TempoEthApiError: FromEvmError<N::Evm>,
+    Rpc: RpcConvert<Primitives = N::Primitives>,
+{
 }
