@@ -38,7 +38,8 @@ use reth_node_ethereum::{
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
 use reth_rpc_eth_api::{
-    FromEvmError, RpcConvert, RpcTypes, SignableTxRequest, helpers::pending_block::BuildPendingEnv,
+    FromEvmError, FullEthApiServer, RpcConvert, RpcTypes, SignableTxRequest,
+    helpers::pending_block::BuildPendingEnv,
 };
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing::{debug, info};

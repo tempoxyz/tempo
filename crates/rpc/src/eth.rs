@@ -1,19 +1,20 @@
-use alloy::primitives::U256;
+use alloy::primitives::{B256, Bytes, U256};
 use reth_evm::{SpecFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes};
 use reth_rpc::{
     RpcTypes,
     eth::{DevSigner, EthApi, RpcNodeCore},
 };
-use reth_rpc_convert::{
-    RpcConvert, RpcConverter, SignableTxRequest, transaction::ReceiptConverter,
-};
+use reth_rpc_convert::{RpcConvert, RpcConverter, SignableTxRequest};
 use reth_rpc_eth_api::{
     EthApiTypes, FromEvmError, RpcNodeCoreExt,
     helpers::{
-        AddDevSigners, Call, EthApiSpec, EthCall, EthFees, EthState, FullEthApi, LoadBlock,
-        LoadFee, LoadPendingBlock, LoadState, SpawnBlocking, Trace, estimate::EstimateCall,
-        pending_block::PendingEnvBuilder, spec::SignersForApi,
+        AddDevSigners, Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions,
+        LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
+        SpawnBlocking, Trace,
+        estimate::EstimateCall,
+        pending_block::PendingEnvBuilder,
+        spec::{SignersForApi, SignersForRpc},
     },
 };
 use reth_rpc_eth_types::{
@@ -124,6 +125,41 @@ where
     }
 }
 
+impl<N, Rpc> EthTransactions for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    EthApiError: FromEvmError<N::Evm>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
+{
+    #[inline]
+    fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
+        todo!()
+        // self.inner.signers()
+    }
+
+    /// Decodes and recovers the transaction and submits it to the pool.
+    ///
+    /// Returns the hash of the transaction.
+    async fn send_raw_transaction(&self, tx: Bytes) -> Result<B256, Self::Error> {
+        self.inner.send_raw_transaction(tx).await
+    }
+}
+
+impl<N, Rpc> LoadTransaction for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
+{
+}
+
+impl<N, Rpc> LoadReceipt for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    EthApiError: FromEvmError<N::Evm>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
+{
+}
+
 impl<N, Rpc> EthApiSpec for TempoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
@@ -162,6 +198,14 @@ where
     fn tracing_task_guard(&self) -> &BlockingTaskGuard {
         self.inner.blocking_task_guard()
     }
+}
+
+impl<N, Rpc> EthBlocks for TempoEthApi<N, Rpc>
+where
+    N: RpcNodeCore,
+    EthApiError: FromEvmError<N::Evm>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
+{
 }
 
 impl<N, Rpc> LoadBlock for TempoEthApi<N, Rpc>
