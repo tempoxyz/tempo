@@ -50,7 +50,7 @@ pub trait TIPFeeDatabaseProvider<D: Database> {
     fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, D::Error>;
 }
 
-/// Implementation of TIPFeeManager storage operations for generic [`StateProvider`]
+/// Implementation of TIPFeeManager storage operations for generic [`Database`]
 impl<D: Database> TIPFeeDatabaseProvider<D> for D {
     fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, D::Error> {
         // Look up user's configured fee token in TIPFeeManager storage
