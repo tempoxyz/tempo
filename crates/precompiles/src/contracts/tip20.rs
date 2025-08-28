@@ -281,9 +281,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     pub fn mint_with_memo(
         &mut self,
         msg_sender: &Address,
-        call: ITIP20::mintCall,
+        call: ITIP20::mintWithMemoCall,
     ) -> Result<(), TIP20Error> {
-        self.mint(msg_sender, call)?;
+        // mint
         //       emit TransferWithMemo(address(0), to, amount, memo);
         todo!()
     }
@@ -317,7 +317,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     pub fn burn_with_memo(
         &mut self,
         msg_sender: &Address,
-        call: ITIP20::mintCall,
+        call: ITIP20::burnWithMemoCall,
     ) -> Result<(), TIP20Error> {
         todo!()
     }
@@ -424,10 +424,11 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(true)
     }
 
+    // TODO:
     pub fn transfer_from_with_memo(
         &mut self,
         msg_sender: &Address,
-        call: ITIP20::transferFromCall,
+        call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool, TIP20Error> {
         todo!()
     }
