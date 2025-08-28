@@ -1,6 +1,6 @@
 use std::{fmt::Debug, sync::Arc};
 
-use alloy_consensus::{BlobTransactionValidationError, error::ValueError};
+use alloy_consensus::{BlobTransactionValidationError, Transaction, error::ValueError};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718, WithEncoded},
     eip2930::AccessList,
@@ -29,8 +29,13 @@ impl TempoPooledTransaction {
         Self::from_eth(EthPooledTransaction::new(transaction, encoded_length))
     }
 
-    fn from_eth(eth_pooled: EthPooledTransaction) -> Self {
+    pub fn from_eth(eth_pooled: EthPooledTransaction) -> Self {
         Self { inner: eth_pooled }
+    }
+
+    /// Get the cost of the transaction in the fee token.
+    pub fn fee_token_cost(&self) -> U256 {
+        self.inner.cost - self.inner.value()
     }
 }
 
