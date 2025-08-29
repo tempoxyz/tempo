@@ -42,7 +42,7 @@ impl<T: StateProvider> TIPFeeStateProvider for T {
 }
 
 /// Trait to provide [`Database`] access to TIPFeeManager storage to fetch fee token data and balances
-pub trait TIPFeeDatabaseProvider<D: Database> {
+pub trait TIPFeeDatabaseExt<D: Database> {
     /// Get fee token balance for a user.
     ///
     /// Returns the user's balance in their configured fee token. Falls back to
