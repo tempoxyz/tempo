@@ -52,7 +52,7 @@ pub struct GenesisArgs {
     pub chain_id: u64,
 
     /// Base fee
-    #[arg(long, short, default_value = "0")]
+    #[arg(long, default_value = "0")]
     pub base_fee_per_gas: u128,
 }
 
