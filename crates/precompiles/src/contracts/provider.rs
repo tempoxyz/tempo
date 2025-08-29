@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, U256};
-use reth_evm::revm::{Database, interpreter::instructions::utility::IntoAddress};
+use reth_evm::{Database, revm::interpreter::instructions::utility::IntoAddress};
 use reth_storage_api::{StateProvider, errors::ProviderResult};
 
 use crate::{
@@ -42,17 +42,17 @@ impl<T: StateProvider> TIPFeeStateProvider for T {
 }
 
 /// Trait to provide [`Database`] access to TIPFeeManager storage to fetch fee token data and balances
-pub trait TIPFeeDatabaseExt<D: Database> {
+pub trait TIPFeeDatabaseExt: Database {
     /// Get fee token balance for a user.
     ///
     /// Returns the user's balance in their configured fee token. Falls back to
     /// validator token if user has no token set.
-    fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, D::Error>;
+    fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, Self::Error>;
 }
 
 /// Implementation of TIPFeeManager storage operations for generic [`Database`]
-impl<D: Database> TIPFeeDatabaseProvider<D> for D {
-    fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, D::Error> {
+impl<T: Database> TIPFeeDatabaseExt for T {
+    fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, T::Error> {
         // Look up user's configured fee token in TIPFeeManager storage
         let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
         let fee_token = self
