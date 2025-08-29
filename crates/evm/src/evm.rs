@@ -1,21 +1,19 @@
-use alloy_primitives::{Address, Bytes};
-use alloy_evm::revm::{
-    Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
-    context::{
-        TxEnv,
-        result::{EVMError, HaltReason},
-    },
-    inspector::NoOpInspector,
-    primitives::hardfork::SpecId,
-};
 use alloy_evm::{
-    Database, Evm, EvmEnv, EvmFactory, eth::EthEvmContext, precompiles::PrecompilesMap,
+    Database, Evm, EvmEnv, EvmFactory,
+    eth::EthEvmContext,
+    precompiles::PrecompilesMap,
+    revm::{
+        Context, ExecuteEvm, InspectEvm, Inspector, MainContext, SystemCallEvm,
+        context::{
+            BlockEnv, Host, TxEnv,
+            result::{EVMError, HaltReason, ResultAndState},
+        },
+        handler::{EthPrecompiles, EvmTr},
+        inspector::NoOpInspector,
+        primitives::hardfork::SpecId,
+    },
 };
-use alloy_evm::revm::{
-    MainContext,
-    context::{BlockEnv, Host, result::ResultAndState},
-    handler::{EthPrecompiles, EvmTr},
-};
+use alloy_primitives::{Address, Bytes};
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
 use tempo_revm::evm::TempoContext;
