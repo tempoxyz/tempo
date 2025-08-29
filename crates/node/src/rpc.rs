@@ -1,9 +1,11 @@
 use crate::node::TempoNode;
 use alloy::{network::Ethereum, primitives::U256};
+use alloy_primitives::uint;
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
+use reth_evm::{TxEnvFor, revm::Database};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy, PrimitivesTy, TxTy};
 use reth_node_builder::{
     NodeAdapter,
@@ -26,7 +28,11 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind,
 };
+use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
+use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
+
+pub const U256_U64_MAX: U256 = uint!(18446744073709551615_U256);
 
 /// Tempo `Eth` API implementation.
 ///
@@ -48,6 +54,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     /// Creates a new `TempoEthApi`.
     pub fn new(eth_api: EthApi<NodeAdapter<N>, EthRpcConverterFor<NodeAdapter<N>>>) -> Self {
         Self { inner: eth_api }
+    }
+
+    /// Returns the feeToken balance of the tx caller in the token's native decimals
+    pub fn caller_fee_token_allowance<DB, T>(&self, db: &mut DB, env: &T) -> Result<U256, DB::Error>
+    where
+        DB: Database,
+        T: reth_evm::revm::context_interface::Transaction,
+    {
+        db.get_fee_token_balance(env.caller())
     }
 }
 
@@ -181,6 +196,26 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     #[inline]
     fn max_simulate_blocks(&self) -> u64 {
         self.inner.max_simulate_blocks()
+    }
+
+    /// Returns the max gas limit that the caller can afford given a transaction environment.
+    fn caller_gas_allowance(
+        &self,
+        mut db: impl Database<Error: Into<EthApiError>>,
+        env: &TxEnvFor<Self::Evm>,
+    ) -> Result<u64, Self::Error> {
+        let balance = self
+            .caller_fee_token_allowance(&mut db, env)
+            .map_err(Into::into)?;
+
+        // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
+        // 10**9 so we must adjust by USD_DECIMAL_FACTOR
+        let adjusted_balance = balance
+            .saturating_mul(USD_DECIMAL_FACTOR)
+            .min(U256_U64_MAX)
+            .saturating_to::<u64>();
+
+        Ok(adjusted_balance)
     }
 }
 

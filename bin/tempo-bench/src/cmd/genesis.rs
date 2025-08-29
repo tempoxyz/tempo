@@ -44,7 +44,7 @@ pub struct GenesisArgs {
     pub mnemonic: String,
 
     /// Balance for each account
-    #[arg(short, long, default_value = "0xD3C21BCECCEDA1000000")]
+    #[arg(long, default_value = "0xD3C21BCECCEDA1000000")]
     pub balance: U256,
 
     /// Chain ID
@@ -52,7 +52,7 @@ pub struct GenesisArgs {
     pub chain_id: u64,
 
     /// Base fee
-    #[arg(long, short, default_value = "0")]
+    #[arg(long, short, default_value = "44")]
     pub base_fee_per_gas: u128,
 }
 
