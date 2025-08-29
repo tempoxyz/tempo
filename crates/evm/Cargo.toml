@@ -11,8 +11,6 @@ description = "TODO:"
 [dependencies]
 tempo-precompiles.workspace = true
 tempo-revm.workspace = true
-reth.workspace = true
-reth-evm.workspace = true
-reth-revm.workspace = true
+alloy-evm.workspace = true
 alloy-primitives.workspace = true
 

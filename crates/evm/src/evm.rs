@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, Bytes};
-use reth::revm::{
+use alloy_evm::revm::{
     Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
     context::{
         TxEnv,
@@ -8,10 +8,10 @@ use reth::revm::{
     inspector::NoOpInspector,
     primitives::hardfork::SpecId,
 };
-use reth_evm::{
+use alloy_evm::{
     Database, Evm, EvmEnv, EvmFactory, eth::EthEvmContext, precompiles::PrecompilesMap,
 };
-use reth_revm::{
+use alloy_evm::revm::{
     MainContext,
     context::{BlockEnv, Host, result::ResultAndState},
     handler::{EthPrecompiles, EvmTr},

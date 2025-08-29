@@ -11920,10 +11920,8 @@ dependencies = [
 name = "tempo-evm"
 version = "0.1.0"
 dependencies = [
+ "alloy-evm",
  "alloy-primitives",
- "reth",
- "reth-evm",
- "reth-revm",
  "tempo-precompiles",
  "tempo-revm",
 ]
