@@ -240,13 +240,22 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
-    let calldata = token.mint(caller, U256::random()).calldata().clone();
+    let calldata = token.mint(caller, U256::from(1000)).calldata().clone();
     let tx = TransactionRequest::default()
         .to(*token.address())
-        .input(TransactionInput::new(calldata));
+        .input(calldata.into());
 
-    let gas = provider.estimate_gas(tx).await?;
-    assert_eq!(gas, 23697);
+    let gas = provider.estimate_gas(tx.clone()).await?;
+    // gas estimation is calldata dependent, but should be consistent with same calldata
+    assert_eq!(gas, 22919);
+
+    // ensure we can successfully send the tx with that gas
+    let receipt = provider
+        .send_transaction(tx.gas_limit(gas))
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.gas_used <= gas);
 
     Ok(())
 }
