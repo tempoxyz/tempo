@@ -22,7 +22,7 @@ use tempo_precompiles::{
         TipFeeManager, tip20::ISSUER_ROLE,
     },
 };
-use tempo_predeployed_contracts::MULTICALL_ADDRESS;
+use tempo_predeployed_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS};
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
@@ -151,6 +151,22 @@ impl GenesisArgs {
             MULTICALL_ADDRESS,
             GenesisAccount {
                 code: Some(tempo_predeployed_contracts::Multicall::DEPLOYED_BYTECODE.clone()),
+                ..Default::default()
+            },
+        );
+
+        genesis_alloc.insert(
+            CREATEX_ADDRESS,
+            GenesisAccount {
+                code: Some(tempo_predeployed_contracts::CreateX::DEPLOYED_BYTECODE.clone()),
+                ..Default::default()
+            },
+        );
+
+        genesis_alloc.insert(
+            PERMIT2_ADDRESS,
+            GenesisAccount {
+                code: Some(tempo_predeployed_contracts::Permit2::DEPLOYED_BYTECODE.clone()),
                 ..Default::default()
             },
         );
