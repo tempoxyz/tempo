@@ -212,7 +212,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         let adjusted_balance = balance
             .saturating_mul(USD_DECIMAL_FACTOR)
             .min(U256_U64_MAX)
-            .to::<u64>();
+            .saturating_to::<u64>();
 
         Ok(adjusted_balance)
     }
