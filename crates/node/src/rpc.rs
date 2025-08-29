@@ -56,6 +56,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
         Self { inner: eth_api }
     }
 
+    /// Returns the feeToken balance of the tx caller in the token's native decimals
     pub fn caller_fee_token_allowance<DB, T>(&self, db: &mut DB, env: &T) -> Result<U256, DB::Error>
     where
         DB: Database,
