@@ -28,8 +28,7 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind,
 };
-use std::ops::Deref;
-use tempo_precompiles::contracts::provider::TIPFeeDatabaseProvider;
+use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
 
