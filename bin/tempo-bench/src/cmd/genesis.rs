@@ -22,6 +22,7 @@ use tempo_precompiles::{
         TipFeeManager, tip20::ISSUER_ROLE,
     },
 };
+use tempo_chainspec::spec::{TEMPO_BASE_FEE};
 use tempo_predeployed_contracts::MULTICALL_ADDRESS;
 
 /// Generate genesis allocation file for testing
@@ -52,7 +53,7 @@ pub struct GenesisArgs {
     pub chain_id: u64,
 
     /// Base fee
-    #[arg(long, default_value = "0")]
+    #[arg(long, default_value_t = TEMPO_BASE_FEE.into())]
     pub base_fee_per_gas: u128,
 }
 

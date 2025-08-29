@@ -11892,6 +11892,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simple-tqdm",
+ "tempo-chainspec",
  "tempo-evm",
  "tempo-precompiles",
  "tempo-predeployed-contracts",
