@@ -16,7 +16,7 @@ tempo-precompiles.workspace = true
 reth-malachite.workspace = true
 reth-cli-commands.workspace = true
 reth-ethereum-engine-primitives.workspace = true
-reth-ethereum = { workspace = true, features = ["rpc"] }
+reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-ethereum-primitives.workspace = true
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true

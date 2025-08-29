@@ -1,5 +1,5 @@
 [package]
-name = "tempo-evm"
+name = "tempo-predeployed-contracts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,5 @@ description = "TODO:"
 # workspace = true
 
 [dependencies]
-tempo-precompiles.workspace = true
-tempo-revm.workspace = true
-alloy-evm.workspace = true
-alloy-primitives.workspace = true
+alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
 
