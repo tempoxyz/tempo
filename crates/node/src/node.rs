@@ -1,13 +1,12 @@
-use crate::{args::TempoArgs, rpc::TempoEthApiBuilder};
+use crate::{args::TempoArgs, engine::TempoEngineValidator, rpc::TempoEthApiBuilder};
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
-use alloy_rpc_types_engine::{ExecutionData, PayloadAttributes};
-use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
+use alloy_rpc_types_engine::ExecutionData;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{
     ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
-    eth::spec::EthExecutorSpec,
     revm::{context::TxEnv, primitives::Address},
 };
 use reth_malachite::MalachiteConsensusBuilder;
@@ -26,8 +25,7 @@ use reth_node_builder::{
     },
 };
 use reth_node_ethereum::{
-    EthEngineTypes, EthEvmConfig, EthereumEngineValidator, EthereumEngineValidatorBuilder,
-    EthereumNetworkBuilder, EthereumPayloadBuilder,
+    EthEngineTypes, EthEvmConfig, EthereumNetworkBuilder, EthereumPayloadBuilder,
 };
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
@@ -109,14 +107,14 @@ where
     }
 }
 
-impl<N> Default for TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, EthereumEngineValidatorBuilder>
+impl<N> Default for TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, TempoEngineValidatorBuilder>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
     fn default() -> Self {
         Self::new(RpcAddOns::new(
             TempoEthApiBuilder::default(),
-            EthereumEngineValidatorBuilder::default(),
+            TempoEngineValidatorBuilder::default(),
             BasicEngineApiBuilder::default(),
             BasicEngineValidatorBuilder::default(),
             Default::default(),
@@ -212,7 +210,7 @@ where
         MalachiteConsensusBuilder,
     >;
 
-    type AddOns = TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, EthereumEngineValidatorBuilder>;
+    type AddOns = TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, TempoEngineValidatorBuilder>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components()
@@ -271,15 +269,11 @@ where
 #[non_exhaustive]
 pub struct TempoExecutorBuilder;
 
-impl<Types, Node> ExecutorBuilder<Node> for TempoExecutorBuilder
+impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
-    Types: NodeTypes<
-            ChainSpec: Hardforks + EthExecutorSpec + EthereumHardforks,
-            Primitives = EthPrimitives,
-        >,
-    Node: FullNodeTypes<Types = Types>,
+    Node: FullNodeTypes<Types = TempoNode>,
 {
-    type EVM = EthEvmConfig<Types::ChainSpec, TempoEvmFactory>;
+    type EVM = EthEvmConfig<TempoChainSpec, TempoEvmFactory>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
         let evm_config =
@@ -289,25 +283,19 @@ where
     }
 }
 
-/// Builder for [`EthereumEngineValidator`].
+/// Builder for [`TempoEngineValidator`].
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TempoEngineValidatorBuilder;
 
-impl<Node, Types> PayloadValidatorBuilder<Node> for TempoEngineValidatorBuilder
+impl<Node> PayloadValidatorBuilder<Node> for TempoEngineValidatorBuilder
 where
-    Types: NodeTypes<
-            ChainSpec: Hardforks + EthereumHardforks + Clone + 'static,
-            Payload: EngineTypes<ExecutionData = ExecutionData>
-                         + PayloadTypes<PayloadAttributes = PayloadAttributes>,
-            Primitives = EthPrimitives,
-        >,
-    Node: FullNodeComponents<Types = Types>,
+    Node: FullNodeComponents<Types = TempoNode>,
 {
-    type Validator = EthereumEngineValidator<Types::ChainSpec>;
+    type Validator = TempoEngineValidator;
 
     async fn build(self, ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
-        Ok(EthereumEngineValidator::new(ctx.config.chain.clone()))
+        Ok(TempoEngineValidator::new(ctx.config.chain.clone()))
     }
 }
 
