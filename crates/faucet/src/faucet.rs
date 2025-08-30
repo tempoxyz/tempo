@@ -16,10 +16,8 @@ use jsonrpsee::{
     proc_macros::rpc,
     types::error::{INTERNAL_ERROR_CODE, INVALID_REQUEST_CODE},
 };
-use reth::{
-    rpc::result::rpc_err,
-    transaction_pool::{TransactionOrigin, TransactionPool, error::PoolError},
-};
+use reth_transaction_pool::{TransactionOrigin, TransactionPool, error::PoolError};
+use reth_rpc_server_types::result::rpc_err;
 use tempo_precompiles::contracts::ITIP20;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 

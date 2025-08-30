@@ -80,7 +80,7 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         let inner: ChainSpec = genesis.into();
-        TempoChainSpec { inner }
+        Self { inner }
     }
 }
 

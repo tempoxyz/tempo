@@ -5,10 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Faucet RPC module for dispensing TIP20 tokens"
 
+[lints]
+workspace = true
+
 [dependencies]
-reth.workspace = true
 tempo-precompiles.workspace = true
 tempo-transaction-pool.workspace = true
+reth-transaction-pool.workspace = true
+reth-rpc-server-types.workspace = true
 alloy = { workspace = true, features = [
   "rpc-types",
   "signers",
@@ -17,7 +21,6 @@ alloy = { workspace = true, features = [
 ] }
 async-trait.workspace = true
 jsonrpsee.workspace = true
-serde.workspace = true
 clap.workspace = true
 thiserror.workspace = true
 url = "2.5.4"

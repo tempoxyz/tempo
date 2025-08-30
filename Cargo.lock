@@ -11913,7 +11913,6 @@ dependencies = [
  "reth-cli",
  "reth-ethereum",
  "reth-network-peers",
- "reth-tracing",
  "serde_json",
 ]
 
@@ -11935,8 +11934,8 @@ dependencies = [
  "async-trait",
  "clap",
  "jsonrpsee",
- "reth",
- "serde",
+ "reth-rpc-server-types",
+ "reth-transaction-pool",
  "tempo-precompiles",
  "tempo-transaction-pool",
  "thiserror 2.0.16",
