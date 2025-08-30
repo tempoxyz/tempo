@@ -1,4 +1,4 @@
-//! Utitilies to make working with tracing and telemetry easier.
+//! Utilities to make working with tracing and telemetry easier.
 
 /// Formats a [`std::time::Duration`] using the [`std::fmt::Display`].
 ///

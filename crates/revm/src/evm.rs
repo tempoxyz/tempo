@@ -51,7 +51,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Consumes self and returns a new Evm type with given Precompiles.
     pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        TempoEvm(self.0.with_precompiles(precompiles))
+        Self(self.0.with_precompiles(precompiles))
     }
 
     /// Consumes self and returns the inner Inspector.

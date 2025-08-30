@@ -5,25 +5,25 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
-# [lints]
-# workspace = true
+[lints]
+workspace = true
 
 [dependencies]
 tempo-precompiles.workspace = true
+
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true
 reth-ethereum-primitives.workspace = true
-reth-evm.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
-alloy.workspace = true
+
+alloy = { workspace = true, features = ["reqwest"] }
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-futures.workspace = true
 
 [dev-dependencies]
 reth-transaction-pool.workspace = true
-alloy-eips.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
+alloy-eips.workspace = true
 tokio.workspace = true

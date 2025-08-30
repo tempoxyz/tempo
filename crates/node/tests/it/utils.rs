@@ -23,7 +23,7 @@ use tempo_precompiles::{
 };
 
 /// Creates a test TIP20 token with issuer role granted to the caller
-pub async fn setup_test_token<P>(
+pub(crate) async fn setup_test_token<P>(
     provider: P,
     caller: Address,
 ) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
@@ -59,16 +59,16 @@ where
 }
 
 /// Node source for integration testing
-pub enum NodeSource {
+pub(crate) enum NodeSource {
     ExternalRpc(Url),
     LocalNode(String),
 }
 
 /// Type alias for a local test node and task manager
-pub type LocalTestNode = (Box<dyn TestNodeHandle>, TaskManager);
+pub(crate) type LocalTestNode = (Box<dyn TestNodeHandle>, TaskManager);
 
 /// Trait wrapper around NodeHandle to simplify function return types
-pub trait TestNodeHandle: Send {}
+pub(crate) trait TestNodeHandle: Send {}
 
 /// Generic [`TestNodeHandle`] implementation for NodeHandle
 impl<Node, AddOns> TestNodeHandle for NodeHandle<Node, AddOns>
@@ -79,7 +79,9 @@ where
 }
 
 /// Set up a test node from the provided source configuration
-pub async fn setup_test_node(source: NodeSource) -> eyre::Result<(Url, Option<LocalTestNode>)> {
+pub(crate) async fn setup_test_node(
+    source: NodeSource,
+) -> eyre::Result<(Url, Option<LocalTestNode>)> {
     match source {
         NodeSource::ExternalRpc(url) => Ok((url, None)),
         NodeSource::LocalNode(genesis_content) => {

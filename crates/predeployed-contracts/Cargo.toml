@@ -5,8 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 description = "TODO:"
 
-# [lints]
-# workspace = true
+[lints]
+workspace = true
 
 [dependencies]
 alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }

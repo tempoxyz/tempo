@@ -184,7 +184,6 @@ mod tests {
     use alloy_eips::eip2718::Decodable2718;
     use alloy_primitives::{U256, hex};
     use reth_ethereum_primitives::PooledTransactionVariant;
-    use reth_evm::revm::interpreter::instructions::utility::IntoU256;
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
@@ -248,7 +247,7 @@ mod tests {
         // Add fee token for user
         let storage = vec![(
             mapping_slot(transaction.sender(), tip_fee_manager::slots::USER_TOKENS).into(),
-            fee_token.into_u256(),
+            U256::from_be_bytes(fee_token.into_word().0),
         )];
         let fee_manager_acct = ExtendedAccount::new(0, U256::ZERO).extend_storage(storage);
         provider.add_account(TIP_FEE_MANAGER_ADDRESS, fee_manager_acct);

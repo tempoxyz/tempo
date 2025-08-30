@@ -8,4 +8,3 @@ rust-version.workspace = true
 eyre.workspace = true
 jiff = { version = "0.2.15", default-features = false }
 tracing.workspace = true
-tracing-core = "0.1.34"

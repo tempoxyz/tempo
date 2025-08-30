@@ -13,9 +13,9 @@ use alloy_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256}
 mod slots {
     use alloy::primitives::{U256, uint};
 
-    pub const POLICY_ID_COUNTER: U256 = uint!(0_U256);
-    pub const POLICY_DATA: U256 = uint!(1_U256);
-    pub const POLICY_SET: U256 = uint!(2_U256);
+    pub(super) const POLICY_ID_COUNTER: U256 = uint!(0_U256);
+    pub(super) const POLICY_DATA: U256 = uint!(1_U256);
+    pub(super) const POLICY_SET: U256 = uint!(2_U256);
 }
 
 #[derive(Debug)]

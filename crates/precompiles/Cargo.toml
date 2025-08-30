@@ -5,8 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 description = "TODO:"
 
-# [lints]
-# workspace = true
+[lints]
+workspace = true
 
 [dependencies]
 reth-evm.workspace = true
@@ -15,14 +15,15 @@ alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
-eyre.workspace = true
+
 tracing.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 alloy-signer.workspace = true
-alloy-signer-local = "1.0.27"
+alloy-signer-local.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
+eyre.workspace = true
 
 [[bench]]
 name = "tempo_precompiles"

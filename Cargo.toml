@@ -110,9 +110,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "3425a
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-network-peers" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-payload-builder" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-payload-primitives" }
-reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-primitives-traits", features = [
-  "serde-bincode-compat",
-] }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-primitives-traits"}
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-provider" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-rpc-builder" }
 reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-rpc-convert" }
@@ -143,12 +141,13 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45
 ] }
 alloy = { version = "1.0.23", default-features = false }
 alloy-evm = "0.20.1"
-alloy-consensus = { version = "1.0.23", features = ["serde-bincode-compat"] }
-alloy-eips = { version = "1.0.23", features = ["serde"] }
+alloy-consensus = "1.0.23"
+alloy-eips = "1.0.23"
 alloy-genesis = "1.0.23"
 alloy-primitives = "1.3.1"
 alloy-rpc-types-engine = "1.0.23"
 alloy-signer = "1.0.23"
+alloy-signer-local = "1.0.23"
 alloy-trie = "0.9.1"
 malachitebft-app = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app" }
 malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app-channel" }

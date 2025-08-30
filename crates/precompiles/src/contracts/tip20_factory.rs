@@ -12,7 +12,7 @@ use tracing::trace;
 mod slots {
     use alloy::primitives::U256;
 
-    pub const TOKEN_ID_COUNTER: U256 = U256::ZERO;
+    pub(super) const TOKEN_ID_COUNTER: U256 = U256::ZERO;
 }
 
 #[derive(Debug)]

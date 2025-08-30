@@ -6,17 +6,16 @@ rust-version.workspace = true
 description = "Tempo node implementation"
 default-run = "tempo"
 
-# [lints]
-# workspace = true
+[lints]
+workspace = true
 
 [dependencies]
 tempo-node.workspace = true
 tempo-chainspec.workspace = true
 tempo-faucet.workspace = true
 reth-malachite.workspace = true
-reth.workspace = true
 reth-cli-util.workspace = true
-reth-cli.workspace = true
+reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-engine-primitives.workspace = true
 reth-node-builder.workspace = true
 reth-provider.workspace = true

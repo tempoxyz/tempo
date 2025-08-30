@@ -29,7 +29,7 @@ pub struct Pool {
 
 impl From<Pool> for IFeeManager::Pool {
     fn from(pool: Pool) -> Self {
-        IFeeManager::Pool {
+        Self {
             reserve0: pool.reserve0,
             reserve1: pool.reserve1,
         }
@@ -60,7 +60,7 @@ impl PoolKey {
 
 impl From<PoolKey> for IFeeManager::PoolKey {
     fn from(key: PoolKey) -> Self {
-        IFeeManager::PoolKey {
+        Self {
             token0: key.token0,
             token1: key.token1,
         }
@@ -69,7 +69,7 @@ impl From<PoolKey> for IFeeManager::PoolKey {
 
 impl From<IFeeManager::PoolKey> for PoolKey {
     fn from(key: IFeeManager::PoolKey) -> Self {
-        PoolKey::new(key.token0, key.token1)
+        Self::new(key.token0, key.token1)
     }
 }
 
@@ -82,9 +82,9 @@ pub enum OperationType {
 impl From<u8> for OperationType {
     fn from(value: u8) -> Self {
         match value {
-            0 => OperationType::Deposit,
-            1 => OperationType::Withdraw,
-            _ => panic!("Invalid operation type: {}", value),
+            0 => Self::Deposit,
+            1 => Self::Withdraw,
+            _ => panic!("Invalid operation type: {value}"),
         }
     }
 }
@@ -102,7 +102,7 @@ pub struct QueuedOperation {
 
 impl From<QueuedOperation> for IFeeManager::QueuedOperation {
     fn from(op: QueuedOperation) -> Self {
-        IFeeManager::QueuedOperation {
+        Self {
             opType: op.op_type as u8,
             user: op.user,
             poolKey: op.pool_key.get_id(),
@@ -120,7 +120,7 @@ pub struct FeeInfo {
 
 impl From<FeeInfo> for IFeeManager::FeeInfo {
     fn from(fee_info: FeeInfo) -> Self {
-        IFeeManager::FeeInfo {
+        Self {
             amount: fee_info.amount,
             hasBeenSet: fee_info.has_been_set,
         }

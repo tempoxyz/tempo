@@ -13,7 +13,7 @@
 //! Configuration can be provided via command-line arguments or configuration files.
 
 use clap::Parser;
-use reth::{chainspec::EthChainSpec, cli::Cli};
+use reth_ethereum::{chainspec::EthChainSpec, cli::Cli};
 use reth_malachite::{
     MalachiteConsensus,
     app::{Config, Genesis, State, ValidatorInfo},
