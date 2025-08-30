@@ -181,7 +181,7 @@ mod tests {
         let create_call = ITIP20Factory::createTokenCall {
             name: "No Currency Token".to_string(),
             symbol: "NCT".to_string(),
-            currency: "".to_string(),
+            currency: String::new(),
             admin: sender,
         };
         let calldata = create_call.abi_encode();
@@ -200,8 +200,8 @@ mod tests {
         let symbol = "DEFI".to_string();
 
         let create_call = ITIP20Factory::createTokenCall {
-            name: name.clone(),
-            symbol: symbol.clone(),
+            name,
+            symbol,
             currency: "USD".to_string(),
             admin: sender,
         };

@@ -143,7 +143,7 @@ mod tests {
         let call = ITIP403Registry::createPolicyWithAccountsCall {
             admin,
             policyType: ITIP403Registry::PolicyType::WHITELIST,
-            accounts: accounts.clone(),
+            accounts,
         };
         let calldata = call.abi_encode();
         let result = precompile.call(&calldata, &admin).unwrap();

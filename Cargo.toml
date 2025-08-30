@@ -36,7 +36,6 @@ unreachable-pub = "warn"
 unused-must-use = "warn"
 redundant-lifetimes = "warn"
 unnameable-types = "warn"
-unused-crate-dependencies = "warn"
 
 [workspace.lints.rustdoc]
 all = "warn"
