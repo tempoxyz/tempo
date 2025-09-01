@@ -151,6 +151,7 @@ impl GenesisArgs {
             MULTICALL_ADDRESS,
             GenesisAccount {
                 code: Some(tempo_predeployed_contracts::Multicall::DEPLOYED_BYTECODE.clone()),
+                nonce: Some(1),
                 ..Default::default()
             },
         );
@@ -159,6 +160,7 @@ impl GenesisArgs {
             CREATEX_ADDRESS,
             GenesisAccount {
                 code: Some(tempo_predeployed_contracts::CreateX::DEPLOYED_BYTECODE.clone()),
+                nonce: Some(1),
                 ..Default::default()
             },
         );
@@ -167,6 +169,7 @@ impl GenesisArgs {
             PERMIT2_ADDRESS,
             GenesisAccount {
                 code: Some(tempo_predeployed_contracts::Permit2::DEPLOYED_BYTECODE.clone()),
+                nonce: Some(1),
                 ..Default::default()
             },
         );
