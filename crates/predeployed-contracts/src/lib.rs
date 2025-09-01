@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, address};
 
 pub const MULTICALL_ADDRESS: Address = alloy::providers::MULTICALL3_ADDRESS;
 pub const CREATEX_ADDRESS: Address = address!("0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed");
