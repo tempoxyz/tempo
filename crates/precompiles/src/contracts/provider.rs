@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, U256};
-use reth_evm::revm::interpreter::instructions::utility::IntoAddress;
+use reth_evm::revm::{Database, interpreter::instructions::utility::IntoAddress};
 use reth_storage_api::{StateProvider, errors::ProviderResult};
 
 use crate::{
@@ -7,8 +7,8 @@ use crate::{
     contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20},
 };
 
-/// Provides access to TIPFeeManager storage to fetch fee token data and balances
-pub trait TIPFeeStorageProvider {
+/// Trait to provide [`StateProvider`] access to TIPFeeManager storage to fetch fee token data and balances
+pub trait TIPFeeStateProviderExt {
     /// Get fee token balance for a user.
     ///
     /// Returns the user's balance in their configured fee token. Falls back to
@@ -17,7 +17,7 @@ pub trait TIPFeeStorageProvider {
 }
 
 /// Implementation of TIPFeeManager storage operations for generic [`StateProvider`]
-impl<T: StateProvider> TIPFeeStorageProvider for T {
+impl<T: StateProvider> TIPFeeStateProviderExt for T {
     fn get_fee_token_balance(&self, user: Address) -> ProviderResult<U256> {
         // Look up user's configured fee token in TIPFeeManager storage
         let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
@@ -36,6 +36,37 @@ impl<T: StateProvider> TIPFeeStorageProvider for T {
         let balance = self
             .storage(fee_token, balance_slot.into())?
             .unwrap_or_default();
+
+        Ok(balance)
+    }
+}
+
+/// Trait to provide [`Database`] access to TIPFeeManager storage to fetch fee token data and balances
+pub trait TIPFeeDatabaseExt: Database {
+    /// Get fee token balance for a user.
+    ///
+    /// Returns the user's balance in their configured fee token. Falls back to
+    /// validator token if user has no token set.
+    fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, Self::Error>;
+}
+
+/// Implementation of TIPFeeManager storage operations for generic [`Database`]
+impl<T: Database> TIPFeeDatabaseExt for T {
+    fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, T::Error> {
+        // Look up user's configured fee token in TIPFeeManager storage
+        let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
+        let fee_token = self
+            .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot)?
+            .into_address();
+
+        if fee_token.is_zero() {
+            // TODO: how to handle getting validator fee token? Should we get the next validator or
+            // default to some token?
+        }
+
+        // Query the user's balance in the determined fee token's TIP20 contract
+        let balance_slot = mapping_slot(user, tip20::slots::BALANCES);
+        let balance = self.storage(fee_token, balance_slot)?;
 
         Ok(balance)
     }

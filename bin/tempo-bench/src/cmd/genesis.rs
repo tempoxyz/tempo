@@ -23,7 +23,7 @@ use tempo_precompiles::{
     },
 };
 use tempo_chainspec::spec::{TEMPO_BASE_FEE};
-use tempo_predeployed_contracts::MULTICALL_ADDRESS;
+use tempo_predeployed_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS};
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
@@ -45,7 +45,7 @@ pub struct GenesisArgs {
     pub mnemonic: String,
 
     /// Balance for each account
-    #[arg(short, long, default_value = "0xD3C21BCECCEDA1000000")]
+    #[arg(long, default_value = "0xD3C21BCECCEDA1000000")]
     pub balance: U256,
 
     /// Chain ID
@@ -152,6 +152,25 @@ impl GenesisArgs {
             MULTICALL_ADDRESS,
             GenesisAccount {
                 code: Some(tempo_predeployed_contracts::Multicall::DEPLOYED_BYTECODE.clone()),
+                nonce: Some(1),
+                ..Default::default()
+            },
+        );
+
+        genesis_alloc.insert(
+            CREATEX_ADDRESS,
+            GenesisAccount {
+                code: Some(tempo_predeployed_contracts::CreateX::DEPLOYED_BYTECODE.clone()),
+                nonce: Some(1),
+                ..Default::default()
+            },
+        );
+
+        genesis_alloc.insert(
+            PERMIT2_ADDRESS,
+            GenesisAccount {
+                code: Some(tempo_predeployed_contracts::Permit2::DEPLOYED_BYTECODE.clone()),
+                nonce: Some(1),
                 ..Default::default()
             },
         );
