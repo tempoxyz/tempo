@@ -14,6 +14,7 @@ use reth::revm::{
 use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals};
 use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -22,7 +23,6 @@ use tempo_precompiles::{
         TipFeeManager, tip20::ISSUER_ROLE,
     },
 };
-use tempo_chainspec::spec::{TEMPO_BASE_FEE};
 use tempo_predeployed_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS};
 
 /// Generate genesis allocation file for testing
