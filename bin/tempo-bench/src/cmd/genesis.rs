@@ -14,6 +14,7 @@ use reth::revm::{
 use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals};
 use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -52,7 +53,7 @@ pub struct GenesisArgs {
     pub chain_id: u64,
 
     /// Base fee
-    #[arg(long, short, default_value = "44")]
+    #[arg(long, default_value_t = TEMPO_BASE_FEE.into())]
     pub base_fee_per_gas: u128,
 }
 
