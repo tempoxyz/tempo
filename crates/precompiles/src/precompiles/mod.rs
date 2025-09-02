@@ -194,3 +194,54 @@ where
         Err(other) => panic!("expected encoded interface error, got: {other:?}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::precompiles::Precompile;
+    use alloy_evm::{EthEvmFactory, EvmEnv, EvmFactory, EvmInternals};
+    use alloy_primitives::{Address, Bytes, U256};
+    use reth_evm::{
+        precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
+        revm::{
+            context::ContextTr,
+            database::{CacheDB, EmptyDB},
+        },
+    };
+
+    #[test]
+    fn test_precompile_delegatecall() {
+        let precompile = tempo_precompile!("TIP20Token", |input| TIP20Token::new(
+            1,
+            &mut EvmStorageProvider::new(input.internals, 1),
+        ));
+
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+
+        let target_address = Address::random();
+        let bytecode_address = Address::random();
+        let input = PrecompileInput {
+            data: &Bytes::new(),
+            caller: Address::ZERO,
+            internals: evm_internals,
+            gas: 0,
+            value: U256::ZERO,
+            target_address,
+            bytecode_address,
+        };
+
+        let result = AlloyEvmPrecompile::call(&precompile, input);
+
+        match result {
+            Ok(output) => {
+                assert!(output.reverted);
+                let decoded = DelegateCallNotAllowed::abi_decode(&output.bytes).unwrap();
+                assert!(matches!(decoded, DelegateCallNotAllowed {}));
+            }
+            Err(_) => panic!("expected reverted output"),
+        }
+    }
+}
