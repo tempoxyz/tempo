@@ -1,6 +1,7 @@
 use alloy::{
     primitives::Address,
-    sol_types::{SolCall, SolInterface},
+    sol,
+    sol_types::{SolCall, SolError, SolInterface},
 };
 use alloy_primitives::Bytes;
 use reth_evm::{
@@ -49,17 +50,32 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
     });
 }
 
+sol! {
+    error DelegateCallNotAllowed();
+}
+
+macro_rules! tempo_precompile {
+    ($id:expr, |$input:ident| $impl:expr) => {
+        DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
+            if !$input.is_direct_call() {
+                return Ok(PrecompileOutput::new_reverted(
+                    0,
+                    DelegateCallNotAllowed {}.abi_encode().into(),
+                ));
+            }
+            $impl.call($input.data, &$input.caller)
+        })
+    };
+}
+
 pub struct TIP20Precompile;
 impl TIP20Precompile {
     pub fn create(address: &Address, chain_id: u64) -> DynPrecompile {
         let token_id = address_to_token_id_unchecked(address);
-        DynPrecompile::new_stateful(PrecompileId::Custom("TIP20Token".into()), move |input| {
-            TIP20Token::new(
-                token_id,
-                &mut EvmStorageProvider::new(input.internals, chain_id),
-            )
-            .call(input.data, &input.caller)
-        })
+        tempo_precompile!("TIP20Token", |input| TIP20Token::new(
+            token_id,
+            &mut EvmStorageProvider::new(input.internals, chain_id),
+        ))
     }
 }
 
@@ -67,10 +83,9 @@ pub struct TIP20FactoryPrecompile;
 
 impl TIP20FactoryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        DynPrecompile::new_stateful(PrecompileId::Custom("TIP20Factory".into()), move |input| {
-            TIP20Factory::new(&mut EvmStorageProvider::new(input.internals, chain_id))
-                .call(input.data, &input.caller)
-        })
+        tempo_precompile!("TIP20Factory", |input| TIP20Factory::new(
+            &mut EvmStorageProvider::new(input.internals, chain_id)
+        ))
     }
 }
 
@@ -78,13 +93,9 @@ pub struct TIP403RegistryPrecompile;
 
 impl TIP403RegistryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        DynPrecompile::new_stateful(
-            PrecompileId::Custom("TIP403Registry".into()),
-            move |input| {
-                TIP403Registry::new(&mut EvmStorageProvider::new(input.internals, chain_id))
-                    .call(input.data, &input.caller)
-            },
-        )
+        tempo_precompile!("TIP403Registry", |input| TIP403Registry::new(
+            &mut EvmStorageProvider::new(input.internals, chain_id)
+        ))
     }
 }
 
@@ -92,10 +103,7 @@ pub struct TIP4217RegistryPrecompile;
 
 impl TIP4217RegistryPrecompile {
     pub fn create() -> DynPrecompile {
-        DynPrecompile::new_stateful(
-            PrecompileId::Custom("TIP4217Registry".into()),
-            move |input| TIP4217Registry::default().call(input.data, &input.caller),
-        )
+        tempo_precompile!("TIP4217Registry", |input| TIP4217Registry::default())
     }
 }
 
@@ -103,13 +111,10 @@ pub struct TipFeeManagerPrecompile;
 
 impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        DynPrecompile::new_stateful(PrecompileId::Custom("TipFeeManager".into()), move |input| {
-            TipFeeManager::new(
-                TIP_FEE_MANAGER_ADDRESS,
-                &mut EvmStorageProvider::new(input.internals, chain_id),
-            )
-            .call(input.data, &input.caller)
-        })
+        tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
+            TIP_FEE_MANAGER_ADDRESS,
+            &mut EvmStorageProvider::new(input.internals, chain_id)
+        ))
     }
 }
 
