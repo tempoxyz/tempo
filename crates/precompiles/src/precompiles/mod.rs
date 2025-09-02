@@ -202,7 +202,7 @@ mod tests {
     use alloy_evm::{EthEvmFactory, EvmEnv, EvmFactory, EvmInternals};
     use alloy_primitives::{Address, Bytes, U256};
     use reth_evm::{
-        precompiles::{Precompile as RethPrecompile, PrecompileInput},
+        precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
         revm::{
             context::ContextTr,
             database::{CacheDB, EmptyDB},
@@ -211,8 +211,10 @@ mod tests {
 
     #[test]
     fn test_precompile_delegatecall() {
-        let precompile =
-            tempo_precompile!("TIP4217Registry", |_input| { TIP4217Registry::default() });
+        let precompile = tempo_precompile!("TIP20Token", |input| TIP20Token::new(
+            1,
+            &mut EvmStorageProvider::new(input.internals, 1),
+        ));
 
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
@@ -231,7 +233,7 @@ mod tests {
             bytecode_address,
         };
 
-        let result = RethPrecompile::call(&precompile, input);
+        let result = AlloyEvmPrecompile::call(&precompile, input);
 
         match result {
             Ok(output) => {
