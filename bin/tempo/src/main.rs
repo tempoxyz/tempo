@@ -1,16 +1,4 @@
-//! Main executable for the Reth-Malachite node.
-//!
-//! This binary launches a blockchain node that combines:
-//! - Reth's execution layer for transaction processing and state management
-//! - Malachite's BFT consensus engine for block agreement
-//!
-//! The node operates by:
-//! 1. Starting the Reth node infrastructure (database, networking, RPC)
-//! 2. Creating the application state that bridges Reth and Malachite
-//! 3. Launching the Malachite consensus engine
-//! 4. Running both components until shutdown
-//!
-//! Configuration can be provided via command-line arguments or configuration files.
+//! Main executable for the Tempo node.
 
 use clap::Parser;
 use reth_ethereum::{chainspec::EthChainSpec, cli::Cli};
