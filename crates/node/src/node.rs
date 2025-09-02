@@ -9,7 +9,6 @@ use reth_evm::{
     ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
     revm::{context::TxEnv, primitives::Address},
 };
-use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
     AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -25,7 +24,8 @@ use reth_node_builder::{
     },
 };
 use reth_node_ethereum::{
-    EthEngineTypes, EthEvmConfig, EthereumNetworkBuilder, EthereumPayloadBuilder,
+    EthEngineTypes, EthEvmConfig, EthereumConsensusBuilder, EthereumNetworkBuilder,
+    EthereumPayloadBuilder,
 };
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
@@ -58,7 +58,7 @@ impl TempoNode {
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
-        MalachiteConsensusBuilder,
+        EthereumConsensusBuilder,
     >
     where
         Node: FullNodeTypes<Types = Self>,
@@ -69,7 +69,7 @@ impl TempoNode {
             .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
-            .consensus(MalachiteConsensusBuilder)
+            .consensus(EthereumConsensusBuilder::default())
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
@@ -207,7 +207,7 @@ where
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
-        MalachiteConsensusBuilder,
+        EthereumConsensusBuilder,
     >;
 
     type AddOns = TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, TempoEngineValidatorBuilder>;
