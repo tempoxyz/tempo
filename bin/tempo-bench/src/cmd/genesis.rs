@@ -15,6 +15,9 @@ use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals};
 use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_contracts::{
+    CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS,
+};
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -23,7 +26,6 @@ use tempo_precompiles::{
         TipFeeManager, tip20::ISSUER_ROLE,
     },
 };
-use tempo_predeployed_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS};
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
@@ -151,7 +153,16 @@ impl GenesisArgs {
         genesis_alloc.insert(
             MULTICALL_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_predeployed_contracts::Multicall::DEPLOYED_BYTECODE.clone()),
+                code: Some(tempo_contracts::Multicall::DEPLOYED_BYTECODE.clone()),
+                nonce: Some(1),
+                ..Default::default()
+            },
+        );
+
+        genesis_alloc.insert(
+            DEFAULT_7702_DELEGATE_ADDRESS,
+            GenesisAccount {
+                code: Some(tempo_contracts::IthacaAccount::DEPLOYED_BYTECODE.clone()),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -160,7 +171,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             CREATEX_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_predeployed_contracts::CreateX::DEPLOYED_BYTECODE.clone()),
+                code: Some(tempo_contracts::CreateX::DEPLOYED_BYTECODE.clone()),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -169,7 +180,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             PERMIT2_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_predeployed_contracts::Permit2::DEPLOYED_BYTECODE.clone()),
+                code: Some(tempo_contracts::Permit2::DEPLOYED_BYTECODE.clone()),
                 nonce: Some(1),
                 ..Default::default()
             },

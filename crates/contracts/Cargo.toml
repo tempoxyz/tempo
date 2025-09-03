@@ -1,5 +1,5 @@
 [package]
-name = "tempo-predeployed-contracts"
+name = "tempo-contracts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
