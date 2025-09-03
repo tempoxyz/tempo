@@ -12019,6 +12019,7 @@ dependencies = [
  "reth-ethereum",
  "reth-network-peers",
  "serde_json",
+ "tempo-contracts",
 ]
 
 [[package]]
