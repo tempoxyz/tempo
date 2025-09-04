@@ -3,14 +3,14 @@ use reth_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Context, Inspector,
-        context::{BlockEnv, CfgEnv, ContextError, ContextTr, Evm, FrameStack, Transaction, TxEnv},
+        context::{BlockEnv, CfgEnv, ContextError, ContextTr, Evm, FrameStack, TxEnv},
         handler::{
             EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
             instructions::EthInstructions,
         },
         inspector::InspectorEvmTr,
         interpreter::interpreter::EthInterpreter,
-        state::{Account, Bytecode},
+        state::Bytecode,
     },
 };
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
