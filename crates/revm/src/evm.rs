@@ -191,10 +191,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, U256};
+    use alloy_primitives::Address;
     use reth_evm::revm::{
         ExecuteEvm,
-        context::{BlockEnv, CfgEnv, TxEnv},
+        context::TxEnv,
         database::{CacheDB, EmptyDB},
         primitives::hardfork::SpecId,
         state::Bytecode,
@@ -206,9 +206,9 @@ mod tests {
         let ctx = TempoContext::new(db, SpecId::default());
         let mut tempo_evm = TempoEvm::new(ctx, ());
 
-        let caller = Address::random();
+        let caller_0 = Address::random();
         let tx_env = TxEnv {
-            caller,
+            caller: caller_0,
             nonce: 0,
             ..Default::default()
         };
@@ -216,11 +216,26 @@ mod tests {
         assert!(res.is_success());
 
         let ctx = tempo_evm.ctx();
-        let account = ctx.journal().account(caller).to_owned();
+        let account = ctx.journal().account(caller_0).to_owned();
         assert_eq!(
             account.info.code.unwrap(),
             Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
         );
+
+        // Ensure that auto delegation does not get set when nonce > 0
+        let caller_1 = Address::random();
+        let tx_env = TxEnv {
+            caller: caller_1,
+            nonce: 1,
+            ..Default::default()
+        };
+        let res = tempo_evm.transact_one(tx_env)?;
+        assert!(res.is_success());
+
+        let ctx = tempo_evm.ctx();
+        let account = ctx.journal().account(caller_1).to_owned();
+        assert!(account.info.code.unwrap_or_default().is_empty());
+
         Ok(())
     }
 }
