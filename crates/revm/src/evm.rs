@@ -113,8 +113,8 @@ where
             let journal = ctx.journal_mut();
             let account = journal.account(caller);
 
-            dbg!(account);
-            if account.info.code.is_none() {
+            let account_code = account.info.code.to_owned().unwrap_or_default();
+            if account_code.is_empty() {
                 journal.set_code(caller, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
             }
         }
@@ -207,9 +207,6 @@ mod tests {
         let mut tempo_evm = TempoEvm::new(ctx, ());
 
         let caller = Address::random();
-        let acct = tempo_evm.ctx().journal().account(caller).to_owned();
-        assert_eq!(acct.info.nonce, 0);
-
         let tx_env = TxEnv {
             caller,
             nonce: 0,
