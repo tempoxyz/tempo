@@ -107,17 +107,17 @@ where
 
         let ctx = &mut self.0.ctx;
 
-        // Auto delegate the the default 7702 account if this is the account's first tx
-        if ctx.tx.nonce == 0 {
-            let caller = ctx.tx.caller;
-            let journal = ctx.journal_mut();
-            let account = journal.account(caller);
-
-            let account_code = account.info.code.to_owned().unwrap_or_default();
-            if account_code.is_empty() {
-                journal.set_code(caller, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
-            }
-        }
+        // // Auto delegate the the default 7702 account if this is the account's first tx
+        // if ctx.tx.nonce == 0 {
+        //     let caller = ctx.tx.caller;
+        //     let journal = ctx.journal_mut();
+        //     let account = journal.account(caller);
+        //
+        //     let account_code = account.info.code.to_owned().unwrap_or_default();
+        //     if account_code.is_empty() {
+        //         journal.set_code(caller, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
+        //     }
+        // }
 
         let precompiles = &mut self.0.precompiles;
         let res = Self::Frame::init_with_context(new_frame, ctx, precompiles, frame_input)?;

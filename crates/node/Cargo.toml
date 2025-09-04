@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 tempo-evm.workspace = true
+tempo-contracts.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-faucet.workspace = true
 tempo-chainspec.workspace = true
