@@ -3,15 +3,17 @@ use reth_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Context, Inspector,
-        context::{BlockEnv, CfgEnv, ContextError, Evm, FrameStack, TxEnv},
+        context::{BlockEnv, CfgEnv, ContextError, ContextTr, Evm, FrameStack, Transaction, TxEnv},
         handler::{
             EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
             instructions::EthInstructions,
         },
         inspector::InspectorEvmTr,
         interpreter::interpreter::EthInterpreter,
+        state::{Account, Bytecode},
     },
 };
+use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
@@ -104,6 +106,17 @@ where
         };
 
         let ctx = &mut self.0.ctx;
+
+        // Auto delegate the the default 7702 account if this is the account's first tx
+        if ctx.tx.nonce == 1 {
+            let caller = ctx.tx.caller;
+            let journal = ctx.journal_mut();
+            let account = journal.account(caller);
+            if account.info.code.is_none() {
+                journal.set_code(caller, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
+            }
+        }
+
         let precompiles = &mut self.0.precompiles;
         let res = Self::Frame::init_with_context(new_frame, ctx, precompiles, frame_input)?;
 

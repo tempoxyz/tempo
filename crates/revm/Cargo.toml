@@ -8,9 +8,10 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+tempo-precompiles.workspace = true
+tempo-contracts.workspace = true
 reth-evm.workspace = true
 alloy-primitives.workspace = true
-tempo-precompiles.workspace = true
 
 tracing.workspace = true
 
