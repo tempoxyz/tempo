@@ -13,7 +13,7 @@ members = [
   "crates/faucet",
   "crates/node",
   "crates/precompiles",
-  "crates/predeployed-contracts",
+  "crates/contracts",
   "crates/reth-malachite",
   "crates/telemetry-util",
   "crates/transaction-pool",
@@ -86,7 +86,7 @@ tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }
 tempo-revm = { path = "crates/revm" }
 tempo-precompiles = { path = "crates/precompiles" }
-tempo-predeployed-contracts = { path = "crates/predeployed-contracts" }
+tempo-contracts = { path = "crates/contracts" }
 tempo-telemetry-util = { path = "crates/telemetry-util" }
 tempo-transaction-pool = { path = "crates/transaction-pool" }
 reth = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth" }
@@ -109,7 +109,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "3425a
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-network-peers" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-payload-builder" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-payload-primitives" }
-reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-primitives-traits"}
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-primitives-traits" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-provider" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-rpc-builder" }
 reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "3425a31a2f0a45deefb3b1f6e33cf0858a280ebb", package = "reth-rpc-convert" }

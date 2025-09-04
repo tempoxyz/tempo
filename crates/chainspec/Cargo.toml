@@ -5,10 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 description = "TODO:"
 
- [lints]
- workspace = true
+[lints]
+workspace = true
 
 [dependencies]
+tempo-contracts.workspace = true
 reth-cli.workspace = true
 reth-chainspec.workspace = true
 reth-network-peers.workspace = true

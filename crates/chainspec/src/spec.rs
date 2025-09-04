@@ -11,6 +11,7 @@ use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
+use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 pub const TEMPO_BASE_FEE: u64 = 44;
 
@@ -61,12 +62,19 @@ pub static ADAGIO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 });
 
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
-    let spec = reth_chainspec::DEV.clone();
+    let mut spec = (**reth_chainspec::DEV).clone();
+    let adagio = ADAGIO.clone();
+    let default_7702_alloc = adagio
+        .genesis()
+        .alloc
+        .get(&DEFAULT_7702_DELEGATE_ADDRESS)
+        .expect("Could not get 7702 delegate address");
 
-    TempoChainSpec {
-        inner: (*spec).clone(),
-    }
-    .into()
+    spec.genesis
+        .alloc
+        .insert(DEFAULT_7702_DELEGATE_ADDRESS, default_7702_alloc.clone());
+
+    TempoChainSpec { inner: spec }.into()
 });
 
 /// Tempo chain spec type.

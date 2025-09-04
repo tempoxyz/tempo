@@ -11997,9 +11997,9 @@ dependencies = [
  "serde_json",
  "simple-tqdm",
  "tempo-chainspec",
+ "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles",
- "tempo-predeployed-contracts",
  "thousands",
  "tokio",
  "toml",
@@ -12019,6 +12019,14 @@ dependencies = [
  "reth-ethereum",
  "reth-network-peers",
  "serde_json",
+ "tempo-contracts",
+]
+
+[[package]]
+name = "tempo-contracts"
+version = "0.1.0"
+dependencies = [
+ "alloy",
 ]
 
 [[package]]
@@ -12103,13 +12111,6 @@ dependencies = [
  "reth-evm",
  "reth-storage-api",
  "tracing",
-]
-
-[[package]]
-name = "tempo-predeployed-contracts"
-version = "0.1.0"
-dependencies = [
- "alloy",
 ]
 
 [[package]]
