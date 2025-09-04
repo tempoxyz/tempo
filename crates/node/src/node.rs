@@ -9,7 +9,6 @@ use reth_evm::{
     ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
     revm::{context::TxEnv, primitives::Address},
 };
-use reth_malachite::MalachiteConsensusBuilder;
 use reth_node_api::{
     AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -17,7 +16,8 @@ use reth_node_api::{
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
     components::{
-        BasicPayloadServiceBuilder, ComponentsBuilder, ExecutorBuilder, PoolBuilder, TxPoolBuilder,
+        BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
+        PoolBuilder, TxPoolBuilder,
     },
     rpc::{
         BasicEngineApiBuilder, BasicEngineValidatorBuilder, EngineApiBuilder, EngineValidatorAddOn,
@@ -35,6 +35,7 @@ use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::DiskFileBlobStore};
 use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
+use tempo_consensus::TempoConsensus;
 use tempo_evm::evm::TempoEvmFactory;
 use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
 
@@ -58,7 +59,7 @@ impl TempoNode {
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
-        MalachiteConsensusBuilder,
+        TempoConsensusBuilder,
     >
     where
         Node: FullNodeTypes<Types = Self>,
@@ -69,7 +70,7 @@ impl TempoNode {
             .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
-            .consensus(MalachiteConsensusBuilder)
+            .consensus(TempoConsensusBuilder::default())
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
@@ -207,7 +208,7 @@ where
         BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
-        MalachiteConsensusBuilder,
+        TempoConsensusBuilder,
     >;
 
     type AddOns = TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, TempoEngineValidatorBuilder>;
@@ -280,6 +281,22 @@ where
             EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), TempoEvmFactory::default())
                 .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
         Ok(evm_config)
+    }
+}
+
+/// Builder for [`TempoConsensus`].
+#[derive(Debug, Default, Clone, Copy)]
+#[non_exhaustive]
+pub struct TempoConsensusBuilder;
+
+impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
+where
+    Node: FullNodeTypes<Types = TempoNode>,
+{
+    type Consensus = TempoConsensus;
+
+    async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
+        Ok(TempoConsensus::new(ctx.chain_spec()))
     }
 }
 
