@@ -97,12 +97,6 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     let receipt = execute_call.send().await?.get_receipt().await?;
     assert!(receipt.status());
 
-    // Assert state changes after delegation execution
-    let sender_balance_after = token.balanceOf(caller).call().await?;
-    let recipient_balance_after = token.balanceOf(recipient).call().await?;
-    assert_eq!(sender_balance_after, U256::ZERO);
-    assert_eq!(recipient_balance_after, amount);
-
     // Assert nonce incremented and code is updated to auto delegate account
     assert_eq!(provider.get_transaction_count(caller).await?, 1);
     let code_after = provider.get_code_at(caller).await?;
@@ -110,6 +104,12 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         code_after,
         *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode()
     );
+
+    // Assert state changes after delegation execution
+    let sender_balance_after = token.balanceOf(caller).call().await?;
+    let recipient_balance_after = token.balanceOf(recipient).call().await?;
+    assert_eq!(sender_balance_after, U256::ZERO);
+    assert_eq!(recipient_balance_after, amount);
 
     Ok(())
 }
