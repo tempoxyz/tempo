@@ -33,83 +33,80 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
-    // Create a wallet to deploy the test token
-    let wallet_0 = MnemonicBuilder::<English>::default()
+    let alice = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .build()?;
     let provider = ProviderBuilder::new()
-        .wallet(wallet_0)
+        .wallet(alice)
         .connect_http(http_url.clone());
-    let signer = provider.default_signer_address();
+    let _deployer = provider.default_signer_address();
 
-    // Setup test token
-    let token = setup_test_token(provider.clone(), signer).await?;
+    // Deploy a test token
+    let token = setup_test_token(provider.clone(), _deployer).await?;
 
-    // Create a new wallet to test auto delegation and ensure nonce = 0
-    let wallet_1 = MnemonicBuilder::<English>::default()
+    // Init a fresh wallet with nonce 0
+    let bob = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .index(1)?
         .build()?;
-    let caller = wallet_1.address();
+    let bob_addr = bob.address();
 
-    // Mint test token to the caller
+    // Mint funds to bob
     let amount = U256::random();
     token
-        .mint(caller, amount)
+        .mint(bob_addr, amount)
         .send()
         .await?
         .get_receipt()
         .await?;
 
-    // Assert that the caller has 0 nonce and empty code before auto delegation
-    let tx_count = provider.get_transaction_count(caller).await?;
-    let code_before = provider.get_code_at(caller).await?;
-    assert_eq!(tx_count, 0);
-    assert!(code_before.is_empty());
+    // Assert bob has nonce 0 and empty code
+    assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
+    let code_before = provider.get_code_at(bob_addr).await?;
+    assert!(
+        code_before.is_empty(),
+        "bob should have no code before auto-delegation"
+    );
 
-    // Cache pre execution balances
-    let sender_balance = token.balanceOf(caller).call().await?;
-    assert_eq!(sender_balance, amount);
+    // Balances before
+    let bob_bal_before = token.balanceOf(bob_addr).call().await?;
+    assert_eq!(bob_bal_before, amount);
     let recipient = Address::random();
-    let recipient_balance = token.balanceOf(recipient).call().await?;
-    assert_eq!(recipient_balance, U256::ZERO);
+    let recip_bal_before = token.balanceOf(recipient).call().await?;
+    assert_eq!(recip_bal_before, U256::ZERO);
 
-    // Create the calldata to transfer test token
+    // Build calldata that the delegate impl should execute (token.transfer)
     let delegate_calldata = token
-        .transfer(recipient, sender_balance)
+        .transfer(recipient, bob_bal_before)
         .calldata()
         .to_owned();
 
-    // Create new provider with wallet_1 as signer
-    let provider = ProviderBuilder::new()
-        .wallet(wallet_1)
-        .connect_http(http_url);
-
-    let delegate_account = IthacaAccount::new(caller, provider.clone());
+    // Build the multi-call payload for IthacaAccount::execute
     let calls = vec![Call {
         to: *token.address(),
-        value: alloy::primitives::U256::from(0),
+        value: U256::from(0),
         data: delegate_calldata,
     }];
 
-    // Send the tx to the caller account with empty code
+    let bob_provider = ProviderBuilder::new().wallet(bob).connect_http(http_url);
+    let delegate_account = IthacaAccount::new(bob_addr, bob_provider.clone());
     let execute_call = delegate_account.execute(B256::ZERO, calls.abi_encode().into());
     let receipt = execute_call.send().await?.get_receipt().await?;
-    assert!(receipt.status());
+    assert!(receipt.status(), "7702 delegate execution tx failed");
 
-    // Assert nonce incremented and code is updated to auto delegate account
-    assert_eq!(provider.get_transaction_count(caller).await?, 1);
-    let code_after = provider.get_code_at(caller).await?;
+    assert_eq!(bob_provider.get_transaction_count(bob_addr).await?, 1);
+    let code_after = bob_provider.get_code_at(bob_addr).await?;
     assert_eq!(
         code_after,
-        *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode()
+        *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),
+        "auto-installed code should be the 7702 delegate designator"
     );
 
-    // Assert state changes after delegation execution
-    let sender_balance_after = token.balanceOf(caller).call().await?;
-    let recipient_balance_after = token.balanceOf(recipient).call().await?;
-    assert_eq!(sender_balance_after, U256::ZERO);
-    assert_eq!(recipient_balance_after, amount);
+    // Assert state changes
+    let bob_bal_after = token.balanceOf(bob_addr).call().await?;
+    let recip_bal_after = token.balanceOf(recipient).call().await?;
+    assert_eq!(bob_bal_after, U256::ZERO);
+    assert_eq!(recip_bal_after, amount);
 
     Ok(())
 }
