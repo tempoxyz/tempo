@@ -63,10 +63,7 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     // Assert bob has nonce 0 and empty code
     assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
     let code_before = provider.get_code_at(bob_addr).await?;
-    assert!(
-        code_before.is_empty(),
-        "bob should have no code before auto-delegation"
-    );
+    assert!(code_before.is_empty(),);
 
     // Balances before
     let bob_bal_before = token.balanceOf(bob_addr).call().await?;
@@ -99,7 +96,6 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     assert_eq!(
         code_after,
         *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),
-        "auto-installed code should be the 7702 delegate designator"
     );
 
     // Assert state changes
