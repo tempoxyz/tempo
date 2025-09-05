@@ -1,16 +1,17 @@
 use crate::contracts::{
-    TIP20Token, address_to_token_id_unchecked,
-    storage::{StorageProvider, slots::mapping_slot},
+    address_to_token_id_unchecked,
+    storage::{slots::mapping_slot, StorageProvider},
     types::{IFeeManager, ITIP20},
+    TIP20Token,
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256},
+    primitives::{keccak256, Address, B256, U256},
     sol_types::SolValue,
 };
 use reth_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 pub mod slots {
-    use alloy::primitives::{U256, uint};
+    use alloy::primitives::{uint, U256};
 
     pub const POOLS: U256 = uint!(0_U256);
     pub const POOL_EXISTS: U256 = uint!(2_U256);
@@ -568,8 +569,8 @@ mod tests {
 
     use super::*;
     use crate::{
+        contracts::{tip20::ISSUER_ROLE, HashMapStorageProvider},
         TIP_FEE_MANAGER_ADDRESS,
-        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE},
     };
 
     #[test]

@@ -13,6 +13,7 @@ tempo-contracts.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-faucet.workspace = true
 tempo-chainspec.workspace = true
+tempo-consensus.workspace = true
 tempo-precompiles.workspace = true
 reth-malachite.workspace = true
 reth-ethereum-engine-primitives.workspace = true

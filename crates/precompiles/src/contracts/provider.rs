@@ -3,7 +3,7 @@ use reth_evm::revm::{Database, interpreter::instructions::utility::IntoAddress};
 use reth_storage_api::{StateProvider, errors::ProviderResult};
 
 use crate::{
-    TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20},
 };
 
@@ -21,14 +21,18 @@ impl<T: StateProvider> TIPFeeStateProviderExt for T {
     fn get_fee_token_balance(&self, user: Address) -> ProviderResult<U256> {
         // Look up user's configured fee token in TIPFeeManager storage
         let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
-        let fee_token = self
+        let mut fee_token = self
             .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot.into())?
             .unwrap_or_default()
             .into_address();
 
         if fee_token.is_zero() {
-            // TODO: how to handle getting validator fee token? Should we get the next validator or
-            // default to some token?
+            // FIXME: Currently, if the user fee token is not set, we default to the validator fee
+            // token. This works during block building since the validator is known, however during
+            // gas estimation, we do not currently have a way to know which validator is next. As a
+            // temporary fix for testnet, we default to a DEFAULT_FEE_TOKEN which is the first fee token
+            // deployed however we should update this to a more robust approach.
+            fee_token = DEFAULT_FEE_TOKEN;
         }
 
         // Query the user's balance in the determined fee token's TIP20 contract
@@ -55,13 +59,17 @@ impl<T: Database> TIPFeeDatabaseExt for T {
     fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, T::Error> {
         // Look up user's configured fee token in TIPFeeManager storage
         let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
-        let fee_token = self
+        let mut fee_token = self
             .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot)?
             .into_address();
 
         if fee_token.is_zero() {
-            // TODO: how to handle getting validator fee token? Should we get the next validator or
-            // default to some token?
+            // FIXME: Currently, if the user fee token is not set, we default to the validator fee
+            // token. This works during block building since the validator is known, however during
+            // gas estimation, we do not currently have a way to know which validator is next. As a
+            // temporary fix for testnet, we default to a DEFAULT_FEE_TOKEN which is the first fee token
+            // deployed however we should update this to a more robust approach.
+            fee_token = DEFAULT_FEE_TOKEN;
         }
 
         // Query the user's balance in the determined fee token's TIP20 contract
