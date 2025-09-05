@@ -14,7 +14,7 @@ use tempo_precompiles::contracts::provider::TIPFeeStateProviderExt;
 pub const USD_DECIMAL_FACTOR: U256 = uint!(1000_U256);
 
 /// Validator for Tempo transactions.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction>,
