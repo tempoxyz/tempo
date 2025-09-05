@@ -1,9 +1,25 @@
-use crate::utils::{NodeSource, setup_test_node};
+use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
+    sol,
+    sol_types::SolValue,
 };
+use alloy_primitives::{Address, B256, U256};
+use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
+use rand::random;
 use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
+use tempo_precompiles::contracts::ITIP20::{self, ITIP20Calls};
+
+sol! {
+    struct Call {
+        address to;
+        uint256 value;
+        bytes data;
+    }
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_auto_7702_delegation() -> eyre::Result<()> {
@@ -22,38 +38,37 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         .build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-
     let tx_count = provider.get_transaction_count(caller).await?;
     assert_eq!(tx_count, 0);
 
-    // let code_before = provider.get_code(fresh_address).await?;
-    // assert!(code_before.is_empty());
-    //
-    // // Send the first transaction from this account (nonce 0)
-    // // This should trigger auto-delegation to DEFAULT_7702_DELEGATE_ADDRESS
-    // let tx = TransactionRequest::default()
-    //     .to(Address::random()) // Send to any address
-    //     .value(U256::from(1))
-    //     .gas_price(TEMPO_BASE_FEE as u128)
-    //     .gas(21000);
-    //
-    // let receipt = provider.send_transaction(tx).await?.get_receipt().await?;
-    //
-    // assert!(receipt.status());
-    //
-    // // Check that the account now has EIP-7702 delegation code
-    // let code_after = provider.get_code(fresh_address).await?;
-    // assert!(!code_after.is_empty());
-    //
-    // // The code should be the EIP-7702 delegation bytecode
-    // // EIP-7702 bytecode format: 0xef0100 + 20-byte address
-    // let expected_delegation_code = {
-    //     let mut code = vec![0xef, 0x01, 0x00];
-    //     code.extend_from_slice(DEFAULT_7702_DELEGATE_ADDRESS.as_slice());
-    //     code
-    // };
-    //
-    // assert_eq!(code_after.as_ref(), &expected_delegation_code);
+    // Setup test token
+    let token = setup_test_token(provider.clone(), caller).await?;
+
+    let sender_balance = token.balanceOf(caller).call().await?;
+    let recipient = Address::random();
+    let recipient_balance = token.balanceOf(recipient).call().await?;
+
+    let delegate_calldata = token
+        .transfer(recipient, sender_balance)
+        .calldata()
+        .to_owned();
+    let delegate_account = IthacaAccount::new(DEFAULT_7702_DELEGATE_ADDRESS, provider.clone());
+    let calls = vec![Call {
+        to: *token.address(),
+        value: alloy::primitives::U256::from(0),
+        data: delegate_calldata,
+    }];
+
+    let tx = TransactionRequest::default()
+        .from(caller)
+        .to(caller)
+        .input(TransactionInput::new(calls.abi_encode().into()))
+        .gas_price(TEMPO_BASE_FEE as u128);
+
+    let execute_call = delegate_account.execute(B256::ZERO, calls.abi_encode().into());
+    let receipt = execute_call.send().await?.get_receipt().await?;
+
+    // TODO: assert state changes
 
     Ok(())
 }
