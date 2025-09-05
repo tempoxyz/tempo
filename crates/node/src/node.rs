@@ -333,6 +333,7 @@ where
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
         let mut pool_config = ctx.pool_config();
         pool_config.minimal_protocol_basefee = TEMPO_BASE_FEE;
+        pool_config.max_inflight_delegated_slot_limit = usize::MAX;
 
         let blob_cache_size = if let Some(blob_cache_size) = pool_config.blob_cache_size {
             Some(blob_cache_size)
