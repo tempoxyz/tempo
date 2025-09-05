@@ -9,7 +9,7 @@ use alloy_primitives::{Address, B256, U256};
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
 use rand::random;
 use reth_evm::revm::state::Bytecode;
-use std::env;
+use std::{env, str::FromStr};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
 use tempo_precompiles::contracts::ITIP20::{self, ITIP20Calls};
@@ -87,7 +87,10 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
 
     let bob_provider = ProviderBuilder::new().wallet(bob).connect_http(http_url);
     let delegate_account = IthacaAccount::new(bob_addr, bob_provider.clone());
-    let execute_call = delegate_account.execute(B256::ZERO, calls.abi_encode().into());
+    let execution_mode =
+        B256::from_str("0x0100000000007821000100000000000000000000000000000000000000000000")
+            .unwrap();
+    let execute_call = delegate_account.execute(execution_mode, calls.abi_encode().into());
     let receipt = execute_call.send().await?.get_receipt().await?;
     assert!(receipt.status(), "7702 delegate execution tx failed");
 
