@@ -32,14 +32,15 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
+    // TODO: use a different account to mint so we can assert nonce = 1 after
     let wallet = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .index(1)?
         .build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-    let tx_count = provider.get_transaction_count(caller).await?;
-    assert_eq!(tx_count, 0);
+    assert_eq!(provider.get_transaction_count(caller).await?, 0);
+    // TODO: assert 0 code
 
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -52,23 +53,26 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         .transfer(recipient, sender_balance)
         .calldata()
         .to_owned();
-    let delegate_account = IthacaAccount::new(DEFAULT_7702_DELEGATE_ADDRESS, provider.clone());
+    let delegate_account = IthacaAccount::new(caller, provider.clone());
     let calls = vec![Call {
         to: *token.address(),
         value: alloy::primitives::U256::from(0),
         data: delegate_calldata,
     }];
 
-    let tx = TransactionRequest::default()
-        .from(caller)
-        .to(caller)
-        .input(TransactionInput::new(calls.abi_encode().into()))
-        .gas_price(TEMPO_BASE_FEE as u128);
-
     let execute_call = delegate_account.execute(B256::ZERO, calls.abi_encode().into());
-    let receipt = execute_call.send().await?.get_receipt().await?;
+    let _receipt = execute_call.send().await?.get_receipt().await?;
 
-    // TODO: assert state changes
+    // Assert state changes after delegation execution
+    let sender_balance_after = token.balanceOf(caller).call().await?;
+    let recipient_balance_after = token.balanceOf(recipient).call().await?;
+
+    // Verify the transfer was successful
+    assert_eq!(sender_balance_after, U256::ZERO,);
+    assert_eq!(recipient_balance_after, sender_balance);
+    // assert_eq!(provider.get_transaction_count(caller).await?, tx_count + 1);
+
+    // TODO: assert that code is as expected
 
     Ok(())
 }
