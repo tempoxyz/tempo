@@ -5,7 +5,7 @@ use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
-use reth_evm::{TxEnvFor, revm::Database};
+use reth_evm::{EvmEnvFor, TxEnvFor, revm::Database};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy, PrimitivesTy, TxTy};
 use reth_node_builder::{
     NodeAdapter,
@@ -202,10 +202,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     fn caller_gas_allowance(
         &self,
         mut db: impl Database<Error: Into<EthApiError>>,
-        env: &TxEnvFor<Self::Evm>,
+        _evm_env: &EvmEnvFor<Self::Evm>,
+        tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
         let balance = self
-            .caller_fee_token_allowance(&mut db, env)
+            .caller_fee_token_allowance(&mut db, tx_env)
             .map_err(Into::into)?;
 
         // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
