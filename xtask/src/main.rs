@@ -187,6 +187,7 @@ fn generate_config(
         let eth_dst = cfg.storage_directory.with_file_name("reth_storage");
         let command = format!(
             "cargo run --release --bin tempo-commonware -- \
+                \\\n--filter-directives \"debug,net=warn,reth_ecies=warn\" \
                 \\\nnode \
                 \\\n--consensus-config {dst} \
                 \\\n--datadir {eth_dst} \
