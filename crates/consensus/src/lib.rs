@@ -1,3 +1,5 @@
+//! Tempo consensus implementation.
+
 use alloy_consensus::Header;
 use alloy_evm::block::BlockExecutionResult;
 use reth_chainspec::EthChainSpec;
