@@ -98,13 +98,6 @@ where
         ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
         ContextError<DB::Error>,
     > {
-        let is_first_init = self.0.frame_stack.index().is_none();
-        let new_frame = if is_first_init {
-            self.0.frame_stack.start_init()
-        } else {
-            self.0.frame_stack.get_next()
-        };
-
         let ctx = &mut self.0.ctx;
 
         // Auto delegate the the default 7702 account if this is the account's first tx
@@ -117,17 +110,7 @@ where
             }
         }
 
-        let precompiles = &mut self.0.precompiles;
-        let res = Self::Frame::init_with_context(new_frame, ctx, precompiles, frame_input)?;
-
-        Ok(res.map_frame(|token| {
-            if is_first_init {
-                self.0.frame_stack.end_init(token);
-            } else {
-                self.0.frame_stack.push(token);
-            }
-            self.0.frame_stack.get()
-        }))
+        self.0.frame_init(frame_input)
     }
 
     fn frame_run(&mut self) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {

@@ -12142,6 +12142,7 @@ dependencies = [
  "serde_json",
  "tempo-chainspec",
  "tempo-consensus",
+ "tempo-contracts",
  "tempo-evm",
  "tempo-faucet",
  "tempo-precompiles",
