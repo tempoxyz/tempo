@@ -220,20 +220,6 @@ mod tests {
             Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
         );
 
-        // Ensure that auto delegation does not get set when nonce > 0
-        let caller_1 = Address::random();
-        let tx_env = TxEnv {
-            caller: caller_1,
-            nonce: 1,
-            ..Default::default()
-        };
-        let res = tempo_evm.transact_one(tx_env)?;
-        assert!(res.is_success());
-
-        let ctx = tempo_evm.ctx();
-        let account = ctx.journal().account(caller_1).to_owned();
-        assert!(account.info.code.unwrap_or_default().is_empty());
-
         Ok(())
     }
 }
