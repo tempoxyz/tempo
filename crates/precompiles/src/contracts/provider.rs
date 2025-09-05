@@ -51,25 +51,40 @@ pub trait TIPFeeDatabaseExt: Database {
     ///
     /// Returns the user's balance in their configured fee token. Falls back to
     /// validator token if user has no token set.
-    fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, Self::Error>;
+    fn get_fee_token_balance(
+        &mut self,
+        user: Address,
+        validator: Address,
+    ) -> Result<U256, Self::Error>;
 }
 
 /// Implementation of TIPFeeManager storage operations for generic [`Database`]
 impl<T: Database> TIPFeeDatabaseExt for T {
-    fn get_fee_token_balance(&mut self, user: Address) -> Result<U256, T::Error> {
+    fn get_fee_token_balance(
+        &mut self,
+        user: Address,
+        validator: Address,
+    ) -> Result<U256, T::Error> {
         // Look up user's configured fee token in TIPFeeManager storage
         let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
         let mut fee_token = self
             .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot)?
             .into_address();
 
+        // If the user feeToken is not set, use the validator fee token
         if fee_token.is_zero() {
-            // FIXME: Currently, if the user fee token is not set, we default to the validator fee
-            // token. This works during block building since the validator is known, however during
-            // gas estimation, we do not currently have a way to know which validator is next. As a
-            // temporary fix for testnet, we default to a DEFAULT_FEE_TOKEN which is the first fee token
-            // deployed however we should update this to a more robust approach.
-            fee_token = DEFAULT_FEE_TOKEN;
+            let validator_token_slot =
+                mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+            fee_token = self
+                .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot)?
+                .into_address();
+
+            // If the validator fee token is not set, fallback to the default fee token
+            // TODO: Ensure that validators must set a feeToken. We can then remove the default fee
+            // token.
+            if fee_token.is_zero() {
+                fee_token = DEFAULT_FEE_TOKEN;
+            }
         }
 
         // Query the user's balance in the determined fee token's TIP20 contract
