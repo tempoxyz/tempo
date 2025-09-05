@@ -53,8 +53,9 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     let caller = wallet_1.address();
 
     // Mint test token to the caller
+    let amount = U256::random();
     token
-        .mint(caller, U256::random())
+        .mint(caller, amount)
         .send()
         .await?
         .get_receipt()
@@ -68,6 +69,7 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
 
     // Cache pre execution balances
     let sender_balance = token.balanceOf(caller).call().await?;
+    assert_eq!(sender_balance, amount);
     let recipient = Address::random();
     let recipient_balance = token.balanceOf(recipient).call().await?;
     assert_eq!(recipient_balance, U256::ZERO);
@@ -92,13 +94,14 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
 
     // Send the tx to the caller account with empty code
     let execute_call = delegate_account.execute(B256::ZERO, calls.abi_encode().into());
-    let _receipt = execute_call.send().await?.get_receipt().await?;
+    let receipt = execute_call.send().await?.get_receipt().await?;
+    assert!(receipt.status());
 
     // Assert state changes after delegation execution
     let sender_balance_after = token.balanceOf(caller).call().await?;
     let recipient_balance_after = token.balanceOf(recipient).call().await?;
-    // assert_eq!(sender_balance_after, U256::ZERO);
-    // assert_eq!(recipient_balance_after, sender_balance);
+    assert_eq!(sender_balance_after, U256::ZERO);
+    assert_eq!(recipient_balance_after, amount);
 
     // Assert nonce incremented and code is updated to auto delegate account
     assert_eq!(provider.get_transaction_count(caller).await?, 1);
