@@ -1,13 +1,9 @@
 use crate::utils::{NodeSource, setup_test_node};
 use alloy::{
-    primitives::{Address, U256},
-    providers::{Provider, ProviderBuilder, WalletProvider, ext::TraceApi},
-    rpc::types::TransactionRequest,
+    providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
 use std::env;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_auto_7702_delegation() -> eyre::Result<()> {
