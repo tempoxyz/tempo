@@ -1,6 +1,6 @@
 use crate::node::TempoNode;
 use alloy::{network::Ethereum, primitives::U256};
-use alloy_primitives::uint;
+use alloy_primitives::{Address, uint};
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -28,7 +28,7 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind,
 };
-use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
+use tempo_precompiles::contracts::{provider::TIPFeeDatabaseExt, tip_fee_manager::FeeToken};
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
 
@@ -57,12 +57,17 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     }
 
     /// Returns the feeToken balance of the tx caller in the token's native decimals
-    pub fn caller_fee_token_allowance<DB, T>(&self, db: &mut DB, env: &T) -> Result<U256, DB::Error>
+    pub fn caller_fee_token_allowance<DB, T>(
+        &self,
+        db: &mut DB,
+        env: &T,
+        validator: Address,
+    ) -> Result<FeeToken, DB::Error>
     where
         DB: Database,
         T: reth_evm::revm::context_interface::Transaction,
     {
-        db.get_fee_token_balance(env.caller())
+        db.get_fee_token_balance(env.caller(), validator)
     }
 }
 
@@ -202,16 +207,17 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     fn caller_gas_allowance(
         &self,
         mut db: impl Database<Error: Into<EthApiError>>,
-        _evm_env: &EvmEnvFor<Self::Evm>,
+        evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        let balance = self
-            .caller_fee_token_allowance(&mut db, tx_env)
+        let fee_token = self
+            .caller_fee_token_allowance(&mut db, tx_env, evm_env.block_env.beneficiary)
             .map_err(Into::into)?;
 
         // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
         // 10**9 so we must adjust by USD_DECIMAL_FACTOR
-        let adjusted_balance = balance
+        let adjusted_balance = fee_token
+            .balance()
             .saturating_mul(USD_DECIMAL_FACTOR)
             .min(U256_U64_MAX)
             .saturating_to::<u64>();
