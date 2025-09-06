@@ -4,7 +4,11 @@ use reth_storage_api::{StateProvider, errors::ProviderResult};
 
 use crate::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20},
+    contracts::{
+        storage::slots::mapping_slot,
+        tip_fee_manager::{self, FeeToken, TokenBalance},
+        tip20,
+    },
 };
 
 /// Trait to provide [`StateProvider`] access to TIPFeeManager storage to fetch fee token data and balances
@@ -55,7 +59,7 @@ pub trait TIPFeeDatabaseExt: Database {
         &mut self,
         user: Address,
         validator: Address,
-    ) -> Result<U256, Self::Error>;
+    ) -> Result<FeeToken, Self::Error>;
 }
 
 /// Implementation of TIPFeeManager storage operations for generic [`Database`]
@@ -64,33 +68,38 @@ impl<T: Database> TIPFeeDatabaseExt for T {
         &mut self,
         user: Address,
         validator: Address,
-    ) -> Result<U256, T::Error> {
+    ) -> Result<FeeToken, Self::Error> {
         // Look up user's configured fee token in TIPFeeManager storage
         let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
-        let mut fee_token = self
+        let user_fee_token = self
             .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot)?
             .into_address();
 
         // If the user feeToken is not set, use the validator fee token
-        if fee_token.is_zero() {
+        if user_fee_token.is_zero() {
             let validator_token_slot =
                 mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
-            fee_token = self
+            let validator_fee_token = self
                 .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot)?
                 .into_address();
 
-            // If the validator fee token is not set, fallback to the default fee token
-            // TODO: Ensure that validators must set a feeToken. We can then remove the default fee
-            // token.
-            if fee_token.is_zero() {
-                fee_token = DEFAULT_FEE_TOKEN;
-            }
+            let fee_token = if validator_fee_token.is_zero() {
+                DEFAULT_FEE_TOKEN
+            } else {
+                validator_fee_token
+            };
+
+            // Query the user's balance in the validator's fee token
+            let balance_slot = mapping_slot(user, tip20::slots::BALANCES);
+            let balance = self.storage(fee_token, balance_slot)?;
+
+            Ok(FeeToken::Validator(TokenBalance::new(fee_token, balance)))
+        } else {
+            // Query the user's balance in their configured fee token
+            let balance_slot = mapping_slot(user, tip20::slots::BALANCES);
+            let balance = self.storage(user_fee_token, balance_slot)?;
+
+            Ok(FeeToken::User(TokenBalance::new(user_fee_token, balance)))
         }
-
-        // Query the user's balance in the determined fee token's TIP20 contract
-        let balance_slot = mapping_slot(user, tip20::slots::BALANCES);
-        let balance = self.storage(fee_token, balance_slot)?;
-
-        Ok(balance)
     }
 }

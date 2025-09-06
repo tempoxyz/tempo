@@ -28,7 +28,7 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind,
 };
-use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
+use tempo_precompiles::contracts::{provider::TIPFeeDatabaseExt, tip_fee_manager::FeeToken};
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
 
@@ -62,7 +62,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
         db: &mut DB,
         env: &T,
         validator: Address,
-    ) -> Result<U256, DB::Error>
+    ) -> Result<FeeToken, DB::Error>
     where
         DB: Database,
         T: reth_evm::revm::context_interface::Transaction,
@@ -210,13 +210,14 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        let balance = self
+        let fee_token = self
             .caller_fee_token_allowance(&mut db, tx_env, evm_env.block_env.beneficiary)
             .map_err(Into::into)?;
 
         // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
         // 10**9 so we must adjust by USD_DECIMAL_FACTOR
-        let adjusted_balance = balance
+        let adjusted_balance = fee_token
+            .balance()
             .saturating_mul(USD_DECIMAL_FACTOR)
             .min(U256_U64_MAX)
             .saturating_to::<u64>();
