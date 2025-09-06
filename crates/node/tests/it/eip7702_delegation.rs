@@ -1,5 +1,6 @@
 use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
+    dyn_abi::abi,
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol,
@@ -90,10 +91,11 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     let execution_mode =
         B256::from_str("0x0100000000007821000100000000000000000000000000000000000000000000")
             .unwrap();
+
     let execute_call = delegate_account.execute(execution_mode, calls.abi_encode().into());
     let receipt = execute_call.send().await?.get_receipt().await?;
-    assert!(receipt.status(), "7702 delegate execution tx failed");
 
+    assert!(receipt.status(), "7702 delegate execution tx failed");
     assert_eq!(bob_provider.get_transaction_count(bob_addr).await?, 1);
     let code_after = bob_provider.get_code_at(bob_addr).await?;
     assert_eq!(
