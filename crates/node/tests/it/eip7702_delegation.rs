@@ -1,19 +1,14 @@
 use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
-    dyn_abi::abi,
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol,
     sol_types::SolValue,
 };
 use alloy_primitives::{Address, B256, U256};
-use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
-use rand::random;
 use reth_evm::revm::state::Bytecode;
 use std::{env, str::FromStr};
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
-use tempo_precompiles::contracts::ITIP20::{self, ITIP20Calls};
 
 sol! {
     struct Call {
