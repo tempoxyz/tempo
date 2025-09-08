@@ -71,7 +71,6 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     let recip_bal_before = token.balanceOf(recipient).call().await?;
     assert_eq!(recip_bal_before, U256::ZERO);
 
-    // Build calldata that the delegate impl should execute (token.transfer)
     let delegate_calldata = token
         .transfer(recipient, bob_bal_before)
         .calldata()
@@ -202,7 +201,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    // Assert bob has nonce 0 and empty code
+    // Assert account has nonce 0 and empty code
     assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty());
