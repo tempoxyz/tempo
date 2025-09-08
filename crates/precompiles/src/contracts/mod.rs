@@ -1,4 +1,3 @@
-pub mod account_registrar;
 pub mod provider;
 pub mod roles;
 pub mod storage;
@@ -6,13 +5,14 @@ pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip4217_registry;
+pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod types;
 
 use crate::TIP20_TOKEN_PREFIX;
-pub use account_registrar::TipAccountRegistrar;
 use alloy::primitives::Address;
 pub use storage::{StorageProvider, evm::EvmStorageProvider, hashmap::HashMapStorageProvider};
+pub use tip_account_registrar::TipAccountRegistrar;
 pub use tip_fee_manager::TipFeeManager;
 pub use tip20::TIP20Token;
 pub use tip20_factory::TIP20Factory;

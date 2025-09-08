@@ -9,15 +9,15 @@ use reth_evm::{
     revm::precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
-pub mod account_registrar;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip4217_registry;
+pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use crate::{
-    DAA_REGISTRAR_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     TIP4217_REGISTRY_ADDRESS,
     contracts::{
         EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
@@ -46,7 +46,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             Some(TIP4217RegistryPrecompile::create())
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id))
-        } else if *address == DAA_REGISTRAR_ADDRESS {
+        } else if *address == TIP_ACCOUNT_REGISTRAR {
             Some(TipAccountRegistrarPrecompile::create(chain_id))
         } else {
             None
