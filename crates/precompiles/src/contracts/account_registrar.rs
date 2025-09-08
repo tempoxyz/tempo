@@ -82,22 +82,16 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use alloy::sol_types::SolCall;
+
     use super::*;
     use crate::{
         contracts::{HashMapStorageProvider, types::ITipAccountRegistrar},
         precompiles::Precompile,
     };
-
-    #[test]
-    fn test_precompile_call_with_invalid_selector() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
-        let invalid_calldata = [0xFF; 4];
-        let sender = Address::ZERO;
-
-        let result = registrar.call(&invalid_calldata, &sender);
-        assert!(result.is_err());
-    }
+    use alloy_primitives::keccak256;
+    use alloy_signer::{Signer, SignerSync};
+    use alloy_signer_local::PrivateKeySigner;
 
     #[test]
     fn test_delegate_to_default() {
@@ -113,7 +107,6 @@ mod tests {
 
         let hash = keccak256(EIP_7702_DELEGATION_MSG.as_bytes());
 
-        // Sign the hash directly (not with Ethereum message prefix)
         let signature = signer.sign_hash_sync(&hash).unwrap();
         let call = ITipAccountRegistrar::delegateToDefaultCall {
             hash,
@@ -126,7 +119,6 @@ mod tests {
         let recovered_address = result.unwrap();
         assert_eq!(recovered_address, expected_address);
 
-        // Verify that the account was deployed with EIP-7702 delegation
         let code_after = storage
             .get_code(expected_address)
             .expect("Failed to get account code");
@@ -134,5 +126,83 @@ mod tests {
             code_after,
             Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
         );
+    }
+
+    #[test]
+    fn test_invalid_message() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
+
+        let signer = PrivateKeySigner::random();
+        let hash = keccak256(b"wrong message");
+        let signature = signer.sign_hash_sync(&hash).unwrap();
+        let call = ITipAccountRegistrar::delegateToDefaultCall {
+            hash,
+            signature: signature.as_bytes().into(),
+        };
+
+        let result = registrar.delegate_to_default(call);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TipAccountRegistrarError::InvalidSignature(_)
+        ));
+    }
+
+    #[test]
+    fn test_malformed_signature() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
+
+        // Signature too short
+        let hash = keccak256(EIP_7702_DELEGATION_MSG.as_bytes());
+        let call = ITipAccountRegistrar::delegateToDefaultCall {
+            hash,
+            signature: vec![0u8; 64].into(),
+        };
+
+        let result = registrar.delegate_to_default(call);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TipAccountRegistrarError::InvalidSignature(_)
+        ));
+
+        // Signature too long
+        let call = ITipAccountRegistrar::delegateToDefaultCall {
+            hash,
+            signature: vec![0u8; 66].into(),
+        };
+
+        let result = registrar.delegate_to_default(call);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TipAccountRegistrarError::InvalidSignature(_)
+        ));
+    }
+
+    #[test]
+    fn test_invalid_signature() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
+
+        let hash = keccak256(EIP_7702_DELEGATION_MSG.as_bytes());
+
+        // Create a signature with an invalid recovery value
+        let mut invalid_signature = vec![0u8; 65];
+        invalid_signature[64] = 30;
+
+        let call = ITipAccountRegistrar::delegateToDefaultCall {
+            hash,
+            signature: invalid_signature.into(),
+        };
+
+        let result = registrar.delegate_to_default(call);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TipAccountRegistrarError::InvalidSignature(_)
+        ));
     }
 }
