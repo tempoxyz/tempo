@@ -1,13 +1,18 @@
 use alloy_primitives::Bytes;
 use reth_evm::revm::{
-    context::{Cfg, ContextTr, FrameToken, JournalTr, OutFrame, result::FromStringError},
+    Database,
+    context::{
+        Cfg, ContextError, ContextTr, FrameToken, JournalTr, OutFrame, result::FromStringError,
+    },
     handler::{
         CallFrame, ContextTrDbError, EthFrame, FrameData, FrameResult, ItemOrResult,
         PrecompileProvider,
     },
     interpreter::{
         CallInputs, CallOutcome, CallValue, FrameInput, Gas, InputsImpl, InstructionResult,
-        InterpreterResult, SharedMemory, interpreter::ExtBytecode,
+        InterpreterResult, SharedMemory,
+        interpreter::{EthInterpreter, ExtBytecode},
+        interpreter_action::FrameInit,
     },
     primitives::CALL_STACK_LIMIT,
     state::Bytecode,
@@ -119,50 +124,58 @@ pub trait TempoFrameExt {
             return return_result(InstructionResult::Stop);
         }
 
-        // Create interpreter and executes call and push new CallStackFrame.
-        this.get(EthFrame::invalid).clear(
-            FrameData::Call(CallFrame {
-                return_memory_range: inputs.return_memory_offset.clone(),
-            }),
-            FrameInput::Call(inputs),
-            depth,
-            memory,
-            ExtBytecode::new_with_hash(bytecode, code_hash),
-            interpreter_input,
-            is_static,
-            ctx.cfg().spec().into(),
-            gas_limit,
-            checkpoint,
-        );
-        Ok(ItemOrResult::Item(this.consume()))
+        // TODO: uncomment once EthFrame::invalid is public
+        // // Create interpreter and executes call and push new CallStackFrame.
+        // this.get(EthFrame::invalid).clear(
+        //     FrameData::Call(CallFrame {
+        //         return_memory_range: inputs.return_memory_offset.clone(),
+        //     }),
+        //     FrameInput::Call(inputs),
+        //     depth,
+        //     memory,
+        //     ExtBytecode::new_with_hash(bytecode, code_hash),
+        //     interpreter_input,
+        //     is_static,
+        //     ctx.cfg().spec().into(),
+        //     gas_limit,
+        //     checkpoint,
+        // );
+        // Ok(ItemOrResult::Item(this.consume()))
+        //
+        //
+        todo!()
     }
 
-    ///// Initializes a frame with the given context and precompiles.
-    //pub fn init_with_context<
-    //    CTX: ContextTr,
-    //    PRECOMPILES: PrecompileProvider<CTX, Output = InterpreterResult>,
-    //>(
-    //    this: OutFrame<'_, Self>,
-    //    ctx: &mut CTX,
-    //    precompiles: &mut PRECOMPILES,
-    //    frame_init: FrameInit,
-    //) -> Result<
-    //    ItemOrResult<FrameToken, FrameResult>,
-    //    ContextError<<<CTX as ContextTr>::Db as Database>::Error>,
-    //> {
-    //    // TODO cleanup inner make functions
-    //    let FrameInit {
-    //        depth,
-    //        memory,
-    //        frame_input,
-    //    } = frame_init;
-    //
-    //    match frame_input {
-    //        FrameInput::Call(inputs) => {
-    //            Self::make_call_frame(this, ctx, precompiles, depth, memory, inputs)
-    //        }
-    //        FrameInput::Create(inputs) => Self::make_create_frame(this, ctx, depth, memory, inputs),
-    //        FrameInput::Empty => unreachable!(),
-    //    }
-    //}
+    /// Initializes a frame with the given context and precompiles.
+    fn init_with_context<
+        CTX: ContextTr,
+        PRECOMPILES: PrecompileProvider<CTX, Output = InterpreterResult>,
+    >(
+        this: OutFrame<'_, EthFrame>,
+        ctx: &mut CTX,
+        precompiles: &mut PRECOMPILES,
+        frame_init: FrameInit,
+    ) -> Result<
+        ItemOrResult<FrameToken, FrameResult>,
+        ContextError<<<CTX as ContextTr>::Db as Database>::Error>,
+    > {
+        // TODO cleanup inner make functions
+        let FrameInit {
+            depth,
+            memory,
+            frame_input,
+        } = frame_init;
+
+        match frame_input {
+            FrameInput::Call(inputs) => {
+                Self::make_call_frame(this, ctx, precompiles, depth, memory, inputs)
+            }
+            FrameInput::Create(inputs) => {
+                EthFrame::make_create_frame(this, ctx, depth, memory, inputs)
+            }
+            FrameInput::Empty => unreachable!(),
+        }
+    }
 }
+
+impl TempoFrameExt for EthFrame<EthInterpreter> {}
