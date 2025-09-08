@@ -1,0 +1,279 @@
+use std::sync::Arc;
+
+use alloy_consensus::Transaction;
+use alloy_primitives::U256;
+use alloy_rlp::Encodable;
+use reth_basic_payload_builder::{
+    BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
+    is_better_payload,
+};
+use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
+use reth_errors::ConsensusError;
+use reth_evm::{
+    ConfigureEvm, Evm, NextBlockEnvAttributes,
+    block::{BlockExecutionError, BlockValidationError},
+    execute::{BlockBuilder, BlockBuilderOutcome},
+};
+use reth_payload_builder::{EthBuiltPayload, EthPayloadBuilderAttributes, PayloadBuilderError};
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
+use reth_revm::{State, context::Block, database::StateProviderDatabase};
+use reth_storage_api::StateProviderFactory;
+use reth_transaction_pool::{
+    BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
+    error::InvalidPoolTransactionError,
+};
+use tempo_chainspec::TempoChainSpec;
+use tempo_evm::TempoEvmConfig;
+use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTransaction};
+use tracing::{debug, trace, warn};
+
+#[derive(Debug, Clone)]
+pub struct TempoPayloadBuilder<Provider> {
+    pool: TempoTransactionPool<Provider>,
+    provider: Provider,
+    evm_config: TempoEvmConfig,
+}
+
+impl<Provider> TempoPayloadBuilder<Provider> {
+    pub const fn new(
+        pool: TempoTransactionPool<Provider>,
+        provider: Provider,
+        evm_config: TempoEvmConfig,
+    ) -> Self {
+        Self {
+            pool,
+            provider,
+            evm_config,
+        }
+    }
+}
+
+impl<Provider> PayloadBuilder for TempoPayloadBuilder<Provider>
+where
+    Provider:
+        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
+{
+    type Attributes = EthPayloadBuilderAttributes;
+    type BuiltPayload = EthBuiltPayload;
+
+    fn try_build(
+        &self,
+        args: BuildArguments<EthPayloadBuilderAttributes, EthBuiltPayload>,
+    ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError> {
+        self.build_payload(args, |attributes| {
+            self.pool.best_transactions_with_attributes(attributes)
+        })
+    }
+
+    fn on_missing_payload(
+        &self,
+        _args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
+    ) -> MissingPayloadBehaviour<Self::BuiltPayload> {
+        MissingPayloadBehaviour::AwaitInProgress
+    }
+
+    fn build_empty_payload(
+        &self,
+        config: PayloadConfig<Self::Attributes>,
+    ) -> Result<EthBuiltPayload, PayloadBuilderError> {
+        self.build_payload(
+            BuildArguments::new(
+                Default::default(),
+                config,
+                Default::default(),
+                Default::default(),
+            ),
+            |_| core::iter::empty(),
+        )?
+        .into_payload()
+        .ok_or_else(|| PayloadBuilderError::MissingPayload)
+    }
+}
+
+impl<Provider> TempoPayloadBuilder<Provider>
+where
+    Provider: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec>,
+{
+    fn build_payload<Txs>(
+        &self,
+        args: BuildArguments<EthPayloadBuilderAttributes, EthBuiltPayload>,
+        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+    ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
+    where
+        Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    {
+        let BuildArguments {
+            mut cached_reads,
+            config,
+            cancel,
+            best_payload,
+        } = args;
+        let PayloadConfig {
+            parent_header,
+            attributes,
+        } = config;
+
+        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let state = StateProviderDatabase::new(&state_provider);
+        let mut db = State::builder()
+            .with_database(cached_reads.as_db_mut(state))
+            .with_bundle_update()
+            .build();
+
+        let mut builder = self
+            .evm_config
+            .builder_for_next_block(
+                &mut db,
+                &parent_header,
+                NextBlockEnvAttributes {
+                    timestamp: attributes.timestamp,
+                    suggested_fee_recipient: attributes.suggested_fee_recipient,
+                    prev_randao: attributes.prev_randao,
+                    gas_limit: parent_header.gas_limit,
+                    parent_beacon_block_root: attributes.parent_beacon_block_root,
+                    withdrawals: Some(attributes.withdrawals.clone()),
+                },
+            )
+            .map_err(PayloadBuilderError::other)?;
+
+        let chain_spec = self.provider.chain_spec();
+
+        debug!(target: "payload_builder", id=%attributes.id, parent_header = ?parent_header.hash(), parent_number = parent_header.number, "building new payload");
+        let mut cumulative_gas_used = 0;
+        let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
+        let base_fee = builder.evm_mut().block().basefee;
+
+        let mut best_txs = best_txs(BestTransactionsAttributes::new(
+            base_fee,
+            builder
+                .evm_mut()
+                .block()
+                .blob_gasprice()
+                .map(|gasprice| gasprice as u64),
+        ));
+        let mut total_fees = U256::ZERO;
+
+        builder.apply_pre_execution_changes().map_err(|err| {
+            warn!(target: "payload_builder", %err, "failed to apply pre-execution changes");
+            PayloadBuilderError::Internal(err.into())
+        })?;
+
+        let mut block_transactions_rlp_length = 0;
+        let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp);
+
+        while let Some(pool_tx) = best_txs.next() {
+            // ensure we still have capacity for this transaction
+            if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
+                // we can't fit this transaction into the block, so we need to mark it as invalid
+                // which also removes all dependent transaction from the iterator before we can
+                // continue
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    InvalidPoolTransactionError::ExceedsGasLimit(
+                        pool_tx.gas_limit(),
+                        block_gas_limit,
+                    ),
+                );
+                continue;
+            }
+
+            // check if the job was cancelled, if so we can exit early
+            if cancel.is_cancelled() {
+                return Ok(BuildOutcome::Cancelled);
+            }
+
+            // convert tx to a signed transaction
+            let tx = pool_tx.to_consensus();
+
+            let estimated_block_size_with_tx = block_transactions_rlp_length
+                + tx.inner().length()
+                + attributes.withdrawals.length()
+                + 1024; // 1Kb of overhead for the block header
+
+            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    InvalidPoolTransactionError::OversizedData(
+                        estimated_block_size_with_tx,
+                        MAX_RLP_BLOCK_SIZE,
+                    ),
+                );
+                continue;
+            }
+
+            let gas_used = match builder.execute_transaction(tx.clone()) {
+                Ok(gas_used) => gas_used,
+                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                    error,
+                    ..
+                })) => {
+                    if error.is_nonce_too_low() {
+                        // if the nonce is too low, we can skip this transaction
+                        trace!(target: "payload_builder", %error, ?tx, "skipping nonce too low transaction");
+                    } else {
+                        // if the transaction is invalid, we can skip it and all of its
+                        // descendants
+                        trace!(target: "payload_builder", %error, ?tx, "skipping invalid transaction and its descendants");
+                        best_txs.mark_invalid(
+                            &pool_tx,
+                            InvalidPoolTransactionError::Consensus(
+                                InvalidTransactionError::TxTypeNotSupported,
+                            ),
+                        );
+                    }
+                    continue;
+                }
+                // this is an error that we should treat as fatal for this attempt
+                Err(err) => return Err(PayloadBuilderError::evm(err)),
+            };
+
+            block_transactions_rlp_length += tx.inner().length();
+
+            // update and add to total fees
+            let miner_fee = tx
+                .effective_tip_per_gas(base_fee)
+                .expect("fee is always valid; execution succeeded");
+            total_fees += U256::from(miner_fee) * U256::from(gas_used);
+            cumulative_gas_used += gas_used;
+        }
+
+        // check if we have a better block
+        if !is_better_payload(best_payload.as_ref(), total_fees) {
+            // Release db
+            drop(builder);
+            // can skip building the block
+            return Ok(BuildOutcome::Aborted {
+                fees: total_fees,
+                cached_reads,
+            });
+        }
+
+        let BlockBuilderOutcome {
+            execution_result,
+            block,
+            ..
+        } = builder.finish(&state_provider)?;
+
+        let requests = chain_spec
+            .is_prague_active_at_timestamp(attributes.timestamp)
+            .then_some(execution_result.requests);
+
+        let sealed_block = Arc::new(block.sealed_block().clone());
+        debug!(target: "payload_builder", id=%attributes.id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
+
+        if sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: sealed_block.rlp_length(),
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
+
+        let payload = EthBuiltPayload::new(attributes.id, sealed_block, total_fees, requests);
+
+        Ok(BuildOutcome::Better {
+            payload,
+            cached_reads,
+        })
+    }
+}

@@ -17,26 +17,25 @@ use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PoolBuilder, TxPoolBuilder,
+        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder,
     },
     rpc::{
         BasicEngineApiBuilder, BasicEngineValidatorBuilder, EngineApiBuilder, EngineValidatorAddOn,
         EngineValidatorBuilder, EthApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
     },
 };
-use reth_node_ethereum::{
-    EthEngineTypes, EthEvmConfig, EthereumNetworkBuilder, EthereumPayloadBuilder,
-};
+use reth_node_ethereum::{EthEngineTypes, EthEvmConfig, EthereumNetworkBuilder};
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
 use reth_rpc_eth_api::FromEvmError;
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing::{debug, info};
-use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::DiskFileBlobStore};
+use reth_transaction_pool::TransactionValidationTaskExecutor;
 use std::{default::Default, sync::Arc, time::SystemTime};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_consensus::TempoConsensus;
-use tempo_evm::evm::TempoEvmFactory;
+use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
+use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
 
 /// Type configuration for a regular Ethereum node.
@@ -56,7 +55,7 @@ impl TempoNode {
     pub fn components<Node>() -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
-        BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
+        BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
@@ -205,7 +204,7 @@ where
     type ComponentsBuilder = ComponentsBuilder<
         N,
         TempoPoolBuilder,
-        BasicPayloadServiceBuilder<EthereumPayloadBuilder>,
+        BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
@@ -274,7 +273,7 @@ impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
     Node: FullNodeTypes<Types = TempoNode>,
 {
-    type EVM = EthEvmConfig<TempoChainSpec, TempoEvmFactory>;
+    type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
         let evm_config =
@@ -328,7 +327,7 @@ impl<Node> PoolBuilder<Node> for TempoPoolBuilder
 where
     Node: FullNodeTypes<Types = TempoNode>,
 {
-    type Pool = TempoTransactionPool<Node::Provider, DiskFileBlobStore>;
+    type Pool = TempoTransactionPool<Node::Provider>;
 
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
         let mut pool_config = ctx.pool_config();
@@ -387,5 +386,30 @@ where
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
 
         Ok(transaction_pool)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct TempoPayloadBuilderBuilder;
+
+impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
+    for TempoPayloadBuilderBuilder
+where
+    Node: FullNodeTypes<Types = TempoNode>,
+{
+    type PayloadBuilder = TempoPayloadBuilder<Node::Provider>;
+
+    async fn build_payload_builder(
+        self,
+        ctx: &BuilderContext<Node>,
+        pool: TempoTransactionPool<Node::Provider>,
+        evm_config: TempoEvmConfig,
+    ) -> eyre::Result<Self::PayloadBuilder> {
+        Ok(TempoPayloadBuilder::new(
+            pool,
+            ctx.provider().clone(),
+            evm_config,
+        ))
     }
 }

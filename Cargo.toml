@@ -13,6 +13,7 @@ members = [
   "crates/evm",
   "crates/faucet",
   "crates/node",
+  "crates/payload",
   "crates/precompiles",
   "crates/contracts",
   "crates/reth-malachite",
@@ -87,12 +88,14 @@ tempo-consensus = { path = "crates/consensus" }
 tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }
 tempo-revm = { path = "crates/revm" }
+tempo-payload-builder = { path = "crates/payload" }
 tempo-precompiles = { path = "crates/precompiles" }
 tempo-contracts = { path = "crates/contracts" }
 tempo-telemetry-util = { path = "crates/telemetry-util" }
 tempo-transaction-pool = { path = "crates/transaction-pool" }
 
 reth = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
@@ -102,8 +105,10 @@ reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "50
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "50e8409" }
