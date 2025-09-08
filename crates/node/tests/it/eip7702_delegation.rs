@@ -153,7 +153,7 @@ async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
     let execute_call =
         delegate_account.execute(execution_mode, vec![invalid_call].abi_encode().into());
     let res = execute_call.send().await;
-    let err = res.err().expect("Could not get err");
+    let err = res.expect_err("Tx succeeded unexpectedly");
     assert!(err.to_string().contains("execution reverted"));
 
     let final_code = bob_provider.get_code_at(bob_addr).await?;

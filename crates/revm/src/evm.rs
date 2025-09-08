@@ -3,17 +3,15 @@ use reth_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Context, Inspector,
-        context::{BlockEnv, CfgEnv, ContextError, ContextTr, Evm, FrameStack, Host, TxEnv},
+        context::{BlockEnv, CfgEnv, ContextError, Evm, FrameStack, TxEnv},
         handler::{
             EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
             instructions::EthInstructions,
         },
         inspector::InspectorEvmTr,
         interpreter::interpreter::EthInterpreter,
-        state::Bytecode,
     },
 };
-use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 use crate::frame::TempoFrameExt;
 
@@ -183,11 +181,12 @@ mod tests {
     use alloy_primitives::Address;
     use reth_evm::revm::{
         ExecuteEvm,
-        context::TxEnv,
+        context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
         primitives::hardfork::SpecId,
         state::Bytecode,
     };
+    use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
     #[test]
     fn test_auto_7702_delegation() -> eyre::Result<()> {
