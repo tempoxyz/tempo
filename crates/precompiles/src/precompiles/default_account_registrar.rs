@@ -3,11 +3,11 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
-    DefaultAccountRegistrar, StorageProvider,
-    types::{DefaultAccountRegistrarError, IDefaultAccountRegistrar},
+    TipAccountRegistrar, StorageProvider,
+    types::{TipAccountRegistrarError, ITipAccountRegistrar},
 };
 
-impl<'a, S: StorageProvider> Precompile for DefaultAccountRegistrar<'a, S> {
+impl<'a, S: StorageProvider> Precompile for TipAccountRegistrar<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
@@ -18,10 +18,10 @@ impl<'a, S: StorageProvider> Precompile for DefaultAccountRegistrar<'a, S> {
             .unwrap();
 
         match selector {
-            IDefaultAccountRegistrar::delegateToDefaultCall::SELECTOR => {
+            ITipAccountRegistrar::delegateToDefaultCall::SELECTOR => {
                 mutate::<
-                    IDefaultAccountRegistrar::delegateToDefaultCall,
-                    DefaultAccountRegistrarError,
+                    ITipAccountRegistrar::delegateToDefaultCall,
+                    TipAccountRegistrarError,
                 >(calldata, msg_sender, |sender, call| {
                     self.delegate_to_default(sender, call)
                 })

@@ -142,7 +142,7 @@ sol! {
 
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
-    interface IDefaultAccountRegistrar {
+    interface ITipAccountRegistrar {
         function delegateToDefault(bytes32 hash, bytes signature) external returns (address authority);
 
         // Errors
@@ -331,7 +331,7 @@ macro_rules! fee_manager_err {
 }
 
 // Use the auto-generated error and event enums
-pub use IDefaultAccountRegistrar::IDefaultAccountRegistrarErrors as DefaultAccountRegistrarError;
+pub use ITipAccountRegistrar::ITipAccountRegistrarErrors as TipAccountRegistrarError;
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};

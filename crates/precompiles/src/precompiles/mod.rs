@@ -20,7 +20,7 @@ use crate::{
     DAA_REGISTRAR_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     TIP4217_REGISTRY_ADDRESS,
     contracts::{
-        DefaultAccountRegistrar, EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry,
+        TipAccountRegistrar, EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry,
         TIP4217Registry, address_is_token_address, address_to_token_id_unchecked,
         tip_fee_manager::TipFeeManager,
     },
@@ -47,7 +47,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id))
         } else if *address == DAA_REGISTRAR_ADDRESS {
-            Some(DefaultAccountRegistrarPrecompile::create(chain_id))
+            Some(TipAccountRegistrarPrecompile::create(chain_id))
         } else {
             None
         }
@@ -122,12 +122,12 @@ impl TipFeeManagerPrecompile {
     }
 }
 
-pub struct DefaultAccountRegistrarPrecompile;
+pub struct TipAccountRegistrarPrecompile;
 
-impl DefaultAccountRegistrarPrecompile {
+impl TipAccountRegistrarPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("DefaultAccountRegistrar", |input| {
-            DefaultAccountRegistrar::new(&mut EvmStorageProvider::new(input.internals, chain_id))
+        tempo_precompile!("TipAccountRegistrar", |input| {
+            TipAccountRegistrar::new(&mut EvmStorageProvider::new(input.internals, chain_id))
         })
     }
 }

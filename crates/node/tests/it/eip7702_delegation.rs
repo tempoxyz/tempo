@@ -12,7 +12,7 @@ use alloy_primitives::{Address, B256, U256, keccak256};
 use reth_evm::revm::state::Bytecode;
 use std::{env, str::FromStr};
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
-use tempo_precompiles::{DAA_REGISTRAR_ADDRESS, contracts::types::IDefaultAccountRegistrar};
+use tempo_precompiles::{DAA_REGISTRAR_ADDRESS, contracts::types::ITipAccountRegistrar};
 
 sol! {
     struct Call {
@@ -157,11 +157,11 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let hash = keccak256(message);
     let signature = bob.sign_hash_sync(&hash)?;
 
-    // Call the DefaultAccountRegistrar precompile to delegate teh account
-    let registrar = IDefaultAccountRegistrar::new(DAA_REGISTRAR_ADDRESS, provider.clone());
+    // Call the TipAccountRegistrar precompile to delegate teh account
+    let registrar = ITipAccountRegistrar::new(DAA_REGISTRAR_ADDRESS, provider.clone());
     let registrar_call = registrar.delegateToDefault(hash, signature.as_bytes().into());
     let receipt = registrar_call.send().await?.get_receipt().await?;
-    assert!(receipt.status(), "DefaultAccountRegistrar call failed");
+    assert!(receipt.status(), "TipAccountRegistrar call failed");
 
     // Verify that Bob's account the default delegation bytecode
     let code_after = provider.get_code_at(bob_addr).await?;

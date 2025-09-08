@@ -4,14 +4,14 @@ use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 use crate::contracts::{
     StorageProvider,
-    types::{DefaultAccountRegistrarError, IDefaultAccountRegistrar},
+    types::{ITipAccountRegistrar, TipAccountRegistrarError},
 };
 
-pub struct DefaultAccountRegistrar<'a, S: StorageProvider> {
+pub struct TipAccountRegistrar<'a, S: StorageProvider> {
     storage: &'a mut S,
 }
 
-impl<'a, S: StorageProvider> DefaultAccountRegistrar<'a, S> {
+impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self { storage }
     }
@@ -19,14 +19,14 @@ impl<'a, S: StorageProvider> DefaultAccountRegistrar<'a, S> {
     pub fn delegate_to_default(
         &mut self,
         _msg_sender: &Address,
-        call: IDefaultAccountRegistrar::delegateToDefaultCall,
-    ) -> Result<Address, DefaultAccountRegistrarError> {
-        let IDefaultAccountRegistrar::delegateToDefaultCall { hash, signature } = call;
+        call: ITipAccountRegistrar::delegateToDefaultCall,
+    ) -> Result<Address, TipAccountRegistrarError> {
+        let ITipAccountRegistrar::delegateToDefaultCall { hash, signature } = call;
 
         // Signature should be 65 bytes: [r (32 bytes), s (32 bytes), v (1 byte)]
         if signature.len() != 65 {
-            return Err(DefaultAccountRegistrarError::InvalidSignature(
-                IDefaultAccountRegistrar::InvalidSignature {},
+            return Err(TipAccountRegistrarError::InvalidSignature(
+                ITipAccountRegistrar::InvalidSignature {},
             ));
         }
 
@@ -46,19 +46,24 @@ impl<'a, S: StorageProvider> DefaultAccountRegistrar<'a, S> {
         let signer = match ecrecover(sig.into(), v, msg) {
             Ok(recovered_addr) => Address::from_word(recovered_addr),
             Err(_) => {
-                return Err(DefaultAccountRegistrarError::InvalidSignature(
-                    IDefaultAccountRegistrar::InvalidSignature {},
+                return Err(TipAccountRegistrarError::InvalidSignature(
+                    ITipAccountRegistrar::InvalidSignature {},
                 ));
             }
         };
 
-        // TODO: Check if the signer account has code - should be empty for delegation
-        // For now, skip the code check since StorageProvider doesn't have get_code method
+        let code = self
+            .storage
+            .get_code(signer)
+            .expect("TODO: handle error")
+            .unwrap_or_default();
 
-        // Delegate the account to the default 7702 implementation
-        self.storage
-            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))
-            .expect("TODO: handle error");
+        if code.is_empty() {
+            // Delegate the account to the default 7702 implementation
+            self.storage
+                .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))
+                .expect("TODO: handle error");
+        }
 
         Ok(signer)
     }
@@ -68,7 +73,7 @@ impl<'a, S: StorageProvider> DefaultAccountRegistrar<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        contracts::{HashMapStorageProvider, types::IDefaultAccountRegistrar},
+        contracts::{HashMapStorageProvider, types::ITipAccountRegistrar},
         precompiles::Precompile,
     };
     use alloy_primitives::B256;
@@ -76,10 +81,10 @@ mod tests {
     #[test]
     fn test_delegate_to_default_stub() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registrar = DefaultAccountRegistrar::new(&mut storage);
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
         let sender = Address::ZERO;
 
-        let call = IDefaultAccountRegistrar::delegateToDefaultCall {
+        let call = ITipAccountRegistrar::delegateToDefaultCall {
             hash: B256::ZERO,
             signature: vec![0u8; 65].into(), // 65 zero bytes
         };
@@ -92,7 +97,7 @@ mod tests {
     #[test]
     fn test_precompile_call_with_invalid_selector() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registrar = DefaultAccountRegistrar::new(&mut storage);
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
         let invalid_calldata = [0xFF; 4];
         let sender = Address::ZERO;
 
@@ -107,7 +112,7 @@ mod tests {
         use alloy_signer_local::PrivateKeySigner;
 
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registrar = DefaultAccountRegistrar::new(&mut storage);
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
 
         let signer = PrivateKeySigner::random();
         let expected_address = signer.address();
@@ -117,7 +122,7 @@ mod tests {
 
         // Sign the hash directly (not with Ethereum message prefix)
         let signature = signer.sign_hash_sync(&hash).unwrap();
-        let call = IDefaultAccountRegistrar::delegateToDefaultCall {
+        let call = ITipAccountRegistrar::delegateToDefaultCall {
             hash,
             signature: signature.as_bytes().into(),
         };
