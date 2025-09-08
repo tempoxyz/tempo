@@ -125,16 +125,13 @@ async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
         .wallet(alice)
         .connect_http(http_url.clone());
 
-    // Init a fresh wallet with nonce 0
+    // Init a new wallet with nonce 0
     let bob = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .index(1)?
         .build()?;
-
-    let bob = PrivateKeySigner::random();
     let bob_addr = bob.address();
 
-    // Assert bob has nonce 0 and empty code
     assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty());
@@ -165,7 +162,7 @@ async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
     assert!(!receipt.status());
 
     let final_code = bob_provider.get_code_at(bob_addr).await?;
-    assert!(final_code.is_empty(),);
+    assert!(final_code.is_empty());
 
     Ok(())
 }
