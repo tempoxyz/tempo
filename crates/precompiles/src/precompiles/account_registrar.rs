@@ -1,4 +1,4 @@
-use crate::precompiles::{Precompile, mutate};
+use crate::precompiles::{Precompile, mutate, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -20,6 +20,12 @@ impl<'a, S: StorageProvider> Precompile for TipAccountRegistrar<'a, S> {
                     calldata,
                     msg_sender,
                     |_, call| self.delegate_to_default(call),
+                )
+            }
+            ITipAccountRegistrar::getDelegationMessageCall::SELECTOR => {
+                view::<ITipAccountRegistrar::getDelegationMessageCall, _>(
+                    calldata,
+                    |_| Self::get_delegation_message(),
                 )
             }
             _ => Err(PrecompileError::Other(
