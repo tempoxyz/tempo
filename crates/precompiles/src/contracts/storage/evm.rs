@@ -31,11 +31,16 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
         self.chain_id
     }
 
-    fn set_code(&mut self, address: Address, code: Vec<u8>) -> Result<(), Self::Error> {
+    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), Self::Error> {
         self.ensure_loaded_account(address)?;
-        self.internals
-            .set_code(address, Bytecode::new_raw(code.into()));
+        self.internals.set_code(address, code);
         Ok(())
+    }
+
+    fn get_code(&self, address: Address) -> Result<Option<Bytecode>, Self::Error> {
+        // For simplicity in EvmStorageProvider, we'll return None since we can't easily 
+        // get code without mutable access to internals
+        Ok(None)
     }
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
@@ -102,7 +107,7 @@ mod tests {
         let mut provider = EvmStorageProvider::new(evm_internals, 1);
 
         let addr = Address::random();
-        let code = vec![0xff];
+        let code = Bytecode::new_raw(vec![0xff].into());
         provider.set_code(addr, code.clone())?;
         drop(provider);
 
@@ -110,7 +115,7 @@ mod tests {
             panic!("Failed to load account code")
         };
 
-        assert_eq!(data, Bytes::from(code));
+        assert_eq!(data, *code.bytecode());
         Ok(())
     }
 

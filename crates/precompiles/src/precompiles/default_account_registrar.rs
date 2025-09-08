@@ -3,8 +3,8 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
-    DefaultAccountRegistrar,
-    types::{IDefaultAccountRegistrar, DefaultAccountRegistrarError},
+    DefaultAccountRegistrar, StorageProvider,
+    types::{DefaultAccountRegistrarError, IDefaultAccountRegistrar},
 };
 
 impl<'a, S: StorageProvider> Precompile for DefaultAccountRegistrar<'a, S> {
@@ -19,11 +19,12 @@ impl<'a, S: StorageProvider> Precompile for DefaultAccountRegistrar<'a, S> {
 
         match selector {
             IDefaultAccountRegistrar::delegateToDefaultCall::SELECTOR => {
-                mutate::<IDefaultAccountRegistrar::delegateToDefaultCall, DefaultAccountRegistrarError>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.delegate_to_default(sender, call),
-                )
+                mutate::<
+                    IDefaultAccountRegistrar::delegateToDefaultCall,
+                    DefaultAccountRegistrarError,
+                >(calldata, msg_sender, |sender, call| {
+                    self.delegate_to_default(sender, call)
+                })
             }
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
@@ -31,4 +32,3 @@ impl<'a, S: StorageProvider> Precompile for DefaultAccountRegistrar<'a, S> {
         }
     }
 }
-

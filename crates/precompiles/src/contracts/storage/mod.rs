@@ -12,6 +12,7 @@ pub trait StorageProvider {
 
     fn chain_id(&self) -> u64;
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), Self::Error>;
+    fn get_code(&self, address: Address) -> Result<Option<Bytecode>, Self::Error>;
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error>;
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error>;
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error>;

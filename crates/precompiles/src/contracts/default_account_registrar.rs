@@ -40,6 +40,7 @@ impl<'a, S: StorageProvider> DefaultAccountRegistrar<'a, S> {
             v -= 27;
         }
 
+        // TODO: enforce a specific message to be signed?
         let msg = &hash;
 
         let signer = match ecrecover(sig.into(), v, msg) {
@@ -66,12 +67,16 @@ impl<'a, S: StorageProvider> DefaultAccountRegistrar<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{contracts::types::IDefaultAccountRegistrar, precompiles::Precompile};
+    use crate::{
+        contracts::{HashMapStorageProvider, types::IDefaultAccountRegistrar},
+        precompiles::Precompile,
+    };
     use alloy_primitives::B256;
 
     #[test]
     fn test_delegate_to_default_stub() {
-        let mut registrar = DefaultAccountRegistrar::new();
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut registrar = DefaultAccountRegistrar::new(&mut storage);
         let sender = Address::ZERO;
 
         let call = IDefaultAccountRegistrar::delegateToDefaultCall {
@@ -86,7 +91,8 @@ mod tests {
 
     #[test]
     fn test_precompile_call_with_invalid_selector() {
-        let mut registrar = DefaultAccountRegistrar::new();
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut registrar = DefaultAccountRegistrar::new(&mut storage);
         let invalid_calldata = [0xFF; 4];
         let sender = Address::ZERO;
 
@@ -100,7 +106,8 @@ mod tests {
         use alloy_signer::{Signer, SignerSync};
         use alloy_signer_local::PrivateKeySigner;
 
-        let mut registrar = DefaultAccountRegistrar::new();
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut registrar = DefaultAccountRegistrar::new(&mut storage);
 
         let signer = PrivateKeySigner::random();
         let expected_address = signer.address();
@@ -120,5 +127,14 @@ mod tests {
 
         let recovered_address = result.unwrap();
         assert_eq!(recovered_address, expected_address);
+
+        // Verify that the account was deployed with EIP-7702 delegation
+        let code_after = storage
+            .get_code(expected_address)
+            .expect("Failed to get account code");
+        assert_eq!(
+            code_after,
+            Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
+        );
     }
 }
