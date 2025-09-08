@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, B256, U256};
-use reth_evm::revm::precompile::secp256k1::k256::ecrecover;
+use reth_evm::revm::precompile::secp256k1::ecrecover;
 
 use crate::contracts::types::{DefaultAccountRegistrarError, IDefaultAccountRegistrar};
 
@@ -24,9 +24,24 @@ impl DefaultAccountRegistrar {
             ));
         }
 
-        // TODO: Implement ECDSA recovery using ecrecover with hash and signature
-        // For now, return a stub address
-        Ok(Address::ZERO)
+        // Extract signature components
+        // r: bytes 0-31 bytes
+        // s: bytes 32-63 bytes
+        // v: byte 64
+        let sig: &[u8; 64] = signature[0..64].try_into().unwrap();
+        let mut v = signature[64];
+        if v >= 27 {
+            v -= 27;
+        }
+
+        let msg = &hash;
+
+        match ecrecover(sig.into(), v, msg) {
+            Ok(recovered_addr) => Ok(Address::from_word(recovered_addr)),
+            Err(_) => Err(DefaultAccountRegistrarError::InvalidSignature(
+                IDefaultAccountRegistrar::InvalidSignature {},
+            )),
+        }
     }
 }
 
@@ -53,8 +68,8 @@ mod tests {
         };
 
         let result = registrar.delegate_to_default(&sender, call);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Address::ZERO);
+        // Should fail with invalid signature (all zeros)
+        assert!(result.is_err());
     }
 
     #[test]
@@ -74,27 +89,23 @@ mod tests {
         use alloy_signer_local::PrivateKeySigner;
 
         let mut registrar = DefaultAccountRegistrar::new();
-        let sender = Address::ZERO;
 
-        // Create a random signer
         let signer = PrivateKeySigner::random();
         let expected_address = signer.address();
 
-        // Create a message to sign
-        let message = b"Hello, DAA!";
+        let message = b"msg";
         let hash = keccak256(message);
 
-        // Sign the message hash
-        let signature = signer.sign_message_sync(message).unwrap();
-        let signature_bytes = signature.as_bytes();
+        // Sign the hash directly (not with Ethereum message prefix)
+        let signature = signer.sign_hash_sync(&hash).unwrap();
         let call = IDefaultAccountRegistrar::delegateToDefaultCall {
             hash,
-            signature: signature_bytes.into(),
+            signature: signature.as_bytes().into(),
         };
 
-        let result = registrar.delegate_to_default(&sender, call);
-
+        let result = registrar.delegate_to_default(&signer.address(), call);
         assert!(result.is_ok());
+
         let recovered_address = result.unwrap();
         assert_eq!(recovered_address, expected_address);
     }
