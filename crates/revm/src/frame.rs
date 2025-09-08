@@ -3,7 +3,7 @@ use reth_evm::revm::{
     Database,
     context::{
         Cfg, ContextError, ContextTr, FrameToken, JournalTr, OutFrame, Transaction,
-        result::FromStringError,
+        journaled_state::JournalCheckpoint, result::FromStringError,
     },
     handler::{
         CallFrame, ContextTrDbError, EthFrame, FrameData, FrameResult, ItemOrResult,
@@ -11,7 +11,7 @@ use reth_evm::revm::{
     },
     interpreter::{
         CallInputs, CallOutcome, CallValue, FrameInput, Gas, InputsImpl, InstructionResult,
-        InterpreterResult, SharedMemory,
+        Interpreter, InterpreterResult, SharedMemory,
         interpreter::{EthInterpreter, ExtBytecode},
         interpreter_action::FrameInit,
     },
@@ -138,26 +138,23 @@ impl TempoFrameExt {
             return return_result(InstructionResult::Stop);
         }
 
-        // TODO: uncomment once EthFrame::invalid is public
-        // // Create interpreter and executes call and push new CallStackFrame.
-        // this.get(EthFrame::invalid).clear(
-        //     FrameData::Call(CallFrame {
-        //         return_memory_range: inputs.return_memory_offset.clone(),
-        //     }),
-        //     FrameInput::Call(inputs),
-        //     depth,
-        //     memory,
-        //     ExtBytecode::new_with_hash(bytecode, code_hash),
-        //     interpreter_input,
-        //     is_static,
-        //     ctx.cfg().spec().into(),
-        //     gas_limit,
-        //     checkpoint,
-        // );
-        // Ok(ItemOrResult::Item(this.consume()))
-        //
-        //
-        todo!()
+        // Create interpreter and executes call and push new CallStackFrame.
+        out_frame.get(Self::invalid).clear(
+            FrameData::Call(CallFrame {
+                return_memory_range: inputs.return_memory_offset.clone(),
+            }),
+            FrameInput::Call(inputs),
+            depth,
+            memory,
+            ExtBytecode::new_with_hash(bytecode, code_hash),
+            interpreter_input,
+            is_static,
+            ctx.cfg().spec().into(),
+            gas_limit,
+            checkpoint,
+        );
+
+        Ok(ItemOrResult::Item(out_frame.consume()))
     }
 
     /// Initializes a frame with the given context and precompiles.
@@ -188,6 +185,23 @@ impl TempoFrameExt {
                 EthFrame::make_create_frame(this, ctx, depth, memory, inputs)
             }
             FrameInput::Empty => unreachable!(),
+        }
+    }
+
+    fn invalid() -> EthFrame {
+        Self::do_default(Interpreter::invalid())
+    }
+
+    fn do_default(interpreter: Interpreter<EthInterpreter>) -> EthFrame {
+        EthFrame {
+            data: FrameData::Call(CallFrame {
+                return_memory_range: 0..0,
+            }),
+            input: FrameInput::Empty,
+            depth: 0,
+            checkpoint: JournalCheckpoint::default(),
+            interpreter,
+            is_finished: false,
         }
     }
 }
