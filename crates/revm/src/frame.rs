@@ -1,9 +1,14 @@
 use alloy_primitives::Bytes;
 use reth_evm::revm::{
-    context::{result::FromStringError, Cfg, ContextTr, FrameToken, JournalTr, OutFrame},
-    handler::{CallFrame, ContextTrDbError, EthFrame, FrameData, FrameResult, ItemOrResult, PrecompileProvider},
+    context::{Cfg, ContextTr, FrameToken, JournalTr, OutFrame, result::FromStringError},
+    handler::{
+        CallFrame, ContextTrDbError, EthFrame, FrameData, FrameResult, ItemOrResult,
+        PrecompileProvider,
+    },
     interpreter::{
-        interpreter::{EthInterpreter, ExtBytecode}, CallInputs, CallOutcome, CallValue, FrameInput, Gas, InputsImpl, InstructionResult, InterpreterResult, SharedMemory
+        CallInputs, CallOutcome, CallValue, FrameInput, Gas, InputsImpl, InstructionResult,
+        InterpreterResult, SharedMemory,
+        interpreter::{EthInterpreter, ExtBytecode},
     },
     primitives::CALL_STACK_LIMIT,
     state::Bytecode,
@@ -51,7 +56,40 @@ pub trait TempoFrameExt {
 
         // Touch address. For "EIP-158 State Clear", this will erase empty accounts.
         if let CallValue::Transfer(value) = inputs.value {
-            // Transfer value from caller to called account Target will get touched even if balance transferred is zero. if let Some(i) = ctx.journal_mut() .transfer(inputs.caller, inputs.target_address, value)? { ctx.journal_mut().checkpoint_revert(checkpoint); return return_result(i.into()); } } let interpreter_input = InputsImpl { target_address: inputs.target_address, caller_address: inputs.caller, bytecode_address: Some(inputs.bytecode_address), input: inputs.input.clone(), call_value: inputs.value.get(), }; let is_static = inputs.is_static; let gas_limit = inputs.gas_limit; if let Some(result) = precompiles.run(ctx, &inputs).map_err(ERROR::from_string)? { if result.result.is_ok() { ctx.journal_mut().checkpoint_commit(); } else { ctx.journal_mut().checkpoint_revert(checkpoint); } return Ok(ItemOrResult::Result(FrameResult::Call(CallOutcome { result, memory_offset: inputs.return_memory_offset.clone(), }))); } let account = ctx
+            // Transfer value from caller to called account
+            // Target will get touched even if balance transferred is zero.
+            if let Some(i) =
+                ctx.journal_mut()
+                    .transfer(inputs.caller, inputs.target_address, value)?
+            {
+                ctx.journal_mut().checkpoint_revert(checkpoint);
+                return return_result(i.into());
+            }
+        }
+
+        let interpreter_input = InputsImpl {
+            target_address: inputs.target_address,
+            caller_address: inputs.caller,
+            bytecode_address: Some(inputs.bytecode_address),
+            input: inputs.input.clone(),
+            call_value: inputs.value.get(),
+        };
+        let is_static = inputs.is_static;
+        let gas_limit = inputs.gas_limit;
+
+        if let Some(result) = precompiles.run(ctx, &inputs).map_err(ERROR::from_string)? {
+            if result.result.is_ok() {
+                ctx.journal_mut().checkpoint_commit();
+            } else {
+                ctx.journal_mut().checkpoint_revert(checkpoint);
+            }
+            return Ok(ItemOrResult::Result(FrameResult::Call(CallOutcome {
+                result,
+                memory_offset: inputs.return_memory_offset.clone(),
+            })));
+        }
+
+        let account = ctx
             .journal_mut()
             .load_account_code(inputs.bytecode_address)?;
 
@@ -89,8 +127,6 @@ pub trait TempoFrameExt {
             checkpoint,
         );
         Ok(ItemOrResult::Item(this.consume()))
-    }
-
     }
 
     ///// Initializes a frame with the given context and precompiles.
