@@ -216,7 +216,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let hash = keccak256(message);
     let signature = bob.sign_hash_sync(&hash)?;
 
-    // Call the TipAccountRegistrar precompile to delegate teh account
+    // Call the TipAccountRegistrar precompile to delegate the account
     let registrar = ITipAccountRegistrar::new(DAA_REGISTRAR_ADDRESS, provider.clone());
     let registrar_call = registrar.delegateToDefault(hash, signature.as_bytes().into());
     let receipt = registrar_call.send().await?.get_receipt().await?;
