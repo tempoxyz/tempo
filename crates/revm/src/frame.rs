@@ -2,7 +2,8 @@ use alloy_primitives::Bytes;
 use reth_evm::revm::{
     Database,
     context::{
-        Cfg, ContextError, ContextTr, FrameToken, JournalTr, OutFrame, result::FromStringError,
+        Cfg, ContextError, ContextTr, FrameToken, JournalTr, OutFrame, Transaction,
+        result::FromStringError,
     },
     handler::{
         CallFrame, ContextTrDbError, EthFrame, FrameData, FrameResult, ItemOrResult,
@@ -17,6 +18,7 @@ use reth_evm::revm::{
     primitives::CALL_STACK_LIMIT,
     state::Bytecode,
 };
+use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 pub struct TempoFrameExt;
 
@@ -28,7 +30,7 @@ impl TempoFrameExt {
         PRECOMPILES: PrecompileProvider<CTX, Output = InterpreterResult>,
         ERROR: From<ContextTrDbError<CTX>> + FromStringError,
     >(
-        mut this: OutFrame<'_, EthFrame>,
+        mut out_frame: OutFrame<'_, EthFrame>,
         ctx: &mut CTX,
         precompiles: &mut PRECOMPILES,
         depth: usize,
@@ -70,6 +72,16 @@ impl TempoFrameExt {
             {
                 ctx.journal_mut().checkpoint_revert(checkpoint);
                 return return_result(i.into());
+            }
+        }
+
+        // Auto delegate the the default 7702 account if this is the account's first tx
+        if ctx.journal().depth() == 0 && ctx.tx().nonce() == 0 {
+            let caller = ctx.caller();
+            let code = ctx.load_account_code(caller).unwrap_or_default();
+            if code.is_empty() {
+                ctx.journal_mut()
+                    .set_code(caller, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
             }
         }
 
