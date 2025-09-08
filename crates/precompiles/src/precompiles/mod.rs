@@ -149,7 +149,7 @@ fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> T::Return) -> Precompi
 }
 
 #[inline]
-fn mutate<T: SolCall, E: SolInterface>(
+pub fn mutate<T: SolCall, E: SolInterface>(
     calldata: &[u8],
     sender: &Address,
     f: impl FnOnce(&Address, T) -> Result<T::Return, E>,

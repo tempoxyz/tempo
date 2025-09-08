@@ -1,11 +1,34 @@
-use crate::{contracts::DefaultAccountRegistrar, precompiles::Precompile};
-use alloy_primitives::Address;
-use reth_evm::revm::precompile::PrecompileResult;
+use crate::precompiles::{Precompile, mutate};
+use alloy::{primitives::Address, sol_types::SolCall};
+use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
+
+use crate::contracts::{
+    DefaultAccountRegistrar,
+    types::{IDefaultAccountRegistrar, DefaultAccountRegistrarError},
+};
 
 impl Precompile for DefaultAccountRegistrar {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        // Delegate to the contract implementation
-        DefaultAccountRegistrar::call(self, calldata, msg_sender)
+        let selector: [u8; 4] = calldata
+            .get(..4)
+            .ok_or_else(|| {
+                PrecompileError::Other("Invalid input: missing function selector".to_string())
+            })?
+            .try_into()
+            .unwrap();
+
+        match selector {
+            IDefaultAccountRegistrar::delegateToDefaultCall::SELECTOR => {
+                mutate::<IDefaultAccountRegistrar::delegateToDefaultCall, DefaultAccountRegistrarError>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.delegate_to_default(sender, call),
+                )
+            }
+            _ => Err(PrecompileError::Other(
+                "Unknown function selector".to_string(),
+            )),
+        }
     }
 }
 

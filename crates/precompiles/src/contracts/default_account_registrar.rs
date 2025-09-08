@@ -1,10 +1,6 @@
 use alloy_primitives::Address;
-use reth_evm::revm::precompile::PrecompileResult;
 
-use crate::{
-    contracts::types::{DefaultAccountRegistrarError, IDefaultAccountRegistrar},
-    precompiles::Precompile,
-};
+use crate::contracts::types::{DefaultAccountRegistrarError, IDefaultAccountRegistrar};
 
 pub struct DefaultAccountRegistrar;
 
@@ -37,22 +33,36 @@ impl Default for DefaultAccountRegistrar {
     }
 }
 
-impl Precompile for DefaultAccountRegistrar {
-    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        let selector = calldata.get(..4).and_then(|s| s.try_into().ok());
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::types::IDefaultAccountRegistrar;
+    use alloy_primitives::{B256, U256};
 
-        match selector {
-            Some(IDefaultAccountRegistrar::delegateToDefaultCall::SELECTOR) => {
-                mutate::<IDefaultAccountRegistrar::delegateToDefaultCall, DefaultAccountRegistrarError>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.delegate_to_default(sender, call),
-                )
-            }
-            _ => Err(reth_evm::revm::precompile::PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
-        }
+    #[test]
+    fn test_delegate_to_default_stub() {
+        let mut registrar = DefaultAccountRegistrar::new();
+        let sender = Address::ZERO;
+
+        let call = IDefaultAccountRegistrar::delegateToDefaultCall {
+            hash: B256::ZERO,
+            v: 27,
+            r: B256::ZERO,
+            s: B256::ZERO,
+        };
+
+        let result = registrar.delegate_to_default(&sender, call);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Address::ZERO);
+    }
+
+    #[test]
+    fn test_precompile_call_with_invalid_selector() {
+        let mut registrar = DefaultAccountRegistrar::new();
+        let invalid_calldata = [0xFF; 4]; // Invalid selector
+        let sender = Address::ZERO;
+
+        let result = registrar.call(&invalid_calldata, &sender);
+        assert!(result.is_err());
     }
 }
-
