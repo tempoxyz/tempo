@@ -12,7 +12,10 @@ use alloy_primitives::{Address, B256, U256, keccak256};
 use reth_evm::revm::state::Bytecode;
 use std::{env, str::FromStr};
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
-use tempo_precompiles::{DAA_REGISTRAR_ADDRESS, contracts::types::ITipAccountRegistrar};
+use tempo_precompiles::{
+    TIP_ACCOUNT_REGISTRAR,
+    contracts::{tip_account_registrar::EIP_7702_DELEGATION_MSG, types::ITipAccountRegistrar},
+};
 
 sol! {
     struct Call {
@@ -41,17 +44,14 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         .connect_http(http_url.clone());
     let _deployer = provider.default_signer_address();
 
-    // Deploy a test token
     let token = setup_test_token(provider.clone(), _deployer).await?;
 
-    // Init a fresh wallet with nonce 0
     let bob = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .index(1)?
         .build()?;
     let bob_addr = bob.address();
 
-    // Mint funds to bob
     let amount = U256::random();
     token
         .mint(bob_addr, amount)
@@ -60,12 +60,11 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    // Assert bob has nonce 0 and empty code
+    // Assert pre state
     assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty(),);
 
-    // Balances before
     let bob_bal_before = token.balanceOf(bob_addr).call().await?;
     assert_eq!(bob_bal_before, amount);
     let recipient = Address::random();
@@ -78,7 +77,6 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         .calldata()
         .to_owned();
 
-    // Build the multi-call payload for IthacaAccount::execute
     let calls = vec![Call {
         to: *token.address(),
         value: U256::from(0),
@@ -190,14 +188,12 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let deployer = provider.default_signer_address();
     let token = setup_test_token(provider.clone(), deployer).await?;
 
-    // Init a fresh wallet with nonce 0
     let bob = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .index(1)?
         .build()?;
     let bob_addr = bob.address();
 
-    // Mint funds to bob
     let amount = U256::random();
     token
         .mint(bob_addr, amount)
@@ -211,18 +207,15 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty());
 
-    // Sign a message with Bob private key
-    let message = b"test message";
-    let hash = keccak256(message);
+    let hash = keccak256(EIP_7702_DELEGATION_MSG);
     let signature = bob.sign_hash_sync(&hash)?;
 
-    // Call the TipAccountRegistrar precompile to delegate the account
-    let registrar = ITipAccountRegistrar::new(DAA_REGISTRAR_ADDRESS, provider.clone());
+    // Create a new tx to delegate to the default 7702 impl
+    let registrar = ITipAccountRegistrar::new(TIP_ACCOUNT_REGISTRAR, provider.clone());
     let registrar_call = registrar.delegateToDefault(hash, signature.as_bytes().into());
     let receipt = registrar_call.send().await?.get_receipt().await?;
     assert!(receipt.status(), "TipAccountRegistrar call failed");
 
-    // Verify that Bob's account the default delegation bytecode
     let code_after = provider.get_code_at(bob_addr).await?;
     assert_eq!(
         code_after,
@@ -241,7 +234,6 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
         .calldata()
         .to_owned();
 
-    // Build the multi-call payload for IthacaAccount::execute
     let calls = vec![Call {
         to: *token.address(),
         value: U256::from(0),
@@ -260,7 +252,6 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     assert!(receipt.status(), "7702 delegate execution tx failed");
     assert_eq!(bob_provider.get_transaction_count(bob_addr).await?, 1);
 
-    // Assert state changes
     let bob_bal_after = token.balanceOf(bob_addr).call().await?;
     let recip_bal_after = token.balanceOf(recipient).call().await?;
     assert_eq!(bob_bal_after, U256::ZERO);
