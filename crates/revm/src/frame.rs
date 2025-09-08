@@ -7,8 +7,7 @@ use reth_evm::revm::{
     },
     interpreter::{
         CallInputs, CallOutcome, CallValue, FrameInput, Gas, InputsImpl, InstructionResult,
-        InterpreterResult, SharedMemory,
-        interpreter::{EthInterpreter, ExtBytecode},
+        InterpreterResult, SharedMemory, interpreter::ExtBytecode,
     },
     primitives::CALL_STACK_LIMIT,
     state::Bytecode,
@@ -77,7 +76,16 @@ pub trait TempoFrameExt {
         let is_static = inputs.is_static;
         let gas_limit = inputs.gas_limit;
 
-        if let Some(result) = precompiles.run(ctx, &inputs).map_err(ERROR::from_string)? {
+        if let Some(result) = precompiles
+            .run(
+                ctx,
+                &inputs.target_address,
+                &interpreter_input,
+                is_static,
+                gas_limit,
+            )
+            .map_err(ERROR::from_string)?
+        {
             if result.result.is_ok() {
                 ctx.journal_mut().checkpoint_commit();
             } else {
