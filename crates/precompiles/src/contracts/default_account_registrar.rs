@@ -1,13 +1,19 @@
-use alloy_primitives::{Address, B256, U256};
-use reth_evm::revm::precompile::secp256k1::ecrecover;
+use alloy_primitives::Address;
+use reth_evm::revm::{precompile::secp256k1::ecrecover, state::Bytecode};
+use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
-use crate::contracts::types::{DefaultAccountRegistrarError, IDefaultAccountRegistrar};
+use crate::contracts::{
+    StorageProvider,
+    types::{DefaultAccountRegistrarError, IDefaultAccountRegistrar},
+};
 
-pub struct DefaultAccountRegistrar;
+pub struct DefaultAccountRegistrar<'a, S: StorageProvider> {
+    storage: &'a mut S,
+}
 
-impl DefaultAccountRegistrar {
-    pub fn new() -> Self {
-        Self
+impl<'a, S: StorageProvider> DefaultAccountRegistrar<'a, S> {
+    pub fn new(storage: &'a mut S) -> Self {
+        Self { storage }
     }
 
     pub fn delegate_to_default(
@@ -36,18 +42,24 @@ impl DefaultAccountRegistrar {
 
         let msg = &hash;
 
-        match ecrecover(sig.into(), v, msg) {
-            Ok(recovered_addr) => Ok(Address::from_word(recovered_addr)),
-            Err(_) => Err(DefaultAccountRegistrarError::InvalidSignature(
-                IDefaultAccountRegistrar::InvalidSignature {},
-            )),
-        }
-    }
-}
+        let signer = match ecrecover(sig.into(), v, msg) {
+            Ok(recovered_addr) => Address::from_word(recovered_addr),
+            Err(_) => {
+                return Err(DefaultAccountRegistrarError::InvalidSignature(
+                    IDefaultAccountRegistrar::InvalidSignature {},
+                ));
+            }
+        };
 
-impl Default for DefaultAccountRegistrar {
-    fn default() -> Self {
-        Self::new()
+        // TODO: Check if the signer account has code - should be empty for delegation
+        // For now, skip the code check since StorageProvider doesn't have get_code method
+
+        // Delegate the account to the default 7702 implementation
+        self.storage
+            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))
+            .expect("TODO: handle error");
+
+        Ok(signer)
     }
 }
 

@@ -7,7 +7,7 @@ use crate::contracts::{
     types::{IDefaultAccountRegistrar, DefaultAccountRegistrarError},
 };
 
-impl Precompile for DefaultAccountRegistrar {
+impl<'a, S: StorageProvider> Precompile for DefaultAccountRegistrar<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)

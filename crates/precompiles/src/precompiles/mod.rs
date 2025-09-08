@@ -47,7 +47,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id))
         } else if *address == DAA_REGISTRAR_ADDRESS {
-            Some(DefaultAccountRegistrarPrecompile::create())
+            Some(DefaultAccountRegistrarPrecompile::create(chain_id))
         } else {
             None
         }
@@ -125,8 +125,10 @@ impl TipFeeManagerPrecompile {
 pub struct DefaultAccountRegistrarPrecompile;
 
 impl DefaultAccountRegistrarPrecompile {
-    pub fn create() -> DynPrecompile {
-        tempo_precompile!("DefaultAccountRegistrar", |_input| DefaultAccountRegistrar::new())
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("DefaultAccountRegistrar", |input| DefaultAccountRegistrar::new(
+            &mut EvmStorageProvider::new(input.internals, chain_id)
+        ))
     }
 }
 

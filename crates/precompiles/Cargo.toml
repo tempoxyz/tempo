@@ -9,6 +9,7 @@ description = "TODO:"
 workspace = true
 
 [dependencies]
+tempo-contracts.workspace = true
 reth-evm.workspace = true
 reth-storage-api.workspace = true
 alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
