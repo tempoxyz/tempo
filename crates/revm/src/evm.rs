@@ -100,21 +100,6 @@ where
         ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
         ContextError<DB::Error>,
     > {
-        // Auto delegate the the default 7702 account if this is the account's first tx
-        if self.0.journal().depth == 0 {
-            let ctx = &mut self.0.ctx;
-            if ctx.tx.nonce == 0 {
-                let caller = ctx.tx.caller;
-                let code = ctx.load_account_code(caller).unwrap_or_default();
-                if code.is_empty() {
-                    ctx.journal_mut()
-                        .set_code(caller, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
-                }
-            }
-        }
-
-        // TODO: ensure that the code is not set if the tx fails
-
         let is_first_init = self.0.frame_stack.index().is_none();
         let new_frame = if is_first_init {
             self.0.frame_stack.start_init()
