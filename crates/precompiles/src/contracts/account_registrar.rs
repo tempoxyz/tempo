@@ -22,7 +22,6 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
     ) -> Result<Address, TipAccountRegistrarError> {
         let ITipAccountRegistrar::delegateToDefaultCall { hash, signature } = call;
 
-        // Signature should be 65 bytes: [r (32 bytes), s (32 bytes), v (1 byte)]
         if signature.len() != 65 {
             return Err(TipAccountRegistrarError::InvalidSignature(
                 ITipAccountRegistrar::InvalidSignature {},

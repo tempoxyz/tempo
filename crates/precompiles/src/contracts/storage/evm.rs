@@ -73,7 +73,6 @@ mod tests {
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         revm::context::{ContextTr, Host},
     };
-    use alloy_primitives::Bytes;
     use reth_evm::revm::{
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
@@ -107,7 +106,7 @@ mod tests {
         let mut provider = EvmStorageProvider::new(evm_internals, 1);
 
         let addr = Address::random();
-        let code = Bytecode::new_legacy(vec![0xff].into());
+        let code = Bytecode::new_raw(vec![0xff].into());
         provider.set_code(addr, code.clone())?;
         drop(provider);
 
