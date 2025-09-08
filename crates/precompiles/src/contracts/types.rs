@@ -331,7 +331,6 @@ macro_rules! fee_manager_err {
 }
 
 // Use the auto-generated error and event enums
-pub use ITipAccountRegistrar::ITipAccountRegistrarErrors as TipAccountRegistrarError;
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
@@ -339,3 +338,4 @@ pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };
+pub use ITipAccountRegistrar::ITipAccountRegistrarErrors as TipAccountRegistrarError;

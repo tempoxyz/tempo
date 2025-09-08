@@ -2,10 +2,7 @@ use crate::precompiles::{Precompile, mutate};
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
-use crate::contracts::{
-    StorageProvider, TipAccountRegistrar,
-    types::ITipAccountRegistrar,
-};
+use crate::contracts::{StorageProvider, TipAccountRegistrar, types::ITipAccountRegistrar};
 
 impl<'a, S: StorageProvider> Precompile for TipAccountRegistrar<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
