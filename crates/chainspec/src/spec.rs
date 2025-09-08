@@ -49,7 +49,7 @@ impl ChainSpecParser for TempoChainSpecParser {
 
 pub static ADAGIO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let _genesis: Genesis = serde_json::from_str(include_str!("./genesis/adagio.json"))
-        .expect("`../res/genesis/adagio.json` must be present and deserializable");
+        .expect("`./genesis/adagio.json` must be present and deserializable");
     let hardforks: ChainHardforks = EthereumHardfork::mainnet().into();
     let mut spec = ChainSpec {
         chain: Chain::from(1234),
@@ -175,5 +175,16 @@ impl EthereumHardforks for TempoChainSpec {
 impl EthExecutorSpec for TempoChainSpec {
     fn deposit_contract_address(&self) -> Option<Address> {
         self.inner.deposit_contract_address()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use reth_cli::chainspec::ChainSpecParser as _;
+
+    #[test]
+    fn can_load_adagio() {
+        let _ = super::TempoChainSpecParser::parse("adagio")
+            .expect("the adagio chainspec must always be well formed");
     }
 }
