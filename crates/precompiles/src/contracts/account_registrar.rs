@@ -82,23 +82,14 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::sol_types::SolCall;
-
     use super::*;
-    use crate::{
-        contracts::{HashMapStorageProvider, types::ITipAccountRegistrar},
-        precompiles::Precompile,
-    };
+    use crate::contracts::{HashMapStorageProvider, types::ITipAccountRegistrar};
     use alloy_primitives::keccak256;
-    use alloy_signer::{Signer, SignerSync};
+    use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
     #[test]
     fn test_delegate_to_default() {
-        use alloy_primitives::keccak256;
-        use alloy_signer::{Signer, SignerSync};
-        use alloy_signer_local::PrivateKeySigner;
-
         let mut storage = HashMapStorageProvider::new(1);
         let mut registrar = TipAccountRegistrar::new(&mut storage);
 
