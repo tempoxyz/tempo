@@ -107,7 +107,7 @@ mod tests {
         let mut provider = EvmStorageProvider::new(evm_internals, 1);
 
         let addr = Address::random();
-        let code = Bytecode::new_raw(vec![0xff].into());
+        let code = Bytecode::new_legacy(vec![0xff].into());
         provider.set_code(addr, code.clone())?;
         drop(provider);
 
