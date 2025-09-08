@@ -4,7 +4,7 @@ use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
     StorageProvider, TipAccountRegistrar,
-    types::{ITipAccountRegistrar, TipAccountRegistrarError},
+    types::ITipAccountRegistrar,
 };
 
 impl<'a, S: StorageProvider> Precompile for TipAccountRegistrar<'a, S> {
