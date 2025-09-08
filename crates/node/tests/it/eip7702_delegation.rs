@@ -1,7 +1,7 @@
 use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
     providers::{Provider, ProviderBuilder, WalletProvider},
-    signers::local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English},
+    signers::local::{MnemonicBuilder, coins_bip39::English},
     sol,
     sol_types::SolValue,
 };
