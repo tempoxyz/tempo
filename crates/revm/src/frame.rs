@@ -54,16 +54,6 @@ impl TempoFrameExt {
             return return_result(InstructionResult::CallTooDeep);
         }
 
-        // Auto delegate the the default 7702 account if this is the account's first tx
-        if ctx.journal().depth() == 0 && ctx.tx().nonce() == 0 {
-            let caller = ctx.caller();
-            let code = ctx.load_account_code(caller).unwrap_or_default();
-            if code.is_empty() {
-                ctx.journal_mut()
-                    .set_code(caller, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
-            }
-        }
-
         // Make account warm and loaded.
         let _ = ctx
             .journal_mut()
@@ -71,6 +61,16 @@ impl TempoFrameExt {
 
         // Create subroutine checkpoint
         let checkpoint = ctx.journal_mut().checkpoint();
+
+        // Auto delegate the the default 7702 account if this is the account's first tx
+        if ctx.journal().depth() == 1 && ctx.tx().nonce() == 0 {
+            let caller = ctx.caller();
+            let code = ctx.load_account_code(caller).unwrap_or_default();
+            if code.is_empty() {
+                ctx.journal_mut()
+                    .set_code(caller, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
+            }
+        }
 
         // Touch address. For "EIP-158 State Clear", this will erase empty accounts.
         if let CallValue::Transfer(value) = inputs.value {

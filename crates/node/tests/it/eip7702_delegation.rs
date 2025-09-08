@@ -1,7 +1,7 @@
 use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
     providers::{Provider, ProviderBuilder, WalletProvider},
-    signers::local::{MnemonicBuilder, coins_bip39::English},
+    signers::local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English},
     sol,
     sol_types::SolValue,
 };
@@ -130,6 +130,8 @@ async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
         .phrase("test test test test test test test test test test test junk")
         .index(1)?
         .build()?;
+
+    let bob = PrivateKeySigner::random();
     let bob_addr = bob.address();
 
     // Assert bob has nonce 0 and empty code
@@ -137,9 +139,9 @@ async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty());
 
-    // Build a call that will fail (calling a non-existent contract method)
+    // Build a call that will fail
     let invalid_call = Call {
-        to: Address::random(), // Non-existent contract address
+        to: Address::random(),
         value: U256::from(1),
         data: b"invalid_method()".to_vec().into(),
     };
@@ -152,9 +154,15 @@ async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
 
     let execute_call =
         delegate_account.execute(execution_mode, vec![invalid_call].abi_encode().into());
-    let res = execute_call.send().await;
-    let err = res.expect_err("Tx succeeded unexpectedly");
-    assert!(err.to_string().contains("execution reverted"));
+
+    let receipt = execute_call
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    assert!(!receipt.status());
 
     let final_code = bob_provider.get_code_at(bob_addr).await?;
     assert!(final_code.is_empty(),);
