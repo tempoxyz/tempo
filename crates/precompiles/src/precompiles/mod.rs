@@ -20,8 +20,8 @@ use crate::{
     DAA_REGISTRAR_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     TIP4217_REGISTRY_ADDRESS,
     contracts::{
-        TipAccountRegistrar, EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry,
-        TIP4217Registry, address_is_token_address, address_to_token_id_unchecked,
+        EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
+        TipAccountRegistrar, address_is_token_address, address_to_token_id_unchecked,
         tip_fee_manager::TipFeeManager,
     },
 };

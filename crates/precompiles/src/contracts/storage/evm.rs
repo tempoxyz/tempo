@@ -37,10 +37,10 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
         Ok(())
     }
 
-    fn get_code(&self, address: Address) -> Result<Option<Bytecode>, Self::Error> {
-        // For simplicity in EvmStorageProvider, we'll return None since we can't easily
-        // get code without mutable access to internals
-        Ok(None)
+    fn get_code(&mut self, address: Address) -> Result<Option<Bytecode>, Self::Error> {
+        self.ensure_loaded_account(address)?;
+        let account = self.internals.load_account_code(address)?;
+        Ok(account.data.info.code.clone())
     }
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
