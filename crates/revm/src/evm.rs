@@ -114,6 +114,26 @@ where
         // TODO: ensure that the code is not set if the tx fails
 
         self.0.frame_init(frame_input)
+
+        // let is_first_init = self.frame_stack.index().is_none();
+        // let new_frame = if is_first_init {
+        //     self.frame_stack.start_init()
+        // } else {
+        //     self.frame_stack.get_next()
+        // };
+        //
+        // let ctx = &mut self.ctx;
+        // let precompiles = &mut self.precompiles;
+        // let res = Self::Frame::init_with_context(new_frame, ctx, precompiles, frame_input)?;
+        //
+        // Ok(res.map_frame(|token| {
+        //     if is_first_init {
+        //         unsafe { self.frame_stack.end_init(token) };
+        //     } else {
+        //         unsafe { self.frame_stack.push(token) };
+        //     }
+        //     self.frame_stack.get()
+        // }))
     }
 
     fn frame_run(&mut self) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
