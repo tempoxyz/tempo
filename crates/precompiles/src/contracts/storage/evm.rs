@@ -118,7 +118,4 @@ mod tests {
         assert_eq!(data, *code.bytecode());
         Ok(())
     }
-
-    #[test]
-    fn test_emit_event() {}
 }
