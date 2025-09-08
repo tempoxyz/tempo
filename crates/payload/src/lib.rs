@@ -3,7 +3,6 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use std::sync::Arc;
 use alloy_consensus::Transaction;
 use alloy_primitives::U256;
 use alloy_rlp::Encodable;
@@ -27,6 +26,7 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
+use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoEvmConfig;
 use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTransaction};
