@@ -13,6 +13,7 @@ members = [
   "crates/evm",
   "crates/faucet",
   "crates/node",
+  "crates/payload",
   "crates/precompiles",
   "crates/contracts",
   "crates/reth-malachite",
@@ -87,12 +88,14 @@ tempo-consensus = { path = "crates/consensus" }
 tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }
 tempo-revm = { path = "crates/revm" }
+tempo-payload-builder = { path = "crates/payload" }
 tempo-precompiles = { path = "crates/precompiles" }
 tempo-contracts = { path = "crates/contracts" }
 tempo-telemetry-util = { path = "crates/telemetry-util" }
 tempo-transaction-pool = { path = "crates/transaction-pool" }
 
 reth = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
@@ -102,8 +105,10 @@ reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "9d
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
@@ -136,6 +141,7 @@ reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "
 reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5" }
+
 alloy-network = { version = "1.0.23" }
 alloy-rpc-types-eth = { version = "1.0.23" }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "9d56da5", features = [

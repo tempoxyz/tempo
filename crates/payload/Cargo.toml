@@ -1,0 +1,30 @@
+[package]
+name = "tempo-payload-builder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tempo-chainspec.workspace = true
+tempo-evm.workspace = true
+tempo-transaction-pool.workspace = true
+
+reth-basic-payload-builder.workspace = true
+reth-chainspec.workspace = true
+reth-consensus-common.workspace = true
+reth-errors.workspace = true
+reth-evm.workspace = true
+reth-payload-builder.workspace = true
+reth-primitives-traits.workspace = true
+reth-revm.workspace = true
+reth-storage-api.workspace = true
+reth-transaction-pool.workspace = true
+
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp = "0.3"
+
+tracing.workspace = true
