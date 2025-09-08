@@ -12,12 +12,6 @@ tempo-chainspec.workspace = true
 tempo-evm.workspace = true
 tempo-transaction-pool.workspace = true
 
-# Core dependencies
-alloy-consensus.workspace = true
-alloy-primitives.workspace = true
-alloy-rlp = "0.3"
-
-# Reth dependencies
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
 reth-consensus-common.workspace = true
@@ -29,5 +23,8 @@ reth-revm.workspace = true
 reth-storage-api.workspace = true
 reth-transaction-pool.workspace = true
 
-# Other dependencies
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp = "0.3"
+
 tracing.workspace = true
