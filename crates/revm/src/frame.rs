@@ -18,10 +18,12 @@ use reth_evm::revm::{
     state::Bytecode,
 };
 
-pub trait TempoFrameExt {
+pub struct TempoFrameExt;
+
+impl TempoFrameExt {
     /// Make call frame
     #[inline]
-    fn make_call_frame<
+    pub fn make_call_frame<
         CTX: ContextTr,
         PRECOMPILES: PrecompileProvider<CTX, Output = InterpreterResult>,
         ERROR: From<ContextTrDbError<CTX>> + FromStringError,
@@ -147,7 +149,7 @@ pub trait TempoFrameExt {
     }
 
     /// Initializes a frame with the given context and precompiles.
-    fn init_with_context<
+    pub fn init_with_context<
         CTX: ContextTr,
         PRECOMPILES: PrecompileProvider<CTX, Output = InterpreterResult>,
     >(
@@ -177,5 +179,3 @@ pub trait TempoFrameExt {
         }
     }
 }
-
-impl TempoFrameExt for EthFrame<EthInterpreter> {}

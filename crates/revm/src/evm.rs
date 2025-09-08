@@ -15,6 +15,8 @@ use reth_evm::{
 };
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
+use crate::frame::TempoFrameExt;
+
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
 
@@ -113,27 +115,25 @@ where
 
         // TODO: ensure that the code is not set if the tx fails
 
-        self.0.frame_init(frame_input)
+        let is_first_init = self.0.frame_stack.index().is_none();
+        let new_frame = if is_first_init {
+            self.0.frame_stack.start_init()
+        } else {
+            self.0.frame_stack.get_next()
+        };
 
-        // let is_first_init = self.frame_stack.index().is_none();
-        // let new_frame = if is_first_init {
-        //     self.frame_stack.start_init()
-        // } else {
-        //     self.frame_stack.get_next()
-        // };
-        //
-        // let ctx = &mut self.ctx;
-        // let precompiles = &mut self.precompiles;
-        // let res = Self::Frame::init_with_context(new_frame, ctx, precompiles, frame_input)?;
-        //
-        // Ok(res.map_frame(|token| {
-        //     if is_first_init {
-        //         unsafe { self.frame_stack.end_init(token) };
-        //     } else {
-        //         unsafe { self.frame_stack.push(token) };
-        //     }
-        //     self.frame_stack.get()
-        // }))
+        let ctx = &mut self.0.ctx;
+        let precompiles = &mut self.0.precompiles;
+        let res = TempoFrameExt::init_with_context(new_frame, ctx, precompiles, frame_input)?;
+
+        Ok(res.map_frame(|token| {
+            if is_first_init {
+                self.0.frame_stack.end_init(token);
+            } else {
+                self.0.frame_stack.push(token);
+            }
+            self.0.frame_stack.get()
+        }))
     }
 
     fn frame_run(&mut self) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
