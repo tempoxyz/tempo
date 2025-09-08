@@ -1,5 +1,9 @@
-use std::sync::Arc;
+//! Tempo Payload Builder.
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+
+use std::sync::Arc;
 use alloy_consensus::Transaction;
 use alloy_primitives::U256;
 use alloy_rlp::Encodable;
