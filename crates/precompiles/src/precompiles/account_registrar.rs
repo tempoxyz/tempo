@@ -23,10 +23,9 @@ impl<'a, S: StorageProvider> Precompile for TipAccountRegistrar<'a, S> {
                 )
             }
             ITipAccountRegistrar::getDelegationMessageCall::SELECTOR => {
-                view::<ITipAccountRegistrar::getDelegationMessageCall, _>(
-                    calldata,
-                    |_| Self::get_delegation_message(),
-                )
+                view::<ITipAccountRegistrar::getDelegationMessageCall>(calldata, |_| {
+                    Self::get_delegation_message().to_string()
+                })
             }
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
