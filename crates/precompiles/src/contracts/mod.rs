@@ -1,4 +1,4 @@
-pub mod default_account_registrar;
+pub mod account_registrar;
 pub mod provider;
 pub mod roles;
 pub mod storage;
@@ -10,8 +10,8 @@ pub mod tip_fee_manager;
 pub mod types;
 
 use crate::TIP20_TOKEN_PREFIX;
+pub use account_registrar::TipAccountRegistrar;
 use alloy::primitives::Address;
-pub use default_account_registrar::TipAccountRegistrar;
 pub use storage::{StorageProvider, evm::EvmStorageProvider, hashmap::HashMapStorageProvider};
 pub use tip_fee_manager::TipFeeManager;
 pub use tip20::TIP20Token;
@@ -19,7 +19,7 @@ pub use tip20_factory::TIP20Factory;
 pub use tip403_registry::TIP403Registry;
 pub use tip4217_registry::TIP4217Registry;
 pub use types::{
-    ITipAccountRegistrar, IFeeManager, ITIP20, ITIP20Factory, ITIP403Registry, ITIP4217Registry,
+    IFeeManager, ITIP20, ITIP20Factory, ITIP403Registry, ITIP4217Registry, ITipAccountRegistrar,
 };
 
 /// Converts a token ID to its corresponding contract address

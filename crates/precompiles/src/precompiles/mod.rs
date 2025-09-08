@@ -9,7 +9,7 @@ use reth_evm::{
     revm::precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
-pub mod default_account_registrar;
+pub mod account_registrar;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
@@ -126,9 +126,9 @@ pub struct TipAccountRegistrarPrecompile;
 
 impl TipAccountRegistrarPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("TipAccountRegistrar", |input| {
-            TipAccountRegistrar::new(&mut EvmStorageProvider::new(input.internals, chain_id))
-        })
+        tempo_precompile!("TipAccountRegistrar", |input| TipAccountRegistrar::new(
+            &mut EvmStorageProvider::new(input.internals, chain_id)
+        ))
     }
 }
 

@@ -3,8 +3,8 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
-    TipAccountRegistrar, StorageProvider,
-    types::{TipAccountRegistrarError, ITipAccountRegistrar},
+    StorageProvider, TipAccountRegistrar,
+    types::{ITipAccountRegistrar, TipAccountRegistrarError},
 };
 
 impl<'a, S: StorageProvider> Precompile for TipAccountRegistrar<'a, S> {
@@ -19,12 +19,11 @@ impl<'a, S: StorageProvider> Precompile for TipAccountRegistrar<'a, S> {
 
         match selector {
             ITipAccountRegistrar::delegateToDefaultCall::SELECTOR => {
-                mutate::<
-                    ITipAccountRegistrar::delegateToDefaultCall,
-                    TipAccountRegistrarError,
-                >(calldata, msg_sender, |sender, call| {
-                    self.delegate_to_default(sender, call)
-                })
+                mutate::<ITipAccountRegistrar::delegateToDefaultCall, _>(
+                    calldata,
+                    msg_sender,
+                    |_, call| self.delegate_to_default(call),
+                )
             }
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),

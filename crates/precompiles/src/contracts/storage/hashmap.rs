@@ -35,7 +35,7 @@ impl StorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
-    fn get_code(&self, address: Address) -> Result<Option<Bytecode>, Self::Error> {
+    fn get_code(&mut self, address: Address) -> Result<Option<Bytecode>, Self::Error> {
         Ok(self.code.get(&address).cloned())
     }
 

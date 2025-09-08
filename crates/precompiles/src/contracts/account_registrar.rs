@@ -18,7 +18,6 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
 
     pub fn delegate_to_default(
         &mut self,
-        _msg_sender: &Address,
         call: ITipAccountRegistrar::delegateToDefaultCall,
     ) -> Result<Address, TipAccountRegistrarError> {
         let ITipAccountRegistrar::delegateToDefaultCall { hash, signature } = call;
@@ -76,23 +75,6 @@ mod tests {
         contracts::{HashMapStorageProvider, types::ITipAccountRegistrar},
         precompiles::Precompile,
     };
-    use alloy_primitives::B256;
-
-    #[test]
-    fn test_delegate_to_default_stub() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
-        let sender = Address::ZERO;
-
-        let call = ITipAccountRegistrar::delegateToDefaultCall {
-            hash: B256::ZERO,
-            signature: vec![0u8; 65].into(), // 65 zero bytes
-        };
-
-        let result = registrar.delegate_to_default(&sender, call);
-        // Should fail with invalid signature (all zeros)
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_precompile_call_with_invalid_selector() {
@@ -127,7 +109,7 @@ mod tests {
             signature: signature.as_bytes().into(),
         };
 
-        let result = registrar.delegate_to_default(&signer.address(), call);
+        let result = registrar.delegate_to_default(call);
         assert!(result.is_ok());
 
         let recovered_address = result.unwrap();
