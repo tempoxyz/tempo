@@ -1,3 +1,6 @@
+//! A Tempo node.
+//!
+//! Run with argument `--help` to see a list of options.
 use tempo_commonware_node::cli;
 
 fn main() {
