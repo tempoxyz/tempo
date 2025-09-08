@@ -12087,6 +12087,8 @@ version = "0.1.0"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",
+ "reth-evm-ethereum",
+ "tempo-chainspec",
  "tempo-precompiles",
  "tempo-revm",
 ]
@@ -12145,9 +12147,33 @@ dependencies = [
  "tempo-contracts",
  "tempo-evm",
  "tempo-faucet",
+ "tempo-payload-builder",
  "tempo-precompiles",
  "tempo-transaction-pool",
  "tokio",
+]
+
+[[package]]
+name = "tempo-payload-builder"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "reth-basic-payload-builder",
+ "reth-chainspec",
+ "reth-consensus-common",
+ "reth-errors",
+ "reth-evm",
+ "reth-payload-builder",
+ "reth-primitives-traits",
+ "reth-revm",
+ "reth-storage-api",
+ "reth-transaction-pool",
+ "tempo-chainspec",
+ "tempo-evm",
+ "tempo-transaction-pool",
+ "tracing",
 ]
 
 [[package]]

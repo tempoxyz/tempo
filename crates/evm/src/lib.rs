@@ -4,3 +4,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 pub mod evm;
+pub use evm::TempoEvmFactory;
+
+use tempo_chainspec::TempoChainSpec;
+
+pub type TempoEvmConfig = reth_evm_ethereum::EthEvmConfig<TempoChainSpec, TempoEvmFactory>;
