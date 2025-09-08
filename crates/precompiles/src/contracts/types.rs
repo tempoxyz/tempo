@@ -143,7 +143,7 @@ sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
     interface IDefaultAccountRegistrar {
-        function delegateToDefault(bytes32 hash, uint8 v, bytes32 r, bytes32 s) external returns (address authority);
+        function delegateToDefault(bytes32 hash, bytes signature) external returns (address authority);
 
         // Errors
         error InvalidSignature();
