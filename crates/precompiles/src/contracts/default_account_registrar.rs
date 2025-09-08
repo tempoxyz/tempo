@@ -36,7 +36,7 @@ impl Default for DefaultAccountRegistrar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::types::IDefaultAccountRegistrar;
+    use crate::{contracts::types::IDefaultAccountRegistrar, precompiles::Precompile};
     use alloy_primitives::{B256, U256};
 
     #[test]
@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn test_precompile_call_with_invalid_selector() {
         let mut registrar = DefaultAccountRegistrar::new();
-        let invalid_calldata = [0xFF; 4]; // Invalid selector
+        let invalid_calldata = [0xFF; 4];
         let sender = Address::ZERO;
 
         let result = registrar.call(&invalid_calldata, &sender);
