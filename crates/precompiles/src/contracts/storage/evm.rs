@@ -114,7 +114,7 @@ mod tests {
             panic!("Failed to load account code")
         };
 
-        assert_eq!(data, *code.bytecode());
+        assert_eq!(data, *code.original_bytes());
         Ok(())
     }
 }
