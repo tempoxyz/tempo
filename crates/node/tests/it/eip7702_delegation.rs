@@ -106,3 +106,62 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _node_handle) = setup_test_node(source).await?;
+
+    let alice = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let provider = ProviderBuilder::new()
+        .wallet(alice)
+        .connect_http(http_url.clone());
+
+    // Init a new wallet with nonce 0
+    let bob = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .index(1)?
+        .build()?;
+    let bob_addr = bob.address();
+
+    assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
+    let code_before = provider.get_code_at(bob_addr).await?;
+    assert!(code_before.is_empty());
+
+    let invalid_call = Call {
+        to: Address::random(),
+        value: U256::from(1),
+        data: b"invalid_method()".to_vec().into(),
+    };
+
+    let bob_provider = ProviderBuilder::new().wallet(bob).connect_http(http_url);
+    let delegate_account = IthacaAccount::new(bob_addr, bob_provider.clone());
+    let execution_mode =
+        B256::from_str("0x0100000000007821000100000000000000000000000000000000000000000000")
+            .unwrap();
+
+    let execute_call =
+        delegate_account.execute(execution_mode, vec![invalid_call].abi_encode().into());
+
+    let receipt = execute_call
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    assert!(!receipt.inner.is_success());
+
+    let final_code = bob_provider.get_code_at(bob_addr).await?;
+    assert!(final_code.is_empty());
+
+    Ok(())
+}
