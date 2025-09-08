@@ -38,7 +38,7 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
     }
 
     fn get_code(&self, address: Address) -> Result<Option<Bytecode>, Self::Error> {
-        // For simplicity in EvmStorageProvider, we'll return None since we can't easily 
+        // For simplicity in EvmStorageProvider, we'll return None since we can't easily
         // get code without mutable access to internals
         Ok(None)
     }

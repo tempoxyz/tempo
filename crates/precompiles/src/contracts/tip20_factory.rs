@@ -34,7 +34,10 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
     pub fn initialize(&mut self) -> Result<(), TIP20Error> {
         // must ensure the account is not empty, by setting some code
         self.storage
-            .set_code(TIP20_FACTORY_ADDRESS, Bytecode::new_legacy(Bytes::from_static(&[0xef])))
+            .set_code(
+                TIP20_FACTORY_ADDRESS,
+                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+            )
             .expect("TODO: handle error");
         Ok(())
     }

@@ -126,9 +126,9 @@ pub struct DefaultAccountRegistrarPrecompile;
 
 impl DefaultAccountRegistrarPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("DefaultAccountRegistrar", |input| DefaultAccountRegistrar::new(
-            &mut EvmStorageProvider::new(input.internals, chain_id)
-        ))
+        tempo_precompile!("DefaultAccountRegistrar", |input| {
+            DefaultAccountRegistrar::new(&mut EvmStorageProvider::new(input.internals, chain_id))
+        })
     }
 }
 
