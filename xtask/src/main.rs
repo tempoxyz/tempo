@@ -1,3 +1,5 @@
+//! xtask is a Swiss army knife of tools that help with running and testing tempo.
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::Parser;
