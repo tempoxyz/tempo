@@ -136,7 +136,6 @@ async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty());
 
-    // Build a call that will fail
     let invalid_call = Call {
         to: Address::random(),
         value: U256::from(1),
@@ -159,7 +158,7 @@ async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    assert!(!receipt.status());
+    assert!(!receipt.inner.is_success());
 
     let final_code = bob_provider.get_code_at(bob_addr).await?;
     assert!(final_code.is_empty());
