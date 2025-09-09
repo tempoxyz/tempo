@@ -324,6 +324,15 @@ where
     }
 
     /// Verifies a [`Verify`] request.
+    ///
+    /// this method only renders a decision on the `verify.response`
+    /// channel if it was able to come to a boolean decision. If it was
+    /// unable to refute or prove the validity of the block it will
+    /// return an error and drop the response channel.
+    ///
+    /// Conditions for which no decision could be made are usually:
+    /// no block could be read from the syncer or communication with the
+    /// execution layer failed.
     #[instrument(
         skip_all,
         fields(
@@ -361,15 +370,6 @@ where
                 mut response,
             } = verify;
 
-            // NOTE: this method only renders a decision on the `response`
-            // channel if it was able to come to a boolean decision. If it was
-            // unable to refute or prove the validity of the block because it
-            // was unavailable or because communication with the execution
-            // layer failed, it will return an error and drop the response
-            // channel.
-            // to come to a boolean decision it returns an error. These are
-            // usually: it was unable to get the block from the syncer or
-            // communication with the execiution layer failed.
             let verification_fut = async {
                 let parent_request = if parent.1 == genesis_block.digest() {
                     Either::Left(futures_util::future::always_ready({
