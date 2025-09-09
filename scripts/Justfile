@@ -27,7 +27,7 @@ tempo-dev-up:
 		--gpo.default-suggested-fee 0 \
 		> logs/tempo-dev.log 2>&1 &
 	PID=$!
-	echo "Started tempo-dev with PID $PID, logs at scripts/logs/tempo-dev.log"
+	echo "Started tempo-dev with PID $PID
 
 tempo-dev-down:
 	#!/bin/bash
