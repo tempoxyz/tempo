@@ -14,63 +14,58 @@ echo "Testing basic token transfer..."
 
 # Generate test wallets
 echo "Generating test wallets..."
-WALLET1_OUTPUT=$(cast wallet new)
-PK1=$(echo "$WALLET1_OUTPUT" | grep "Private key:" | awk '{print $3}')
-ADDR1=$(echo "$WALLET1_OUTPUT" | grep "Address:" | awk '{print $2}')
+SENDER_WALLET=$(cast wallet new)
+SENDER_PK=$(echo "$SENDER_WALLET" | grep "Private key:" | awk '{print $3}')
+SENDER_ADDR=$(echo "$SENDER_WALLET" | grep "Address:" | awk '{print $2}')
 
-WALLET2_OUTPUT=$(cast wallet new)
-PK2=$(echo "$WALLET2_OUTPUT" | grep "Private key:" | awk '{print $3}')
-ADDR2=$(echo "$WALLET2_OUTPUT" | grep "Address:" | awk '{print $2}')
+RECIPIENT_ADDR=$(cast wallet new | grep "Address:" | awk '{print $2}')
 
-echo "Wallet 1: $ADDR1"
-echo "Wallet 2: $ADDR2"
+echo "Sender: $SENDER_ADDR"
+echo "Recipient: $RECIPIENT_ADDR"
 
-# Token addresses
 TESTUSD="0x20c0000000000000000000000000000000000000"
 
-echo "Funding wallet 1..."
-cast rpc tempo_fundAddress $ADDR1
-
-echo "Checking gas price..."
-GAS_PRICE=$(cast gas-price)
-echo "Current gas price: $GAS_PRICE"
+echo "Funding sender address..."
+cast rpc tempo_fundAddress $SENDER_ADDR
 
 echo "Checking initial balances..."
-BALANCE1_INITIAL=$(cast balance --erc20 $TESTUSD $ADDR1)
-BALANCE2_INITIAL=$(cast balance --erc20 $TESTUSD $ADDR2)
-echo "Wallet 1 initial balance: $BALANCE1_INITIAL"
-echo "Wallet 2 initial balance: $BALANCE2_INITIAL"
+SENDER_NATIVE_BALANCE=$(cast balance $SENDER_ADDR)
+echo "Sender native balance: $SENDER_NATIVE_BALANCE"
+if [ "$SENDER_NATIVE_BALANCE" != "0" ]; then
+  echo "ERROR: Expected sender native balance to be 0, got $SENDER_NATIVE_BALANCE"
+  exit 1
+fi
 
-# Transfer amount
+SENDER_BALANCE_INITIAL=$(cast balance --erc20 $TESTUSD $SENDER_ADDR)
+RECIPIENT_BALANCE_INITIAL=$(cast balance --erc20 $TESTUSD $RECIPIENT_ADDR)
+echo "Sender initial token balance: $SENDER_BALANCE_INITIAL"
+echo "Recipient initial token balance: $RECIPIENT_BALANCE_INITIAL"
+
 TRANSFER_AMOUNT=1000
 
 echo "Estimating gas for transfer..."
-GAS_ESTIMATE=$(cast estimate $TESTUSD "transfer(address,uint256)" $ADDR2 $TRANSFER_AMOUNT --from $ADDR1)
+GAS_ESTIMATE=$(cast estimate $TESTUSD "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_AMOUNT --from $SENDER_ADDR)
 echo "Gas estimate: $GAS_ESTIMATE"
 
 echo "Executing transfer..."
-cast send $TESTUSD "transfer(address,uint256)" $ADDR2 $TRANSFER_AMOUNT --private-key $PK1 --gas-limit $GAS_ESTIMATE
+cast send $TESTUSD "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_AMOUNT --private-key $SENDER_PK --gas-limit $GAS_ESTIMATE
 
 echo "Checking final balances..."
-BALANCE1_FINAL=$(cast balance --erc20 $TESTUSD $ADDR1)
-BALANCE2_FINAL=$(cast balance --erc20 $TESTUSD $ADDR2)
-echo "Wallet 1 final balance: $BALANCE1_FINAL"
-echo "Wallet 2 final balance: $BALANCE2_FINAL"
+SENDER_BALANCE_FINAL=$(cast balance --erc20 $TESTUSD $SENDER_ADDR)
+RECIPIENT_BALANCE_FINAL=$(cast balance --erc20 $TESTUSD $RECIPIENT_ADDR)
+echo "Sender final balance: $SENDER_BALANCE_FINAL"
+echo "Recipient final balance: $RECIPIENT_BALANCE_FINAL"
 
-# Verify transfer
-EXPECTED_BALANCE1=$((BALANCE1_INITIAL - TRANSFER_AMOUNT))
-EXPECTED_BALANCE2=$((BALANCE2_INITIAL + TRANSFER_AMOUNT))
+EXPECTED_SENDER_BALANCE=$((SENDER_BALANCE_INITIAL - TRANSFER_AMOUNT))
 
-if [ "$BALANCE1_FINAL" != "$EXPECTED_BALANCE1" ]; then
-  echo "ERROR: Wallet 1 balance mismatch. Expected $EXPECTED_BALANCE1, got $BALANCE1_FINAL"
+if [ "$SENDER_BALANCE_FINAL" != "$EXPECTED_SENDER_BALANCE" ]; then
+  echo "ERROR: Sender balance mismatch. Expected $EXPECTED_SENDER_BALANCE, got $SENDER_BALANCE_FINAL"
   exit 1
 fi
 
-if [ "$BALANCE2_FINAL" != "$TRANSFER_AMOUNT" ]; then
-  echo "ERROR: Wallet 2 balance mismatch. Expected $TRANSFER_AMOUNT, got $BALANCE2_FINAL"
+if [ "$RECIPIENT_BALANCE_FINAL" != "$TRANSFER_AMOUNT" ]; then
+  echo "ERROR: Recipient balance mismatch. Expected $TRANSFER_AMOUNT, got $RECIPIENT_BALANCE_FINAL"
   exit 1
 fi
 
-echo "✓ Transfer completed successfully"
-echo "Basic transfer test completed!"
-
+echo "Transfer completed successfully"
