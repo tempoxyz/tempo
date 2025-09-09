@@ -12,17 +12,12 @@ fi
 
 echo "Testing basic token transfer..."
 
-# Generate test wallets
-echo "Generating test wallets..."
+echo "Generating wallets..."
 SENDER_WALLET=$(cast wallet new)
 SENDER_PK=$(echo "$SENDER_WALLET" | grep "Private key:" | awk '{print $3}')
 SENDER_ADDR=$(echo "$SENDER_WALLET" | grep "Address:" | awk '{print $2}')
 
 RECIPIENT_ADDR=$(cast wallet new | grep "Address:" | awk '{print $2}')
-
-echo "Sender: $SENDER_ADDR"
-echo "Recipient: $RECIPIENT_ADDR"
-
 TESTUSD="0x20c0000000000000000000000000000000000000"
 
 echo "Funding sender address..."

@@ -7,13 +7,11 @@ set -e
 
 # Use existing ETH_RPC_URL or default to localhost
 if [ -z "$ETH_RPC_URL" ]; then
-    export ETH_RPC_URL="http://localhost:8545"
+  export ETH_RPC_URL="http://localhost:8545"
 fi
 
 echo "Testing 7702 delegation..."
 
-# Generate new wallet
-echo "Generating new wallet..."
 WALLET_OUTPUT=$(cast wallet new)
 export TEST_PRIVATE_KEY=$(echo "$WALLET_OUTPUT" | grep "Private key:" | awk '{print $3}')
 export TEST_ADDR=$(echo "$WALLET_OUTPUT" | grep "Address:" | awk '{print $2}')
@@ -21,9 +19,6 @@ echo "Generated wallet: $TEST_ADDR"
 
 echo "Funding address $TEST_ADDR..."
 cast rpc tempo_fundAddress $TEST_ADDR
-
-echo "Checking balance..."
-cast balance --erc20 0x20c0000000000000000000000000000000000000 $TEST_ADDR
 
 echo "Checking account code is empty..."
 INITIAL_CODE=$(cast code $TEST_ADDR)
@@ -47,10 +42,8 @@ TRANSFER_0_CALLDATA=$(cast calldata "transfer(address,uint256)" $RECIPIENT_0 $TR
 TRANSFER_1_CALLDATA=$(cast calldata "transfer(address,uint256)" $RECIPIENT_1 $TRANSFER_AMOUNT)
 TRANSFER_2_CALLDATA=$(cast calldata "transfer(address,uint256)" $RECIPIENT_2 $TRANSFER_AMOUNT)
 
-# Encode batch calls
 export EXEC_MODE=0x0100000000007821000100000000000000000000000000000000000000000000
 
-# Call struct: (address to, uint256 value, bytes data)
 BATCH_CALLDATA=$(cast abi-encode "f((address,uint256,bytes)[])" "[(${TOKEN_ADDR},0,${TRANSFER_0_CALLDATA}),(${TOKEN_ADDR},0,${TRANSFER_1_CALLDATA}),(${TOKEN_ADDR},0,${TRANSFER_2_CALLDATA})]")
 
 echo "Executing batch transfer via 7702 delegation..."
