@@ -72,6 +72,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check advisories bans sources
 
