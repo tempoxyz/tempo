@@ -8,6 +8,7 @@ use crate::contracts::storage::StorageProvider;
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     code: HashMap<Address, Bytecode>,
+    nonces: HashMap<Address, u64>,
     pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
 }
@@ -17,9 +18,14 @@ impl HashMapStorageProvider {
         Self {
             internals: HashMap::new(),
             code: HashMap::new(),
+            nonces: HashMap::new(),
             events: HashMap::new(),
             chain_id,
         }
+    }
+
+    pub fn set_nonce(&mut self, address: Address, nonce: u64) {
+        self.nonces.insert(address, nonce);
     }
 }
 
@@ -47,6 +53,10 @@ impl StorageProvider for HashMapStorageProvider {
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
         self.events.entry(address).or_default().push(event);
         Ok(())
+    }
+
+    fn get_nonce(&mut self, address: Address) -> Result<u64, Self::Error> {
+        Ok(self.nonces.get(&address).copied().unwrap_or(0))
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {

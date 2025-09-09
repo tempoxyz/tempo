@@ -47,18 +47,30 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
             }
         };
 
+        let nonce = self.storage.get_nonce(signer).expect("TODO: handle error");
+
+        if nonce != 0 {
+            return Err(TipAccountRegistrarError::NonceNotZero(
+                ITipAccountRegistrar::NonceNotZero {},
+            ));
+        }
+
         let code = self
             .storage
             .get_code(signer)
             .expect("TODO: handle error")
             .unwrap_or_default();
 
-        if code.is_empty() {
-            // Delegate the account to the default 7702 implementation
-            self.storage
-                .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))
-                .expect("TODO: handle error");
+        if !code.is_empty() {
+            return Err(TipAccountRegistrarError::CodeNotEmpty(
+                ITipAccountRegistrar::CodeNotEmpty {},
+            ));
         }
+
+        // Delegate the account to the default 7702 implementation
+        self.storage
+            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))
+            .expect("TODO: handle error");
 
         Ok(signer)
     }
@@ -157,5 +169,33 @@ mod tests {
             result.unwrap_err(),
             TipAccountRegistrarError::InvalidSignature(_)
         ));
+    }
+
+    #[test]
+    fn test_nonce_gt_zero() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let signer = PrivateKeySigner::random();
+        let expected_address = signer.address();
+        storage.set_nonce(expected_address, 1);
+
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
+
+        let hash = keccak256(b"test");
+        let signature = signer.sign_hash_sync(&hash).unwrap();
+        let call = ITipAccountRegistrar::delegateToDefaultCall {
+            hash,
+            signature: signature.as_bytes().into(),
+        };
+
+        let result = registrar.delegate_to_default(call);
+        assert!(matches!(
+            result.unwrap_err(),
+            TipAccountRegistrarError::NonceNotZero(_)
+        ));
+
+        let code_after = storage
+            .get_code(expected_address)
+            .expect("Failed to get account code");
+        assert_eq!(code_after, None);
     }
 }

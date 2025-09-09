@@ -57,6 +57,12 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
         Ok(())
     }
 
+    fn get_nonce(&mut self, address: Address) -> Result<u64, Self::Error> {
+        self.ensure_loaded_account(address)?;
+        let account = self.internals.load_account(address)?;
+        Ok(account.data.info.nonce)
+    }
+
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
         self.ensure_loaded_account(address)?;
         Ok(self
