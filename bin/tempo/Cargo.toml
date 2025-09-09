@@ -2,6 +2,7 @@
 name = "tempo"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 description = "Tempo node implementation"
 default-run = "tempo"

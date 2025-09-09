@@ -41,8 +41,10 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         .connect_http(http_url.clone());
     let _deployer = provider.default_signer_address();
 
+    // Deploy a test token
     let token = setup_test_token(provider.clone(), _deployer).await?;
 
+    // Init a fresh wallet with nonce 0
     let bob = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .index(1)?
@@ -57,7 +59,6 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    // Assert pre state
     assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty(),);

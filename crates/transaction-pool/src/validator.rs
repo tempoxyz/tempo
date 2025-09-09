@@ -1,5 +1,5 @@
 use crate::transaction::TempoPooledTransaction;
-use alloy::primitives::{U256, uint};
+use alloy_primitives::{U256, uint};
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,

@@ -3,9 +3,8 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use reth_chainspec::{
-    BaseFeeParams, Chain, ChainHardforks, ChainSpec, DepositContract, EthChainSpec,
-    EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks,
-    Head,
+    BaseFeeParams, Chain, ChainSpec, DepositContract, EthChainSpec, EthereumHardfork,
+    EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks, Head,
 };
 use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
@@ -48,22 +47,15 @@ impl ChainSpecParser for TempoChainSpecParser {
 }
 
 pub static ADAGIO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
-    let _genesis: Genesis = serde_json::from_str(include_str!("./genesis/adagio.json"))
+    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/adagio.json"))
         .expect("`./genesis/adagio.json` must be present and deserializable");
-    let hardforks: ChainHardforks = EthereumHardfork::mainnet().into();
-    let mut spec = ChainSpec {
-        chain: Chain::from(1234),
-        hardforks,
-        // TODO: update spec for testnet
-        ..Default::default()
-    };
-    spec.genesis.config.dao_fork_support = true;
-    TempoChainSpec { inner: spec }.into()
+    TempoChainSpec::from_genesis(genesis).into()
 });
 
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let mut spec = (**reth_chainspec::DEV).clone();
     let adagio = ADAGIO.clone();
+
     let default_7702_alloc = adagio
         .genesis()
         .alloc
@@ -186,5 +178,11 @@ mod tests {
     fn can_load_adagio() {
         let _ = super::TempoChainSpecParser::parse("adagio")
             .expect("the adagio chainspec must always be well formed");
+    }
+
+    #[test]
+    fn can_load_dev() {
+        let _ = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
     }
 }

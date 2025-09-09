@@ -35,8 +35,7 @@ timeout_rebroadcast = "5s"
 # Address to listen on for P2P connections
 listen_addr = "/ip4/0.0.0.0/tcp/${CONSENSUS_PORT}"
 
-# Persistent peers to maintain connections with
-persistent_peers = [${PEERS}]
+persistent_peers = [${PEERS}]# Persistent peers to maintain connections with
 
 # Allow duplicate IPs in peer connections
 allow_duplicate_ip = true
