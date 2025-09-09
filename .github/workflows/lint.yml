@@ -66,6 +66,17 @@ jobs:
           skip: "*.json,target,Cargo.lock"
           ignore_words_list: "amountIn"
 
+  deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check advisories bans sources
+
 
   lint-success:
     name: lint success
@@ -76,6 +87,7 @@ jobs:
       - fmt
       - docs
       - codespell
+      - deny
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed
