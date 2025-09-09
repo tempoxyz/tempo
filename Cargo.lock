@@ -1365,6 +1365,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 dependencies = [
  "serde",
+ "zeroize",
 ]
 
 [[package]]
@@ -1818,6 +1819,7 @@ dependencies = [
  "cc",
  "cfg-if",
  "constant_time_eq",
+ "zeroize",
 ]
 
 [[package]]
@@ -2471,17 +2473,17 @@ dependencies = [
 
 [[package]]
 name = "commonware-broadcast"
-version = "0.0.58"
+version = "0.0.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a5bee66c7680e78cdc6d47ccb2d4e3c3db4f00b981f2efb6cc6a329ede1ee7d"
+checksum = "2b53ae1b9e2aa4d9621c9c56b70c644564dd18e8b189ab3b05568cd8f3bd74ff"
 dependencies = [
  "bytes",
- "commonware-codec",
+ "commonware-codec 0.0.61",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 0.0.61",
  "commonware-p2p",
- "commonware-runtime",
- "commonware-utils",
+ "commonware-runtime 0.0.61",
+ "commonware-utils 0.0.61",
  "futures",
  "prometheus-client 0.22.3",
  "thiserror 2.0.16",
@@ -2500,22 +2502,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "commonware-consensus"
-version = "0.0.58"
+name = "commonware-codec"
+version = "0.0.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439a1a5630465b65e2e0f531a23543412b3a01f051b815faeda7b87295b89830"
+checksum = "c017a5c6ea1379df41e802cf92320c75cbb643e3437d5423c383fea04acabe71"
+dependencies = [
+ "bytes",
+ "paste",
+ "thiserror 2.0.16",
+]
+
+[[package]]
+name = "commonware-consensus"
+version = "0.0.61"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b51b30c5ad1510021e8811a97fdde2b9e9e0007004af37671288911b54ca1f10"
 dependencies = [
  "bytes",
  "cfg-if",
  "commonware-broadcast",
- "commonware-codec",
+ "commonware-codec 0.0.61",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 0.0.61",
  "commonware-p2p",
  "commonware-resolver",
- "commonware-runtime",
+ "commonware-runtime 0.0.61",
  "commonware-storage",
- "commonware-utils",
+ "commonware-utils 0.0.61",
  "futures",
  "governor",
  "prometheus-client 0.22.3",
@@ -2527,19 +2540,22 @@ dependencies = [
 
 [[package]]
 name = "commonware-cryptography"
-version = "0.0.58"
+version = "0.0.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b17804ba29033a971c6129ecd5c80b36ca4f97f525b6f2605a38fabbbd4fdb69"
+checksum = "fb411d775b16a2a63e4f11dc3df4b1abc6de4d87ea224cd6132a2e4a550788cd"
 dependencies = [
  "blake3",
  "blst",
  "bytes",
- "commonware-codec",
- "commonware-utils",
+ "cfg-if",
+ "commonware-codec 0.0.61",
+ "commonware-utils 0.0.61",
  "ed25519-consensus",
  "getrandom 0.2.16",
  "p256",
  "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
  "rayon",
  "sha2 0.10.9",
  "thiserror 2.0.16",
@@ -2561,18 +2577,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "commonware-p2p"
-version = "0.0.58"
+name = "commonware-macros"
+version = "0.0.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abc4dc1c6997240c7322542b22e912ee39d0f7da47fb611e9be14d7fb36ca0e8"
+checksum = "15083257029fd7e73dd64ef91f440e2d23461dd3571570bdb50802a2c3dabee5"
+dependencies = [
+ "futures",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+ "tracing",
+ "tracing-subscriber 0.3.20",
+]
+
+[[package]]
+name = "commonware-p2p"
+version = "0.0.61"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c7c900f6ab7f5b880577c036f4157ec770e8320122893f18e777a7802b17ecb"
 dependencies = [
  "bytes",
- "commonware-codec",
+ "commonware-codec 0.0.61",
  "commonware-cryptography",
- "commonware-macros",
- "commonware-runtime",
+ "commonware-macros 0.0.61",
+ "commonware-runtime 0.0.61",
  "commonware-stream",
- "commonware-utils",
+ "commonware-utils 0.0.61",
  "either",
  "futures",
  "governor",
@@ -2585,19 +2615,19 @@ dependencies = [
 
 [[package]]
 name = "commonware-resolver"
-version = "0.0.58"
+version = "0.0.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55b6111c0a24e505a076f6f42d3cb1182b55f05160446760c5cef97c7a3c59b7"
+checksum = "43d33d2398c157e7d16a4d228ee589b3cc3bf9a5d586d62cdbf3d1456521f5a9"
 dependencies = [
  "bimap",
  "bytes",
- "commonware-codec",
+ "commonware-codec 0.0.61",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 0.0.61",
  "commonware-p2p",
- "commonware-runtime",
+ "commonware-runtime 0.0.61",
  "commonware-stream",
- "commonware-utils",
+ "commonware-utils 0.0.61",
  "futures",
  "governor",
  "prometheus-client 0.22.3",
@@ -2616,8 +2646,8 @@ dependencies = [
  "axum",
  "bytes",
  "cfg-if",
- "commonware-macros",
- "commonware-utils",
+ "commonware-macros 0.0.58",
+ "commonware-utils 0.0.58",
  "criterion 0.5.1",
  "futures",
  "getrandom 0.2.16",
@@ -2638,17 +2668,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "commonware-storage"
-version = "0.0.58"
+name = "commonware-runtime"
+version = "0.0.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6b74959b9e6e611fd7764858d9d571e026b454cd3fa716f33c02e61fd940cb1"
+checksum = "0e87f9a5af0bddb109db377a1178d37d7a48f7d38c7526ad713b61255e1c3477"
+dependencies = [
+ "async-lock",
+ "axum",
+ "bytes",
+ "cfg-if",
+ "commonware-macros 0.0.61",
+ "commonware-utils 0.0.61",
+ "criterion 0.5.1",
+ "futures",
+ "getrandom 0.2.16",
+ "governor",
+ "libc",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "prometheus-client 0.22.3",
+ "rand 0.8.5",
+ "rayon",
+ "sha2 0.10.9",
+ "sysinfo",
+ "thiserror 2.0.16",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber 0.3.20",
+]
+
+[[package]]
+name = "commonware-storage"
+version = "0.0.61"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "745e28ba40878b343c4848126b19c3e84aa4e86162150969de0cdc891433d45b"
 dependencies = [
  "bytes",
- "commonware-codec",
+ "commonware-codec 0.0.61",
  "commonware-cryptography",
- "commonware-macros",
- "commonware-runtime",
- "commonware-utils",
+ "commonware-macros 0.0.61",
+ "commonware-runtime 0.0.61",
+ "commonware-utils 0.0.61",
  "crc32fast",
  "futures",
  "futures-util",
@@ -2661,17 +2723,17 @@ dependencies = [
 
 [[package]]
 name = "commonware-stream"
-version = "0.0.58"
+version = "0.0.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e96fdc2c280f2e6b86f32893231b63a20c847c4350c0137c9a2172b83adfdc0"
+checksum = "2a440a5b05696c0b327f3bf0a8bc9d7d29fac79e867f8fbbe80a6990687e52ac"
 dependencies = [
  "bytes",
  "chacha20poly1305",
- "commonware-codec",
+ "commonware-codec 0.0.61",
  "commonware-cryptography",
- "commonware-macros",
- "commonware-runtime",
- "commonware-utils",
+ "commonware-macros 0.0.61",
+ "commonware-runtime 0.0.61",
+ "commonware-utils 0.0.61",
  "futures",
  "hkdf",
  "rand 0.8.5",
@@ -2687,7 +2749,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "948bfc7f5f7136a6708bc0c18600456f74d9d3dc3c66e613d922427f06263129"
 dependencies = [
  "bytes",
- "commonware-codec",
+ "commonware-codec 0.0.58",
+ "futures",
+ "getrandom 0.2.16",
+ "rand 0.8.5",
+ "thiserror 2.0.16",
+]
+
+[[package]]
+name = "commonware-utils"
+version = "0.0.61"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b621179b24e2db27f1399a895e049f370312c5391c9b058734d69dbffcfd77d"
+dependencies = [
+ "bytes",
+ "commonware-codec 0.0.61",
  "futures",
  "getrandom 0.2.16",
  "rand 0.8.5",
@@ -12460,6 +12536,7 @@ dependencies = [
  "libc",
  "memchr",
  "ntapi",
+ "rayon",
  "windows 0.57.0",
 ]
 
@@ -12601,7 +12678,7 @@ dependencies = [
 name = "tempo-commonware"
 version = "0.1.0"
 dependencies = [
- "commonware-runtime",
+ "commonware-runtime 0.0.58",
  "tempo-commonware-node",
  "tempo-eyre",
 ]
@@ -12620,13 +12697,13 @@ dependencies = [
  "camino",
  "clap",
  "commonware-broadcast",
- "commonware-codec",
+ "commonware-codec 0.0.61",
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-p2p",
  "commonware-resolver",
- "commonware-runtime",
- "commonware-utils",
+ "commonware-runtime 0.0.61",
+ "commonware-utils 0.0.61",
  "eyre",
  "futures-channel",
  "futures-util",
@@ -12674,9 +12751,9 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "camino",
- "commonware-codec",
+ "commonware-codec 0.0.61",
  "commonware-cryptography",
- "commonware-utils",
+ "commonware-utils 0.0.61",
  "const-hex",
  "indexmap 2.11.0",
  "rand 0.8.5",
@@ -12692,9 +12769,9 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "bytes",
- "commonware-codec",
+ "commonware-codec 0.0.61",
  "commonware-cryptography",
- "commonware-utils",
+ "commonware-utils 0.0.61",
  "rand 0.8.5",
 ]
 
@@ -12903,7 +12980,7 @@ dependencies = [
  "camino",
  "clap",
  "commonware-cryptography",
- "commonware-utils",
+ "commonware-utils 0.0.61",
  "eyre",
  "indexmap 2.11.0",
  "rand 0.8.5",
