@@ -12,10 +12,7 @@ use alloy_primitives::{Address, B256, U256, keccak256};
 use reth_evm::revm::state::Bytecode;
 use std::{env, str::FromStr};
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
-use tempo_precompiles::{
-    TIP_ACCOUNT_REGISTRAR,
-    contracts::{tip_account_registrar::EIP_7702_DELEGATION_MSG, types::ITipAccountRegistrar},
-};
+use tempo_precompiles::{TIP_ACCOUNT_REGISTRAR, contracts::types::ITipAccountRegistrar};
 
 sol! {
     struct Call {
@@ -206,7 +203,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty());
 
-    let hash = keccak256(EIP_7702_DELEGATION_MSG);
+    let hash = keccak256(b"test");
     let signature = bob.sign_hash_sync(&hash)?;
 
     // Create a new tx to delegate to the default 7702 impl

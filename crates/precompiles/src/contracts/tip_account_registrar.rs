@@ -1,8 +1,6 @@
-use alloy_primitives::{Address, keccak256};
+use alloy_primitives::Address;
 use reth_evm::revm::{precompile::secp256k1::ecrecover, state::Bytecode};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
-
-pub const EIP_7702_DELEGATION_MSG: &str = "eip7702 account delegation";
 
 use crate::contracts::{
     StorageProvider,
@@ -16,10 +14,6 @@ pub struct TipAccountRegistrar<'a, S: StorageProvider> {
 impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self { storage }
-    }
-
-    pub fn get_delegation_message() -> &'static str {
-        EIP_7702_DELEGATION_MSG
     }
 
     pub fn delegate_to_default(
@@ -44,17 +38,7 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
             v -= 27;
         }
 
-        // Enforce that the signed message matches the delegation message
-        let expected_hash = keccak256(EIP_7702_DELEGATION_MSG.as_bytes());
-        if hash != expected_hash {
-            return Err(TipAccountRegistrarError::InvalidSignature(
-                ITipAccountRegistrar::InvalidSignature {},
-            ));
-        }
-
-        let msg = &hash;
-
-        let signer = match ecrecover(sig.into(), v, msg) {
+        let signer = match ecrecover(sig.into(), v, &hash) {
             Ok(recovered_addr) => Address::from_word(recovered_addr),
             Err(_) => {
                 return Err(TipAccountRegistrarError::InvalidSignature(
@@ -96,8 +80,7 @@ mod tests {
         let signer = PrivateKeySigner::random();
         let expected_address = signer.address();
 
-        let hash = keccak256(EIP_7702_DELEGATION_MSG.as_bytes());
-
+        let hash = keccak256(b"test");
         let signature = signer.sign_hash_sync(&hash).unwrap();
         let call = ITipAccountRegistrar::delegateToDefaultCall {
             hash,
@@ -120,33 +103,12 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_message() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
-
-        let signer = PrivateKeySigner::random();
-        let hash = keccak256(b"wrong message");
-        let signature = signer.sign_hash_sync(&hash).unwrap();
-        let call = ITipAccountRegistrar::delegateToDefaultCall {
-            hash,
-            signature: signature.as_bytes().into(),
-        };
-
-        let result = registrar.delegate_to_default(call);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TipAccountRegistrarError::InvalidSignature(_)
-        ));
-    }
-
-    #[test]
     fn test_malformed_signature() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut registrar = TipAccountRegistrar::new(&mut storage);
 
         // Signature too short
-        let hash = keccak256(EIP_7702_DELEGATION_MSG.as_bytes());
+        let hash = keccak256(b"test message");
         let call = ITipAccountRegistrar::delegateToDefaultCall {
             hash,
             signature: vec![0u8; 64].into(),
@@ -178,7 +140,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let mut registrar = TipAccountRegistrar::new(&mut storage);
 
-        let hash = keccak256(EIP_7702_DELEGATION_MSG.as_bytes());
+        let hash = keccak256(b"test message");
 
         // Create a signature with an invalid recovery value
         let mut invalid_signature = vec![0u8; 65];

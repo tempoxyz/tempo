@@ -1,4 +1,4 @@
-use crate::precompiles::{Precompile, mutate, view};
+use crate::precompiles::{Precompile, mutate};
 use alloy::{primitives::Address, sol_types::SolCall};
 use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -21,11 +21,6 @@ impl<'a, S: StorageProvider> Precompile for TipAccountRegistrar<'a, S> {
                     msg_sender,
                     |_, call| self.delegate_to_default(call),
                 )
-            }
-            ITipAccountRegistrar::getDelegationMessageCall::SELECTOR => {
-                view::<ITipAccountRegistrar::getDelegationMessageCall>(calldata, |_| {
-                    Self::get_delegation_message().to_string()
-                })
             }
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
