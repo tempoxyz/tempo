@@ -25,3 +25,6 @@ mod scripts
 [group('dev')]
 tempo-dev-up: scripts::tempo-dev-up
 tempo-dev-down: scripts::tempo-dev-down
+
+[group('test')]
+feature-test: scripts::auto-7702-delegation scripts::basic-transfer

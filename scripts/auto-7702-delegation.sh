@@ -1,9 +1,14 @@
 #!/bin/bash
 
 # Test 7702 delegation functionality
-# Make sure tempo-dev is running first: just tempo-dev-up
+# Uses existing ETH_RPC_URL or defaults to localhost:8545
 
 set -e
+
+# Use existing ETH_RPC_URL or default to localhost
+if [ -z "$ETH_RPC_URL" ]; then
+    export ETH_RPC_URL="http://localhost:8545"
+fi
 
 echo "Testing 7702 delegation..."
 
