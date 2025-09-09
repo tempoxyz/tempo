@@ -27,7 +27,7 @@ tempo-dev-up:
 		--gpo.default-suggested-fee 0 \
 		> logs/tempo-dev.log 2>&1 &
 	PID=$!
-	echo "Started tempo-dev with PID $PID
+	echo "Started tempo-dev with PID $PID"
 
 tempo-dev-down:
 	#!/bin/bash
@@ -40,10 +40,10 @@ tempo-dev-down:
 	rm -rf logs data
 	echo "Cleaned up logs and data directories"
 
-test-auto-7702-delegation:
+auto-7702-delegation:
 	#!/bin/bash
 	./auto-7702-delegation.sh
 
-test-basic-transfer:
+basic-transfer:
 	#!/bin/bash
-	./test-basic-transfer.sh
+	./basic-transfer.sh

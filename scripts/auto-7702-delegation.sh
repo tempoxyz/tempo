@@ -12,6 +12,7 @@ fi
 
 echo "Testing 7702 delegation..."
 
+export TOKEN_ADDR=0x20c0000000000000000000000000000000000000
 WALLET_OUTPUT=$(cast wallet new)
 export TEST_PRIVATE_KEY=$(echo "$WALLET_OUTPUT" | grep "Private key:" | awk '{print $3}')
 export TEST_ADDR=$(echo "$WALLET_OUTPUT" | grep "Address:" | awk '{print $2}')
@@ -19,6 +20,8 @@ echo "Generated wallet: $TEST_ADDR"
 
 echo "Funding address $TEST_ADDR..."
 cast rpc tempo_fundAddress $TEST_ADDR
+sleep 1
+echo "Balance: $(cast balance --erc20 $TOKEN_ADDR $TEST_ADDR)"
 
 echo "Checking account code is empty..."
 INITIAL_CODE=$(cast code $TEST_ADDR)
@@ -34,7 +37,6 @@ export RECIPIENT_1=$(cast wallet new | grep "Address:" | awk '{print $2}')
 export RECIPIENT_2=$(cast wallet new | grep "Address:" | awk '{print $2}')
 echo "Recipients: $RECIPIENT_0, $RECIPIENT_1, $RECIPIENT_2"
 
-export TOKEN_ADDR=0x20c0000000000000000000000000000000000000
 export TRANSFER_AMOUNT=1000
 
 echo "Preparing batch transfer calldata..."
@@ -47,7 +49,7 @@ export EXEC_MODE=0x0100000000007821000100000000000000000000000000000000000000000
 BATCH_CALLDATA=$(cast abi-encode "f((address,uint256,bytes)[])" "[(${TOKEN_ADDR},0,${TRANSFER_0_CALLDATA}),(${TOKEN_ADDR},0,${TRANSFER_1_CALLDATA}),(${TOKEN_ADDR},0,${TRANSFER_2_CALLDATA})]")
 
 echo "Executing batch transfer via 7702 delegation..."
-cast send $TEST_ADDR "execute(bytes32,bytes)" $EXEC_MODE $BATCH_CALLDATA --private-key $TEST_PRIVATE_KEY --gas-limit 2000000
+cast send $TEST_ADDR "execute(bytes32,bytes)" $EXEC_MODE $BATCH_CALLDATA --private-key $TEST_PRIVATE_KEY
 
 echo "Verifying recipient balances..."
 
