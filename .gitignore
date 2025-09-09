@@ -4,6 +4,8 @@ genesis.json
 testnet/nodes/
 testnet/logs/
 
+# logs
+data
 .DS_Store
 .idea
 **/.env
