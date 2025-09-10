@@ -8,7 +8,7 @@ use alloy::{
     sol,
     sol_types::SolValue,
 };
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{Address, B256, U256, b256, keccak256};
 use reth_evm::revm::state::Bytecode;
 use std::{env, str::FromStr};
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
@@ -245,8 +245,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let bob_provider = ProviderBuilder::new().wallet(bob).connect_http(http_url);
     let delegate_account = IthacaAccount::new(bob_addr, bob_provider.clone());
     let execution_mode =
-        B256::from_str("0x0100000000007821000100000000000000000000000000000000000000000000")
-            .unwrap();
+        b256!("0x0100000000007821000100000000000000000000000000000000000000000000");
 
     let execute_call = delegate_account.execute(execution_mode, calls.abi_encode().into());
     let receipt = execute_call.send().await?.get_receipt().await?;
