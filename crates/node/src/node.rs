@@ -276,9 +276,10 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config =
-            EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), TempoEvmFactory::default())
-                .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
+        let evm_config = TempoEvmConfig::new(
+            ctx.chain_spec(),
+            TempoEvmFactory::default(),
+        );
         Ok(evm_config)
     }
 }
