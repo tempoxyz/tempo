@@ -329,6 +329,7 @@ mod tests {
         Journal,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
+        state::Account,
     };
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
@@ -420,9 +421,12 @@ mod tests {
         Ok(())
     }
 
+    #[test]
     fn test_delegate_code_hash() {
-        let bytecode = Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS);
-        let hash = bytecode.hash_slow();
-        assert_eq!(hash, DEFAULT_7702_DELEGATE_CODE_HASH);
+        let mut account = Account::default();
+        account
+            .info
+            .set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
+        assert_eq!(account.info.code_hash, DEFAULT_7702_DELEGATE_CODE_HASH);
     }
 }
