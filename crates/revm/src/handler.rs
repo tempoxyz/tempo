@@ -102,13 +102,7 @@ where
         let caller_account = journal.load_account_code(tx.caller())?.data;
 
         let account_info = &mut caller_account.info;
-        if account_info.nonce == 0
-            && account_info
-                .code
-                .as_ref()
-                .unwrap_or(&Bytecode::default())
-                .is_empty()
-        {
+        if account_info.has_no_code_and_nonce() {
             account_info.set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
         }
 
