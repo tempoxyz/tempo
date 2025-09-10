@@ -36,19 +36,18 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
             }
         };
 
-        let nonce = self.storage.get_nonce(signer).expect("TODO: handle error");
+        let account_info = self
+            .storage
+            .get_account_info(signer)
+            .expect("TODO: handle error");
 
-        if nonce != 0 {
+        if account_info.nonce != 0 {
             return Err(TipAccountRegistrarError::NonceNotZero(
                 ITipAccountRegistrar::NonceNotZero {},
             ));
         }
 
-        let code = self
-            .storage
-            .get_code(signer)
-            .expect("TODO: handle error")
-            .unwrap_or_default();
+        let code = account_info.code.unwrap_or_default();
 
         if !code.is_empty() {
             return Err(TipAccountRegistrarError::CodeNotEmpty(
@@ -131,11 +130,11 @@ mod tests {
         let recovered_address = result.unwrap();
         assert_eq!(recovered_address, expected_address);
 
-        let code_after = storage
-            .get_code(expected_address)
-            .expect("Failed to get account code");
+        let account_info_after = storage
+            .get_account_info(expected_address)
+            .expect("Failed to get account info");
         assert_eq!(
-            code_after,
+            account_info_after.code,
             Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
         );
     }
@@ -219,9 +218,9 @@ mod tests {
             TipAccountRegistrarError::NonceNotZero(_)
         ));
 
-        let code_after = storage
-            .get_code(expected_address)
-            .expect("Failed to get account code");
-        assert_eq!(code_after, None);
+        let account_info_after = storage
+            .get_account_info(expected_address)
+            .expect("Failed to get account info");
+        assert_eq!(account_info_after.code, None);
     }
 }

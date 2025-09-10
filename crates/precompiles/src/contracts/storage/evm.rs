@@ -2,7 +2,7 @@ use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
 use reth_evm::revm::state::Bytecode;
 
-use crate::contracts::storage::StorageProvider;
+use crate::contracts::storage::{AccountInfo, StorageProvider};
 
 pub struct EvmStorageProvider<'a> {
     internals: EvmInternals<'a>,
@@ -37,10 +37,10 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
         Ok(())
     }
 
-    fn get_code(&mut self, address: Address) -> Result<Option<Bytecode>, Self::Error> {
+    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
         self.ensure_loaded_account(address)?;
         let account = self.internals.load_account_code(address)?;
-        Ok(account.data.info.code.clone())
+        Ok(account.data.info.clone())
     }
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
@@ -55,12 +55,6 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
             data: event,
         });
         Ok(())
-    }
-
-    fn get_nonce(&mut self, address: Address) -> Result<u64, Self::Error> {
-        self.ensure_loaded_account(address)?;
-        let account = self.internals.load_account(address)?;
-        Ok(account.data.info.nonce)
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {

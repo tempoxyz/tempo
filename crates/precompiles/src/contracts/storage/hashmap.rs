@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, LogData, U256};
-use reth_evm::revm::state::Bytecode;
+use reth_evm::revm::state::{AccountInfo, Bytecode};
 
 use crate::contracts::storage::StorageProvider;
 
@@ -41,8 +41,10 @@ impl StorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
-    fn get_code(&mut self, address: Address) -> Result<Option<Bytecode>, Self::Error> {
-        Ok(self.code.get(&address).cloned())
+    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
+        let code = self.code.get(&address).cloned().unwrap_or_default();
+        let nonce = self.nonces.get(&address).copied().unwrap_or(0);
+        Ok(AccountInfo::new(U256::ZERO, nonce, code.hash_slow(), code))
     }
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
@@ -53,10 +55,6 @@ impl StorageProvider for HashMapStorageProvider {
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
         self.events.entry(address).or_default().push(event);
         Ok(())
-    }
-
-    fn get_nonce(&mut self, address: Address) -> Result<u64, Self::Error> {
-        Ok(self.nonces.get(&address).copied().unwrap_or(0))
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
