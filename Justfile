@@ -19,3 +19,14 @@ build-release binary extra_args="": (build binary "-r " + extra_args)
 build binary extra_args="":
     CROSS_CONTAINER_IN_CONTAINER={{act_debug_mode}} RUSTFLAGS="-C link-arg=-lgcc -Clink-arg=-static-libgcc" \
         {{cargo_build_binary}} build {{extra_args}} --target x86_64-unknown-linux-gnu --bin {{binary}}
+
+mod scripts
+
+[group('dev')]
+tempo-dev-up: scripts::tempo-dev-up
+tempo-dev-down: scripts::tempo-dev-down
+
+[group('test')]
+feature-test: scripts::auto-7702-delegation  scripts::basic-transfer
+
+
