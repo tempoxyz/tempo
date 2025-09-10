@@ -47,3 +47,8 @@ auto-7702-delegation:
 basic-transfer:
 	#!/bin/bash
 	./basic-transfer.sh
+
+registrar-delegation:
+	#!/bin/bash
+	./registrar-delegation.sh
+

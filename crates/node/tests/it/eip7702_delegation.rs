@@ -210,6 +210,8 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     // Create a new tx to delegate to the default 7702 impl
     let registrar = ITipAccountRegistrar::new(TIP_ACCOUNT_REGISTRAR, provider.clone());
     let registrar_call = registrar.delegateToDefault(hash, signature.as_bytes().into());
+    let addr = registrar_call.call().await?;
+    assert_eq!(addr, bob_addr);
     let receipt = registrar_call.send().await?.get_receipt().await?;
     assert!(receipt.status(), "TipAccountRegistrar call failed");
 

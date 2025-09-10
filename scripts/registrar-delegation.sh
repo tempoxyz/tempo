@@ -14,6 +14,7 @@ echo "Testing registrar type delegation..."
 
 export TOKEN_ADDR=0x20c0000000000000000000000000000000000000
 export REGISTRAR_ADDR=0x7702ac0000000000000000000000000000000000
+export DEFAULT_DELEGATE_ADDR=0x7702c00000000000000000000000000000000000
 
 SENDER_WALLET_JSON=$(cast wallet new --json)
 export SENDER_PRIVATE_KEY=$(echo "$SENDER_WALLET_JSON" | jq -r '.[0].private_key')
@@ -44,23 +45,24 @@ if [ "$SIGNER_INITIAL_CODE" != "0x" ]; then
   exit 1
 fi
 
-echo "Creating signature from signer for delegation..."
-TEST_HASH=0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
-SIGNATURE=$(cast wallet sign $TEST_HASH --private-key $SIGNER_PRIVATE_KEY)
+echo "Creating signature for delegation..."
+TEST_HASH=$(cast keccak "test")
+SIGNATURE=$(cast wallet sign --no-hash $TEST_HASH --private-key $SIGNER_PRIVATE_KEY)
 
 echo "Sending delegation tx..."
-DELEGATION_TX=$(cast send $REGISTRAR_ADDR "delegateToDefault(bytes32,bytes)" $TEST_HASH $SIGNATURE --private-key $SENDER_PRIVATE_KEY --json)
+cast send $REGISTRAR_ADDR "delegateToDefault(bytes32,bytes)" $TEST_HASH $SIGNATURE --private-key $SENDER_PRIVATE_KEY
 sleep 2
 
 SIGNER_NONCE=$(cast nonce $SIGNER_ADDR)
 SIGNER_CODE=$(cast code $SIGNER_ADDR)
 
 if [ "$SIGNER_NONCE" != "0" ]; then
-  echo "ERROR: Expected signer nonce 0, got: $SIGNER_INITIAL_NONCE"
+  echo "ERROR: Expected signer nonce 0, got: $SIGNER_NONCE"
   exit 1
 fi
 
 EXPECTED_7702_CODE="0xef01007702c00000000000000000000000000000000000"
 if [ "$SIGNER_CODE" != "$EXPECTED_7702_CODE" ]; then
-  echo "WARNING: Code after delegation ($FINAL_CODE) doesn't match expected 7702 code ($EXPECTED_7702_CODE)"
+  echo "Code after delegation ($SIGNER_CODE) doesn't match expected 7702 code ($EXPECTED_7702_CODE)"
+  exit 1
 fi
