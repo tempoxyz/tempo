@@ -444,19 +444,17 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 
     let (allowed_accounts, blacklisted_accounts) = accounts.split_at(accounts.len() / 2);
 
-    // Add accounts to blacklist
-    try_join_all(blacklisted_accounts.iter().map(|account| async {
-        registry
-            .modifyPolicyBlacklist(policy_id, account.address(), true)
+    let mut pending = vec![];
+    for account in blacklisted_accounts {
+        let pending_tx = registry
+            .modifyPolicyBlacklist(policy_id, account, true)
             .gas_price(TEMPO_BASE_FEE as u128)
             .gas(30000)
             .send()
-            .await
-            .expect("Could not send tx")
-            .get_receipt()
-            .await
-    }))
-    .await?;
+            .await?;
+
+        pending.push(pending_tx);
+    }
 
     // Mint tokens to all accounts
     try_join_all(accounts.iter().map(|account| async {
