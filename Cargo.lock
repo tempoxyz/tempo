@@ -12520,7 +12520,6 @@ version = "0.1.0"
 dependencies = [
  "alloy-rpc-types-engine",
  "clap",
- "commonware-runtime",
  "eyre",
  "reth-cli-util",
  "reth-ethereum",
@@ -12530,8 +12529,6 @@ dependencies = [
  "reth-node-ethereum",
  "reth-provider",
  "tempo-chainspec",
- "tempo-commonware-node",
- "tempo-commonware-node-config",
  "tempo-faucet",
  "tempo-node",
  "tokio",
@@ -12598,9 +12595,21 @@ dependencies = [
 name = "tempo-commonware"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "commonware-runtime",
+ "eyre",
+ "reth-cli-util",
+ "reth-ethereum",
+ "reth-malachite",
+ "reth-node-builder",
+ "reth-node-ethereum",
+ "tempo-chainspec",
  "tempo-commonware-node",
- "tempo-eyre",
+ "tempo-commonware-node-config",
+ "tempo-faucet",
+ "tempo-node",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -12761,7 +12770,6 @@ dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
- "camino",
  "clap",
  "eyre",
  "futures",
@@ -12772,6 +12780,7 @@ dependencies = [
  "reth-ethereum-engine-primitives",
  "reth-ethereum-primitives",
  "reth-evm",
+ "reth-malachite",
  "reth-node-api",
  "reth-node-builder",
  "reth-node-core",

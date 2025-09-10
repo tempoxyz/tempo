@@ -12,19 +12,29 @@
 //!
 //! Configuration can be provided via command-line arguments or configuration files.
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+
 use clap::Parser;
-use commonware_runtime::Runner;
-use eyre::Context;
-use reth_ethereum::cli::Cli;
-use reth_malachite::MalachiteConsensus;
-use reth_node_builder::NodeHandle;
+use reth_ethereum::{chainspec::EthChainSpec, cli::Cli};
+use reth_malachite::{
+    MalachiteConsensus,
+    app::{Config, Genesis, State, ValidatorInfo},
+    cli::MalachiteArgs,
+    consensus::{EngineConfig, start_consensus_engine},
+    context::MalachiteContext,
+    types::Address,
+};
+use reth_node_builder::{
+    FullNode, FullNodeComponents, FullNodeTypes, NodeHandle, NodeTypes, PayloadTypes,
+    rpc::RethRpcAddOns,
+};
 use reth_node_ethereum::EthEvmConfig;
-use std::{future, sync::Arc, thread};
+use reth_provider::DatabaseProviderFactory;
+use std::{fs, future, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::cli::launch_consensus_stack;
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
-use tempo_node::{TempoFullNode, args::TempoArgs, node::TempoNode};
-use tokio::sync::oneshot;
+use tempo_node::{args::TempoArgs, node::TempoNode};
 use tracing::info;
 
 fn main() {
@@ -42,46 +52,8 @@ fn main() {
         )
     };
 
-    let (node_tx, node_rx) = oneshot::channel::<(TempoFullNode, TempoArgs)>();
-    let (consensus_tx, consensus_rx) = oneshot::channel();
-
-    let setup_consenus = thread::spawn(move || {
-        let Ok((node, args)) = node_rx.blocking_recv() else {
-            return Ok(());
-        };
-
-        let consensus_handle = if node.config.dev.dev || args.no_consensus {
-            tokio::spawn(async move { future::pending::<()>().await })
-        } else {
-            let consensus_config =
-                tempo_commonware_node_config::Config::from_file(&args.consensus_config)
-                    .wrap_err_with(|| {
-                        format!(
-                            "failed parsing consensus config from provided argument `{}`",
-                            args.consensus_config
-                        )
-                    })?;
-            let runtime_config = commonware_runtime::tokio::Config::default()
-                .with_tcp_nodelay(Some(true))
-                .with_worker_threads(consensus_config.worker_threads)
-                .with_storage_directory(&consensus_config.storage_directory)
-                .with_catch_panics(true);
-
-            let runner = commonware_runtime::tokio::Runner::new(runtime_config);
-
-            runner.start(async move |ctx| {
-                launch_consensus_stack(&ctx, &consensus_config, node).await
-            })?
-        };
-
-        let _ = consensus_tx.send(consensus_handle);
-
-        eyre::Ok(())
-    });
-
     if let Err(err) = Cli::<TempoChainSpecParser, TempoArgs>::parse()
         .run_with_components::<TempoNode>(components, async move |builder, args| {
-            let faucet_args = args.faucet_args.clone();
             info!(target: "reth::cli", "Launching node");
             let NodeHandle {
                 node,
@@ -89,13 +61,13 @@ fn main() {
             } = builder
                 .node(TempoNode::new(args.clone()))
                 .extend_rpc_modules(move |ctx| {
-                    if faucet_args.enabled {
+                    if args.faucet_args.enabled {
                         let txpool = ctx.pool().clone();
                         let ext = TempoFaucetExt::new(
                             txpool,
-                            faucet_args.address(),
-                            faucet_args.amount(),
-                            faucet_args.provider(),
+                            args.faucet_args.address(),
+                            args.faucet_args.amount(),
+                            args.faucet_args.provider(),
                         );
 
                         ctx.modules.merge_configured(ext.into_rpc())?;
@@ -112,14 +84,19 @@ fn main() {
                 .launch_with_debug_capabilities()
                 .await?;
 
-            let _ = node_tx.send((node, args));
-            let consensus_handle = consensus_rx.await?;
+            let malachite_handle = if node.config.dev.dev || args.no_consensus {
+                tokio::spawn(async move { future::pending::<()>().await })
+            } else {
+                spawn_malachite(node.clone(), args.malachite_args)
+                    .await?
+                    .app
+            };
 
             tokio::select! {
                 _ = node_exit_future => {
                     tracing::info!("Reth node exited");
                 }
-                _ = consensus_handle => {
+                _ = malachite_handle => {
                     tracing::info!("Consensus engine exited");
                 }
                 _ = tokio::signal::ctrl_c() => {
@@ -133,6 +110,119 @@ fn main() {
         eprintln!("Error: {err:?}");
         std::process::exit(1);
     }
+}
 
-    setup_consenus.join().unwrap().unwrap();
+/// Spawns malachite consensus
+async fn spawn_malachite<N, A>(
+    node: FullNode<N, A>,
+    args: MalachiteArgs,
+) -> eyre::Result<reth_malachite::consensus::AppHandle>
+where
+    N: FullNodeComponents,
+    N::Types: NodeTypes,
+    <N::Types as NodeTypes>::Payload: PayloadTypes<
+            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
+            ExecutionData = alloy_rpc_types_engine::ExecutionData,
+            BuiltPayload = reth_ethereum_engine_primitives::EthBuiltPayload,
+        >,
+    A: RethRpcAddOns<N>,
+    <<N as FullNodeTypes>::Provider as DatabaseProviderFactory>::ProviderRW: Send,
+{
+    let ctx = MalachiteContext::default();
+    let config = if args.consensus_config.is_some() && args.config_file().exists() {
+        tracing::info!("Loading config from: {:?}", args.config_file());
+        reth_malachite::app::config_loader::load_config(&args.config_file())?
+    } else {
+        Config::new()
+    };
+
+    let mut genesis = if args.genesis.is_some() && args.genesis_file().exists() {
+        tracing::info!("Loading genesis from: {:?}", args.genesis_file());
+        reth_malachite::app::config_loader::load_genesis(&args.genesis_file())?
+    } else {
+        // Create a default genesis with initial validators
+        let validator_address = Address::new([1; 20]);
+        let validator_info = ValidatorInfo::new(validator_address, 1000, vec![0; 32]);
+        Genesis::new(args.chain_id()).with_validators(vec![validator_info])
+    };
+
+    let (address, _validator_pubkey, validator_privkey) =
+        if args.validator_key.is_some() && args.validator_key_file().exists() {
+            tracing::info!(
+                "Loading validator key from: {:?}",
+                args.validator_key_file()
+            );
+            let (addr, pubkey, privkey) =
+                reth_malachite::app::config_loader::load_validator_key(&args.validator_key_file())?;
+            tracing::info!("Loaded validator address: {:?}", addr);
+            (addr, Some(pubkey), Some(privkey))
+        } else {
+            tracing::warn!("No validator key provided, node will run in non-validator mode");
+            (Address::new([0; 20]), None, None)
+        };
+
+    let app_handle = node.add_ons_handle.beacon_engine_handle.clone();
+    let payload_builder_handle = node.payload_builder_handle.clone();
+    let provider = node.provider.clone();
+    let chain_spec = node.chain_spec();
+    genesis.genesis_hash = chain_spec.genesis_hash();
+
+    let signing_provider = if let Some(privkey) = validator_privkey {
+        match reth_malachite::provider::Ed25519Provider::from_bytes(&privkey) {
+            Ok(provider) => {
+                tracing::info!("Created signing provider for validator");
+                Some(provider)
+            }
+            Err(e) => {
+                tracing::error!("Failed to create signing provider: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let state: State<N::Types> = State::from_provider(
+        ctx.clone(),
+        config,
+        genesis.clone(),
+        address,
+        Arc::new(provider),
+        app_handle,
+        payload_builder_handle,
+        signing_provider,
+    )
+    .await?;
+
+    tracing::info!("Application state created successfully");
+
+    let home_dir = args.home_dir();
+    fs::create_dir_all(&home_dir)?;
+    fs::create_dir_all(home_dir.join("config"))?;
+    fs::create_dir_all(home_dir.join("data"))?;
+
+    let config_file_path = args.config_file();
+    tracing::info!("Checking for Malachite config at: {:?}", config_file_path);
+
+    let engine_config = if config_file_path.exists() {
+        tracing::info!("Loading Malachite config from: {:?}", config_file_path);
+        reth_malachite::consensus::config_loader::load_engine_config(
+            &config_file_path,
+            args.chain_id(),
+            args.node_id(),
+        )?
+    } else {
+        EngineConfig::new(args.chain_id(), args.node_id(), "127.0.0.1:26657".parse()?)
+    };
+
+    tracing::info!(
+        "Starting Malachite consensus engine with chain_id={}, node_id={}, home_dir={:?}",
+        args.chain_id(),
+        args.node_id(),
+        home_dir
+    );
+
+    let app_handle = start_consensus_engine(state, engine_config, home_dir).await?;
+
+    Ok(app_handle)
 }

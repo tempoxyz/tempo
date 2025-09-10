@@ -16,6 +16,7 @@ tempo-consensus.workspace = true
 tempo-payload-builder.workspace = true
 tempo-precompiles.workspace = true
 
+reth-malachite.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-ethereum-primitives.workspace = true
@@ -41,7 +42,6 @@ alloy-primitives.workspace = true
 eyre.workspace = true
 clap.workspace = true
 tokio.workspace = true
-camino.workspace = true
 
 [dev-dependencies]
 tempo-precompiles.workspace = true
