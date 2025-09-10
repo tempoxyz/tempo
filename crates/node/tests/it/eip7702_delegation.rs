@@ -108,7 +108,7 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
+async fn test_ensure_7702_delegation_on_revert() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
@@ -160,8 +160,11 @@ async fn test_no_7702_delegation_on_revert() -> eyre::Result<()> {
 
     assert!(!receipt.inner.is_success());
 
-    let final_code = bob_provider.get_code_at(bob_addr).await?;
-    assert!(final_code.is_empty());
+    let code_after = bob_provider.get_code_at(bob_addr).await?;
+    assert_eq!(
+        code_after,
+        *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),
+    );
 
     Ok(())
 }

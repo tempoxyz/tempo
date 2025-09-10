@@ -589,18 +589,19 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         .collect();
 
     // Add senders and recipients to whitelist
-    try_join_all(whitelisted_accounts.iter().map(|account| async {
-        registry
-            .modifyPolicyWhitelist(policy_id, *account, true)
+    let mut pending = vec![];
+    for account in whitelisted_accounts {
+        let pending_tx = registry
+            .modifyPolicyWhitelist(policy_id, account, true)
             .gas_price(TEMPO_BASE_FEE as u128)
             .gas(30000)
             .send()
-            .await
-            .expect("Could not send tx")
-            .get_receipt()
-            .await
-    }))
-    .await?;
+            .await?;
+
+        pending.push(pending_tx);
+    }
+
+    try_join_all(pending.into_iter().map(|tx| tx.get_receipt())).await?;
 
     // Mint tokens to all accounts
     try_join_all(accounts.iter().map(|account| async {
