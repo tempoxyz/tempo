@@ -456,8 +456,6 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         pending.push(pending_tx);
     }
 
-    try_join_all(pending.into_iter().map(|tx| tx.get_receipt())).await?;
-
     // Mint tokens to all accounts
     try_join_all(accounts.iter().map(|account| async {
         token
