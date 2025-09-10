@@ -22,7 +22,7 @@ TESTUSD="0x20c0000000000000000000000000000000000000"
 
 echo "Funding sender address..."
 cast rpc tempo_fundAddress $SENDER_ADDR
-sleep 1
+sleep 2
 
 echo "Checking initial balances..."
 SENDER_NATIVE_BALANCE=$(cast balance $SENDER_ADDR)
