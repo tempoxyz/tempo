@@ -36,14 +36,14 @@ use tempo_chainspec::TempoChainSpec;
 pub struct TempoEvmConfig {
     /// Inner [`EthBlockExecutorFactory`].
     pub executor_factory:
-        EthBlockExecutorFactory<RethReceiptBuilder, Arc<TempoChainSpec>, EthEvmFactory>,
+        EthBlockExecutorFactory<RethReceiptBuilder, Arc<TempoChainSpec>, TempoEvmFactory>,
     /// Ethereum block assembler.
     pub block_assembler: EthBlockAssembler<TempoChainSpec>,
 }
 
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
-    pub fn new(chain_spec: Arc<TempoChainSpec>, evm_factory: EthEvmFactory) -> Self {
+    pub fn new(chain_spec: Arc<TempoChainSpec>, evm_factory: TempoEvmFactory) -> Self {
         let executor_factory = EthBlockExecutorFactory::new(
             RethReceiptBuilder::default(),
             chain_spec.clone(),
@@ -59,7 +59,7 @@ impl TempoEvmConfig {
 
     /// Create a new [`TempoEvmConfig`] with the given chain spec and default EVM factory.
     pub fn new_with_default_factory(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self::new(chain_spec, EthEvmFactory::default())
+        Self::new(chain_spec, TempoEvmFactory::default())
     }
 
     /// Returns the chain spec
@@ -79,7 +79,7 @@ impl ConfigureEvm for TempoEvmConfig {
     type Error = Infallible;
     type NextBlockEnvCtx = NextBlockEnvAttributes;
     type BlockExecutorFactory =
-        EthBlockExecutorFactory<RethReceiptBuilder, Arc<TempoChainSpec>, EthEvmFactory>;
+        EthBlockExecutorFactory<RethReceiptBuilder, Arc<TempoChainSpec>, TempoEvmFactory>;
     type BlockAssembler = EthBlockAssembler<TempoChainSpec>;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
