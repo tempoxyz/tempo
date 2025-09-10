@@ -7,8 +7,7 @@ use crate::contracts::storage::StorageProvider;
 
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
-    code: HashMap<Address, Bytecode>,
-    nonces: HashMap<Address, u64>,
+    accounts: HashMap<Address, AccountInfo>,
     pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
 }
@@ -17,15 +16,14 @@ impl HashMapStorageProvider {
     pub fn new(chain_id: u64) -> Self {
         Self {
             internals: HashMap::new(),
-            code: HashMap::new(),
-            nonces: HashMap::new(),
+            accounts: HashMap::new(),
             events: HashMap::new(),
             chain_id,
         }
     }
-
     pub fn set_nonce(&mut self, address: Address, nonce: u64) {
-        self.nonces.insert(address, nonce);
+        let account = self.accounts.entry(address).or_default();
+        account.nonce = nonce;
     }
 }
 
@@ -37,14 +35,13 @@ impl StorageProvider for HashMapStorageProvider {
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), Self::Error> {
-        self.code.insert(address, code);
+        let account = self.accounts.entry(address).or_default();
+        account.code = Some(code);
         Ok(())
     }
 
     fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
-        let code = self.code.get(&address).cloned().unwrap_or_default();
-        let nonce = self.nonces.get(&address).copied().unwrap_or(0);
-        Ok(AccountInfo::new(U256::ZERO, nonce, code.hash_slow(), code))
+        Ok(self.accounts.get(&address).cloned().unwrap_or_default())
     }
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
