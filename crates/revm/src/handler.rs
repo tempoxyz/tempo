@@ -13,7 +13,9 @@ use reth_evm::revm::{
     inspector::{Inspector, InspectorHandler},
     interpreter::{instructions::utility::IntoAddress, interpreter::EthInterpreter},
     primitives::hardfork::SpecId,
+    state::Bytecode,
 };
+use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20},
@@ -98,6 +100,17 @@ where
 
         // Load caller's account.
         let caller_account = journal.load_account_code(tx.caller())?.data;
+
+        let account_info = &mut caller_account.info;
+        if account_info.nonce == 0
+            && account_info
+                .code
+                .as_ref()
+                .unwrap_or(&Bytecode::default())
+                .is_empty()
+        {
+            account_info.set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
+        }
 
         validate_account_nonce_and_code(
             &mut caller_account.info,
