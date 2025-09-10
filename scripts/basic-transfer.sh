@@ -39,12 +39,8 @@ echo "Recipient initial token balance: $RECIPIENT_BALANCE_INITIAL"
 
 TRANSFER_AMOUNT=1000
 
-echo "Estimating gas for transfer..."
-GAS_ESTIMATE=$(cast estimate $TESTUSD "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_AMOUNT --from $SENDER_ADDR)
-echo "Gas estimate: $GAS_ESTIMATE"
-
 echo "Executing transfer..."
-cast send $TESTUSD "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_AMOUNT --private-key $SENDER_PK --gas-limit $GAS_ESTIMATE
+cast send $TESTUSD "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_AMOUNT --private-key $SENDER_PK
 
 echo "Checking final balances..."
 SENDER_BALANCE_FINAL=$(cast balance --erc20 $TESTUSD $SENDER_ADDR)
