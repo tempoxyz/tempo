@@ -34,9 +34,16 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
         // v: byte 64
         let sig: &[u8; 64] = signature[0..64].try_into().unwrap();
         let mut v = signature[64];
-        if v >= 27 {
-            v -= 27;
-        }
+        // Normalize v and bound-check
+        v = match v {
+            27 | 28 => v - 27,
+            0 | 1 => v,
+            _ => {
+                return Err(TipAccountRegistrarError::InvalidSignature(
+                    ITipAccountRegistrar::InvalidSignature {},
+                ));
+            }
+        };
 
         let signer = match ecrecover(sig.into(), v, &hash) {
             Ok(recovered_addr) => Address::from_word(recovered_addr),
