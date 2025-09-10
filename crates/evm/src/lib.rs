@@ -8,18 +8,25 @@ use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
 use alloy_eips::eip1559::INITIAL_BASE_FEE;
 use alloy_evm::{EthEvmFactory, EvmFactory, eth::EthBlockExecutorFactory};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Bytes, U256};
 pub use evm::TempoEvmFactory;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_ethereum_forks::{EthereumHardfork, Hardforks};
 use reth_ethereum_primitives::{Block, EthPrimitives};
 use reth_evm::{
     self, ConfigureEvm, EvmEnv, NextBlockEnvAttributes,
     eth::{EthBlockExecutionCtx, spec::EthExecutorSpec},
+    revm::{
+        context::{BlockEnv, CfgEnv},
+        context_interface::block::BlobExcessGasAndPrice,
+        primitives::hardfork::SpecId,
+    },
 };
-use reth_primitives_traits::{AlloyBlockHeader, Header, SealedBlock, SealedHeader};
+use reth_primitives_traits::{
+    AlloyBlockHeader, Header, SealedBlock, SealedHeader, constants::MAX_TX_GAS_LIMIT_OSAKA,
+};
 
-use reth_evm_ethereum::{EthBlockAssembler, RethReceiptBuilder};
+use reth_evm_ethereum::{EthBlockAssembler, RethReceiptBuilder, revm_spec};
 use tempo_chainspec::TempoChainSpec;
 
 /// Tempo-related EVM configuration.
@@ -52,6 +59,17 @@ impl TempoEvmConfig {
     pub fn new_with_default_factory(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self::new(chain_spec, EthEvmFactory::default())
     }
+
+    /// Returns the chain spec
+    pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
+        self.executor_factory.spec()
+    }
+
+    /// Sets the extra data for the block assembler.
+    pub fn with_extra_data(mut self, extra_data: Bytes) -> Self {
+        self.block_assembler.extra_data = extra_data;
+        self
+    }
 }
 
 impl ConfigureEvm for TempoEvmConfig {
@@ -71,60 +89,59 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &Header) -> EvmEnv {
-        // let blob_params = self
-        //     .executor_factory
-        //     .chain_spec()
-        //     .blob_params_at_timestamp(header.timestamp);
-        //
-        //
-        //
-        // let spec = revm_spec(self.executor_factory.chain_spec(), header);
-        //
-        // // configure evm env based on parent block
-        // let mut cfg_env = CfgEnv::new()
-        //     .with_chain_id(self.executor_factory.chain_spec().chain().id())
-        //     .with_spec(spec);
-        //
-        // if let Some(blob_params) = &blob_params {
-        //     cfg_env.set_max_blobs_per_tx(blob_params.max_blobs_per_tx);
-        // }
-        //
-        // // derive the EIP-4844 blob fees from the header's `excess_blob_gas` and the current
-        // // blobparams
-        // let blob_excess_gas_and_price =
-        //     header
-        //         .excess_blob_gas
-        //         .zip(blob_params)
-        //         .map(|(excess_blob_gas, params)| {
-        //             let blob_gasprice = params.calc_blob_fee(excess_blob_gas);
-        //             BlobExcessGasAndPrice {
-        //                 excess_blob_gas,
-        //                 blob_gasprice,
-        //             }
-        //         });
-        //
-        // let block_env = BlockEnv {
-        //     number: U256::from(header.number()),
-        //     beneficiary: header.beneficiary(),
-        //     timestamp: U256::from(header.timestamp()),
-        //     difficulty: if spec >= SpecId::MERGE {
-        //         U256::ZERO
-        //     } else {
-        //         header.difficulty()
-        //     },
-        //     prevrandao: if spec >= SpecId::MERGE {
-        //         header.mix_hash()
-        //     } else {
-        //         None
-        //     },
-        //     gas_limit: header.gas_limit(),
-        //     basefee: header.base_fee_per_gas().unwrap_or_default(),
-        //     blob_excess_gas_and_price,
-        // };
-        //
-        // EvmEnv { cfg_env, block_env }
+        let blob_params = self.chain_spec().blob_params_at_timestamp(header.timestamp);
+        let spec = revm_spec(self.chain_spec(), header);
 
-        todo!()
+        // configure evm env based on parent block
+        let mut cfg_env = CfgEnv::new()
+            .with_chain_id(self.chain_spec().chain().id())
+            .with_spec(spec);
+
+        if let Some(blob_params) = &blob_params {
+            cfg_env.set_max_blobs_per_tx(blob_params.max_blobs_per_tx);
+        }
+
+        if self
+            .chain_spec()
+            .is_osaka_active_at_timestamp(header.timestamp)
+        {
+            cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
+
+        // derive the EIP-4844 blob fees from the header's `excess_blob_gas` and the current
+        // blobparams
+        let blob_excess_gas_and_price =
+            header
+                .excess_blob_gas
+                .zip(blob_params)
+                .map(|(excess_blob_gas, params)| {
+                    let blob_gasprice = params.calc_blob_fee(excess_blob_gas);
+                    BlobExcessGasAndPrice {
+                        excess_blob_gas,
+                        blob_gasprice,
+                    }
+                });
+
+        let block_env = BlockEnv {
+            number: U256::from(header.number()),
+            beneficiary: header.beneficiary(),
+            timestamp: U256::from(header.timestamp()),
+            difficulty: if spec >= SpecId::MERGE {
+                U256::ZERO
+            } else {
+                header.difficulty()
+            },
+            prevrandao: if spec >= SpecId::MERGE {
+                header.mix_hash()
+            } else {
+                None
+            },
+            gas_limit: header.gas_limit(),
+            basefee: header.base_fee_per_gas().unwrap_or_default(),
+            blob_excess_gas_and_price,
+        };
+
+        EvmEnv { cfg_env, block_env }
     }
 
     fn next_evm_env(
