@@ -13,9 +13,9 @@ fi
 echo "Testing 7702 delegation..."
 
 export TOKEN_ADDR=0x20c0000000000000000000000000000000000000
-WALLET_OUTPUT=$(cast wallet new)
-export TEST_PRIVATE_KEY=$(echo "$WALLET_OUTPUT" | grep "Private key:" | awk '{print $3}')
-export TEST_ADDR=$(echo "$WALLET_OUTPUT" | grep "Address:" | awk '{print $2}')
+WALLET_JSON=$(cast wallet new --json)
+export TEST_PRIVATE_KEY=$(echo "$WALLET_JSON" | jq -r '.[0].private_key')
+export TEST_ADDR=$(echo "$WALLET_JSON" | jq -r '.[0].address')
 echo "Generated wallet: $TEST_ADDR"
 
 echo "Funding address $TEST_ADDR..."
@@ -32,9 +32,9 @@ if [ "$INITIAL_CODE" != "0x" ]; then
 fi
 
 # Generate random recipient addresses
-export RECIPIENT_0=$(cast wallet new | grep "Address:" | awk '{print $2}')
-export RECIPIENT_1=$(cast wallet new | grep "Address:" | awk '{print $2}')
-export RECIPIENT_2=$(cast wallet new | grep "Address:" | awk '{print $2}')
+export RECIPIENT_0=$(cast wallet new --json | jq -r '.[0].address')
+export RECIPIENT_1=$(cast wallet new --json | jq -r '.[0].address')
+export RECIPIENT_2=$(cast wallet new --json | jq -r '.[0].address')
 echo "Recipients: $RECIPIENT_0, $RECIPIENT_1, $RECIPIENT_2"
 
 export TRANSFER_AMOUNT=1000

@@ -13,11 +13,11 @@ fi
 echo "Testing basic token transfer..."
 
 echo "Generating wallets..."
-SENDER_WALLET=$(cast wallet new)
-SENDER_PK=$(echo "$SENDER_WALLET" | grep "Private key:" | awk '{print $3}')
-SENDER_ADDR=$(echo "$SENDER_WALLET" | grep "Address:" | awk '{print $2}')
+SENDER_WALLET_JSON=$(cast wallet new --json)
+SENDER_PK=$(echo "$SENDER_WALLET_JSON" | jq -r '.[0].private_key')
+SENDER_ADDR=$(echo "$SENDER_WALLET_JSON" | jq -r '.[0].address')
 
-RECIPIENT_ADDR=$(cast wallet new | grep "Address:" | awk '{print $2}')
+RECIPIENT_ADDR=$(cast wallet new --json | jq -r '.[0].address')
 TESTUSD="0x20c0000000000000000000000000000000000000"
 
 echo "Funding sender address..."
