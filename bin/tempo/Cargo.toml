@@ -11,8 +11,11 @@ workspace = true
 
 [dependencies]
 tempo-node.workspace = true
+tempo-commonware-node.workspace = true
+tempo-commonware-node-config.workspace = true
 tempo-chainspec.workspace = true
 tempo-faucet.workspace = true
+commonware-runtime.workspace = true
 reth-malachite.workspace = true
 reth-cli-util.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
