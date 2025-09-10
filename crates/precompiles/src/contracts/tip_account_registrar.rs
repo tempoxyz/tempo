@@ -17,6 +17,8 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
         Self { storage }
     }
 
+    /// Validates an ECDSA signature, and deploys the default 7702 delegate code
+    /// to the recovered signer's account. The account must have nonce = 0 and empty code.
     pub fn delegate_to_default(
         &mut self,
         call: ITipAccountRegistrar::delegateToDefaultCall,
