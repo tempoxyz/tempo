@@ -4,7 +4,7 @@
 
 [peers]
 trusted_nodes = [
-{% for host in groups['adagio-1'] %}
+{% for host in play_hosts %}
   "enode://{{ hostvars[host]['disc_pub_key_hex'] }}@{{ host }}:30303"{% if not loop.last %},{% endif %}
 
 {% endfor %}

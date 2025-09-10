@@ -1,10 +1,33 @@
 ---
-- name: Install Caddy
-  apt:
-    name: caddy
+- name: Add Caddy repository signing key to a dedicated keyring
+  ansible.builtin.apt_key:
+    url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+    state: present
+    keyring: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  become: yes
+
+- name: Add Caddy APT repository (uses signed-by keyring)
+  ansible.builtin.apt_repository:
+    filename: caddy-stable
+    repo: >-
+      deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg]
+      https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
     state: present
     update_cache: yes
   become: yes
+
+- name: Install Caddy
+  apt:
+    name: caddy
+    state: latest
+    update_cache: yes
+  become: yes
+
+- name: Install JSON Parse plugin
+  command:
+    cmd: caddy add-package github.com/abiosoft/caddy-json-parse
+  become: yes
+  ignore_errors: true
 
 - name: Create SSL certificate directory
   file:

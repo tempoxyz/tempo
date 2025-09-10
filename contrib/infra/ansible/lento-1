@@ -1,0 +1,4 @@
+[lento-1]
+lento-node-1 ansible_user=ubuntu ansible_hostname=lento-node-1 tempo_faucet_privkey="d9fb56b9574ed61ab0478a607166eeb3a80b1b91ab1bf00f45932105d07b5e11"
+lento-node-2 ansible_user=ubuntu ansible_hostname=lento-node-2 tempo_faucet_privkey="c24de1e962c31c8341cdae2b25b3e435d374b433a429d42c8c2398af1ffca3f9"
+lento-node-3 ansible_user=ubuntu ansible_hostname=lento-node-3 tempo_faucet_privkey="e46003255e3d8fd72386038bfe229fad736b0ae6a3f11662f20807bc8276277c"

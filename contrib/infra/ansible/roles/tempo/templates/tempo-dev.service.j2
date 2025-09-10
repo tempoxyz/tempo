@@ -16,7 +16,7 @@ ExecStart=/usr/local/bin/tempo node --datadir {{ ansible_env.HOME }}/malachite/r
 {% if tempo_faucet_privkey is defined %}
   --faucet.enabled \
   --faucet.private-key 0x{{ tempo_faucet_privkey }} \
-  --faucet.amount 100000000 \
+  --faucet.amount 1000000000000 \
   --faucet.address 0x20c0000000000000000000000000000000000000 \
 {% endif %}
   --chain {{ ansible_env.HOME }}/malachite/config/reth_genesis.json \
@@ -25,7 +25,7 @@ ExecStart=/usr/local/bin/tempo node --datadir {{ ansible_env.HOME }}/malachite/r
   --http \
   --http.addr 0.0.0.0 \
   --http.port 8545 \
-  --http.api eth,net,web3,txpool \
+  --http.api eth,net,web3,txpool,trace \
   --authrpc.port 8551 \
   --metrics 9000 \
   --ipcdisable \
@@ -52,7 +52,8 @@ ExecStart=/usr/local/bin/tempo node --datadir {{ ansible_env.HOME }}/malachite/r
   --rpc.max-connections 429496729 \
   --rpc.max-request-size 1000000 \
   --rpc.max-response-size 1000000 \
-  --max-tx-reqs 1000000
+  --max-tx-reqs 1000000 \
+  --gpo.default-suggested-fee 0 \
 
 Restart=always
 RestartSec=10

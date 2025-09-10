@@ -1,15 +1,33 @@
 # Caddy configuration for Tempo RPC proxy
 
+{
+    order json_parse before log_append
+}
+
 # HTTP to HTTPS redirect
 :80 {
     redir https://{host}{uri} permanent
 }
 
 :443 {
+    log
+    json_parse
     tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
 
-    basicauth {
+    basic_auth {
         ttest $2a$14$rSSf4Mq.sMBa8dIJ/sg5MO3hTjyY9Cd2HDTE1EaI3Ek4CTu5w/y7a
+        tempo $2a$14$ETLDK0qfPjsrmqm7COPZoOZIXG/9IxHKfZT.NHMErAG8lo7Wkjjme
+        eng $2a$14$qdci6Z3JxXKI3VEFSAqUb.yyLscexjVChOUyVcHfyQu5RpAo8P2oW
+        agitated-davinci $2a$14$Qn5rmpNYSeN60qYDbMCzH.KAbdQXts0YtuovCu4dV/NdO/PCPc2au
+        vigorous-volhard $2a$14$HKzPbjn8ITH2IBrvg.ffIeaIFcWoqFvM9sukLvbIoNKMUQwfCBbKm
+        eager-euler $2a$14$FY30MATqbQIkNhILPNA7y.kAeg0Aye1.rlMlpiZiXTMEr9vwRkmNG
+        youthful-hawking $2a$14$l1ZXoj5WuH0jYPzRqD0NY.lnpdb83rNJZ6MSTWn89L9oeDp3NG23S
+        reverent-dijkstra $2a$14$wI5uZt.6j7RzQ55RumNjAev.zEdHu67sNdV8dc.tizNlyY3u.LSXK
+        tender-panini $2a$14$CJs95PCShaUbJk4O4r0k1.53zZzA6xJ/P40VTGt5zUWYEUQ1QIC86
+        sleepy-williams $2a$14$ZPqCIzgx4YcmQL1HCITBD.Zs6ZCbG61XvoCsG8yu7t0mVL8Dk6vIO
+        affectionate-germain $2a$14$hBn4Vp4SbC4jaL4hqlMqneX8etUk8ASwtiCISudZRXdgh9zr9ws/6
+        brave-fermat $2a$14$wfYo41Ib2NiwyAPy5iDOSO.6RtkGfZ7rLYAtqLHzSZzjbyk5P6nFu
+        dreamy-northcutt $2a$14$siPi3FO4VIKOAE0JzYBxIutKeg5ZoVNnog8suK8XTOQyKtlYy1tV2
     }
 
     reverse_proxy localhost:8545 {
@@ -18,7 +36,10 @@
         header_up X-Forwarded-For {remote}
         header_up X-Forwarded-Proto {scheme}
     }
-    
+
+    log_append user "{http.auth.user.id}"
+    log_append eth_method "{json.method}"
+
     # Enable CORS for JSON-RPC requests
     header {
         Access-Control-Allow-Origin "*"

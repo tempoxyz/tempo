@@ -5,6 +5,7 @@
     enabled: no
     daemon_reload: yes
   become: yes
+  ignore_errors: true
 
 - name: Reset the network if needed
   file:
@@ -18,6 +19,10 @@
     state: directory
     mode: '0755'
 
+- name: commonware
+  include_tasks: commonware.yml
+  when: tempo_commonware == 'true'
+
 - name: Include discovery key generation tasks
   include_tasks: disc_keygen.yml
 
@@ -26,7 +31,7 @@
 
 - name: Include sidecar installation tasks
   include_tasks: install_sidecar.yml
-  when: tempo_proposer == 'false'
+  when: tempo_proposer is defined and tempo_proposer == 'false' and tempo_commonware is not defined
 
 - name: Check if genesis file exists
   stat:
@@ -52,4 +57,4 @@
     enabled: yes
     daemon_reload: yes
   become: yes
-  when: tempo_proposer == 'false'
+  when: tempo_proposer is defined and tempo_proposer == 'false' and tempo_commonware is not defined

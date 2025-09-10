@@ -24,6 +24,13 @@
         name: grafana.grafana.alloy
       vars:
         alloy_config: |
+          prometheus.exporter.unix "node_exporter" {}
+          
+          prometheus.scrape "node_exporter" {
+            targets = prometheus.exporter.unix.node_exporter.targets
+            forward_to = [prometheus.relabel.instance.receiver]
+          }
+          
           prometheus.scrape "default" {
             targets = [{"__address__" = "localhost:9000"}]
             forward_to = [prometheus.relabel.instance.receiver]
@@ -48,4 +55,42 @@
                   password = "{{ tempo_grafana_api_token }}"
                 }
             }
+          }
+          
+          loki.relabel "journal" {
+              forward_to = []
+
+              rule {
+                source_labels = ["__journal__systemd_unit"]
+                target_label  = "unit"
+              }
+          
+              rule {
+                action = "keep"
+                source_labels = ["__journal__systemd_unit"]
+                regex = "(tempo.service|tempo-sidecar.service|caddy.service)"
+              }
+          
+              rule {
+                action = "replace"
+                target_label = "instance"
+                replacement = "{{ tempo_chain_id }}-{{ ansible_hostname }}"
+              }
+          }
+          
+          loki.source.journal "logs_integrations_integrations_node_exporter_journal_scrape" {
+            max_age       = "24h0m0s"
+            relabel_rules = loki.relabel.journal.rules
+            forward_to    = [loki.write.loki.receiver]
+          }
+          
+          loki.write "loki" {
+             endpoint {
+                url = "https://logs-prod-036.grafana.net/loki/api/v1/push"
+
+                basic_auth {
+                  username = "1288995"
+                  password = "{{ tempo_grafana_api_token }}"
+                }
+            } 
           }

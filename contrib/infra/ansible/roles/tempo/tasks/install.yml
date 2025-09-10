@@ -29,3 +29,13 @@
     mode: '0644'
   become: yes
   notify: reload systemd
+  when: tempo_commonware is not defined
+
+- name: Install tempo systemd service
+  template:
+    src: tempo-commonware.service.j2
+    dest: /etc/systemd/system/tempo.service
+    mode: '0644'
+  become: yes
+  notify: reload systemd
+  when: tempo_commonware == 'true'

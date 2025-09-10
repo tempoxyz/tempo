@@ -20,14 +20,6 @@
     src: "files/reth_genesis.json"
     dest: "{{ ansible_env.HOME }}/malachite/config/reth_genesis.json"
 
-#- name: Generate and copy genesis + config files
-#  template:
-#    src: "{{ item }}.j2"
-#    dest: "{{ ansible_env.HOME }}/malachite/config/{{ item }}"
-#  with_items:
-#  - genesis.json
-#  - malachite.toml
-
 - name: Create reth directory
   file:
     path: "{{ ansible_env.HOME }}/malachite/reth"
