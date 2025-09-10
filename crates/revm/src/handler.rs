@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256, b256};
 use reth_evm::revm::{
     Database,
     context::{
@@ -23,6 +23,10 @@ use tempo_precompiles::{
 use tracing::trace;
 
 use crate::{TempoEvm, evm::TempoContext};
+
+/// Hashed account code of default 7702 delegate deployment
+const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
+    b256!("e7b3e4597bdbdd0cc4eb42f9b799b580f23068f54e472bb802cb71efb1570482");
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
@@ -103,7 +107,10 @@ where
 
         let account_info = &mut caller_account.info;
         if account_info.has_no_code_and_nonce() {
-            account_info.set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
+            account_info.set_code_and_hash(
+                Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
+                DEFAULT_7702_DELEGATE_CODE_HASH,
+            );
         }
 
         validate_account_nonce_and_code(
@@ -411,5 +418,11 @@ mod tests {
         assert_eq!(user_fee_token, fee_token);
 
         Ok(())
+    }
+
+    fn test_delegate_code_hash() {
+        let bytecode = Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS);
+        let hash = bytecode.hash_slow();
+        assert_eq!(hash, DEFAULT_7702_DELEGATE_CODE_HASH);
     }
 }
