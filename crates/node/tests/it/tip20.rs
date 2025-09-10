@@ -447,7 +447,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     let mut pending = vec![];
     for account in blacklisted_accounts {
         let pending_tx = registry
-            .modifyPolicyBlacklist(policy_id, account, true)
+            .modifyPolicyBlacklist(policy_id, account.address(), true)
             .gas_price(TEMPO_BASE_FEE as u128)
             .gas(30000)
             .send()
