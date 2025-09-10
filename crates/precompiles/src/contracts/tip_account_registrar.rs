@@ -1,4 +1,5 @@
-use alloy_primitives::Address;
+use alloy::eips::eip7702::constants::SECP256K1N_HALF;
+use alloy_primitives::{Address, B512, U256};
 use reth_evm::revm::{precompile::secp256k1::ecrecover, state::Bytecode};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
@@ -22,30 +23,9 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
     ) -> Result<Address, TipAccountRegistrarError> {
         let ITipAccountRegistrar::delegateToDefaultCall { hash, signature } = call;
 
-        if signature.len() != 65 {
-            return Err(TipAccountRegistrarError::InvalidSignature(
-                ITipAccountRegistrar::InvalidSignature {},
-            ));
-        }
+        let (sig, v) = validate_signature(&signature)?;
 
-        // Extract signature components
-        // r: bytes 0-31 bytes
-        // s: bytes 32-63 bytes
-        // v: byte 64
-        let sig: &[u8; 64] = signature[0..64].try_into().unwrap();
-        let mut v = signature[64];
-        // Normalize v and bound-check
-        v = match v {
-            27 | 28 => v - 27,
-            0 | 1 => v,
-            _ => {
-                return Err(TipAccountRegistrarError::InvalidSignature(
-                    ITipAccountRegistrar::InvalidSignature {},
-                ));
-            }
-        };
-
-        let signer = match ecrecover(sig.into(), v, &hash) {
+        let signer = match ecrecover(&sig, v, &hash) {
             Ok(recovered_addr) => Address::from_word(recovered_addr),
             Err(_) => {
                 return Err(TipAccountRegistrarError::InvalidSignature(
@@ -81,6 +61,43 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
 
         Ok(signer)
     }
+}
+
+/// Validates an ECDSA signature according to Ethereum standards.
+/// Accepts recovery values `v ∈ {0, 1, 27, 28}` and enforces EIP-2 low-s requirement.
+fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TipAccountRegistrarError> {
+    if signature.len() != 65 {
+        return Err(TipAccountRegistrarError::InvalidSignature(
+            ITipAccountRegistrar::InvalidSignature {},
+        ));
+    }
+
+    // Extract signature components
+    // r: bytes 0-31 bytes
+    // s: bytes 32-63 bytes
+    // v: byte 64
+    let sig: &[u8; 64] = signature[0..64].try_into().unwrap();
+    let mut v = signature[64];
+    // Normalize v and bound-check
+    v = match v {
+        27 | 28 => v - 27,
+        0 | 1 => v,
+        _ => {
+            return Err(TipAccountRegistrarError::InvalidSignature(
+                ITipAccountRegistrar::InvalidSignature {},
+            ));
+        }
+    };
+
+    // Enforce EIP-2 low-s
+    let s = U256::from_be_slice(&sig[32..64]);
+    if s > SECP256K1N_HALF {
+        return Err(TipAccountRegistrarError::InvalidSignature(
+            ITipAccountRegistrar::InvalidSignature {},
+        ));
+    }
+
+    Ok((sig.into(), v))
 }
 
 #[cfg(test)]
