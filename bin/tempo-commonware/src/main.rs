@@ -62,12 +62,17 @@ fn main() -> eyre::Result<()> {
         oneshot::channel::<(TempoFullNode, TempoCommonwareArgs)>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
+
+    let shutdown_token_clone = shutdown_token.clone();
     let consensus_handle = thread::spawn(move || {
         let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err("channel closed before consensus-relevant command line args and a handle to the execution node could be received")?;
 
         let ret = if node.config.dev.dev || args.inner.no_consensus {
-            // TODO: pass in a cancellation token or something to kill this thread also in dev
-            futures::executor::block_on(futures::future::pending::<Result<_, _>>())
+            futures::executor::block_on(async move {
+                shutdown_token_clone.cancelled().await;
+                Ok(())
+            })
         } else {
             let consensus_config =
                 tempo_commonware_node_config::Config::from_file(&args.consensus_config)
@@ -85,9 +90,17 @@ fn main() -> eyre::Result<()> {
 
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
-            runner
-                .start(async move |ctx| run_consensus_stack(&ctx, &consensus_config, node).await)
-                .wrap_err("consensus runtime failed")
+            runner.start(async move |ctx| {
+                tokio::select!(
+                    ret = run_consensus_stack(&ctx, &consensus_config, node) => {
+                        ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
+                        .wrap_err("concensus stack failed")
+                    }
+                    () = shutdown_token_clone.cancelled() => {
+                        Ok(())
+                    }
+                )
+            })
         };
         let _ = consensus_dead_tx.send(());
         ret
@@ -144,6 +157,7 @@ fn main() -> eyre::Result<()> {
                     tracing::info!("Received shutdown signal");
                 }
             }
+            shutdown_token.cancel();
 
             Ok(())
         })

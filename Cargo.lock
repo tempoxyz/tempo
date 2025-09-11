@@ -12613,6 +12613,7 @@ dependencies = [
  "tempo-faucet",
  "tempo-node",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

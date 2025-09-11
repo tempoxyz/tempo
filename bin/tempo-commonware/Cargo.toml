@@ -26,4 +26,5 @@ reth-node-ethereum.workspace = true
 clap.workspace = true
 eyre.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
