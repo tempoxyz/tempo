@@ -22,20 +22,10 @@ pub struct ConsensusStack {
     pub consensus_engine: Handle<eyre::Result<()>>,
 }
 
-// async fn launch_consensus_stack<TNodeTypes: NodeTypes>(
-//     context: &commonware_runtime::tokio::Context,
-//     config: &tempo_commonware_node_config::Config,
-//     chainspec: Arc<TempoChainSpec>,
-//     execution_engine: ConsensusEngineHandle<TNodeTypes::Payload>,
-//     execution_payload_builder: PayloadBuilderHandle<TNodeTypes::Payload>,
-// ) -> eyre::Result<ConsensusStack> {
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
     config: &tempo_commonware_node_config::Config,
     execution_node: TempoFullNode,
-    // chainspec: Arc<TempoChainSpec>,
-    // execution_engine: ConsensusEngineHandle<TNodeTypes::Payload>,
-    // execution_payload_builder: PayloadBuilderHandle<TNodeTypes::Payload>,
 ) -> eyre::Result<()> {
     let (mut network, mut oracle) =
         instantiate_network(context, config).wrap_err("failed to start network")?;
@@ -64,9 +54,6 @@ pub async fn run_consensus_stack(
         fee_recipient: config.fee_recipient,
 
         execution_node,
-        // chainspec: node.chain_spec(),
-        // execution_engine: node.add_ons_handle.consensus_engine_handle().clone(),
-        // execution_payload_builder: node.payload_builder_handle.clone(),
         blocker: oracle,
         // TODO: Set this through config?
         partition_prefix: "engine".into(),

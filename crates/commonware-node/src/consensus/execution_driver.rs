@@ -19,6 +19,7 @@ use reth::payload::PayloadBuilderHandle;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_builder::{ConsensusEngineHandle, PayloadTypes};
 use reth_node_ethereum::EthEngineTypes;
+use reth_primitives_traits::SealedBlock;
 use tempo_node::TempoFullNode;
 
 use reth_provider::BlockReader as _;
@@ -41,17 +42,14 @@ pub struct Builder<TContext> {
     /// before blocking.
     pub mailbox_size: usize,
 
+    /// The syncer for subscribing to blocks distributed via the consensus
+    /// p2p network.
     pub syncer_mailbox: marshal::Mailbox<BlsScheme, Block<reth_ethereum_primitives::Block>>,
 
+    /// A handle to the execution node to verify and create new payloads.
     pub execution_node: TempoFullNode,
 }
 
-// // impl<TContext, TExecutionNode, TExecutionNodeAddons>
-// //     Builder<TContext, TExecutionNode, TExecutionNodeAddons>
-// where
-//     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
-//     TExecutionNode: FullNodeComponents,
-//     TExecutionNodeAddons: NodeAddOns<TExecutionNode>,
 impl<TContext> Builder<TContext>
 where
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
@@ -60,20 +58,13 @@ where
         let (tx, rx) = mpsc::channel(self.mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
 
-        // TODO: simplify this to use `block_at_number` again once reth merges
-        // https://github.com/paradigmxyz/reth/pull/18300
-        //
-        // Needs `.sealed_block_with_senders` and `TransactionVariant::NoHash`,
-        // because the DEV chainspec uses a hard coded hash. `into_sealed_block`
-        // forces a recomputation of the block.
         let block = self
             .execution_node
             .provider
-            .sealed_block_with_senders(0.into(), reth_provider::TransactionVariant::NoHash)
+            .block_by_number(0)
             .map_err(Into::<eyre::Report>::into)
             .and_then(|maybe| maybe.ok_or_eyre("block reader returned empty genesis block"))
-            .wrap_err("failed reading genesis block from execution node")?
-            .into_sealed_block();
+            .wrap_err("failed reading genesis block from execution node")?;
         Ok(ExecutionDriver {
             context: self.context,
 
@@ -83,7 +74,7 @@ where
             my_mailbox,
             syncer_mailbox: self.syncer_mailbox,
 
-            genesis_block: Arc::new(Block::from_execution_block(block)),
+            genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
 
             latest_proposed_block: Arc::new(RwLock::new(None)),
 
