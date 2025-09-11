@@ -11989,7 +11989,6 @@ dependencies = [
  "reth-evm",
  "reth-evm-ethereum",
  "reth-primitives-traits",
- "reth-storage-api",
  "tempo-chainspec",
  "tempo-precompiles",
  "tempo-revm",

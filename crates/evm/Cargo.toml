@@ -20,7 +20,6 @@ reth-ethereum-forks.workspace = true
 reth-primitives-traits.workspace = true
 reth-chainspec.workspace = true
 reth-ethereum-primitives.workspace = true
-reth-storage-api.workspace = true
 
 alloy-evm.workspace = true
 alloy-eips.workspace = true

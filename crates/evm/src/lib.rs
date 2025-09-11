@@ -4,36 +4,25 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 pub mod evm;
-use std::{borrow::Cow, convert::Infallible, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 
-use alloy_eips::{Decodable2718, eip1559::INITIAL_BASE_FEE, eip7840::BlobParams};
 use alloy_evm::eth::EthBlockExecutorFactory;
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::Bytes;
 use alloy_rpc_types_engine::ExecutionData;
 pub use evm::TempoEvmFactory;
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
-use reth_ethereum_forks::{EthereumHardfork, Hardforks};
-use reth_ethereum_primitives::{Block, EthPrimitives, TransactionSigned};
+use reth_ethereum_primitives::{Block, EthPrimitives};
 use reth_evm::{
     self, ConfigureEngineEvm, ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator,
     ExecutionCtxFor, NextBlockEnvAttributes,
     eth::EthBlockExecutionCtx,
-    revm::{
-        context::{BlockEnv, CfgEnv},
-        context_interface::block::BlobExcessGasAndPrice,
-        primitives::hardfork::SpecId,
-    },
 };
 use reth_primitives_traits::{
-    AlloyBlockHeader, Header, SealedBlock, SealedHeader, SignedTransaction,
-    constants::MAX_TX_GAS_LIMIT_OSAKA,
+    AlloyBlockHeader, Header, SealedBlock, SealedHeader,
 };
 
 use reth_evm_ethereum::{
-    EthBlockAssembler, EthEvmConfig, RethReceiptBuilder, revm_spec,
-    revm_spec_by_timestamp_and_block_number,
+    EthBlockAssembler, EthEvmConfig, RethReceiptBuilder,
 };
-use reth_storage_api::errors::any::AnyError;
 use tempo_chainspec::TempoChainSpec;
 
 /// Tempo-related EVM configuration.
