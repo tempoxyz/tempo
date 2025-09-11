@@ -12595,9 +12595,26 @@ dependencies = [
 name = "tempo-commonware"
 version = "0.1.0"
 dependencies = [
+ "camino",
+ "clap",
  "commonware-runtime",
+ "eyre",
+ "futures",
+ "reth-cli-util",
+ "reth-ethereum",
+ "reth-malachite",
+ "reth-node-builder",
+ "reth-node-ethereum",
+ "tempo-chainspec",
  "tempo-commonware-node",
+ "tempo-commonware-node-config",
+ "tempo-consensus",
  "tempo-eyre",
+ "tempo-faucet",
+ "tempo-node",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

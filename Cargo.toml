@@ -99,6 +99,7 @@ tempo-commonware-node-cryptography = { path = "crates/commonware-node-cryptograp
 tempo-consensus = { path = "crates/consensus" }
 tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }
+tempo-eyre = { path = "crates/eyre" }
 tempo-revm = { path = "crates/revm" }
 tempo-payload-builder = { path = "crates/payload" }
 tempo-precompiles = { path = "crates/precompiles" }
@@ -225,6 +226,7 @@ tempfile = "3.20.0"
 thiserror = "2.0.14"
 # TODO: restrict this to only the required features
 tokio = { version = "1.45.1", features = ["full"] }
+tokio-util = "0.7.16"
 toml = "0.8"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"

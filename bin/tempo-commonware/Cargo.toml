@@ -7,6 +7,24 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-commonware-runtime = "0.0.58"
+tempo-eyre.workspace = true
+tempo-node.workspace = true
 tempo-commonware-node.workspace = true
-tempo-eyre = { version = "0.1.0", path = "../../crates/eyre" }
+tempo-commonware-node-config.workspace = true
+tempo-chainspec.workspace = true
+tempo-consensus.workspace = true
+tempo-faucet.workspace = true
+
+camino = { workspace = true, features = ["serde1"] }
+commonware-runtime.workspace = true
+futures = { workspace = true, features = ["executor"] }
+reth-malachite.workspace = true
+reth-cli-util.workspace = true
+reth-ethereum = { workspace = true, features = ["full", "cli"] }
+reth-node-builder.workspace = true
+reth-node-ethereum.workspace = true
+clap.workspace = true
+eyre.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
