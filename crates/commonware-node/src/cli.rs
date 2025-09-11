@@ -30,7 +30,7 @@ pub struct ConsensusStack {
 //     execution_engine: ConsensusEngineHandle<TNodeTypes::Payload>,
 //     execution_payload_builder: PayloadBuilderHandle<TNodeTypes::Payload>,
 // ) -> eyre::Result<ConsensusStack> {
-pub async fn launch_consensus_stack(
+pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
     config: &tempo_commonware_node_config::Config,
     execution_node: TempoFullNode,
@@ -102,16 +102,19 @@ pub async fn launch_consensus_stack(
         consensus_engine.start(pending, recovered, resolver, broadcaster, backfill),
     );
 
-    Ok(tokio::spawn(async move {
-        tokio::select! {
-            _ = network => {
-                tracing::info!("Network task exited");
-            }
-            _ = consensus_engine => {
-                tracing::info!("Consensus engine exited");
-            }
+    tokio::select! {
+        ret = network => {
+            ret.map_err(eyre::Report::from)
+                .and_then(|()| Err(eyre!("exited unexpectedly")))
+                .wrap_err("network task failed")
         }
-    }))
+
+        ret = consensus_engine => {
+            ret.map_err(eyre::Report::from)
+                .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
+                .wrap_err("consensus engine task failed")
+        }
+    }
 }
 
 fn instantiate_network(

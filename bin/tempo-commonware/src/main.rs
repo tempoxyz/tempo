@@ -23,7 +23,7 @@ use reth_node_builder::NodeHandle;
 use reth_node_ethereum::EthEvmConfig;
 use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::cli::launch_consensus_stack;
+use tempo_commonware_node::cli::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 use tempo_node::{TempoFullNode, args::TempoArgs, node::TempoNode};
@@ -85,7 +85,7 @@ fn main() {
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
             runner
-                .start(async move |ctx| launch_consensus_stack(&ctx, &consensus_config, node).await)
+                .start(async move |ctx| run_consensus_stack(&ctx, &consensus_config, node).await)
                 .wrap_err("consensus runtime failed")
         };
         let _ = consensus_dead_tx.send(());
