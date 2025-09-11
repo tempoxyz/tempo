@@ -32,6 +32,7 @@ manual-string-new = "warn"
 uninlined-format-args = "warn"
 use-self = "warn"
 redundant-clone = "warn"
+default-constructed-unit-structs = "allow"
 
 [workspace.lints.rust]
 rust-2018-idioms = "warn"
