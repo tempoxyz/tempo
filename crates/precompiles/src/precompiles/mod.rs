@@ -13,14 +13,16 @@ pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip4217_registry;
+pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use crate::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     TIP4217_REGISTRY_ADDRESS,
     contracts::{
         EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
-        address_is_token_address, address_to_token_id_unchecked, tip_fee_manager::TipFeeManager,
+        TipAccountRegistrar, address_is_token_address, address_to_token_id_unchecked,
+        tip_fee_manager::TipFeeManager,
     },
 };
 
@@ -44,6 +46,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             Some(TIP4217RegistryPrecompile::create())
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id))
+        } else if *address == TIP_ACCOUNT_REGISTRAR {
+            Some(TipAccountRegistrarPrecompile::create(chain_id))
         } else {
             None
         }
@@ -118,6 +122,16 @@ impl TipFeeManagerPrecompile {
     }
 }
 
+pub struct TipAccountRegistrarPrecompile;
+
+impl TipAccountRegistrarPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("TipAccountRegistrar", |input| TipAccountRegistrar::new(
+            &mut EvmStorageProvider::new(input.internals, chain_id)
+        ))
+    }
+}
+
 #[inline]
 fn metadata<T: SolCall>(result: T::Return) -> PrecompileResult {
     Ok(PrecompileOutput::new(
@@ -137,7 +151,7 @@ fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> T::Return) -> Precompi
 }
 
 #[inline]
-fn mutate<T: SolCall, E: SolInterface>(
+pub fn mutate<T: SolCall, E: SolInterface>(
     calldata: &[u8],
     sender: &Address,
     f: impl FnOnce(&Address, T) -> Result<T::Return, E>,

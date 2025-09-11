@@ -2,7 +2,7 @@ use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
 use reth_evm::revm::state::Bytecode;
 
-use crate::contracts::storage::StorageProvider;
+use crate::contracts::storage::{AccountInfo, StorageProvider};
 
 pub struct EvmStorageProvider<'a> {
     internals: EvmInternals<'a>,
@@ -31,11 +31,16 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
         self.chain_id
     }
 
-    fn set_code(&mut self, address: Address, code: Vec<u8>) -> Result<(), Self::Error> {
+    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), Self::Error> {
         self.ensure_loaded_account(address)?;
-        self.internals
-            .set_code(address, Bytecode::new_raw(code.into()));
+        self.internals.set_code(address, code);
         Ok(())
+    }
+
+    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
+        self.ensure_loaded_account(address)?;
+        let account = self.internals.load_account_code(address)?;
+        Ok(account.data.info.clone())
     }
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
@@ -68,7 +73,6 @@ mod tests {
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         revm::context::{ContextTr, Host},
     };
-    use alloy_primitives::Bytes;
     use reth_evm::revm::{
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
@@ -102,7 +106,7 @@ mod tests {
         let mut provider = EvmStorageProvider::new(evm_internals, 1);
 
         let addr = Address::random();
-        let code = vec![0xff];
+        let code = Bytecode::new_raw(vec![0xff].into());
         provider.set_code(addr, code.clone())?;
         drop(provider);
 
@@ -110,10 +114,7 @@ mod tests {
             panic!("Failed to load account code")
         };
 
-        assert_eq!(data, Bytes::from(code));
+        assert_eq!(data, *code.original_bytes());
         Ok(())
     }
-
-    #[test]
-    fn test_emit_event() {}
 }

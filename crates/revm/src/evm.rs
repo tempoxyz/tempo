@@ -154,3 +154,42 @@ where
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Address;
+    use reth_evm::revm::{
+        ExecuteEvm,
+        context::{ContextTr, TxEnv},
+        database::{CacheDB, EmptyDB},
+        primitives::hardfork::SpecId,
+        state::Bytecode,
+    };
+    use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+
+    #[test]
+    fn test_auto_7702_delegation() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let ctx = TempoContext::new(db, SpecId::default());
+        let mut tempo_evm = TempoEvm::new(ctx, ());
+
+        let caller_0 = Address::random();
+        let tx_env = TxEnv {
+            caller: caller_0,
+            nonce: 0,
+            ..Default::default()
+        };
+        let res = tempo_evm.transact_one(tx_env)?;
+        assert!(res.is_success());
+
+        let ctx = tempo_evm.ctx();
+        let account = ctx.journal().account(caller_0).to_owned();
+        assert_eq!(
+            account.info.code.unwrap(),
+            Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
+        );
+
+        Ok(())
+    }
+}

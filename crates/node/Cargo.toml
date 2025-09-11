@@ -2,6 +2,7 @@
 name = "tempo-node"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 
 [lints]
@@ -48,6 +49,7 @@ tempo-precompiles.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
 reth-node-core.workspace = true
 serde_json.workspace = true
+tempo-contracts.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 alloy = { workspace = true, features = [
   "full",

@@ -2,7 +2,7 @@
 name = "tempo-bench"
 version.workspace = true
 edition.workspace = true
-
+license.workspace = true
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-evm.workspace = true

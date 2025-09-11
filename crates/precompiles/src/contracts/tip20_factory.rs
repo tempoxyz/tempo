@@ -7,6 +7,8 @@ use crate::{
     },
 };
 use alloy::primitives::{Address, IntoLogData, U256};
+use alloy_primitives::Bytes;
+use reth_evm::revm::state::Bytecode;
 use tracing::trace;
 
 mod slots {
@@ -32,7 +34,10 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
     pub fn initialize(&mut self) -> Result<(), TIP20Error> {
         // must ensure the account is not empty, by setting some code
         self.storage
-            .set_code(TIP20_FACTORY_ADDRESS, vec![0xef])
+            .set_code(
+                TIP20_FACTORY_ADDRESS,
+                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+            )
             .expect("TODO: handle error");
         Ok(())
     }

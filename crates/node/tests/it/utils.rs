@@ -88,7 +88,7 @@ pub(crate) async fn setup_test_node(
             let tasks = TaskManager::current();
             let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(&genesis_content)?);
 
-            let node_config = NodeConfig::new(Arc::new(chain_spec))
+            let mut node_config = NodeConfig::new(Arc::new(chain_spec))
                 .with_unused_ports()
                 .dev()
                 .with_rpc(
@@ -97,6 +97,7 @@ pub(crate) async fn setup_test_node(
                         .with_http()
                         .with_http_api(RpcModuleSelection::All),
                 );
+            node_config.txpool.max_account_slots = usize::MAX;
 
             let node_handle = NodeBuilder::new(node_config.clone())
                 .testing_node(tasks.executor())

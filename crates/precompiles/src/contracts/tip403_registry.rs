@@ -9,6 +9,8 @@ use crate::{
 };
 use alloy::primitives::{Address, IntoLogData, U256};
 use alloy_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use alloy_primitives::Bytes;
+use reth_evm::revm::state::Bytecode;
 
 mod slots {
     use alloy::primitives::{U256, uint};
@@ -32,7 +34,10 @@ pub struct PolicyData {
 impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         storage
-            .set_code(TIP403_REGISTRY_ADDRESS, vec![0xef])
+            .set_code(
+                TIP403_REGISTRY_ADDRESS,
+                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+            )
             .expect("TODO: handle error");
 
         Self { storage }

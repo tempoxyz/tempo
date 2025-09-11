@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256, b256};
 use reth_evm::revm::{
     Database,
     context::{
@@ -13,7 +13,9 @@ use reth_evm::revm::{
     inspector::{Inspector, InspectorHandler},
     interpreter::{instructions::utility::IntoAddress, interpreter::EthInterpreter},
     primitives::hardfork::SpecId,
+    state::Bytecode,
 };
+use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20},
@@ -21,6 +23,10 @@ use tempo_precompiles::{
 use tracing::trace;
 
 use crate::{TempoEvm, evm::TempoContext};
+
+/// Hashed account code of default 7702 delegate deployment
+const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
+    b256!("e7b3e4597bdbdd0cc4eb42f9b799b580f23068f54e472bb802cb71efb1570482");
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
@@ -98,6 +104,14 @@ where
 
         // Load caller's account.
         let caller_account = journal.load_account_code(tx.caller())?.data;
+
+        let account_info = &mut caller_account.info;
+        if account_info.has_no_code_and_nonce() {
+            account_info.set_code_and_hash(
+                Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
+                DEFAULT_7702_DELEGATE_CODE_HASH,
+            );
+        }
 
         validate_account_nonce_and_code(
             &mut caller_account.info,
@@ -315,6 +329,7 @@ mod tests {
         Journal,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
+        state::Account,
     };
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
@@ -404,5 +419,14 @@ mod tests {
         assert_eq!(user_fee_token, fee_token);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_delegate_code_hash() {
+        let mut account = Account::default();
+        account
+            .info
+            .set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
+        assert_eq!(account.info.code_hash, DEFAULT_7702_DELEGATE_CODE_HASH);
     }
 }

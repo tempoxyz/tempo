@@ -10,6 +10,8 @@ use crate::contracts::{
 };
 use alloy::primitives::{Address, B256, IntoLogData, Signature as EthSignature, U256, keccak256};
 use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
+use alloy_primitives::Bytes;
+use reth_evm::revm::state::Bytecode;
 use tracing::trace;
 
 pub mod slots {
@@ -618,7 +620,10 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
         // must ensure the account is not empty, by setting some code
         self.storage
-            .set_code(self.token_address, vec![0xef])
+            .set_code(
+                self.token_address,
+                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+            )
             .expect("TODO: handle error");
 
         self.write_string(slots::NAME, name.to_string())?;

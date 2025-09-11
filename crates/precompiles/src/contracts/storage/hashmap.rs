@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, LogData, U256};
+use reth_evm::revm::state::{AccountInfo, Bytecode};
 
 use crate::contracts::storage::StorageProvider;
 
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
+    accounts: HashMap<Address, AccountInfo>,
     pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
 }
@@ -14,9 +16,14 @@ impl HashMapStorageProvider {
     pub fn new(chain_id: u64) -> Self {
         Self {
             internals: HashMap::new(),
+            accounts: HashMap::new(),
             events: HashMap::new(),
             chain_id,
         }
+    }
+    pub fn set_nonce(&mut self, address: Address, nonce: u64) {
+        let account = self.accounts.entry(address).or_default();
+        account.nonce = nonce;
     }
 }
 
@@ -27,9 +34,14 @@ impl StorageProvider for HashMapStorageProvider {
         self.chain_id
     }
 
-    fn set_code(&mut self, _address: Address, _code: Vec<u8>) -> Result<(), Self::Error> {
-        // noop
+    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), Self::Error> {
+        let account = self.accounts.entry(address).or_default();
+        account.code = Some(code);
         Ok(())
+    }
+
+    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
+        Ok(self.accounts.get(&address).cloned().unwrap_or_default())
     }
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
