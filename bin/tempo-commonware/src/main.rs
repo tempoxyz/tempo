@@ -40,7 +40,7 @@ pub struct TempoCommonwareArgs {
     pub consensus_config: camino::Utf8PathBuf,
 }
 
-fn main() {
+fn main() -> eyre::Result<()> {
     reth_cli_util::sigsegv_handler::install();
 
     // XXX: ensures that the error source chain is preserved in
@@ -94,7 +94,8 @@ fn main() {
 
     let components =
         |spec: Arc<TempoChainSpec>| (EthEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
-    if let Err(err) = Cli::<TempoChainSpecParser, TempoCommonwareArgs>::parse()
+
+    Cli::<TempoChainSpecParser, TempoCommonwareArgs>::parse()
         .run_with_components::<TempoNode>(components, async move |builder, args| {
             let faucet_args = args.inner.faucet_args.clone();
 
@@ -130,6 +131,7 @@ fn main() {
 
             let _ = node_tx.send((node, args));
 
+            // TODO: emit these inside a span
             tokio::select! {
                 _ = node_exit_future => {
                     tracing::info!("Reth node exited");
@@ -144,10 +146,8 @@ fn main() {
 
             Ok(())
         })
-    {
-        eprintln!("Error: {err:?}");
-        std::process::exit(1);
-    }
+        .wrap_err("execution node failed")?;
 
     consensus_handle.join().unwrap().unwrap();
+    Ok(())
 }
