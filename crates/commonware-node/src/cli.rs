@@ -5,7 +5,6 @@ use commonware_p2p::authenticated::discovery;
 use commonware_runtime::{Handle, Metrics as _};
 use eyre::{WrapErr as _, eyre};
 use tempo_node::TempoFullNode;
-use tokio::task::JoinHandle;
 
 use crate::config::{
     BACKFILL_BY_DIGEST_CHANNE_IDENTL, BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
@@ -37,7 +36,7 @@ pub async fn run_consensus_stack(
     // chainspec: Arc<TempoChainSpec>,
     // execution_engine: ConsensusEngineHandle<TNodeTypes::Payload>,
     // execution_payload_builder: PayloadBuilderHandle<TNodeTypes::Payload>,
-) -> eyre::Result<JoinHandle<()>> {
+) -> eyre::Result<()> {
     let (mut network, mut oracle) =
         instantiate_network(context, config).wrap_err("failed to start network")?;
 

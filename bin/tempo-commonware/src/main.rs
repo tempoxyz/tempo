@@ -58,11 +58,12 @@ fn main() -> eyre::Result<()> {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    let (node_tx, node_rx) = oneshot::channel::<(TempoFullNode, TempoCommonwareArgs)>();
+    let (args_and_node_handle_tx, args_and_node_handle_rx) =
+        oneshot::channel::<(TempoFullNode, TempoCommonwareArgs)>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
     let consensus_handle = thread::spawn(move || {
-        let (node, args) = node_rx.blocking_recv().wrap_err("channel closed before consensus-relevant command line args and a handle to the execution node could be received")?;
+        let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err("channel closed before consensus-relevant command line args and a handle to the execution node could be received")?;
 
         let ret = if node.config.dev.dev || args.inner.no_consensus {
             // TODO: pass in a cancellation token or something to kill this thread also in dev
@@ -129,7 +130,7 @@ fn main() -> eyre::Result<()> {
                 .await
                 .wrap_err("failed launching execution node")?;
 
-            let _ = node_tx.send((node, args));
+            let _ = args_and_node_handle_tx.send((node, args));
 
             // TODO: emit these inside a span
             tokio::select! {
