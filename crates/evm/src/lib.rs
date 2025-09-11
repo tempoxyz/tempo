@@ -39,31 +39,15 @@ use tempo_chainspec::TempoChainSpec;
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
 pub struct TempoEvmConfig {
-    pub evm_config: EthEvmConfig<TempoChainSpec, TempoEvmFactory>,
-    /// Inner [`EthBlockExecutorFactory`].
-    pub executor_factory:
-        EthBlockExecutorFactory<RethReceiptBuilder, Arc<TempoChainSpec>, TempoEvmFactory>,
-    /// Ethereum block assembler.
-    pub block_assembler: EthBlockAssembler<TempoChainSpec>,
+    /// Inner evm config
+    pub inner: EthEvmConfig<TempoChainSpec, TempoEvmFactory>,
 }
 
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>, evm_factory: TempoEvmFactory) -> Self {
-        let evm_config =
-            EthEvmConfig::new_with_evm_factory(chain_spec.clone(), evm_factory.clone());
-        let executor_factory = EthBlockExecutorFactory::new(
-            RethReceiptBuilder::default(),
-            chain_spec.clone(),
-            evm_factory,
-        );
-
-        let block_assembler = EthBlockAssembler::new(chain_spec.clone());
-        Self {
-            evm_config,
-            executor_factory,
-            block_assembler,
-        }
+        let inner = EthEvmConfig::new_with_evm_factory(chain_spec, evm_factory);
+        Self { inner }
     }
 
     /// Create a new [`TempoEvmConfig`] with the given chain spec and default EVM factory.
@@ -73,18 +57,18 @@ impl TempoEvmConfig {
 
     /// Returns the chain spec
     pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
-        self.executor_factory.spec()
+        self.inner.chain_spec()
     }
 
     /// Returns the inner EVM config
-    pub const fn evm_config(&self) -> &EthEvmConfig<TempoChainSpec, TempoEvmFactory> {
-        &self.evm_config
+    pub const fn inner(&self) -> &EthEvmConfig<TempoChainSpec, TempoEvmFactory> {
+        &self.inner
     }
 
     /// Sets the extra data for the block assembler.
     pub fn with_extra_data(mut self, extra_data: Bytes) -> Self {
-        self.evm_config = self.evm_config.with_extra_data(extra_data.clone());
-        self.block_assembler.extra_data = extra_data;
+        self.inner = self.inner.with_extra_data(extra_data.clone());
+        self.inner.block_assembler.extra_data = extra_data;
         self
     }
 }
@@ -98,15 +82,15 @@ impl ConfigureEvm for TempoEvmConfig {
     type BlockAssembler = EthBlockAssembler<TempoChainSpec>;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
-        &self.executor_factory
+        self.inner.block_executor_factory()
     }
 
     fn block_assembler(&self) -> &Self::BlockAssembler {
-        &self.block_assembler
+        self.inner.block_assembler()
     }
 
     fn evm_env(&self, header: &Header) -> EvmEnv {
-        self.evm_config.evm_env(header)
+        self.inner.evm_env(header)
     }
 
     fn next_evm_env(
@@ -114,11 +98,11 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &Header,
         attributes: &NextBlockEnvAttributes,
     ) -> Result<EvmEnv, Self::Error> {
-        self.evm_config.next_evm_env(parent, attributes)
+        self.inner.next_evm_env(parent, attributes)
     }
 
     fn context_for_block<'a>(&self, block: &'a SealedBlock<Block>) -> EthBlockExecutionCtx<'a> {
-        self.evm_config.context_for_block(block)
+        self.inner.context_for_block(block)
     }
 
     fn context_for_next_block(
@@ -126,20 +110,20 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
     ) -> EthBlockExecutionCtx<'_> {
-        self.evm_config.context_for_next_block(parent, attributes)
+        self.inner.context_for_next_block(parent, attributes)
     }
 }
 
 impl ConfigureEngineEvm<ExecutionData> for TempoEvmConfig {
     fn evm_env_for_payload(&self, payload: &ExecutionData) -> EvmEnvFor<Self> {
-        self.evm_config.evm_env_for_payload(payload)
+        self.inner.evm_env_for_payload(payload)
     }
 
     fn context_for_payload<'a>(&self, payload: &'a ExecutionData) -> ExecutionCtxFor<'a, Self> {
-        self.evm_config.context_for_payload(payload)
+        self.inner.context_for_payload(payload)
     }
 
     fn tx_iterator_for_payload(&self, payload: &ExecutionData) -> impl ExecutableTxIterator<Self> {
-        self.evm_config.tx_iterator_for_payload(payload)
+        self.inner.tx_iterator_for_payload(payload)
     }
 }
