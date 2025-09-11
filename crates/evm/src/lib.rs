@@ -15,7 +15,7 @@ use reth_evm::{
     self, ConfigureEngineEvm, ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator,
     ExecutionCtxFor, NextBlockEnvAttributes, eth::EthBlockExecutionCtx,
 };
-use reth_primitives_traits::{AlloyBlockHeader, Header, SealedBlock, SealedHeader};
+use reth_primitives_traits::{Header, SealedBlock, SealedHeader};
 
 use reth_evm_ethereum::{EthBlockAssembler, EthEvmConfig, RethReceiptBuilder};
 use tempo_chainspec::TempoChainSpec;

@@ -11979,12 +11979,9 @@ dependencies = [
 name = "tempo-evm"
 version = "0.1.0"
 dependencies = [
- "alloy-eips",
  "alloy-evm",
  "alloy-primitives",
  "alloy-rpc-types-engine",
- "reth-chainspec",
- "reth-ethereum-forks",
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-evm-ethereum",
