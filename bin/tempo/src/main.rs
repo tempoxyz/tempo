@@ -12,9 +12,6 @@
 //!
 //! Configuration can be provided via command-line arguments or configuration files.
 
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
-
 use clap::Parser;
 use reth_ethereum::{chainspec::EthChainSpec, cli::Cli};
 use reth_malachite::{
