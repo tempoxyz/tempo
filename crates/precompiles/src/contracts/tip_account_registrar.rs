@@ -219,7 +219,6 @@ mod tests {
         let account_info_after = storage
             .get_account_info(expected_address)
             .expect("Failed to get account info");
-        let code = account_info_after.code.unwrap_or_default();
-        assert!(code.is_empty());
+        assert!(account_info_after.is_empty_code_hash());
     }
 }
