@@ -12531,6 +12531,8 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "governor",
+ "indexmap 2.11.1",
+ "itertools 0.14.0",
  "rand 0.8.5",
  "reth",
  "reth-ethereum-engine-primitives",
