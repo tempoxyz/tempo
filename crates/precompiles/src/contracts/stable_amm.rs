@@ -11,7 +11,7 @@ use alloy::{
 pub mod slots {
     use alloy::primitives::{U256, uint};
 
-    pub const POOLS: U256 = uint!(0_U256);
+    pub const POOLS: U256 = U256::ZERO;
     pub const POOL_EXISTS: U256 = uint!(2_U256);
 }
 
@@ -133,7 +133,7 @@ impl<'a, S: StorageProvider> StableAMM<'a, S> {
 
         // Mark pool as existing
         self.storage
-            .sstore(self.contract_address, exists_slot, U256::from(1))
+            .sstore(self.contract_address, exists_slot, U256::ONE)
             .expect("TODO: handle error");
 
         // TODO: emit event
