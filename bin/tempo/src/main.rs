@@ -14,7 +14,6 @@
 
 use clap::Parser;
 use reth_ethereum::{chainspec::EthChainSpec, cli::Cli};
-use reth_evm_ethereum::EthEvmConfig;
 use reth_malachite::{
     app::{Config, Genesis, State, ValidatorInfo},
     cli::MalachiteArgs,
@@ -30,7 +29,7 @@ use reth_provider::DatabaseProviderFactory;
 use std::{fs, future, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_consensus::TempoConsensus;
-use tempo_evm::TempoEvmFactory;
+use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 use tempo_node::{args::TempoArgs, node::TempoNode};
 use tracing::info;
@@ -45,7 +44,7 @@ fn main() {
 
     let components = |spec: Arc<TempoChainSpec>| {
         (
-            EthEvmConfig::new_with_evm_factory(spec.clone(), TempoEvmFactory::default()),
+            TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()),
             TempoConsensus::new(spec),
         )
     };
