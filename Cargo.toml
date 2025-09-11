@@ -99,6 +99,7 @@ tempo-commonware-node-cryptography = { path = "crates/commonware-node-cryptograp
 tempo-consensus = { path = "crates/consensus" }
 tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }
+tempo-eyre = { path = "crates/eyre" }
 tempo-revm = { path = "crates/revm" }
 tempo-payload-builder = { path = "crates/payload" }
 tempo-precompiles = { path = "crates/precompiles" }

@@ -43,6 +43,16 @@ pub struct TempoCommonwareArgs {
 fn main() {
     reth_cli_util::sigsegv_handler::install();
 
+    // XXX: ensures that the error source chain is preserved in
+    // tracing-instrument generated error events. That is, this hook ensures
+    // that functions instrumented like `#[instrument(err)]` will emit an event
+    // that contains the entire error source chain.
+    //
+    // TODO: Can remove this if https://github.com/tokio-rs/tracing/issues/2648
+    // ever gets addressed.
+    tempo_eyre::install()
+        .expect("must install the eyre error hook before constructing any eyre reports");
+
     // Enable backtraces unless a RUST_BACKTRACE value has already been explicitly provided.
     if std::env::var_os("RUST_BACKTRACE").is_none() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };

@@ -12606,6 +12606,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-commonware-node",
  "tempo-commonware-node-config",
+ "tempo-eyre",
  "tempo-faucet",
  "tempo-node",
  "tokio",
