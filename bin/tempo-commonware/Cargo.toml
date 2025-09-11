@@ -18,7 +18,6 @@ tempo-faucet.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 commonware-runtime.workspace = true
 futures = { workspace = true, features = ["executor"] }
-reth-malachite.workspace = true
 reth-cli-util.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-node-builder.workspace = true

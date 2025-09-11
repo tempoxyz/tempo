@@ -12500,7 +12500,6 @@ dependencies = [
  "futures",
  "reth-cli-util",
  "reth-ethereum",
- "reth-malachite",
  "reth-node-builder",
  "tempo-chainspec",
  "tempo-commonware-node",
