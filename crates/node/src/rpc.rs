@@ -11,7 +11,6 @@ use reth_node_builder::{
     NodeAdapter,
     rpc::{EthApiBuilder, EthApiCtx},
 };
-use reth_node_ethereum::EthereumEthApiBuilder;
 use reth_rpc::eth::{EthApi, core::EthRpcConverterFor};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcNodeCore, RpcNodeCoreExt,
