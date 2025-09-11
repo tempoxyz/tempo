@@ -23,7 +23,7 @@ use reth_node_builder::NodeHandle;
 use reth_node_ethereum::EthEvmConfig;
 use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::cli::run_consensus_stack;
+use tempo_commonware_node::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 use tempo_node::{TempoFullNode, args::TempoArgs, node::TempoNode};
