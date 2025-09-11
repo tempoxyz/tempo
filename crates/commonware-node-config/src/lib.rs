@@ -1,3 +1,5 @@
+//! Definitions to read and write a tempo consensus configuration.
+
 use std::{net::SocketAddr, path::Path};
 
 use commonware_codec::Decode;
@@ -8,7 +10,7 @@ use tempo_commonware_node_cryptography::{GroupShare, PrivateKey, PublicKey, Publ
 #[cfg(test)]
 mod tests;
 
-/// Configuration for the [engine::Engine].
+/// Configuration for the commonware consensus engine.
 ///
 // TODO: There are plenty of other settings that could be added here. alto's `engine::Config`
 // lists a number of hardcoded values, while also hardcoding a lot of other settings.
