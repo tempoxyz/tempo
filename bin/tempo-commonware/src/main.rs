@@ -24,8 +24,9 @@ use reth_node_ethereum::EthEvmConfig;
 use std::{future, path::PathBuf, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::cli::launch_consensus_stack;
+use tempo_consensus::TempoConsensus;
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
-use tempo_node::{TempoConsensus, TempoFullNode, args::TempoArgs, node::TempoNode};
+use tempo_node::{TempoFullNode, args::TempoArgs, node::TempoNode};
 use tokio::sync::oneshot;
 use tracing::info;
 
