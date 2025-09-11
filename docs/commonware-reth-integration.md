@@ -41,12 +41,12 @@ via one of three methods:
 
 1. on `Automaton::verify`,
 2. on `Reporter::finalize`,
-3. on reth exectution layer p2p (which we will not go into here).
+3. on reth execution layer p2p (which we will not go into here).
 
 Both `Automaton::verify` and `Reporter::finalize` rely on a `syncer` actor
 which is implemented through the [`commonware marshal`]. `Automaton::verify`
 tries reading a proposed block from the syncer through the `subscribe` method.
-`Reporter::finalize` on the other hand is performed by the syncer and fowards
+`Reporter::finalize` on the other hand is performed by the syncer and forwards
 a finalized block to the execution driver so that it can advance the state
 machine.
 

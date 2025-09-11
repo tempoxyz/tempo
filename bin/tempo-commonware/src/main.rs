@@ -95,7 +95,7 @@ fn main() -> eyre::Result<()> {
                 tokio::select!(
                     ret = run_consensus_stack(&ctx, &consensus_config, node) => {
                         ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
-                        .wrap_err("concensus stack failed")
+                        .wrap_err("consensus stack failed")
                     }
                     () = shutdown_token_clone.cancelled() => {
                         Ok(())
