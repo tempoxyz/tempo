@@ -20,12 +20,10 @@ alloy-consensus = { workspace = true, features = ["secp256k1"] }
 clap = { workspace = true, features = ["derive", "env"] }
 eyre.workspace = true
 hex.workspace = true
-rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 toml.workspace = true
-reth-chainspec.workspace = true
 reth.workspace = true
 reth-evm.workspace = true
 

@@ -9,23 +9,16 @@ workspace = true
 [dependencies]
 tempo-commonware-node-config.workspace = true
 tempo-commonware-node-cryptography.workspace = true
-tempo-consensus.workspace = true
-tempo-chainspec.workspace = true
-tempo-faucet.workspace = true
 tempo-node.workspace = true
 
 sequential-futures-queue.workspace = true
 
 alloy-consensus.workspace = true
-alloy-eips.workspace = true
-alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-rlp.workspace = true
 
 bytes.workspace = true
-camino.workspace = true
-clap.workspace = true
 
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true
@@ -41,32 +34,14 @@ futures-channel.workspace = true
 futures-util.workspace = true
 governor.workspace = true
 
-pin-project-lite.workspace = true
-
 rand.workspace = true
 reth.workspace = true
-reth-cli.workspace = true
-reth-chainspec.workspace = true
-reth-cli-commands.workspace = true
-reth-cli-runner.workspace = true
-reth-consensus.workspace = true
-reth-db.workspace = true
-reth-ethereum-cli.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-ethereum-primitives.workspace = true
-reth-evm.workspace = true
-reth-execution-types.workspace = true
 reth-node-builder.workspace = true
 reth-node-ethereum.workspace = true
 reth-node-core.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
-reth-tasks.workspace = true
-reth-trie-db.workspace = true
-
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
-tracing-subscriber.workspace = true

@@ -10,6 +10,9 @@
 //! avoided. This is also the reason why pushing is only allowed at the back of
 //! the queue.
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+
 use std::{
     collections::VecDeque,
     task::{Poll, ready},

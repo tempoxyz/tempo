@@ -6,6 +6,9 @@
 //! [`alloy_primitives::B256`] and used as the atom over which consensus is
 //! established.
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+
 use std::ops::Deref;
 
 use alloy_primitives::B256;

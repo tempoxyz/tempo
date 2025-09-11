@@ -1,5 +1,8 @@
 //! Definitions to read and write a tempo consensus configuration.
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+
 use std::{net::SocketAddr, path::Path};
 
 use commonware_codec::Decode;
