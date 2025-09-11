@@ -113,7 +113,7 @@ where
 {
     fn default() -> Self {
         Self::new(RpcAddOns::new(
-            TempoEthApiBuilder,
+            TempoEthApiBuilder::default(),
             TempoEngineValidatorBuilder::default(),
             BasicEngineApiBuilder::default(),
             BasicEngineValidatorBuilder::default(),
