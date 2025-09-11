@@ -21,7 +21,7 @@ use eyre::Context;
 use reth_ethereum::cli::Cli;
 use reth_node_builder::NodeHandle;
 use reth_node_ethereum::EthEvmConfig;
-use std::{future, path::PathBuf, sync::Arc, thread};
+use std::{future, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::cli::launch_consensus_stack;
 use tempo_consensus::TempoConsensus;
@@ -38,7 +38,7 @@ pub struct TempoCommonwareArgs {
     pub inner: TempoArgs,
     /// Commonware configuration path.
     #[clap(long, value_name = "FILE")]
-    pub consensus_config: PathBuf,
+    pub consensus_config: camino::Utf8PathBuf,
 }
 
 fn main() {
@@ -78,7 +78,7 @@ fn main() {
                     .wrap_err_with(|| {
                         format!(
                             "failed parsing consensus config from provided argument `{}`",
-                            args.consensus_config.to_string_lossy()
+                            args.consensus_config,
                         )
                     })?;
             let runtime_config = commonware_runtime::tokio::Config::default()

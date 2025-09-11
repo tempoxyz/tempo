@@ -12595,9 +12595,11 @@ dependencies = [
 name = "tempo-commonware"
 version = "0.1.0"
 dependencies = [
+ "camino",
  "clap",
  "commonware-runtime",
  "eyre",
+ "futures",
  "reth-cli-util",
  "reth-ethereum",
  "reth-malachite",
