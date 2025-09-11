@@ -47,9 +47,7 @@ impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
             ));
         }
 
-        let code = account_info.code.unwrap_or_default();
-
-        if !code.is_empty() {
+        if !account_info.is_empty_code_hash() {
             return Err(TipAccountRegistrarError::CodeNotEmpty(
                 ITipAccountRegistrar::CodeNotEmpty {},
             ));
