@@ -484,56 +484,57 @@ where
             parent,
             mut response,
         } = request;
-        let parent_request = if parent.1 == genesis_block.digest() {
-            Either::Left(futures_util::future::always_ready({
-                move || Ok((*genesis_block).clone())
-            }))
-        } else {
-            Either::Right(syncer_mailbox.subscribe(Some(parent.0), parent.1).await)
-        };
-        let parent = parent_request
-                    .await
-                    .map_err(|_| eyre!(
-                        "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
-                    ))?;
-
-        // XXX: ensures the timestamp is strictly monotonically increasing.
-        // This is a requirement to pass eth/reth checks.
-        //
-        // TODO: revisit this to use `SystemTimeExt::epoch_millis` again
-        // once it is/if it becomes possible to use milliseconds in
-        // reth. This is to ensure a consistent view of timestamps in
-        // reth vs the consensus engine.
-        let mut timestamp = timestamp.epoch().as_secs();
-        if timestamp <= parent.timestamp() {
-            timestamp = parent.timestamp().saturating_add(1);
-        }
-        let payload_attrs = alloy_rpc_types_engine::PayloadAttributes {
-            timestamp,
-            // XXX(tempo-malachite): for PoS compatibility
-            prev_randao: B256::ZERO,
-            suggested_fee_recipient: fee_recipient,
-            // XXX(tempo-malachite): empty withdrawals post-shanghai
-            withdrawals: Some(vec![]),
-            // TODO: tempo-malachite does this (why?); but maybe we can
-            // use the consensus block' digest for this? alternatively somehow
-            // tie this to the threshold simplex view / round / height?;
-            parent_beacon_block_root: Some(B256::ZERO),
-        };
-        let parent_block_hash = parent.block_hash();
-
-        // XXX: sets head = safe = finalized = parent because our finalization
-        // steps does the same.
-        //
-        // TODO: revisit this if we ever relax HEAD pointing a
-        // not-yet-finalized head.
-        let forkchoice_state = ForkchoiceState {
-            head_block_hash: parent_block_hash,
-            safe_block_hash: parent_block_hash,
-            finalized_block_hash: parent_block_hash,
-        };
 
         let proposal_fut = async move {
+            let parent_request = if parent.1 == genesis_block.digest() {
+                Either::Left(futures_util::future::always_ready({
+                    move || Ok((*genesis_block).clone())
+                }))
+            } else {
+                Either::Right(syncer_mailbox.subscribe(Some(parent.0), parent.1).await)
+            };
+            let parent = parent_request
+                        .await
+                        .map_err(|_| eyre!(
+                            "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
+                        ))?;
+
+            // XXX: ensures the timestamp is strictly monotonically increasing.
+            // This is a requirement to pass eth/reth checks.
+            //
+            // TODO: revisit this to use `SystemTimeExt::epoch_millis` again
+            // once it is/if it becomes possible to use milliseconds in
+            // reth. This is to ensure a consistent view of timestamps in
+            // reth vs the consensus engine.
+            let mut timestamp = timestamp.epoch().as_secs();
+            if timestamp <= parent.timestamp() {
+                timestamp = parent.timestamp().saturating_add(1);
+            }
+            let payload_attrs = alloy_rpc_types_engine::PayloadAttributes {
+                timestamp,
+                // XXX(tempo-malachite): for PoS compatibility
+                prev_randao: B256::ZERO,
+                suggested_fee_recipient: fee_recipient,
+                // XXX(tempo-malachite): empty withdrawals post-shanghai
+                withdrawals: Some(vec![]),
+                // TODO: tempo-malachite does this (why?); but maybe we can
+                // use the consensus block' digest for this? alternatively somehow
+                // tie this to the threshold simplex view / round / height?;
+                parent_beacon_block_root: Some(B256::ZERO),
+            };
+            let parent_block_hash = parent.block_hash();
+
+            // XXX: sets head = safe = finalized = parent because our finalization
+            // steps does the same.
+            //
+            // TODO: revisit this if we ever relax HEAD pointing a
+            // not-yet-finalized head.
+            let forkchoice_state = ForkchoiceState {
+                head_block_hash: parent_block_hash,
+                safe_block_hash: parent_block_hash,
+                finalized_block_hash: parent_block_hash,
+            };
+
             let forkchoice_updated = engine
                 .fork_choice_updated(
                     forkchoice_state,
