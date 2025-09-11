@@ -1,5 +1,9 @@
 use crate::{
-    contracts::{storage::StorageProvider, tip_fee_manager::TipFeeManager, types::IFeeManager},
+    contracts::{
+        storage::StorageProvider,
+        tip_fee_manager::TipFeeManager,
+        types::{IFeeManager, IStableAMM},
+    },
     precompiles::{Precompile, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -18,15 +22,15 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             IFeeManager::userTokensCall::SELECTOR => view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call)),
             IFeeManager::validatorTokensCall::SELECTOR => view::<IFeeManager::validatorTokensCall>(calldata, |call| self.validator_tokens(call)),
             IFeeManager::getFeeTokenBalanceCall::SELECTOR => view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| self.get_fee_token_balance(call)),
-            IFeeManager::getPoolIdCall::SELECTOR => view::<IFeeManager::getPoolIdCall>(calldata, |call| self.get_pool_id(call)),
-            IFeeManager::getPoolCall::SELECTOR => view::<IFeeManager::getPoolCall>(calldata, |call| self.get_pool(call)),
-            IFeeManager::poolsCall::SELECTOR => view::<IFeeManager::poolsCall>(calldata, |call| self.pools(call)),
-            IFeeManager::poolExistsCall::SELECTOR => view::<IFeeManager::poolExistsCall>(calldata, |call| self.pool_exists(call)),
+            IStableAMM::getPoolIdCall::SELECTOR => view::<IStableAMM::getPoolIdCall>(calldata, |call| self.get_pool_id(call)),
+            IStableAMM::getPoolCall::SELECTOR => view::<IStableAMM::getPoolCall>(calldata, |call| self.get_pool(call)),
+            IStableAMM::poolsCall::SELECTOR => view::<IStableAMM::poolsCall>(calldata, |call| self.pools(call)),
+            IStableAMM::poolExistsCall::SELECTOR => view::<IStableAMM::poolExistsCall>(calldata, |call| self.pool_exists(call)),
 
             // State changing functions
             IFeeManager::setValidatorTokenCall::SELECTOR => mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_validator_token(s, call)),
             IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),
-            IFeeManager::createPoolCall::SELECTOR => mutate_void::<IFeeManager::createPoolCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |_s, call| self.create_pool(call)),
+            IStableAMM::createPoolCall::SELECTOR => mutate_void::<IStableAMM::createPoolCall, IStableAMM::IStableAMMErrors>(calldata, msg_sender, |_s, call| self.create_pool(call)),
             IFeeManager::collectFeeCall::SELECTOR => {
                 mutate_void::<IFeeManager::collectFeeCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee(s, call))
             }
@@ -44,10 +48,11 @@ mod tests {
             HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
             tip_fee_manager::PoolKey,
             tip20::ISSUER_ROLE,
-            types::{IFeeManager, ITIP20},
+            types::{IFeeManager, IStableAMM, ITIP20},
         },
         fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
+        stable_amm_err,
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -122,7 +127,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &validator);
-        expect_precompile_error(&result, fee_manager_err!(InvalidToken));
+        expect_precompile_error(&result, stable_amm_err!(InvalidToken));
 
         Ok(())
     }
@@ -159,7 +164,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &user);
-        expect_precompile_error(&result, fee_manager_err!(InvalidToken));
+        expect_precompile_error(&result, stable_amm_err!(InvalidToken));
     }
 
     #[test]
@@ -169,7 +174,7 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
 
-        let calldata = IFeeManager::createPoolCall {
+        let calldata = IStableAMM::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
         }
@@ -183,7 +188,7 @@ mod tests {
         let pool_key = PoolKey::new(token_a, token_b);
         let pool_id = pool_key.get_id();
 
-        let calldata = IFeeManager::poolExistsCall { poolId: pool_id }.abi_encode();
+        let calldata = IStableAMM::poolExistsCall { poolId: pool_id }.abi_encode();
         let result = fee_manager
             .call(&Bytes::from(calldata), &Address::random())
             .unwrap();
@@ -198,13 +203,13 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
         let token = Address::random();
 
-        let calldata = IFeeManager::createPoolCall {
+        let calldata = IStableAMM::createPoolCall {
             tokenA: token,
             tokenB: token,
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
-        expect_precompile_error(&result, fee_manager_err!(IdenticalAddresses));
+        expect_precompile_error(&result, stable_amm_err!(IdenticalAddresses));
     }
 
     #[test]
@@ -213,13 +218,13 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
         let token = Address::random();
 
-        let calldata = IFeeManager::createPoolCall {
+        let calldata = IStableAMM::createPoolCall {
             tokenA: Address::ZERO,
             tokenB: token,
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
-        expect_precompile_error(&result, fee_manager_err!(InvalidToken));
+        expect_precompile_error(&result, stable_amm_err!(InvalidToken));
     }
 
     #[test]
@@ -229,7 +234,7 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
 
-        let calldata = IFeeManager::createPoolCall {
+        let calldata = IStableAMM::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
         }
@@ -243,7 +248,7 @@ mod tests {
 
         // Try to create same pool again
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
-        expect_precompile_error(&result, fee_manager_err!(PoolExists));
+        expect_precompile_error(&result, stable_amm_err!(PoolExists));
     }
 
     #[test]
@@ -253,11 +258,11 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
 
-        let key = IFeeManager::PoolKey {
+        let key = IStableAMM::PoolKey {
             token0: token_a,
             token1: token_b,
         };
-        let calldata = IFeeManager::getPoolIdCall { key }.abi_encode();
+        let calldata = IStableAMM::getPoolIdCall { key }.abi_encode();
         let result = fee_manager
             .call(&Bytes::from(calldata), &Address::random())
             .unwrap();
@@ -314,5 +319,186 @@ mod tests {
         assert_eq!(balance_result._1, U256::MAX - amount);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_stable_amm_pool_operations() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let token_a = Address::random();
+        let token_b = Address::random();
+
+        // Create pool using IStableAMM interface
+        let create_call = IStableAMM::createPoolCall {
+            tokenA: token_a,
+            tokenB: token_b,
+        };
+        let calldata = create_call.abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), &Address::random())?;
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        // Get pool using IStableAMM interface
+        let pool_key = IStableAMM::PoolKey {
+            token0: if token_a < token_b { token_a } else { token_b },
+            token1: if token_a < token_b { token_b } else { token_a },
+        };
+        let get_pool_call = IStableAMM::getPoolCall { key: pool_key };
+        let calldata = get_pool_call.abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), &Address::random())?;
+        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+
+        // Decode and verify pool
+        let pool = IStableAMM::Pool::abi_decode(&result.bytes)?;
+        assert_eq!(pool.reserve0, 0);
+        assert_eq!(pool.reserve1, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fee_manager_with_nonexistent_pool() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let validator = Address::random();
+        let token_a = Address::random();
+        let token_b = Address::random();
+
+        // Setup tokens with balance
+        setup_token_with_balance(&mut storage, token_a, user, U256::MAX);
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+
+        // Set different tokens for user and validator (requires pool)
+        fee_manager.call(
+            &Bytes::from(IFeeManager::setValidatorTokenCall { token: token_b }.abi_encode()),
+            &validator,
+        )?;
+        fee_manager.call(
+            &Bytes::from(IFeeManager::setUserTokenCall { token: token_a }.abi_encode()),
+            &user,
+        )?;
+
+        // Try to collect fee without pool existing - should fail
+        let collect_call = IFeeManager::collectFeeCall {
+            user,
+            coinbase: validator,
+            amount: U256::from(100),
+        };
+        let result = fee_manager.call(&Bytes::from(collect_call.abi_encode()), &Address::ZERO);
+
+        // Should fail with PoolDoesNotExist error
+        expect_precompile_error(&result, fee_manager_err!(PoolDoesNotExist));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pool_id_calculation() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let token_a = Address::random();
+        let token_b = Address::random();
+
+        // Test that pool ID is same regardless of token order
+        let key1 = IStableAMM::PoolKey {
+            token0: token_a,
+            token1: token_b,
+        };
+        let key2 = IStableAMM::PoolKey {
+            token0: token_b,
+            token1: token_a,
+        };
+
+        let calldata1 = IStableAMM::getPoolIdCall { key: key1 }.abi_encode();
+        let result1 = fee_manager
+            .call(&Bytes::from(calldata1), &Address::random())
+            .unwrap();
+        let id1 = B256::abi_decode(&result1.bytes).unwrap();
+
+        let calldata2 = IStableAMM::getPoolIdCall { key: key2 }.abi_encode();
+        let result2 = fee_manager
+            .call(&Bytes::from(calldata2), &Address::random())
+            .unwrap();
+        let id2 = B256::abi_decode(&result2.bytes).unwrap();
+
+        // Pool IDs should be the same since tokens are ordered internally
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_pool_exists_check() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let token_a = Address::random();
+        let token_b = Address::random();
+
+        // Get pool ID
+        let pool_key = PoolKey::new(token_a, token_b);
+        let pool_id = pool_key.get_id();
+
+        // Check pool doesn't exist initially
+        let exists_call = IStableAMM::poolExistsCall { poolId: pool_id };
+        let calldata = exists_call.abi_encode();
+        let result = fee_manager
+            .call(&Bytes::from(calldata.clone()), &Address::random())
+            .unwrap();
+        let exists = bool::abi_decode(&result.bytes).unwrap();
+        assert!(!exists);
+
+        // Create pool
+        let create_call = IStableAMM::createPoolCall {
+            tokenA: token_a,
+            tokenB: token_b,
+        };
+        fee_manager
+            .call(&Bytes::from(create_call.abi_encode()), &Address::random())
+            .unwrap();
+
+        // Now pool should exist
+        let result = fee_manager
+            .call(&Bytes::from(calldata), &Address::random())
+            .unwrap();
+        let exists = bool::abi_decode(&result.bytes).unwrap();
+        assert!(exists);
+    }
+
+    #[test]
+    fn test_fee_manager_invalid_token_error() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let user = Address::random();
+        let validator = Address::random();
+
+        // Test that IFeeManager properly validates tokens (zero address)
+        let set_validator_call = IFeeManager::setValidatorTokenCall {
+            token: Address::ZERO,
+        };
+        let result = fee_manager.call(&Bytes::from(set_validator_call.abi_encode()), &validator);
+        expect_precompile_error(&result, fee_manager_err!(InvalidToken));
+
+        let set_user_call = IFeeManager::setUserTokenCall {
+            token: Address::ZERO,
+        };
+        let result = fee_manager.call(&Bytes::from(set_user_call.abi_encode()), &user);
+        expect_precompile_error(&result, fee_manager_err!(InvalidToken));
+    }
+
+    #[test]
+    fn test_collect_fee_only_system_contract() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let user = Address::random();
+        let validator = Address::random();
+        let non_system = Address::random();
+
+        let collect_call = IFeeManager::collectFeeCall {
+            user,
+            coinbase: validator,
+            amount: U256::from(100),
+        };
+
+        // Non-system contract should fail
+        let result = fee_manager.call(&Bytes::from(collect_call.abi_encode()), &non_system);
+        expect_precompile_error(&result, fee_manager_err!(OnlySystemContract));
     }
 }

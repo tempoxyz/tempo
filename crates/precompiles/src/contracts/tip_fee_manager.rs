@@ -1,19 +1,18 @@
 use crate::contracts::{
     TIP20Token, address_to_token_id_unchecked,
+    stable_amm::StableAMM,
     storage::{StorageProvider, slots::mapping_slot},
-    types::{IFeeManager, ITIP20},
+    types::{IFeeManager, IStableAMM, ITIP20},
 };
-use alloy::{
-    primitives::{Address, B256, U256, keccak256},
-    sol_types::SolValue,
-};
+
+// Re-export PoolKey for backward compatibility with tests
+pub use crate::contracts::stable_amm::PoolKey;
+use alloy::primitives::{Address, U256};
 use reth_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 pub mod slots {
     use alloy::primitives::{U256, uint};
 
-    pub const POOLS: U256 = uint!(0_U256);
-    pub const POOL_EXISTS: U256 = uint!(2_U256);
     pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
     pub const USER_TOKENS: U256 = uint!(5_U256);
     pub const COLLECTED_FEES: U256 = uint!(6_U256);
@@ -57,58 +56,6 @@ impl FeeToken {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Pool {
-    pub reserve0: u128,
-    pub reserve1: u128,
-}
-
-impl From<Pool> for IFeeManager::Pool {
-    fn from(pool: Pool) -> Self {
-        Self {
-            reserve0: pool.reserve0,
-            reserve1: pool.reserve1,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PoolKey {
-    pub token0: Address,
-    pub token1: Address,
-}
-
-impl PoolKey {
-    pub fn new(token_a: Address, token_b: Address) -> Self {
-        let (token0, token1) = if token_a < token_b {
-            (token_a, token_b)
-        } else {
-            (token_b, token_a)
-        };
-
-        Self { token0, token1 }
-    }
-
-    pub fn get_id(&self) -> B256 {
-        keccak256((self.token0, self.token1).abi_encode())
-    }
-}
-
-impl From<PoolKey> for IFeeManager::PoolKey {
-    fn from(key: PoolKey) -> Self {
-        Self {
-            token0: key.token0,
-            token1: key.token1,
-        }
-    }
-}
-
-impl From<IFeeManager::PoolKey> for PoolKey {
-    fn from(key: IFeeManager::PoolKey) -> Self {
-        Self::new(key.token0, key.token1)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationType {
     Deposit,
@@ -136,7 +83,7 @@ pub struct QueuedOperation {
     pub token: Address,
 }
 
-impl From<QueuedOperation> for IFeeManager::QueuedOperation {
+impl From<QueuedOperation> for IStableAMM::QueuedOperation {
     fn from(op: QueuedOperation) -> Self {
         Self {
             opType: op.op_type as u8,
@@ -230,47 +177,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn create_pool(
         &mut self,
-        call: IFeeManager::createPoolCall,
-    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        if call.tokenA == call.tokenB {
-            return Err(IFeeManager::IFeeManagerErrors::IdenticalAddresses(
-                IFeeManager::IdenticalAddresses {},
-            ));
-        }
+        call: IStableAMM::createPoolCall,
+    ) -> Result<(), IStableAMM::IStableAMMErrors> {
+        // Delegate to StableAMM
+        let mut amm = StableAMM::new(self.contract_address, self.storage);
+        amm.create_pool(call.clone())?;
 
-        if call.tokenA == Address::ZERO || call.tokenB == Address::ZERO {
-            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
-                IFeeManager::InvalidToken {},
-            ));
-        }
-
+        // Initialize fee tracking for the pool tokens
         let pool_key = PoolKey::new(call.tokenA, call.tokenB);
-        let pool_id = pool_key.get_id();
-
-        // Check if pool already exists
-        let exists_slot = self.get_pool_exists_slot(&pool_id);
-        if self
-            .storage
-            .sload(self.contract_address, exists_slot)
-            .expect("TODO: handle error")
-            != U256::ZERO
-        {
-            return Err(IFeeManager::IFeeManagerErrors::PoolExists(
-                IFeeManager::PoolExists {},
-            ));
-        }
-
-        let pool_slot = self.get_pool_slot(&pool_id);
-        // Store as packed uint128 values. reserve1 in high 128 bits, reserve0 in low 128 bits
-        self.storage
-            .sstore(self.contract_address, pool_slot, U256::ZERO)
-            .expect("TODO: handle error");
-
-        // Mark pool as existing
-        self.storage
-            .sstore(self.contract_address, exists_slot, U256::ONE)
-            .expect("TODO: handle error");
-
         let token0_fees_slot = self.get_collected_fees_slot(&pool_key.token0);
         let token1_fees_slot = self.get_collected_fees_slot(&pool_key.token1);
         let fee_info_value = U256::from(1u128) << 128;
@@ -284,26 +198,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
-    pub fn get_pool_id(&mut self, call: IFeeManager::getPoolIdCall) -> B256 {
-        let pool_key = PoolKey::from(call.key);
-        pool_key.get_id()
+    pub fn get_pool_id(&mut self, call: IStableAMM::getPoolIdCall) -> alloy::primitives::B256 {
+        let mut amm = StableAMM::new(self.contract_address, self.storage);
+        amm.get_pool_id(call)
     }
 
-    pub fn get_pool(&mut self, call: IFeeManager::getPoolCall) -> IFeeManager::Pool {
-        let pool_key = PoolKey::from(call.key);
-        let pool_id = pool_key.get_id();
-        let pool_slot = self.get_pool_slot(&pool_id);
-
-        let pool_value = self
-            .storage
-            .sload(self.contract_address, pool_slot)
-            .expect("TODO: handle error");
-        // TODO: double check this
-        // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
-        let reserve0 = (pool_value & U256::from(u128::MAX)).to::<u128>();
-        let reserve1 = pool_value.wrapping_shr(128).to::<u128>();
-
-        IFeeManager::Pool { reserve0, reserve1 }
+    pub fn get_pool(&mut self, call: IStableAMM::getPoolCall) -> IStableAMM::Pool {
+        let mut amm = StableAMM::new(self.contract_address, self.storage);
+        amm.get_pool(call)
     }
 
     // TODO: swap function
@@ -323,29 +225,19 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let user_token = self.get_user_token(&call.user, &validator_token);
 
         if user_token != validator_token {
-            let pool_key = PoolKey::new(user_token, validator_token);
-            let pool_id = pool_key.get_id();
+            let mut amm = StableAMM::new(self.contract_address, self.storage);
 
-            let exists_slot = self.get_pool_exists_slot(&pool_id);
-            let pool_exists = self
-                .storage
-                .sload(self.contract_address, exists_slot)
-                .expect("TODO: handle error")
-                != U256::ZERO;
-
-            if !pool_exists {
+            // Check if pool exists
+            if !amm.pool_exists_for_tokens(user_token, validator_token) {
                 return Err(IFeeManager::IFeeManagerErrors::PoolDoesNotExist(
                     IFeeManager::PoolDoesNotExist {},
                 ));
             }
 
-            let pool_slot = self.get_pool_slot(&pool_id);
-            let pool_value = self
-                .storage
-                .sload(self.contract_address, pool_slot)
-                .expect("TODO: handle error");
-            let reserve0 = U256::from((pool_value & U256::from(u128::MAX)).to::<u128>());
-            let reserve1 = U256::from(pool_value.wrapping_shr(128).to::<u128>());
+            // Check pool reserves
+            let pool_key = PoolKey::new(user_token, validator_token);
+            let pool_id = pool_key.get_id();
+            let (reserve0, reserve1) = amm.get_pool_reserves(&pool_id);
 
             if reserve0 < Self::MINIMUM_BALANCE || reserve1 < Self::MINIMUM_BALANCE {
                 return Err(IFeeManager::IFeeManagerErrors::InsufficientPoolBalance(
@@ -497,13 +389,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     // TODO: _cleanupTokensWithFees
 
     // Helper methods for storage slots
-    fn get_pool_slot(&self, pool_id: &B256) -> U256 {
-        mapping_slot(pool_id, slots::POOLS)
-    }
-
-    fn get_pool_exists_slot(&self, pool_id: &B256) -> U256 {
-        mapping_slot(pool_id, slots::POOL_EXISTS)
-    }
 
     fn get_validator_token_slot(&self, validator: &Address) -> U256 {
         mapping_slot(validator, slots::VALIDATOR_TOKENS)
@@ -577,25 +462,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
     }
 
-    pub fn pools(&mut self, call: IFeeManager::poolsCall) -> IFeeManager::Pool {
-        let pool_slot = self.get_pool_slot(&call.poolId);
-        let pool_value = self
-            .storage
-            .sload(self.contract_address, pool_slot)
-            .expect("TODO: handle error");
-        // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
-        let reserve0 = (pool_value & U256::from(u128::MAX)).to::<u128>();
-        let reserve1 = pool_value.wrapping_shr(128).to::<u128>();
-
-        IFeeManager::Pool { reserve0, reserve1 }
+    pub fn pools(&mut self, call: IStableAMM::poolsCall) -> IStableAMM::Pool {
+        let mut amm = StableAMM::new(self.contract_address, self.storage);
+        amm.pools(call)
     }
 
-    pub fn pool_exists(&mut self, call: IFeeManager::poolExistsCall) -> bool {
-        let slot = self.get_pool_exists_slot(&call.poolId);
-        self.storage
-            .sload(self.contract_address, slot)
-            .expect("TODO: handle error")
-            != U256::ZERO
+    pub fn pool_exists(&mut self, call: IStableAMM::poolExistsCall) -> bool {
+        let mut amm = StableAMM::new(self.contract_address, self.storage);
+        amm.pool_exists(call)
     }
 }
 
@@ -630,7 +504,7 @@ mod tests {
 
         let token_a = Address::random();
         let token_b = Address::random();
-        let call = IFeeManager::createPoolCall {
+        let call = IStableAMM::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
         };
@@ -640,7 +514,7 @@ mod tests {
 
         let pool_key = PoolKey::new(token_a, token_b);
         let pool_id = pool_key.get_id();
-        let exists_call = IFeeManager::poolExistsCall { poolId: pool_id };
+        let exists_call = IStableAMM::poolExistsCall { poolId: pool_id };
         assert!(fee_manager.pool_exists(exists_call));
     }
 

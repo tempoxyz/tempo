@@ -154,8 +154,9 @@ sol! {
 
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
-    interface IFeeManager {
-        // Structs (represented as tuples in Solidity interface)
+    #[allow(clippy::too_many_arguments)]
+    interface IStableAMM {
+        // Structs
         struct Pool {
             uint128 reserve0;
             uint128 reserve1;
@@ -169,68 +170,53 @@ sol! {
             address token;
         }
 
-        struct FeeInfo {
-            uint128 amount;
-            bool hasBeenSet;
-        }
-
         struct PoolKey {
             address token0;
             address token1;
         }
 
-        // Constants
-        function BASIS_POINTS() external pure returns (uint256);
-        function FEE_BPS() external pure returns (uint256);
-
-
-        // User preferences
-        function userTokens(address user) external view returns (address);
-        function validatorTokens(address validator) external view returns (address);
-        function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
-        function setUserToken(address token) external;
-
-        // Core functions
-        function setValidatorToken(address token) external;
+        // Pool Management
         function createPool(address tokenA, address tokenB) external;
         function getPoolId(PoolKey memory key) external pure returns (bytes32);
         function getPool(PoolKey memory key) external view returns (Pool memory);
+        function pools(bytes32 poolId) external view returns (Pool memory);
+        function poolExists(bytes32 poolId) external view returns (bool);
+
+        // Swapping
         function swap(PoolKey memory key, address tokenIn, uint256 amountIn, address to) external;
+
+        // Liquidity Operations
         function queueDeposit(PoolKey memory key, uint256 amount, address depositToken) external;
         function queueWithdraw(PoolKey memory key, uint256 liquidity) external;
         function executeBlock() external;
-        function collectFee(address user, address coinbase, uint256 amount) external;
 
-        // View functions
-        function getTokensWithFeesLength() external view returns (uint256);
-        function getOperationQueueLength() external view returns (uint256);
-        function getDepositQueueLength() external view returns (uint256);
-        function getWithdrawQueueLength() external view returns (uint256);
+        // Pool Queries
         function isPoolBalanced(PoolKey memory key) external view returns (bool);
         function getLowerBalanceToken(PoolKey memory key) external view returns (address);
         function getHigherBalanceToken(PoolKey memory key) external view returns (address);
         function getTotalValue(PoolKey memory key) external view returns (uint256);
         function pendingReserve0(bytes32 poolId) external view returns (uint256);
         function pendingReserve1(bytes32 poolId) external view returns (uint256);
-        function pools(bytes32 poolId) external view returns (Pool memory);
+
+        // Liquidity Balances
         function totalSupply(bytes32 poolId) external view returns (uint256);
-        function poolExists(bytes32 poolId) external view returns (bool);
         function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
+
+        // Queue Information
+        function getOperationQueueLength() external view returns (uint256);
+        function getDepositQueueLength() external view returns (uint256);
+        function getWithdrawQueueLength() external view returns (uint256);
 
         // Events
         event PoolCreated(address indexed token0, address indexed token1);
         event DepositQueued(address indexed user, address indexed token0, address indexed token1, uint256 amount, address token);
         event WithdrawQueued(address indexed user, address indexed token0, address indexed token1, uint256 liquidity);
         event BlockExecuted(uint256 deposits, uint256 withdraws, uint256 feeSwaps);
-        event UserTokenSet(address indexed user, address indexed token);
-        event ValidatorTokenSet(address indexed validator, address indexed token);
         event Deposit(address indexed user, address indexed token0, address indexed token1, address depositToken, uint256 amount, uint256 liquidity);
         event Withdrawal(address indexed user, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity);
         event Swap(address indexed token0, address indexed token1, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
 
         // Errors
-        error OnlyValidator();
-        error OnlySystemContract();
         error IdenticalAddresses();
         error ZeroAddress();
         error PoolExists();
@@ -242,6 +228,44 @@ sol! {
         error InsufficientLiquidityBalance();
         error MustDepositLowerBalanceToken();
         error InvalidAmount();
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
+    interface IFeeManager {
+        // Structs
+        struct FeeInfo {
+            uint128 amount;
+            bool hasBeenSet;
+        }
+
+        // Constants
+        function BASIS_POINTS() external pure returns (uint256);
+        function FEE_BPS() external pure returns (uint256);
+
+        // User preferences
+        function userTokens(address user) external view returns (address);
+        function validatorTokens(address validator) external view returns (address);
+        function setUserToken(address token) external;
+        function setValidatorToken(address token) external;
+
+        // Fee functions
+        function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
+        function collectFee(address user, address coinbase, uint256 amount) external;
+
+        // View functions
+        function getTokensWithFeesLength() external view returns (uint256);
+
+        // Events
+        event UserTokenSet(address indexed user, address indexed token);
+        event ValidatorTokenSet(address indexed validator, address indexed token);
+
+        // Errors
+        error OnlyValidator();
+        error OnlySystemContract();
+        error InvalidToken();
+        error PoolDoesNotExist();
+        error InsufficientPoolBalance();
         error InsufficientFeeTokenBalance();
     }
 }
@@ -331,9 +355,19 @@ macro_rules! fee_manager_err {
     };
 }
 
+#[macro_export]
+macro_rules! stable_amm_err {
+    ($err:ident) => {
+        $crate::contracts::types::IStableAMM::IStableAMMErrors::$err(
+            $crate::contracts::types::IStableAMM::$err {},
+        )
+    };
+}
+
 // Use the auto-generated error and event enums
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
+pub use IStableAMM::{IStableAMMErrors as StableAMMError, IStableAMMEvents as StableAMMEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 pub use ITIP403Registry::{

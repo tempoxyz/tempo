@@ -1,0 +1,265 @@
+use crate::contracts::{
+    storage::{StorageProvider, slots::mapping_slot},
+    types::IStableAMM,
+};
+use alloy::{
+    primitives::{Address, B256, U256, keccak256},
+    sol_types::SolValue,
+};
+
+/// Storage slots for StableAMM
+pub mod slots {
+    use alloy::primitives::{U256, uint};
+
+    pub const POOLS: U256 = uint!(0_U256);
+    pub const POOL_EXISTS: U256 = uint!(2_U256);
+}
+
+/// Represents a liquidity pool
+#[derive(Debug, Clone)]
+pub struct Pool {
+    pub reserve0: u128,
+    pub reserve1: u128,
+}
+
+impl From<Pool> for IStableAMM::Pool {
+    fn from(pool: Pool) -> Self {
+        Self {
+            reserve0: pool.reserve0,
+            reserve1: pool.reserve1,
+        }
+    }
+}
+
+/// Pool key with ordered tokens
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PoolKey {
+    pub token0: Address,
+    pub token1: Address,
+}
+
+impl PoolKey {
+    pub fn new(token_a: Address, token_b: Address) -> Self {
+        let (token0, token1) = if token_a < token_b {
+            (token_a, token_b)
+        } else {
+            (token_b, token_a)
+        };
+
+        Self { token0, token1 }
+    }
+
+    pub fn get_id(&self) -> B256 {
+        keccak256((self.token0, self.token1).abi_encode())
+    }
+}
+
+impl From<PoolKey> for IStableAMM::PoolKey {
+    fn from(key: PoolKey) -> Self {
+        Self {
+            token0: key.token0,
+            token1: key.token1,
+        }
+    }
+}
+
+impl From<IStableAMM::PoolKey> for PoolKey {
+    fn from(key: IStableAMM::PoolKey) -> Self {
+        Self::new(key.token0, key.token1)
+    }
+}
+
+/// StableAMM implementation
+pub struct StableAMM<'a, S: StorageProvider> {
+    pub contract_address: Address,
+    pub storage: &'a mut S,
+}
+
+impl<'a, S: StorageProvider> StableAMM<'a, S> {
+    pub fn new(contract_address: Address, storage: &'a mut S) -> Self {
+        Self {
+            contract_address,
+            storage,
+        }
+    }
+
+    // Storage slot helpers
+    fn get_pool_slot(&self, pool_id: &B256) -> U256 {
+        mapping_slot(pool_id, slots::POOLS)
+    }
+
+    fn get_pool_exists_slot(&self, pool_id: &B256) -> U256 {
+        mapping_slot(pool_id, slots::POOL_EXISTS)
+    }
+
+    /// Create a new liquidity pool
+    pub fn create_pool(
+        &mut self,
+        call: IStableAMM::createPoolCall,
+    ) -> Result<(), IStableAMM::IStableAMMErrors> {
+        if call.tokenA == call.tokenB {
+            return Err(IStableAMM::IStableAMMErrors::IdenticalAddresses(
+                IStableAMM::IdenticalAddresses {},
+            ));
+        }
+
+        if call.tokenA == Address::ZERO || call.tokenB == Address::ZERO {
+            return Err(IStableAMM::IStableAMMErrors::InvalidToken(
+                IStableAMM::InvalidToken {},
+            ));
+        }
+
+        let pool_key = PoolKey::new(call.tokenA, call.tokenB);
+        let pool_id = pool_key.get_id();
+
+        // Check if pool already exists
+        let exists_slot = self.get_pool_exists_slot(&pool_id);
+        if self
+            .storage
+            .sload(self.contract_address, exists_slot)
+            .expect("TODO: handle error")
+            != U256::ZERO
+        {
+            return Err(IStableAMM::IStableAMMErrors::PoolExists(
+                IStableAMM::PoolExists {},
+            ));
+        }
+
+        let pool_slot = self.get_pool_slot(&pool_id);
+        // Store as packed uint128 values. reserve1 in high 128 bits, reserve0 in low 128 bits
+        self.storage
+            .sstore(self.contract_address, pool_slot, U256::ZERO)
+            .expect("TODO: handle error");
+
+        // Mark pool as existing
+        self.storage
+            .sstore(self.contract_address, exists_slot, U256::from(1))
+            .expect("TODO: handle error");
+
+        // TODO: emit event
+
+        Ok(())
+    }
+
+    /// Get pool ID for a given key
+    pub fn get_pool_id(&mut self, call: IStableAMM::getPoolIdCall) -> B256 {
+        let pool_key = PoolKey::from(call.key);
+        pool_key.get_id()
+    }
+
+    /// Get pool data
+    pub fn get_pool(&mut self, call: IStableAMM::getPoolCall) -> IStableAMM::Pool {
+        let pool_key = PoolKey::from(call.key);
+        let pool_id = pool_key.get_id();
+        let pool_slot = self.get_pool_slot(&pool_id);
+
+        let pool_value = self
+            .storage
+            .sload(self.contract_address, pool_slot)
+            .expect("TODO: handle error");
+
+        // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
+        let reserve0 = (pool_value & U256::from(u128::MAX)).to::<u128>();
+        let reserve1 = pool_value.wrapping_shr(128).to::<u128>();
+
+        IStableAMM::Pool { reserve0, reserve1 }
+    }
+
+    /// Get pool data by ID
+    pub fn pools(&mut self, call: IStableAMM::poolsCall) -> IStableAMM::Pool {
+        let pool_slot = self.get_pool_slot(&call.poolId);
+        let combined = self
+            .storage
+            .sload(self.contract_address, pool_slot)
+            .expect("TODO: handle error");
+
+        let reserve0 = combined.to_be_bytes::<32>()[16..32]
+            .try_into()
+            .map(u128::from_be_bytes)
+            .expect("TODO: handle error");
+        let reserve1 = combined.to_be_bytes::<32>()[0..16]
+            .try_into()
+            .map(u128::from_be_bytes)
+            .expect("TODO: handle error");
+
+        IStableAMM::Pool { reserve0, reserve1 }
+    }
+
+    /// Check if pool exists
+    pub fn pool_exists(&mut self, call: IStableAMM::poolExistsCall) -> bool {
+        let exists_slot = self.get_pool_exists_slot(&call.poolId);
+        self.storage
+            .sload(self.contract_address, exists_slot)
+            .expect("TODO: handle error")
+            != U256::ZERO
+    }
+
+    /// Check if pool exists by key
+    pub fn pool_exists_for_tokens(&mut self, token0: Address, token1: Address) -> bool {
+        let pool_key = PoolKey::new(token0, token1);
+        let pool_id = pool_key.get_id();
+        let exists_slot = self.get_pool_exists_slot(&pool_id);
+
+        self.storage
+            .sload(self.contract_address, exists_slot)
+            .expect("TODO: handle error")
+            != U256::ZERO
+    }
+
+    /// Get pool reserves for validation
+    pub fn get_pool_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
+        let pool_slot = self.get_pool_slot(pool_id);
+        let pool_value = self
+            .storage
+            .sload(self.contract_address, pool_slot)
+            .expect("TODO: handle error");
+
+        let reserve0 = U256::from((pool_value & U256::from(u128::MAX)).to::<u128>());
+        let reserve1 = U256::from(pool_value.wrapping_shr(128).to::<u128>());
+
+        (reserve0, reserve1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::HashMapStorageProvider;
+
+    #[test]
+    fn test_pool_key_ordering() {
+        let addr1 = Address::from([1u8; 20]);
+        let addr2 = Address::from([2u8; 20]);
+
+        let key1 = PoolKey::new(addr1, addr2);
+        let key2 = PoolKey::new(addr2, addr1);
+
+        assert_eq!(key1.token0, addr1);
+        assert_eq!(key1.token1, addr2);
+        assert_eq!(key1, key2);
+        assert_eq!(key1.get_id(), key2.get_id());
+    }
+
+    #[test]
+    fn test_create_pool() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_address = Address::random();
+        let mut amm = StableAMM::new(contract_address, &mut storage);
+
+        let token_a = Address::random();
+        let token_b = Address::random();
+
+        let call = IStableAMM::createPoolCall {
+            tokenA: token_a,
+            tokenB: token_b,
+        };
+
+        assert!(amm.create_pool(call).is_ok());
+
+        // Verify pool exists
+        let pool_key = PoolKey::new(token_a, token_b);
+        let pool_id = pool_key.get_id();
+        let exists_call = IStableAMM::poolExistsCall { poolId: pool_id };
+        assert!(amm.pool_exists(exists_call));
+    }
+}

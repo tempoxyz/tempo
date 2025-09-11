@@ -1,5 +1,6 @@
 pub mod provider;
 pub mod roles;
+pub mod stable_amm;
 pub mod storage;
 pub mod tip20;
 pub mod tip20_factory;
