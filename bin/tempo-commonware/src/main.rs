@@ -21,14 +21,13 @@ use eyre::Context;
 use reth_ethereum::cli::Cli;
 use reth_node_builder::NodeHandle;
 use reth_node_ethereum::EthEvmConfig;
-use std::{future, sync::Arc, thread};
+use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::cli::launch_consensus_stack;
 use tempo_consensus::TempoConsensus;
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 use tempo_node::{TempoFullNode, args::TempoArgs, node::TempoNode};
 use tokio::sync::oneshot;
-use tracing::info;
 
 /// Extra arguments for `tempo-commonware`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
@@ -59,19 +58,15 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    let components =
-        |spec: Arc<TempoChainSpec>| (EthEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
-
     let (node_tx, node_rx) = oneshot::channel::<(TempoFullNode, TempoCommonwareArgs)>();
-    let (consensus_tx, consensus_rx) = oneshot::channel();
+    let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
-    let setup_consenus = thread::spawn(move || {
-        let Ok((node, args)) = node_rx.blocking_recv() else {
-            return Ok(());
-        };
+    let consensus_handle = thread::spawn(move || {
+        let (node, args) = node_rx.blocking_recv().wrap_err("channel closed before consensus-relevant command line args and a handle to the execution node could be received")?;
 
-        let consensus_handle = if node.config.dev.dev || args.inner.no_consensus {
-            tokio::spawn(async move { future::pending::<()>().await })
+        let ret = if node.config.dev.dev || args.inner.no_consensus {
+            // TODO: pass in a cancellation token or something to kill this thread also in dev
+            futures::executor::block_on(futures::future::pending::<Result<_, _>>())
         } else {
             let consensus_config =
                 tempo_commonware_node_config::Config::from_file(&args.consensus_config)
@@ -89,20 +84,20 @@ fn main() {
 
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
-            runner.start(async move |ctx| {
-                launch_consensus_stack(&ctx, &consensus_config, node).await
-            })?
+            runner
+                .start(async move |ctx| launch_consensus_stack(&ctx, &consensus_config, node).await)
+                .wrap_err("consensus runtime failed")
         };
-
-        let _ = consensus_tx.send(consensus_handle);
-
-        eyre::Ok(())
+        let _ = consensus_dead_tx.send(());
+        ret
     });
 
+    let components =
+        |spec: Arc<TempoChainSpec>| (EthEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
     if let Err(err) = Cli::<TempoChainSpecParser, TempoCommonwareArgs>::parse()
         .run_with_components::<TempoNode>(components, async move |builder, args| {
             let faucet_args = args.inner.faucet_args.clone();
-            info!(target: "reth::cli", "Launching node");
+
             let NodeHandle {
                 node,
                 node_exit_future,
@@ -130,16 +125,16 @@ fn main() {
                     ctx
                 })
                 .launch_with_debug_capabilities()
-                .await?;
+                .await
+                .wrap_err("failed launching execution node")?;
 
             let _ = node_tx.send((node, args));
-            let consensus_handle = consensus_rx.await?;
 
             tokio::select! {
                 _ = node_exit_future => {
                     tracing::info!("Reth node exited");
                 }
-                _ = consensus_handle => {
+                _ = &mut consensus_dead_rx => {
                     tracing::info!("Consensus engine exited");
                 }
                 _ = tokio::signal::ctrl_c() => {
@@ -154,5 +149,5 @@ fn main() {
         std::process::exit(1);
     }
 
-    setup_consenus.join().unwrap().unwrap();
+    consensus_handle.join().unwrap().unwrap();
 }
