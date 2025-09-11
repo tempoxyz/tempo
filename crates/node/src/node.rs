@@ -14,7 +14,7 @@ use reth_node_api::{
     PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
-    BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
+    BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
         PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder,
@@ -24,7 +24,7 @@ use reth_node_builder::{
         EngineValidatorBuilder, EthApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
     },
 };
-use reth_node_ethereum::{EthEngineTypes, EthEvmConfig, EthereumNetworkBuilder};
+use reth_node_ethereum::{EthEngineTypes, EthereumNetworkBuilder};
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
 use reth_rpc_eth_api::FromEvmError;
@@ -276,9 +276,7 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config =
-            EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), TempoEvmFactory::default())
-                .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
+        let evm_config = TempoEvmConfig::new(ctx.chain_spec(), TempoEvmFactory::default());
         Ok(evm_config)
     }
 }

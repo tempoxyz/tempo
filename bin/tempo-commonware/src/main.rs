@@ -20,11 +20,11 @@ use commonware_runtime::Runner;
 use eyre::Context;
 use reth_ethereum::cli::Cli;
 use reth_node_builder::NodeHandle;
-use reth_node_ethereum::EthEvmConfig;
 use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
+use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 use tempo_node::{TempoFullNode, args::TempoArgs, node::TempoNode};
 use tokio::sync::oneshot;
@@ -107,8 +107,12 @@ fn main() -> eyre::Result<()> {
         ret
     });
 
-    let components =
-        |spec: Arc<TempoChainSpec>| (EthEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
+    let components = |spec: Arc<TempoChainSpec>| {
+        (
+            TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()),
+            TempoConsensus::new(spec),
+        )
+    };
 
     let mut consensus_read_rx_clone = consensus_dead_rx.clone();
     Cli::<TempoChainSpecParser, TempoCommonwareArgs>::parse()
