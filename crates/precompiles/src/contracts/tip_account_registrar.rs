@@ -221,6 +221,7 @@ mod tests {
         let account_info_after = storage
             .get_account_info(expected_address)
             .expect("Failed to get account info");
-        assert_eq!(account_info_after.code, None);
+        let code = account_info_after.code.unwrap_or_default();
+        assert!(code.is_empty());
     }
 }
