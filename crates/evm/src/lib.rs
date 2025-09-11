@@ -7,17 +7,17 @@ pub mod evm;
 use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
 use alloy_eips::{Decodable2718, eip1559::INITIAL_BASE_FEE, eip7840::BlobParams};
-use alloy_evm::{EthEvmFactory, EvmFactory, eth::EthBlockExecutorFactory};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_evm::eth::EthBlockExecutorFactory;
+use alloy_primitives::{Bytes, U256};
 use alloy_rpc_types_engine::ExecutionData;
 pub use evm::TempoEvmFactory;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_ethereum_forks::{EthereumHardfork, Hardforks};
-use reth_ethereum_primitives::{Block, EthPrimitives, TransactionSigned, TxTy};
+use reth_ethereum_primitives::{Block, EthPrimitives, TransactionSigned};
 use reth_evm::{
     self, ConfigureEngineEvm, ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator,
     ExecutionCtxFor, NextBlockEnvAttributes,
-    eth::{EthBlockExecutionCtx, spec::EthExecutorSpec},
+    eth::EthBlockExecutionCtx,
     revm::{
         context::{BlockEnv, CfgEnv},
         context_interface::block::BlobExcessGasAndPrice,
@@ -54,7 +54,7 @@ impl TempoEvmConfig {
             evm_factory,
         );
 
-        let block_assembler = EthBlockAssembler::new(chain_spec.clone());
+        let block_assembler = EthBlockAssembler::new(chain_spec);
         Self {
             executor_factory,
             block_assembler,
