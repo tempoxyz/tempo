@@ -19,7 +19,7 @@
     state: directory
     mode: '0755'
 
-- name: commonware
+- name: Include commonware tasks
   include_tasks: commonware.yml
   when: tempo_commonware == 'true'
 

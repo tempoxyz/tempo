@@ -1,0 +1,97 @@
+- name: Ensure local commonware config output directory exists
+  tempfile:
+    path: "/tmp"
+    state: directory
+    suffix: "cmwr"
+  register: config_dir
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate commonware configs locally
+  command:
+    cmd: >-
+      cargo x generate-config
+      --force
+      --output {{ config_dir.path }}
+      --peers {{ groups['all'] | length }}
+      --bootstrappers 1
+      --message-backlog 16384
+      --mailbox-size 16384
+      --deque-size 10
+      --from-port 8000
+      --fee-recipient 0x0000000000000000000000000000000000000000
+  delegate_to: localhost
+  run_once: true
+
+- name: Collect generated config files
+  find:
+    paths: "{{ config_dir.path }}"
+    patterns: "*.toml"
+    file_type: file
+  register: cmwr_find
+  delegate_to: localhost
+  run_once: true
+
+- name: Sort and expose config file list
+  set_fact:
+    cmwr_file_paths: "{{ (cmwr_find.files | map(attribute='path') | list) | sort }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+
+- name: Determine this host's commonware index
+  set_fact:
+    cmwr_hosts_sorted: "{{ groups['all'] | sort | list }}"
+
+- name: Set index for this host within sorted hosts
+  set_fact:
+    cmwr_index: "{{ idx }}"
+  vars:
+    idx: "{{ item.0 }}"
+  when: item.1 == inventory_hostname
+  with_indexed_items: "{{ cmwr_hosts_sorted }}"
+
+- name: Copy assigned commonware config to host
+  copy:
+    src: "{{ hostvars['localhost'].cmwr_file_paths[cmwr_index | int] }}"
+    dest: "{{ ansible_env.HOME }}/malachite/config/commonware.toml"
+    mode: '0644'
+
+- name: Build list of peer IPs (tailscale/default)
+  set_fact:
+    cmwr_host_list: "{{ (groups['all'] | sort | list)[:3] }}"
+    cmwr_ip_map: []
+
+- name: Append peer IPs to map
+  set_fact:
+    cmwr_ip_map: "{{ cmwr_ip_map + [ hostvars[item].ansible_tailscale0.ipv4.address | default(hostvars[item].ansible_default_ipv4.address | default(hostvars[item].ansible_host)) ] }}"
+  loop: "{{ cmwr_host_list }}"
+
+- name: Build peer keys list from generated filenames
+  set_fact:
+    cmwr_peer_keys: "{{ hostvars['localhost'].cmwr_file_paths | map('basename') | map('regex_replace', '\\.(toml)$', '') | list }}"
+
+- name: Update metrics_port
+  ini_file:
+    path: "{{ ansible_env.HOME }}/malachite/config/commonware.toml"
+    section: ""
+    option: "metrics_port"
+    value: '8001'
+
+- name: Update listen_port
+  ini_file:
+    path: "{{ ansible_env.HOME }}/malachite/config/commonware.toml"
+    section: ""
+    option: "listen_port"
+    value: '8000'
+
+- name: Update peers table entries using ini_file
+  ini_file:
+    path: "{{ ansible_env.HOME }}/malachite/config/commonware.toml"
+    section: "peers"
+    option: "{{ item }}"
+    value: '"{{ cmwr_ip_map[index | int] }}:8000"'
+    no_extra_spaces: true
+  loop: "{{ cmwr_peer_keys }}"
+  loop_control:
+    index_var: index

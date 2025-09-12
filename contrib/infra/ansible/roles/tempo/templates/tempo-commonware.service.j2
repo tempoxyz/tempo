@@ -1,0 +1,62 @@
+[Unit]
+Description=Tempo Node
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+Group={{ ansible_user }}
+WorkingDirectory={{ ansible_env.HOME }}/malachite
+ExecStart=/usr/local/bin/tempo-commonware node --datadir {{ ansible_env.HOME }}/malachite/reth \
+{% if tempo_faucet_privkey is defined %}
+  --faucet.enabled \
+  --faucet.private-key 0x{{ tempo_faucet_privkey }} \
+  --faucet.amount 1000000000000 \
+  --faucet.address 0x20c0000000000000000000000000000000000000 \
+{% endif %}
+  --chain {{ ansible_env.HOME }}/malachite/config/reth_genesis.json \
+  --consensus-config {{ ansible_env.HOME }}/malachite/config/commonware.toml \
+  --port 30303 \
+  --discovery.port 30303 \
+  --http \
+  --http.addr 0.0.0.0 \
+  --http.port 8545 \
+  --http.api eth,net,web3,txpool,trace \
+  --authrpc.port 8551 \
+  --metrics 9000 \
+  --ipcdisable \
+  --builder.gaslimit 3000000000 \
+  --builder.max-tasks 16 \
+  --builder.deadline 3 \
+  --builder.interval 100ms \
+  --txpool.pending-max-count 10000000000000 \
+  --txpool.basefee-max-count 10000000000000 \
+  --txpool.queued-max-count 10000000000000 \
+  --txpool.pending-max-size 10000 \
+  --txpool.basefee-max-size 10000 \
+  --txpool.queued-max-size 10000 \
+  --txpool.max-new-pending-txs-notifications 10000000 \
+  --txpool.max-account-slots 500000 \
+  --txpool.max-pending-txns 10000000000000 \
+  --txpool.max-new-txns 10000000000000 \
+  --txpool.disable-transactions-backup \
+  --txpool.additional-validation-tasks 8 \
+  --txpool.minimal-protocol-fee 0 \
+  --txpool.minimum-priority-fee 0 \
+  --txpool.max-batch-size 50000 \
+  --rpc.max-connections 429496729 \
+  --rpc.max-request-size 1000000 \
+  --rpc.max-response-size 1000000 \
+  --max-tx-reqs 1000000 \
+  --gpo.default-suggested-fee 0 \
+
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tempo
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target

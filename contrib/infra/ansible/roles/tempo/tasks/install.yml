@@ -29,7 +29,7 @@
     mode: '0644'
   become: yes
   notify: reload systemd
-  when: tempo_commonware is not defined
+  when: tempo_proposer is defined and tempo_commonware is not defined
 
 - name: Install tempo systemd service
   template:
