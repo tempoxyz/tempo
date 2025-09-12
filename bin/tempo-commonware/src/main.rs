@@ -25,19 +25,25 @@ use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
-use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
-use tempo_node::{TempoFullNode, args::TempoArgs, node::TempoNode};
+use tempo_faucet::{
+    args::FaucetArgs,
+    faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
+};
+use tempo_node::{TempoFullNode, node::TempoNode};
 use tokio::sync::oneshot;
 
-/// Extra arguments for `tempo-commonware`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
-pub struct TempoCommonwareArgs {
-    /// Inner [`TempoArgs`].
-    #[command(flatten)]
-    pub inner: TempoArgs,
-    /// Commonware configuration path.
+// TODO: migrate this to tempo_node eventually.
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+struct TempoArgs {
+    /// Start the node without consensus
+    #[arg(long)]
+    pub no_consensus: bool,
+
     #[clap(long, value_name = "FILE")]
     pub consensus_config: camino::Utf8PathBuf,
+
+    #[command(flatten)]
+    pub faucet_args: FaucetArgs,
 }
 
 fn main() -> eyre::Result<()> {
@@ -59,7 +65,7 @@ fn main() -> eyre::Result<()> {
     }
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
-        oneshot::channel::<(TempoFullNode, TempoCommonwareArgs)>();
+        oneshot::channel::<(TempoFullNode, TempoArgs)>();
     let (consensus_dead_tx, consensus_dead_rx) = oneshot::channel();
     let consensus_dead_rx = Arc::new(consensus_dead_rx);
 
@@ -69,7 +75,7 @@ fn main() -> eyre::Result<()> {
     let consensus_handle = thread::spawn(move || {
         let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err("channel closed before consensus-relevant command line args and a handle to the execution node could be received")?;
 
-        let ret = if node.config.dev.dev || args.inner.no_consensus {
+        let ret = if node.config.dev.dev || args.no_consensus {
             futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 Ok(())
@@ -115,15 +121,17 @@ fn main() -> eyre::Result<()> {
     };
 
     let mut consensus_read_rx_clone = consensus_dead_rx.clone();
-    Cli::<TempoChainSpecParser, TempoCommonwareArgs>::parse()
+    Cli::<TempoChainSpecParser, TempoArgs>::parse()
         .run_with_components::<TempoNode>(components, async move |builder, args| {
-            let faucet_args = args.inner.faucet_args.clone();
+            let faucet_args = args.faucet_args.clone();
 
             let NodeHandle {
                 node,
                 node_exit_future,
             } = builder
-                .node(TempoNode::new(args.inner.clone()))
+                // TODO: simplify this after the malachite bits have been removed.
+                .node(TempoNode::new(tempo_node::args::TempoArgs {
+                    no_consensus: args.no_consensus, malachite_args: Default::default(), faucet_args: args.faucet_args.clone(), }))
                 .extend_rpc_modules(move |ctx| {
                     if faucet_args.enabled {
                         let txpool = ctx.pool().clone();
