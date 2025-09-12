@@ -90,7 +90,7 @@ sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
     interface ITIP20Factory {
-        event TokenCreated(uint256 indexed tokenId, string name, string symbol, string currency, address admin);
+        event TokenCreated(address indexed token, uint256 indexed tokenId, string name, string symbol, string currency, address admin);
 
         function createToken(
             string memory name,

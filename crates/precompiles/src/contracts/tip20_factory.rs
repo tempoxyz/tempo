@@ -3,6 +3,7 @@ use crate::{
     contracts::{
         storage::StorageProvider,
         tip20::TIP20Token,
+        token_id_to_address,
         types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
     },
 };
@@ -70,6 +71,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
             .emit_event(
                 TIP20_FACTORY_ADDRESS,
                 TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                    token: token_id_to_address((token_id + U256::ONE).to::<u64>()),
                     tokenId: token_id,
                     name: call.name,
                     symbol: call.symbol,
