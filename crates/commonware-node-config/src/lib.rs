@@ -10,6 +10,8 @@ use commonware_utils::quorum;
 use indexmap::IndexMap;
 use tempo_commonware_node_cryptography::{GroupShare, PrivateKey, PublicKey, PublicPolynomial};
 
+pub mod timeouts;
+
 #[cfg(test)]
 mod tests;
 
@@ -75,6 +77,8 @@ pub struct Config {
     pub deque_size: usize,
 
     pub fee_recipient: alloy_primitives::Address,
+
+    pub timeouts: timeouts::Config,
 }
 
 impl Config {
@@ -176,6 +180,8 @@ struct DeserConfig {
     deque_size: usize,
 
     fee_recipient: alloy_primitives::Address,
+
+    timeouts: timeouts::Config,
 }
 
 impl TryFrom<DeserConfig> for Config {
@@ -196,6 +202,7 @@ impl TryFrom<DeserConfig> for Config {
             mailbox_size,
             deque_size,
             fee_recipient,
+            timeouts,
         } = value;
 
         let threshold = quorum(peers.len() as u32);
@@ -221,6 +228,7 @@ impl TryFrom<DeserConfig> for Config {
             mailbox_size,
             deque_size,
             fee_recipient,
+            timeouts,
         })
     }
 }
