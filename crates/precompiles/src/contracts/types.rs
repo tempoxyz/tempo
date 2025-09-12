@@ -152,6 +152,12 @@ sol! {
         error NonceNotZero();
     }
 
+    /// StableAMM interface defining the base AMM functionality for stablecoin pools.
+    /// This interface provides core liquidity pool management and swap operations.
+    ///
+    /// NOTE: The FeeManager contract inherits from StableAMM and shares the same storage layout.
+    /// When FeeManager is deployed, it effectively "is" a StableAMM with additional fee management
+    /// capabilities layered on top. Both contracts operate on the same storage slots.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
@@ -230,6 +236,18 @@ sol! {
         error InvalidAmount();
     }
 
+    /// FeeManager interface for managing gas fee collection and distribution.
+    ///
+    /// IMPORTANT: FeeManager inherits from StableAMM and shares the same storage layout.
+    /// This means:
+    /// - FeeManager has all the functionality of StableAMM (pool management, swaps, liquidity operations)
+    /// - Both contracts use the same storage slots for AMM data (pools, reserves, liquidity balances)
+    /// - FeeManager extends StableAMM with additional storage slots (4-15) for fee-specific data
+    /// - When deployed, FeeManager IS a StableAMM with additional fee management capabilities
+    ///
+    /// Storage layout:
+    /// - Slots 0-3: StableAMM storage (pools, pool exists, liquidity data)
+    /// - Slots 4+: FeeManager-specific storage (validator tokens, user tokens, collected fees, etc.)
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
     interface IFeeManager {

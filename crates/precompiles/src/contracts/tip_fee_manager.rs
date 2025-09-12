@@ -10,9 +10,18 @@ pub use crate::contracts::stable_amm::PoolKey;
 use alloy::primitives::{Address, U256};
 use reth_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
+/// Storage slots for FeeManager-specific data.
+///
+/// IMPORTANT: FeeManager inherits from StableAMM and shares storage slots.
+/// - Slots 0-3: Reserved for StableAMM data (pools, pool_exists, liquidity)
+/// - Slots 4+: FeeManager-specific data starts here
+///
+/// This shared storage layout means that FeeManager can directly access and modify
+/// AMM pool data using the same storage slots that StableAMM would use.
 pub mod slots {
     use alloy::primitives::{U256, uint};
 
+    // FeeManager-specific slots start at slot 4 to avoid collision with StableAMM slots (0-3)
     pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
     pub const USER_TOKENS: U256 = uint!(5_U256);
     pub const COLLECTED_FEES: U256 = uint!(6_U256);
@@ -110,6 +119,18 @@ impl From<FeeInfo> for IFeeManager::FeeInfo {
     }
 }
 
+/// TipFeeManager implements the FeeManager contract which inherits from StableAMM.
+///
+/// INHERITANCE MODEL:
+/// - FeeManager "is-a" StableAMM, inheriting all AMM functionality
+/// - They share the same contract address and storage space
+/// - FeeManager delegates AMM operations to StableAMM using the same storage
+///
+/// STORAGE SHARING:
+/// - Both contracts operate on the same storage at the same contract address
+/// - StableAMM uses slots 0-3 for pool data
+/// - FeeManager uses slots 4+ for fee-specific data
+/// - When FeeManager creates a StableAMM instance, it passes the same address and storage
 pub struct TipFeeManager<'a, S: StorageProvider> {
     contract_address: Address,
     storage: &'a mut S,
@@ -175,11 +196,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
+    /// Creates a new liquidity pool. This demonstrates the inheritance relationship:
+    /// FeeManager delegates to StableAMM for core AMM operations while adding fee tracking.
     pub fn create_pool(
         &mut self,
         call: IStableAMM::createPoolCall,
     ) -> Result<(), IStableAMM::IStableAMMErrors> {
-        // Delegate to StableAMM
+        // Delegate to StableAMM using the SAME contract address and storage
+        // This works because FeeManager "is" a StableAMM at the storage level
         let mut amm = StableAMM::new(self.contract_address, self.storage);
         amm.create_pool(call.clone())?;
 
@@ -198,11 +222,13 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
+    /// Delegates pool ID calculation to StableAMM (inherited functionality)
     pub fn get_pool_id(&mut self, call: IStableAMM::getPoolIdCall) -> alloy::primitives::B256 {
         let mut amm = StableAMM::new(self.contract_address, self.storage);
         amm.get_pool_id(call)
     }
 
+    /// Delegates pool data retrieval to StableAMM (inherited functionality)
     pub fn get_pool(&mut self, call: IStableAMM::getPoolCall) -> IStableAMM::Pool {
         let mut amm = StableAMM::new(self.contract_address, self.storage);
         amm.get_pool(call)
@@ -225,9 +251,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let user_token = self.get_user_token(&call.user, &validator_token);
 
         if user_token != validator_token {
+            // Create StableAMM instance to access inherited pool functionality
+            // Uses same address and storage - demonstrating shared state
             let mut amm = StableAMM::new(self.contract_address, self.storage);
 
-            // Check if pool exists
+            // Check if pool exists (using inherited StableAMM functionality)
             if !amm.pool_exists_for_tokens(user_token, validator_token) {
                 return Err(IFeeManager::IFeeManagerErrors::PoolDoesNotExist(
                     IFeeManager::PoolDoesNotExist {},
@@ -462,11 +490,13 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
     }
 
+    /// Retrieves pool data by ID (inherited from StableAMM)
     pub fn pools(&mut self, call: IStableAMM::poolsCall) -> IStableAMM::Pool {
         let mut amm = StableAMM::new(self.contract_address, self.storage);
         amm.pools(call)
     }
 
+    /// Checks if a pool exists (inherited from StableAMM)
     pub fn pool_exists(&mut self, call: IStableAMM::poolExistsCall) -> bool {
         let mut amm = StableAMM::new(self.contract_address, self.storage);
         amm.pool_exists(call)

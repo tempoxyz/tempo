@@ -8,11 +8,18 @@ use alloy::{
 };
 
 /// Storage slots for StableAMM
+///
+/// IMPORTANT: These slots are shared with FeeManager when it inherits from StableAMM.
+/// FeeManager uses the same slots (0-3) for AMM functionality and adds its own slots (4+).
+/// This allows FeeManager to operate as a full StableAMM while extending it with fee capabilities.
 pub mod slots {
     use alloy::primitives::{U256, uint};
 
-    pub const POOLS: U256 = U256::ZERO;
-    pub const POOL_EXISTS: U256 = uint!(2_U256);
+    // Base AMM storage slots (also used by FeeManager)
+    pub const POOLS: U256 = U256::ZERO; // Slot 0: Pool reserves mapping
+    pub const POOL_EXISTS: U256 = uint!(2_U256); // Slot 2: Pool existence mapping
+    // Slot 3 would be for additional AMM data (liquidity, etc.)
+    // Slots 4+ are reserved for FeeManager-specific data
 }
 
 /// Represents a liquidity pool
@@ -69,7 +76,19 @@ impl From<IStableAMM::PoolKey> for PoolKey {
     }
 }
 
-/// StableAMM implementation
+/// StableAMM implementation - Base AMM contract for stablecoin pools.
+///
+/// INHERITANCE MODEL:
+/// - StableAMM serves as the base contract providing core AMM functionality
+/// - FeeManager inherits from StableAMM, extending it with fee management capabilities
+/// - Both contracts share the same storage space when FeeManager is deployed
+///
+/// STORAGE SHARING:
+/// - When FeeManager creates a StableAMM instance, it passes its own contract address
+/// - This means both FeeManager and StableAMM operate on the same storage slots
+/// - StableAMM uses slots 0-3, FeeManager extends with slots 4+
+///
+/// This design allows FeeManager to be a full-featured AMM while adding fee-specific logic.
 pub struct StableAMM<'a, S: StorageProvider> {
     pub contract_address: Address,
     pub storage: &'a mut S,
