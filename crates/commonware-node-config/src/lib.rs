@@ -78,6 +78,9 @@ pub struct Config {
 
     pub fee_recipient: alloy_primitives::Address,
 
+    /// Various timeouts employed by the consensus engine, both continuous
+    /// and discrete time.
+    #[serde(default)]
     pub timeouts: timeouts::Config,
 }
 

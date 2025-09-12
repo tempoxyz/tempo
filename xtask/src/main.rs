@@ -162,6 +162,7 @@ fn generate_config(
             mailbox_size,
             deque_size,
             fee_recipient,
+            timeouts: Default::default(),
         };
         configurations.push((name, dst, peer_config));
         port += 2;
