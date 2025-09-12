@@ -66,8 +66,7 @@ fn main() -> eyre::Result<()> {
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
         oneshot::channel::<(TempoFullNode, TempoArgs)>();
-    let (consensus_dead_tx, consensus_dead_rx) = oneshot::channel();
-    let consensus_dead_rx = Arc::new(consensus_dead_rx);
+    let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
 
@@ -120,7 +119,6 @@ fn main() -> eyre::Result<()> {
         )
     };
 
-    let mut consensus_read_rx_clone = consensus_dead_rx.clone();
     Cli::<TempoChainSpecParser, TempoArgs>::parse()
         .run_with_components::<TempoNode>(components, async move |builder, args| {
             let faucet_args = args.faucet_args.clone();
@@ -131,7 +129,10 @@ fn main() -> eyre::Result<()> {
             } = builder
                 // TODO: simplify this after the malachite bits have been removed.
                 .node(TempoNode::new(tempo_node::args::TempoArgs {
-                    no_consensus: args.no_consensus, malachite_args: Default::default(), faucet_args: args.faucet_args.clone(), }))
+                    no_consensus: args.no_consensus,
+                    malachite_args: Default::default(),
+                    faucet_args: args.faucet_args.clone(),
+                }))
                 .extend_rpc_modules(move |ctx| {
                     if faucet_args.enabled {
                         let txpool = ctx.pool().clone();
@@ -165,29 +166,23 @@ fn main() -> eyre::Result<()> {
                 _ = node_exit_future => {
                     tracing::info!("execution node exited");
                 }
-                _ = Arc::get_mut(&mut consensus_read_rx_clone)
-                    .expect("the dead man switch is only held here and after this future/function completes")
-                => {
+                _ = &mut consensus_dead_rx => {
                     tracing::info!("consensus node exited");
                 }
                 _ = tokio::signal::ctrl_c() => {
                     tracing::info!("received shutdown signal");
                 }
             }
-            shutdown_token.cancel();
-
             Ok(())
         })
         .wrap_err("execution node failed")?;
 
-    // XXX: join the thread only if consensus is actually dead. We don't
-    // want to block this function from exiting
-    if consensus_dead_rx.is_terminated() {
-        match consensus_handle.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => eprintln!("consensus task exited with error:\n{err:?}"),
-            Err(unwind) => std::panic::resume_unwind(unwind),
-        }
+    shutdown_token.cancel();
+
+    match consensus_handle.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => eprintln!("consensus task exited with error:\n{err:?}"),
+        Err(unwind) => std::panic::resume_unwind(unwind),
     }
     Ok(())
 }
