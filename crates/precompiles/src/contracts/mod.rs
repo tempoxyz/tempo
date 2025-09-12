@@ -1,12 +1,12 @@
 pub mod provider;
 pub mod roles;
-pub mod stable_amm;
 pub mod storage;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip4217_registry;
 pub mod tip_account_registrar;
+pub mod tip_fee_amm;
 pub mod tip_fee_manager;
 pub mod types;
 

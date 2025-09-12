@@ -2,7 +2,7 @@ use crate::{
     contracts::{
         storage::StorageProvider,
         tip_fee_manager::TipFeeManager,
-        types::{IFeeManager, IStableAMM},
+        types::{IFeeManager, ITIPFeeAMM},
     },
     precompiles::{Precompile, mutate_void, view},
 };
@@ -22,15 +22,15 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             IFeeManager::userTokensCall::SELECTOR => view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call)),
             IFeeManager::validatorTokensCall::SELECTOR => view::<IFeeManager::validatorTokensCall>(calldata, |call| self.validator_tokens(call)),
             IFeeManager::getFeeTokenBalanceCall::SELECTOR => view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| self.get_fee_token_balance(call)),
-            IStableAMM::getPoolIdCall::SELECTOR => view::<IStableAMM::getPoolIdCall>(calldata, |call| self.get_pool_id(call)),
-            IStableAMM::getPoolCall::SELECTOR => view::<IStableAMM::getPoolCall>(calldata, |call| self.get_pool(call)),
-            IStableAMM::poolsCall::SELECTOR => view::<IStableAMM::poolsCall>(calldata, |call| self.pools(call)),
-            IStableAMM::poolExistsCall::SELECTOR => view::<IStableAMM::poolExistsCall>(calldata, |call| self.pool_exists(call)),
+            ITIPFeeAMM::getPoolIdCall::SELECTOR => view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| self.get_pool_id(call)),
+            ITIPFeeAMM::getPoolCall::SELECTOR => view::<ITIPFeeAMM::getPoolCall>(calldata, |call| self.get_pool(call)),
+            ITIPFeeAMM::poolsCall::SELECTOR => view::<ITIPFeeAMM::poolsCall>(calldata, |call| self.pools(call)),
+            ITIPFeeAMM::poolExistsCall::SELECTOR => view::<ITIPFeeAMM::poolExistsCall>(calldata, |call| self.pool_exists(call)),
 
             // State changing functions
             IFeeManager::setValidatorTokenCall::SELECTOR => mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_validator_token(s, call)),
             IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),
-            IStableAMM::createPoolCall::SELECTOR => mutate_void::<IStableAMM::createPoolCall, IStableAMM::IStableAMMErrors>(calldata, msg_sender, |_s, call| self.create_pool(call)),
+            ITIPFeeAMM::createPoolCall::SELECTOR => mutate_void::<ITIPFeeAMM::createPoolCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |_s, call| self.create_pool(call)),
             IFeeManager::collectFeeCall::SELECTOR => {
                 mutate_void::<IFeeManager::collectFeeCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee(s, call))
             }
@@ -48,11 +48,11 @@ mod tests {
             HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
             tip_fee_manager::PoolKey,
             tip20::ISSUER_ROLE,
-            types::{IFeeManager, IStableAMM, ITIP20},
+            types::{IFeeManager, ITIP20, ITIPFeeAMM},
         },
         fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
-        stable_amm_err,
+        tip_fee_amm_err,
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -127,7 +127,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &validator);
-        expect_precompile_error(&result, stable_amm_err!(InvalidToken));
+        expect_precompile_error(&result, tip_fee_amm_err!(InvalidToken));
 
         Ok(())
     }
@@ -164,7 +164,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &user);
-        expect_precompile_error(&result, stable_amm_err!(InvalidToken));
+        expect_precompile_error(&result, tip_fee_amm_err!(InvalidToken));
     }
 
     #[test]
@@ -174,7 +174,7 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
 
-        let calldata = IStableAMM::createPoolCall {
+        let calldata = ITIPFeeAMM::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
         }
@@ -188,7 +188,7 @@ mod tests {
         let pool_key = PoolKey::new(token_a, token_b);
         let pool_id = pool_key.get_id();
 
-        let calldata = IStableAMM::poolExistsCall { poolId: pool_id }.abi_encode();
+        let calldata = ITIPFeeAMM::poolExistsCall { poolId: pool_id }.abi_encode();
         let result = fee_manager
             .call(&Bytes::from(calldata), &Address::random())
             .unwrap();
@@ -203,13 +203,13 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
         let token = Address::random();
 
-        let calldata = IStableAMM::createPoolCall {
+        let calldata = ITIPFeeAMM::createPoolCall {
             tokenA: token,
             tokenB: token,
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
-        expect_precompile_error(&result, stable_amm_err!(IdenticalAddresses));
+        expect_precompile_error(&result, tip_fee_amm_err!(IdenticalAddresses));
     }
 
     #[test]
@@ -218,13 +218,13 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
         let token = Address::random();
 
-        let calldata = IStableAMM::createPoolCall {
+        let calldata = ITIPFeeAMM::createPoolCall {
             tokenA: Address::ZERO,
             tokenB: token,
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
-        expect_precompile_error(&result, stable_amm_err!(InvalidToken));
+        expect_precompile_error(&result, tip_fee_amm_err!(InvalidToken));
     }
 
     #[test]
@@ -234,7 +234,7 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
 
-        let calldata = IStableAMM::createPoolCall {
+        let calldata = ITIPFeeAMM::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
         }
@@ -248,7 +248,7 @@ mod tests {
 
         // Try to create same pool again
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
-        expect_precompile_error(&result, stable_amm_err!(PoolExists));
+        expect_precompile_error(&result, tip_fee_amm_err!(PoolExists));
     }
 
     #[test]
@@ -258,11 +258,11 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
 
-        let key = IStableAMM::PoolKey {
+        let key = ITIPFeeAMM::PoolKey {
             token0: token_a,
             token1: token_b,
         };
-        let calldata = IStableAMM::getPoolIdCall { key }.abi_encode();
+        let calldata = ITIPFeeAMM::getPoolIdCall { key }.abi_encode();
         let result = fee_manager
             .call(&Bytes::from(calldata), &Address::random())
             .unwrap();
@@ -322,14 +322,14 @@ mod tests {
     }
 
     #[test]
-    fn test_stable_amm_pool_operations() -> Result<()> {
+    fn test_tip_fee_amm_pool_operations() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
         let token_a = Address::random();
         let token_b = Address::random();
 
-        // Create pool using IStableAMM interface
-        let create_call = IStableAMM::createPoolCall {
+        // Create pool using ITIPFeeAMM interface
+        let create_call = ITIPFeeAMM::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
         };
@@ -337,18 +337,18 @@ mod tests {
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random())?;
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
-        // Get pool using IStableAMM interface
-        let pool_key = IStableAMM::PoolKey {
+        // Get pool using ITIPFeeAMM interface
+        let pool_key = ITIPFeeAMM::PoolKey {
             token0: if token_a < token_b { token_a } else { token_b },
             token1: if token_a < token_b { token_b } else { token_a },
         };
-        let get_pool_call = IStableAMM::getPoolCall { key: pool_key };
+        let get_pool_call = ITIPFeeAMM::getPoolCall { key: pool_key };
         let calldata = get_pool_call.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random())?;
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
 
         // Decode and verify pool
-        let pool = IStableAMM::Pool::abi_decode(&result.bytes)?;
+        let pool = ITIPFeeAMM::Pool::abi_decode(&result.bytes)?;
         assert_eq!(pool.reserve0, 0);
         assert_eq!(pool.reserve1, 0);
 
@@ -400,22 +400,22 @@ mod tests {
         let token_b = Address::random();
 
         // Test that pool ID is same regardless of token order
-        let key1 = IStableAMM::PoolKey {
+        let key1 = ITIPFeeAMM::PoolKey {
             token0: token_a,
             token1: token_b,
         };
-        let key2 = IStableAMM::PoolKey {
+        let key2 = ITIPFeeAMM::PoolKey {
             token0: token_b,
             token1: token_a,
         };
 
-        let calldata1 = IStableAMM::getPoolIdCall { key: key1 }.abi_encode();
+        let calldata1 = ITIPFeeAMM::getPoolIdCall { key: key1 }.abi_encode();
         let result1 = fee_manager
             .call(&Bytes::from(calldata1), &Address::random())
             .unwrap();
         let id1 = B256::abi_decode(&result1.bytes).unwrap();
 
-        let calldata2 = IStableAMM::getPoolIdCall { key: key2 }.abi_encode();
+        let calldata2 = ITIPFeeAMM::getPoolIdCall { key: key2 }.abi_encode();
         let result2 = fee_manager
             .call(&Bytes::from(calldata2), &Address::random())
             .unwrap();
@@ -437,7 +437,7 @@ mod tests {
         let pool_id = pool_key.get_id();
 
         // Check pool doesn't exist initially
-        let exists_call = IStableAMM::poolExistsCall { poolId: pool_id };
+        let exists_call = ITIPFeeAMM::poolExistsCall { poolId: pool_id };
         let calldata = exists_call.abi_encode();
         let result = fee_manager
             .call(&Bytes::from(calldata.clone()), &Address::random())
@@ -446,7 +446,7 @@ mod tests {
         assert!(!exists);
 
         // Create pool
-        let create_call = IStableAMM::createPoolCall {
+        let create_call = ITIPFeeAMM::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
         };

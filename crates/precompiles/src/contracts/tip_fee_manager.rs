@@ -1,27 +1,27 @@
 use crate::contracts::{
     TIP20Token, address_to_token_id_unchecked,
-    stable_amm::StableAMM,
     storage::{StorageProvider, slots::mapping_slot},
-    types::{IFeeManager, IStableAMM, ITIP20},
+    tip_fee_amm::TIPFeeAMM,
+    types::{IFeeManager, ITIP20, ITIPFeeAMM},
 };
 
 // Re-export PoolKey for backward compatibility with tests
-pub use crate::contracts::stable_amm::PoolKey;
+pub use crate::contracts::tip_fee_amm::PoolKey;
 use alloy::primitives::{Address, U256};
 use reth_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 /// Storage slots for FeeManager-specific data.
 ///
-/// IMPORTANT: FeeManager inherits from StableAMM and shares storage slots.
-/// - Slots 0-3: Reserved for StableAMM data (pools, pool_exists, liquidity)
+/// IMPORTANT: FeeManager inherits from TIPFeeAMM and shares storage slots.
+/// - Slots 0-3: Reserved for TIPFeeAMM data (pools, pool_exists, liquidity)
 /// - Slots 4+: FeeManager-specific data starts here
 ///
 /// This shared storage layout means that FeeManager can directly access and modify
-/// AMM pool data using the same storage slots that StableAMM would use.
+/// AMM pool data using the same storage slots that TIPFeeAMM would use.
 pub mod slots {
     use alloy::primitives::{U256, uint};
 
-    // FeeManager-specific slots start at slot 4 to avoid collision with StableAMM slots (0-3)
+    // FeeManager-specific slots start at slot 4 to avoid collision with TIPFeeAMM slots (0-3)
     pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
     pub const USER_TOKENS: U256 = uint!(5_U256);
     pub const COLLECTED_FEES: U256 = uint!(6_U256);
@@ -92,7 +92,7 @@ pub struct QueuedOperation {
     pub token: Address,
 }
 
-impl From<QueuedOperation> for IStableAMM::QueuedOperation {
+impl From<QueuedOperation> for ITIPFeeAMM::QueuedOperation {
     fn from(op: QueuedOperation) -> Self {
         Self {
             opType: op.op_type as u8,
@@ -119,18 +119,18 @@ impl From<FeeInfo> for IFeeManager::FeeInfo {
     }
 }
 
-/// TipFeeManager implements the FeeManager contract which inherits from StableAMM.
+/// TipFeeManager implements the FeeManager contract which inherits from TIPFeeAMM.
 ///
 /// INHERITANCE MODEL:
-/// - FeeManager "is-a" StableAMM, inheriting all AMM functionality
+/// - FeeManager "is-a" TIPFeeAMM, inheriting all AMM functionality
 /// - They share the same contract address and storage space
-/// - FeeManager delegates AMM operations to StableAMM using the same storage
+/// - FeeManager delegates AMM operations to TIPFeeAMM using the same storage
 ///
 /// STORAGE SHARING:
 /// - Both contracts operate on the same storage at the same contract address
-/// - StableAMM uses slots 0-3 for pool data
+/// - TIPFeeAMM uses slots 0-3 for pool data
 /// - FeeManager uses slots 4+ for fee-specific data
-/// - When FeeManager creates a StableAMM instance, it passes the same address and storage
+/// - When FeeManager creates a TIPFeeAMM instance, it passes the same address and storage
 pub struct TipFeeManager<'a, S: StorageProvider> {
     contract_address: Address,
     storage: &'a mut S,
@@ -197,14 +197,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     }
 
     /// Creates a new liquidity pool. This demonstrates the inheritance relationship:
-    /// FeeManager delegates to StableAMM for core AMM operations while adding fee tracking.
+    /// FeeManager delegates to TIPFeeAMM for core AMM operations while adding fee tracking.
     pub fn create_pool(
         &mut self,
-        call: IStableAMM::createPoolCall,
-    ) -> Result<(), IStableAMM::IStableAMMErrors> {
-        // Delegate to StableAMM using the SAME contract address and storage
-        // This works because FeeManager "is" a StableAMM at the storage level
-        let mut amm = StableAMM::new(self.contract_address, self.storage);
+        call: ITIPFeeAMM::createPoolCall,
+    ) -> Result<(), ITIPFeeAMM::ITIPFeeAMMErrors> {
+        // Delegate to TIPFeeAMM using the SAME contract address and storage
+        // This works because FeeManager "is" a TIPFeeAMM at the storage level
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.create_pool(call.clone())?;
 
         // Initialize fee tracking for the pool tokens
@@ -222,15 +222,15 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
-    /// Delegates pool ID calculation to StableAMM (inherited functionality)
-    pub fn get_pool_id(&mut self, call: IStableAMM::getPoolIdCall) -> alloy::primitives::B256 {
-        let mut amm = StableAMM::new(self.contract_address, self.storage);
+    /// Delegates pool ID calculation to TIPFeeAMM (inherited functionality)
+    pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> alloy::primitives::B256 {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.get_pool_id(call)
     }
 
-    /// Delegates pool data retrieval to StableAMM (inherited functionality)
-    pub fn get_pool(&mut self, call: IStableAMM::getPoolCall) -> IStableAMM::Pool {
-        let mut amm = StableAMM::new(self.contract_address, self.storage);
+    /// Delegates pool data retrieval to TIPFeeAMM (inherited functionality)
+    pub fn get_pool(&mut self, call: ITIPFeeAMM::getPoolCall) -> ITIPFeeAMM::Pool {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.get_pool(call)
     }
 
@@ -251,11 +251,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let user_token = self.get_user_token(&call.user, &validator_token);
 
         if user_token != validator_token {
-            // Create StableAMM instance to access inherited pool functionality
+            // Create TIPFeeAMM instance to access inherited pool functionality
             // Uses same address and storage - demonstrating shared state
-            let mut amm = StableAMM::new(self.contract_address, self.storage);
+            let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
 
-            // Check if pool exists (using inherited StableAMM functionality)
+            // Check if pool exists (using inherited TIPFeeAMM functionality)
             if !amm.pool_exists_for_tokens(user_token, validator_token) {
                 return Err(IFeeManager::IFeeManagerErrors::PoolDoesNotExist(
                     IFeeManager::PoolDoesNotExist {},
@@ -490,15 +490,15 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
     }
 
-    /// Retrieves pool data by ID (inherited from StableAMM)
-    pub fn pools(&mut self, call: IStableAMM::poolsCall) -> IStableAMM::Pool {
-        let mut amm = StableAMM::new(self.contract_address, self.storage);
+    /// Retrieves pool data by ID (inherited from TIPFeeAMM)
+    pub fn pools(&mut self, call: ITIPFeeAMM::poolsCall) -> ITIPFeeAMM::Pool {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.pools(call)
     }
 
-    /// Checks if a pool exists (inherited from StableAMM)
-    pub fn pool_exists(&mut self, call: IStableAMM::poolExistsCall) -> bool {
-        let mut amm = StableAMM::new(self.contract_address, self.storage);
+    /// Checks if a pool exists (inherited from TIPFeeAMM)
+    pub fn pool_exists(&mut self, call: ITIPFeeAMM::poolExistsCall) -> bool {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.pool_exists(call)
     }
 }
@@ -534,7 +534,7 @@ mod tests {
 
         let token_a = Address::random();
         let token_b = Address::random();
-        let call = IStableAMM::createPoolCall {
+        let call = ITIPFeeAMM::createPoolCall {
             tokenA: token_a,
             tokenB: token_b,
         };
@@ -544,7 +544,7 @@ mod tests {
 
         let pool_key = PoolKey::new(token_a, token_b);
         let pool_id = pool_key.get_id();
-        let exists_call = IStableAMM::poolExistsCall { poolId: pool_id };
+        let exists_call = ITIPFeeAMM::poolExistsCall { poolId: pool_id };
         assert!(fee_manager.pool_exists(exists_call));
     }
 

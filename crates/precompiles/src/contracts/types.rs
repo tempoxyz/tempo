@@ -152,16 +152,16 @@ sol! {
         error NonceNotZero();
     }
 
-    /// StableAMM interface defining the base AMM functionality for stablecoin pools.
+    /// TIPFeeAMM interface defining the base AMM functionality for stablecoin pools.
     /// This interface provides core liquidity pool management and swap operations.
     ///
-    /// NOTE: The FeeManager contract inherits from StableAMM and shares the same storage layout.
-    /// When FeeManager is deployed, it effectively "is" a StableAMM with additional fee management
+    /// NOTE: The FeeManager contract inherits from TIPFeeAMM and shares the same storage layout.
+    /// When FeeManager is deployed, it effectively "is" a TIPFeeAMM with additional fee management
     /// capabilities layered on top. Both contracts operate on the same storage slots.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
-    interface IStableAMM {
+    interface ITIPFeeAMM {
         // Structs
         struct Pool {
             uint128 reserve0;
@@ -238,15 +238,15 @@ sol! {
 
     /// FeeManager interface for managing gas fee collection and distribution.
     ///
-    /// IMPORTANT: FeeManager inherits from StableAMM and shares the same storage layout.
+    /// IMPORTANT: FeeManager inherits from TIPFeeAMM and shares the same storage layout.
     /// This means:
-    /// - FeeManager has all the functionality of StableAMM (pool management, swaps, liquidity operations)
+    /// - FeeManager has all the functionality of TIPFeeAMM (pool management, swaps, liquidity operations)
     /// - Both contracts use the same storage slots for AMM data (pools, reserves, liquidity balances)
-    /// - FeeManager extends StableAMM with additional storage slots (4-15) for fee-specific data
-    /// - When deployed, FeeManager IS a StableAMM with additional fee management capabilities
+    /// - FeeManager extends TIPFeeAMM with additional storage slots (4-15) for fee-specific data
+    /// - When deployed, FeeManager IS a TIPFeeAMM with additional fee management capabilities
     ///
     /// Storage layout:
-    /// - Slots 0-3: StableAMM storage (pools, pool exists, liquidity data)
+    /// - Slots 0-3: TIPFeeAMM storage (pools, pool exists, liquidity data)
     /// - Slots 4+: FeeManager-specific storage (validator tokens, user tokens, collected fees, etc.)
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
@@ -374,10 +374,10 @@ macro_rules! fee_manager_err {
 }
 
 #[macro_export]
-macro_rules! stable_amm_err {
+macro_rules! tip_fee_amm_err {
     ($err:ident) => {
-        $crate::contracts::types::IStableAMM::IStableAMMErrors::$err(
-            $crate::contracts::types::IStableAMM::$err {},
+        $crate::contracts::types::ITIPFeeAMM::ITIPFeeAMMErrors::$err(
+            $crate::contracts::types::ITIPFeeAMM::$err {},
         )
     };
 }
@@ -385,10 +385,10 @@ macro_rules! stable_amm_err {
 // Use the auto-generated error and event enums
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
-pub use IStableAMM::{IStableAMMErrors as StableAMMError, IStableAMMEvents as StableAMMEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };
+pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
 pub use ITipAccountRegistrar::ITipAccountRegistrarErrors as TipAccountRegistrarError;
