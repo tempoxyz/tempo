@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod consensus;
+pub mod metrics;
 
 use std::net::SocketAddr;
 

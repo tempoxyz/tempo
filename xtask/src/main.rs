@@ -152,7 +152,7 @@ fn generate_config(
             share,
             polynomial: polynomial.clone(),
             listen_port: port,
-            metrics_port: port + 1,
+            metrics_port: Some(port + 1),
             storage_directory: output.join(&name).join("storage"),
             worker_threads: 3,
             // this will be updated after we have collected all peers

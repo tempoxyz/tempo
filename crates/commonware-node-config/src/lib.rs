@@ -50,7 +50,7 @@ pub struct Config {
     pub polynomial: PublicPolynomial,
 
     pub listen_port: u16,
-    pub metrics_port: u16,
+    pub metrics_port: Option<u16>,
 
     pub storage_directory: camino::Utf8PathBuf,
     pub worker_threads: usize,
@@ -152,7 +152,8 @@ struct DeserConfig {
     polynomial: Vec<u8>,
 
     listen_port: u16,
-    metrics_port: u16,
+
+    metrics_port: Option<u16>,
 
     storage_directory: camino::Utf8PathBuf,
     worker_threads: usize,

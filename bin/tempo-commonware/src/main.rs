@@ -16,11 +16,15 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 use clap::Parser;
-use commonware_runtime::Runner;
-use eyre::Context;
+use commonware_runtime::{Metrics, Runner};
+use eyre::WrapErr as _;
 use reth_ethereum::cli::Cli;
 use reth_node_builder::NodeHandle;
-use std::{sync::Arc, thread};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+    thread,
+};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
@@ -97,15 +101,41 @@ fn main() -> eyre::Result<()> {
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
             runner.start(async move |ctx| {
-                tokio::select!(
-                    ret = run_consensus_stack(&ctx, &consensus_config, node) => {
-                        ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
-                        .wrap_err("consensus stack failed")
-                    }
-                    () = shutdown_token_clone.cancelled() => {
-                        Ok(())
-                    }
-                )
+                let mut metrics_server = consensus_config
+                    .metrics_port
+                    .map(|port| tempo_commonware_node::metrics::install(
+                        ctx.with_label("metrics"),
+                        SocketAddr::new(
+                            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                            port,
+                        ),
+                    ));
+                let consensus_stack = run_consensus_stack(&ctx, &consensus_config, node);
+                tokio::pin!(consensus_stack);
+                loop {
+                    tokio::select!(
+                        ret = &mut consensus_stack => {
+                            break ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
+                            .wrap_err("consensus stack failed");
+                        }
+
+                        () = shutdown_token_clone.cancelled() => {
+                            break Ok(());
+                        }
+
+                        // XXX: just exists to report if the metrics server went down.
+                        // The unwrap is ok because it is gated by is_some.
+                        ret = async { metrics_server.as_mut().unwrap().await },
+                            if metrics_server.is_some()
+                        => {
+                            let reason = match ret.wrap_err("task_panicked") {
+                                Ok(Ok(())) => format!("unexpected normal exit"),
+                                Ok(Err(err)) | Err(err) => format!("{err}"),
+                            };
+                            tracing::warn!(reason, "the metrics server exited");
+                        }
+                    )
+                }
             })
         };
         let _ = consensus_dead_tx.send(());

@@ -12518,6 +12518,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
+ "axum",
  "bytes",
  "commonware-broadcast",
  "commonware-codec",
