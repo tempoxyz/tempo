@@ -36,7 +36,7 @@ reth-codec = ["dep:reth-codecs", "dep:modular-bitfield"]
 serde-bincode-compat = ["serde", "alloy-consensus/serde-bincode-compat", "reth-primitives-traits/serde-bincode-compat"]
 arbitrary = [
     "dep:arbitrary",
-    "serde",  # TransactionEnvelope macro requires serde
+    "serde",
     "alloy-consensus/arbitrary",
     "alloy-primitives/arbitrary",
     "alloy-eips/arbitrary",
