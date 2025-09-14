@@ -12764,7 +12764,6 @@ dependencies = [
  "arbitrary",
  "modular-bitfield",
  "reth-codecs",
- "reth-ethereum-primitives",
  "reth-primitives-traits",
  "serde",
  "test-fuzz",
