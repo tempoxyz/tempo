@@ -71,7 +71,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
             .emit_event(
                 TIP20_FACTORY_ADDRESS,
                 TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-                    token: token_id_to_address((token_id + U256::ONE).to::<u64>()),
+                    token: token_id_to_address(token_id.to::<u64>()),
                     tokenId: token_id,
                     name: call.name,
                     symbol: call.symbol,
