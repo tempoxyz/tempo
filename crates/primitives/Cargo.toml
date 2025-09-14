@@ -1,0 +1,46 @@
+[package]
+name = "tempo-primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Alloy
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+alloy-serde = { workspace = true, optional = true }
+arbitrary = { workspace = true, features = ["derive"], optional = true }
+
+# Reth
+reth-ethereum-primitives = { workspace = true, features = ["serde"], optional = true }
+reth-primitives-traits.workspace = true
+reth-codecs = { workspace = true, optional = true }
+
+# Utils
+serde = { workspace = true, features = ["derive"], optional = true }
+modular-bitfield = { version = "0.11.2", optional = true }
+
+[dev-dependencies]
+reth-codecs.workspace = true
+test-fuzz.workspace = true
+
+[features]
+default = ["serde", "reth-codec", "serde-bincode-compat"]
+serde = ["dep:serde", "dep:alloy-serde"]
+reth-codec = ["dep:reth-codecs", "dep:modular-bitfield"]
+serde-bincode-compat = ["serde", "dep:reth-ethereum-primitives", "reth-ethereum-primitives/serde-bincode-compat"]
+arbitrary = [
+    "dep:arbitrary",
+    "serde",  # TransactionEnvelope macro requires serde
+    "alloy-consensus/arbitrary",
+    "alloy-primitives/arbitrary",
+    "alloy-eips/arbitrary",
+    "reth-ethereum-primitives/arbitrary",
+    "reth-codecs?/arbitrary",
+]
+
+[lints]
+workspace = true
