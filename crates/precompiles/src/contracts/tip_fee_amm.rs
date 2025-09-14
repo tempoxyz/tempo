@@ -3,7 +3,8 @@ use crate::contracts::{
         StorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
-    types::ITIPFeeAMM,
+    tip20::TIP20Token,
+    types::{ITIP20, ITIPFeeAMM},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -137,6 +138,30 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES)
     }
 
+    fn transfer_from_user(
+        &mut self,
+        token: Address,
+        from: &Address,
+        amount: U256,
+    ) -> Result<(), ITIPFeeAMM::ITIPFeeAMMErrors> {
+        let mut token_contract = TIP20Token {
+            token_address: token,
+            storage: self.storage,
+        };
+
+        let call = ITIP20::transferFromCall {
+            from: *from,
+            to: self.contract_address,
+            amount,
+        };
+
+        token_contract
+            .transfer_from(from, call)
+            .expect("TODO: handle error");
+
+        Ok(())
+    }
+
     /// Create a new liquidity pool
     pub fn create_pool(
         &mut self,
@@ -265,7 +290,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         (reserve0, reserve1)
     }
 
-    // TODO: Liqudidity functions
+    // TODO: Liq functions
 
     /// Mint liquidity tokens
     pub fn mint(
@@ -345,7 +370,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         // Update total supply
         let new_total_supply = if total_supply == U256::ZERO {
-            liquidity + U256::from(1000) // Add MIN_LIQUIDITY for first time
+            // TODO: use const, min liquidity
+            liquidity + U256::from(1000)
         } else {
             total_supply + liquidity
         };
