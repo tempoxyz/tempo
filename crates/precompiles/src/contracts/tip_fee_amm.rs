@@ -1,9 +1,12 @@
 use crate::contracts::{
-    storage::{StorageProvider, slots::mapping_slot},
+    storage::{
+        StorageProvider,
+        slots::{double_mapping_slot, mapping_slot},
+    },
     types::ITIPFeeAMM,
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256},
+    primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
 
@@ -95,6 +98,20 @@ pub struct TIPFeeAMM<'a, S: StorageProvider> {
     pub storage: &'a mut S,
 }
 
+/// Square root function using Newton's method
+fn sqrt(x: U256) -> U256 {
+    if x == U256::ZERO {
+        return U256::ZERO;
+    }
+    let mut z = (x + U256::ONE) / U256::from(2);
+    let mut y = x;
+    while z < y {
+        y = z;
+        z = (x / z + z) / U256::from(2);
+    }
+    y
+}
+
 impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     pub fn new(contract_address: Address, storage: &'a mut S) -> Self {
         Self {
@@ -117,8 +134,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     fn get_liquidity_balance_slot(&self, pool_id: &B256, user: &Address) -> U256 {
-        let inner_mapping_slot = mapping_slot(pool_id, slots::LIQUIDITY_BALANCES);
-        todo!()
+        double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES)
     }
 
     /// Create a new liquidity pool
@@ -249,19 +265,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         (reserve0, reserve1)
     }
 
-    /// Square root function using Newton's method
-    pub fn sqrt(&self, x: U256) -> U256 {
-        if x == U256::ZERO {
-            return U256::ZERO;
-        }
-        let mut z = (x + U256::ONE) / U256::from(2);
-        let mut y = x;
-        while z < y {
-            y = z;
-            z = (x / z + z) / U256::from(2);
-        }
-        y
-    }
+    // TODO: Liqudidity functions
 
     /// Mint liquidity tokens
     pub fn mint(
@@ -284,12 +288,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             ));
         }
 
-        if call.amount0 == U256::ZERO && call.amount1 == U256::ZERO {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidAmount(
-                ITIPFeeAMM::InvalidAmount {},
-            ));
-        }
-
         // Get current pool state
         let pool_slot = self.get_pool_slot(&pool_id);
         let pool_value = self
@@ -297,6 +295,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .sload(self.contract_address, pool_slot)
             .expect("TODO: handle error");
 
+        // TODO: use const
         let reserve0 = pool_value & U256::from(u128::MAX);
         let reserve1 = pool_value.wrapping_shr(128);
 
@@ -309,28 +308,20 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         let liquidity = if total_supply == U256::ZERO {
             // First liquidity provider
-            let liquidity = self.sqrt(call.amount0 * call.amount1);
+            let liquidity = sqrt(call.amount0 * call.amount1);
+            // TODO: use const
             if liquidity <= U256::from(1000) {
                 return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
                     ITIPFeeAMM::InsufficientLiquidity {},
                 ));
             }
-            liquidity - U256::from(1000) // Lock minimum liquidity
+            liquidity - U256::from(1000) // Subtract MIN_LIQUIDITY
         } else {
-            // Subsequent liquidity providers - proportional amounts
-            if reserve0 == U256::ZERO || reserve1 == U256::ZERO {
-                return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientReserves(
-                    ITIPFeeAMM::InsufficientReserves {},
-                ));
-            }
-
-            let liquidity0 = (call.amount0 * total_supply) / reserve0;
-            let liquidity1 = (call.amount1 * total_supply) / reserve1;
-            if liquidity0 < liquidity1 {
-                liquidity0
-            } else {
-                liquidity1
-            }
+            // Subsequent liquidity providers - must provide proportional amounts
+            let liq_0 = (call.amount0 * total_supply) / reserve0;
+            let liq_1 = (call.amount1 * total_supply) / reserve1;
+            // TODO: rewrite this as min?
+            liq_0.min(liq_1)
         };
 
         if liquidity == U256::ZERO {
@@ -338,6 +329,10 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 ITIPFeeAMM::InsufficientLiquidity {},
             ));
         }
+
+        // TODO: Transfer tokens from user
+        // IERC20(token0).transferFrom(msg.sender, address(this), amount0);
+        // IERC20(token1).transferFrom(msg.sender, address(this), amount1);
 
         // Update reserves
         let new_reserve0 = reserve0 + call.amount0;
@@ -350,7 +345,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         // Update total supply
         let new_total_supply = if total_supply == U256::ZERO {
-            total_supply + liquidity + U256::from(1000) // Include locked minimum
+            liquidity + U256::from(1000) // Add MIN_LIQUIDITY for first time
         } else {
             total_supply + liquidity
         };
@@ -375,7 +370,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
 
         // TODO: emit Mint event
-        // TODO: handle token transfers (would need TIP20 integration)
+        // emit Mint(msg.sender, token0, token1, amount0, amount1, liquidity, to);
 
         Ok(liquidity)
     }
