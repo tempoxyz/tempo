@@ -193,7 +193,7 @@ sol! {
 
         // Liquidity Operations
         function mint(PoolKey memory key, address token0, address token1, uint256 amount0, uint256 amount1, address to) external returns (uint256 liquidity);
-        function burn(PoolKey memory key, uint256 liquidity, address from, address to) external returns (uint256 amount0, uint256 amount1);
+        function burn(PoolKey memory key, uint256 liquidity, address to) external returns (uint256 amount0, uint256 amount1);
         function queueDeposit(PoolKey memory key, uint256 amount, address depositToken) external;
         function queueWithdraw(PoolKey memory key, uint256 liquidity) external;
         function executeBlock() external;

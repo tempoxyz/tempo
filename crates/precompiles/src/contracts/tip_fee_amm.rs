@@ -142,7 +142,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES)
     }
 
-    fn get_liquidity_balance(&mut self, pool_id: &B256, user: &Address) -> U256 {
+    fn get_liquidity_balance(&mut self, pool_id: &B256, user: Address) -> U256 {
         let slot = double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES);
 
         self.storage
@@ -422,101 +422,22 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     /// Burn liquidity tokens
     pub fn burn(
         &mut self,
+        msg_sender: Address,
         call: ITIPFeeAMM::burnCall,
     ) -> Result<(U256, U256), ITIPFeeAMM::ITIPFeeAMMErrors> {
         let pool_key = PoolKey::from(call.key);
         let pool_id = pool_key.get_id();
-
-        // Check if pool exists
-        let exists_slot = self.get_pool_exists_slot(&pool_id);
-        if self
-            .storage
-            .sload(self.contract_address, exists_slot)
-            .expect("TODO: handle error")
-            == U256::ZERO
-        {
+        if !self.pool_exists(&pool_id) {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
                 ITIPFeeAMM::PoolDoesNotExist {},
             ));
         }
 
-        if call.liquidity == U256::ZERO {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidAmount(
-                ITIPFeeAMM::InvalidAmount {},
-            ));
+        if self.get_liquidity_balance(&pool_id, msg_sender) >= call.liquidity {
+            // TODO: return InsufficientLiquidity
         }
 
-        // Check user's liquidity balance
-        let balance_slot = self.get_liquidity_balance_slot(&pool_id, &call.from);
-        let user_balance = self
-            .storage
-            .sload(self.contract_address, balance_slot)
-            .expect("TODO: handle error");
-
-        if user_balance < call.liquidity {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidityBalance(
-                ITIPFeeAMM::InsufficientLiquidityBalance {},
-            ));
-        }
-
-        // Get current pool state
-        let pool_slot = self.get_pool_slot(&pool_id);
-        let pool_value = self
-            .storage
-            .sload(self.contract_address, pool_slot)
-            .expect("TODO: handle error");
-
-        let reserve0 = pool_value & U256::from(u128::MAX);
-        let reserve1 = pool_value.wrapping_shr(128);
-
-        // Get total supply
-        let total_supply_slot = self.get_total_supply_slot(&pool_id);
-        let total_supply = self
-            .storage
-            .sload(self.contract_address, total_supply_slot)
-            .expect("TODO: handle error");
-
-        if total_supply == U256::ZERO {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
-        }
-
-        // Calculate proportional amounts
-        let amount0 = (call.liquidity * reserve0) / total_supply;
-        let amount1 = (call.liquidity * reserve1) / total_supply;
-
-        if amount0 == U256::ZERO || amount1 == U256::ZERO {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
-        }
-
-        // Update reserves
-        let new_reserve0 = reserve0 - amount0;
-        let new_reserve1 = reserve1 - amount1;
-        let new_pool_value = (new_reserve1 << 128) | new_reserve0;
-
-        self.storage
-            .sstore(self.contract_address, pool_slot, new_pool_value)
-            .expect("TODO: handle error");
-
-        // Update total supply
-        let new_total_supply = total_supply - call.liquidity;
-        self.storage
-            .sstore(self.contract_address, total_supply_slot, new_total_supply)
-            .expect("TODO: handle error");
-
-        // Update user's liquidity balance
-        let new_user_balance = user_balance - call.liquidity;
-        self.storage
-            .sstore(self.contract_address, balance_slot, new_user_balance)
-            .expect("TODO: handle error");
-
-        // TODO: emit Burn event
-        // TODO: handle token transfers (would need TIP20 integration)
-
-        Ok((amount0, amount1))
+        todo!()
     }
 
     /// Get total supply of LP tokens for a pool
