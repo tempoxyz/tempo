@@ -28,10 +28,10 @@ pub mod slots {
     use alloy::primitives::{U256, uint};
 
     // Base AMM storage slots (also used by FeeManager)
-    pub const POOLS: U256 = U256::ZERO; // Slot 0: Pool reserves mapping
-    pub const TOTAL_SUPPLY: U256 = uint!(1_U256); // Slot 1: Pool total supply mapping
-    pub const POOL_EXISTS: U256 = uint!(2_U256); // Slot 2: Pool existence mapping
-    pub const LIQUIDITY_BALANCES: U256 = uint!(3_U256); // Slot 3: Nested mapping for LP balances
+    pub const POOLS: U256 = U256::ZERO;
+    pub const TOTAL_SUPPLY: U256 = uint!(1_U256);
+    pub const POOL_EXISTS: U256 = uint!(2_U256);
+    pub const LIQUIDITY_BALANCES: U256 = uint!(3_U256);
     // Slots 4+ are reserved for FeeManager-specific data
 }
 
