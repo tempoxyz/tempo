@@ -206,12 +206,47 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.set_liquidity_balance(pool_id, to, amount + balance);
     }
 
-    // TODO: update to u128
-    fn set_reserves(&mut self, pool_id: &B256, reserve_0: U256, reserve_1: U256) -> (U256, U256) {
+    fn set_reserves(&mut self, pool_id: &B256, reserve_0: U256, reserve_1: U256) {
         let pool_slot = self.get_pool_slot(&pool_id);
-        //TODO:
+        // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
+        let packed = (reserve_1.wrapping_shl(128)) | (reserve_0 & U256::from(u128::MAX));
+        self.storage
+            .sstore(self.contract_address, pool_slot, packed)
+            .expect("TODO: handle error");
+    }
 
-        todo!()
+    /// Calculate amounts to return when burning liquidity
+    fn calculate_burn_amounts(
+        &mut self,
+        pool_id: &B256,
+        liquidity: U256,
+    ) -> Result<(U256, U256), ITIPFeeAMM::ITIPFeeAMMErrors> {
+        let total_supply = self.get_total_supply(pool_id);
+        if total_supply.is_zero() {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+
+        let (reserve0, reserve1) = self.get_reserves(pool_id);
+
+        let amount0 = (liquidity * reserve0) / total_supply;
+        let amount1 = (liquidity * reserve1) / total_supply;
+
+        if amount0.is_zero() || amount1.is_zero() {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+
+        // // TODO:
+        // uint256 availableReserve0 = _getEffectiveReserve0(pool);
+        // uint256 availableReserve1 = _getEffectiveReserve1(pool);
+        //
+        // require(amount0 <= availableReserve0, "WITHDRAWAL_EXCEEDS_AVAILABLE_RESERVE0");
+        // require(amount1 <= availableReserve1, "WITHDRAWAL_EXCEEDS_AVAILABLE_RESERVE1");
+
+        Ok((amount0, amount1))
     }
 
     fn transfer_from_user(
@@ -419,7 +454,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok(liquidity)
     }
 
-    /// Burn liquidity tokens
+    /// Burn liquidity tokens and return proportional amounts
     pub fn burn(
         &mut self,
         msg_sender: Address,
@@ -433,11 +468,50 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             ));
         }
 
-        if self.get_liquidity_balance(&pool_id, msg_sender) >= call.liquidity {
-            // TODO: return InsufficientLiquidity
+        // Check user has sufficient liquidity
+        let user_balance = self.get_liquidity_balance(&pool_id, msg_sender);
+        if user_balance < call.liquidity {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
         }
 
-        todo!()
+        // Calculate burn amounts
+        let (amount_0, amount_1) = self.calculate_burn_amounts(&pool_id, call.liquidity)?;
+
+        // Burn LP Tokens
+        let balance = self.get_liquidity_balance(&pool_id, msg_sender);
+        self.set_liquidity_balance(&pool_id, msg_sender, balance - call.liquidity);
+        let total_supply = self.get_total_supply(&pool_id);
+        self.set_total_supply(&pool_id, total_supply - call.liquidity);
+
+        // Update reserves
+        let (reserve_0, reserve_1) = self.get_reserves(&pool_id);
+        self.set_reserves(&pool_id, reserve_0 - amount_0, reserve_1 - amount_1);
+
+        // Transfer tokens from user to contract
+        let token_0_id = address_to_token_id_unchecked(&pool_key.token0);
+        TIP20Token::new(token_0_id, self.storage).transfer(
+            &msg_sender,
+            ITIP20::transferCall {
+                to: self.contract_address,
+                amount: amount_0,
+            },
+        );
+
+        let token_1_id = address_to_token_id_unchecked(&pool_key.token1);
+        TIP20Token::new(token_1_id, self.storage).transfer_from(
+            &msg_sender,
+            ITIP20::transferFromCall {
+                from: msg_sender,
+                to: self.contract_address,
+                amount: amount_1,
+            },
+        );
+
+        // TODO: emit burn event
+
+        Ok((amount_0, amount_1))
     }
 
     /// Get total supply of LP tokens for a pool
