@@ -921,10 +921,9 @@ mod tests {
             )
             .expect("Could not mint");
 
-        // Store initial state for comparison
-        let initial_user_lp_balance = amm.get_liquidity_balance(&pool_id, user);
-        let initial_total_supply = amm.get_total_supply(&pool_id);
-        let (initial_reserve0, initial_reserve1) = amm.get_reserves(&pool_id);
+        let lp_balance = amm.get_liquidity_balance(&pool_id, user);
+        let total_supply = amm.get_total_supply(&pool_id);
+        let (reserve_0, reserve_1) = amm.get_reserves(&pool_id);
 
         // Burn half of the liquidity
         let burn_amount = liquidity / U256::from(2);
@@ -939,44 +938,40 @@ mod tests {
             )
             .expect("Could not burn amount");
 
-        // Calculate expected amounts based on proportional share
-        let expected_amount_0 = (burn_amount * initial_reserve0) / initial_total_supply;
-        let expected_amount_1 = (burn_amount * initial_reserve1) / initial_total_supply;
+        // Calculate expected amounts and assert state changes
+        let expected_amount_0 = (burn_amount * reserve_0) / total_supply;
+        let expected_amount_1 = (burn_amount * reserve_1) / total_supply;
         assert_eq!(amount_0_out, expected_amount_0);
         assert_eq!(amount_1_out, expected_amount_1);
 
-        // Check LP token balance decreased
         let final_lp_balance = amm.get_liquidity_balance(&pool_id, user);
-        assert_eq!(final_lp_balance, initial_user_lp_balance - burn_amount);
+        assert_eq!(final_lp_balance, lp_balance - burn_amount);
 
-        // Check total supply decreased
         let final_total_supply = amm.get_total_supply(&pool_id);
-        assert_eq!(final_total_supply, initial_total_supply - burn_amount);
+        assert_eq!(final_total_supply, lp_balance - burn_amount);
 
-        // Check pool reserves decreased
-        let (final_reserve0, final_reserve1) = amm.get_reserves(&pool_id);
-        assert_eq!(final_reserve0, initial_reserve0 - amount_0_out);
-        assert_eq!(final_reserve1, initial_reserve1 - amount_1_out);
+        let (final_reserve_0, final_reserve_1) = amm.get_reserves(&pool_id);
+        assert_eq!(final_reserve_0, reserve_0 - amount_0_out);
+        assert_eq!(final_reserve_1, reserve_0 - amount_1_out);
 
-        // Check user received tokens back and AMM contract balances for token0
+        // Assert token balances
         let mut token_0 =
             TIP20Token::new(address_to_token_id_unchecked(&token_0_addr), &mut storage);
         let user_token_0_bal = token_0.balance_of(ITIP20::balanceOfCall { account: user });
         assert_eq!(user_token_0_bal, amount_0_out);
         let fee_amm_token_0_bal = token_0.balance_of(ITIP20::balanceOfCall { account: amm_addr });
-        assert_eq!(fee_amm_token_0_bal, initial_reserve0 - amount_0_out);
+        assert_eq!(fee_amm_token_0_bal, reserve_0 - amount_0_out);
 
-        // Check user received tokens back and AMM contract balances for token1
         let mut token_1 =
             TIP20Token::new(address_to_token_id_unchecked(&token_1_addr), &mut storage);
         let user_token_1_bal = token_1.balance_of(ITIP20::balanceOfCall { account: user });
         assert_eq!(user_token_1_bal, amount_1_out);
         let fee_amm_token_1_bal = token_1.balance_of(ITIP20::balanceOfCall { account: amm_addr });
-        assert_eq!(fee_amm_token_1_bal, initial_reserve1 - amount_1_out);
+        assert_eq!(fee_amm_token_1_bal, reserve_1 - amount_1_out);
 
-        // Assert burn event emission
+        // Assert event emission
         let events = storage.events.get(&amm_addr).expect("Events should exist");
-        assert_eq!(events.len(), 2); // Mint + Burn events
+        assert_eq!(events.len(), 2);
 
         let expected_burn_event = TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
             sender: user,
