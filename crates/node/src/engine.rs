@@ -3,7 +3,7 @@ use reth_ethereum::{Block, engine::EthPayloadAttributes, primitives::Header};
 use reth_node_api::{InvalidPayloadAttributesError, NewPayloadError, PayloadValidator};
 use reth_primitives_traits::RecoveredBlock;
 
-/// Type encapsulating Tempo engine validation logic. Wraps an inner [`EthereumEngineValidator`].
+/// Type encapsulating Tempo engine validation logic.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoEngineValidator;
