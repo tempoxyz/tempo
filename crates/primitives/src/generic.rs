@@ -1,4 +1,4 @@
-use crate::TempoTxEnvelope;
+use crate::{TempoTxEnvelope, TempoTxType};
 use alloy_consensus::{Block, BlockBody, Header, Receipt};
 use reth_primitives_traits::NodePrimitives;
 
@@ -11,5 +11,5 @@ impl NodePrimitives for TempoPrimitives {
     type BlockHeader = Header;
     type BlockBody = BlockBody<TempoTxEnvelope>;
     type SignedTx = TempoTxEnvelope;
-    type Receipt = Receipt;
+    type Receipt = Receipt<TempoTxType>;
 }

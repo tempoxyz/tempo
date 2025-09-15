@@ -1,7 +1,7 @@
+use super::fee_token::TxFeeToken;
 use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
 use alloy_primitives::{Address, B256};
-
-use super::fee_token::TxFeeToken;
+use reth_primitives_traits::InMemorySize;
 
 /// Tempo transaction envelope containing all supported transaction types
 ///
@@ -187,6 +187,12 @@ impl reth_codecs::alloy::transaction::FromTxCompact for TempoTxEnvelope {
                 (Self::FeeToken(tx), buf)
             }
         }
+    }
+}
+
+impl InMemorySize for TempoTxType {
+    fn size(&self) -> usize {
+        core::mem::size_of::<Self>()
     }
 }
 
