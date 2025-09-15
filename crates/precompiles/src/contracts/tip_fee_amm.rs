@@ -918,7 +918,7 @@ mod tests {
             amount1: amount_1,
             liquidity,
         });
-        assert_eq!(events[0], expected_event.into_log_data());
+        assert_eq!(events[1], expected_event.into_log_data());
     }
 
     #[test]
@@ -1015,6 +1015,6 @@ mod tests {
             liquidity: burn_amount,
             to: user,
         });
-        assert_eq!(events[1], expected_burn_event.into_log_data());
+        assert_eq!(events[2], expected_burn_event.into_log_data());
     }
 }
