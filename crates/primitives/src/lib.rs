@@ -5,4 +5,6 @@
 
 pub mod transaction;
 
+mod generic;
+
 pub use transaction::{FEE_TOKEN_TX_TYPE_ID, TempoTxEnvelope, TempoTxType, TxFeeToken};

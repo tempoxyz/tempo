@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 # Alloy
-alloy-consensus.workspace = true
+alloy-consensus = { workspace = true, features = ["serde", "serde-bincode-compat"] }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
