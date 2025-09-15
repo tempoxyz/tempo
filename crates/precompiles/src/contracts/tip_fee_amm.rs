@@ -167,12 +167,10 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
     pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
         let exists_slot = self.get_pool_exists_slot(pool_id);
-        let exists = self
-            .storage
+        self.storage
             .sload(self.contract_address, exists_slot)
-            .expect("TODO: handle error");
-
-        exists.to::<bool>()
+            .expect("TODO: handle error")
+            != U256::ZERO
     }
 
     pub fn get_pool(&mut self, pool_id: &B256) -> Pool {
