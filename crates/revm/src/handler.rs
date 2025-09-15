@@ -69,7 +69,7 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         let caller = evm.ctx().caller();
         let beneficiary = evm.ctx().beneficiary();
-        let fee_token = get_fee_token(evm.ctx_mut().journal_mut(), caller, beneficiary)?;
+        let fee_token = get_fee_token(evm.ctx_mut(), caller, beneficiary)?;
         trace!(%fee_token, %caller, %beneficiary, "loaded fee token");
         self.fee_token = fee_token;
 
@@ -223,25 +223,31 @@ where
 /// Looks up the user's fee token in the `TIPFeemanager` contract.
 ///
 /// If no fee token is set for the user, or the fee token is the zero address, the returned fee token will be the validator's fee token.
-pub fn get_fee_token<JOURNAL>(
-    journal: &mut JOURNAL,
+pub fn get_fee_token<DB>(
+    ctx: &mut TempoContext<DB>,
     sender: Address,
     validator: Address,
-) -> Result<Address, <JOURNAL::Database as Database>::Error>
+) -> Result<Address, DB::Error>
 where
-    JOURNAL: JournalTr,
+    DB: Database,
 {
+    if let Some(fee_token) = ctx.tx().fee_token {
+        return Ok(fee_token);
+    }
+
     let user_slot = mapping_slot(sender, tip_fee_manager::slots::USER_TOKENS);
     // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-    journal.load_account(TIP_FEE_MANAGER_ADDRESS)?;
-    let user_fee_token = journal
+    ctx.journal_mut().load_account(TIP_FEE_MANAGER_ADDRESS)?;
+    let user_fee_token = ctx
+        .journal_mut()
         .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
         .data
         .into_address();
 
     if user_fee_token.is_zero() {
         let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
-        let validator_fee_token = journal
+        let validator_fee_token = ctx
+            .journal_mut()
             .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
             .data
             .into_address();
@@ -385,16 +391,19 @@ mod tests {
 
     #[test]
     fn test_get_fee_token() -> eyre::Result<()> {
-        let mut journal = create_test_journal();
+        let journal = create_test_journal();
+        let mut ctx = TempoContext::new(CacheDB::new(EmptyDB::default()), SpecId::default())
+            .with_new_journal(journal);
         let user = Address::random();
         let validator = Address::random();
         let user_fee_token = Address::random();
         let validator_fee_token = Address::random();
+        let tx_fee_token = Address::random();
 
         // Set validator token
         let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
-        journal.warm_account(TIP_FEE_MANAGER_ADDRESS)?;
-        journal
+        ctx.journaled_state.warm_account(TIP_FEE_MANAGER_ADDRESS)?;
+        ctx.journaled_state
             .sstore(
                 TIP_FEE_MANAGER_ADDRESS,
                 validator_slot,
@@ -402,12 +411,12 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = get_fee_token(&mut journal, user, validator).unwrap();
+        let fee_token = get_fee_token(&mut ctx, user, validator).unwrap();
         assert_eq!(validator_fee_token, fee_token);
 
         // Set user token
         let user_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
-        journal
+        ctx.journaled_state
             .sstore(
                 TIP_FEE_MANAGER_ADDRESS,
                 user_slot,
@@ -415,8 +424,13 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = get_fee_token(&mut journal, user, validator).unwrap();
+        let fee_token = get_fee_token(&mut ctx, user, validator).unwrap();
         assert_eq!(user_fee_token, fee_token);
+
+        // Set tx fee token
+        ctx.tx.fee_token = Some(tx_fee_token);
+        let fee_token = get_fee_token(&mut ctx, user, validator).unwrap();
+        assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
     }

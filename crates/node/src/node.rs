@@ -1,16 +1,12 @@
 use crate::{args::TempoArgs, engine::TempoEngineValidator, rpc::TempoEthApiBuilder};
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
-use alloy_rpc_types_engine::ExecutionData;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_ethereum_primitives::EthPrimitives;
-use reth_evm::{
-    ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
-    revm::{context::TxEnv, primitives::Address},
-};
+use reth_evm::revm::primitives::Address;
 use reth_node_api::{
-    AddOnsContext, EngineTypes, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
+    AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
@@ -27,8 +23,6 @@ use reth_node_builder::{
 use reth_node_ethereum::{EthEngineTypes, EthereumNetworkBuilder};
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
-use reth_rpc_eth_api::FromEvmError;
-use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::TransactionValidationTaskExecutor;
 use std::{default::Default, sync::Arc, time::SystemTime};
@@ -124,20 +118,11 @@ where
 
 impl<N, EthB, PVB, EB, EVB> NodeAddOns<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                ChainSpec: EthChainSpec + EthereumHardforks,
-                Primitives = EthPrimitives,
-                Payload: EngineTypes<ExecutionData = ExecutionData>,
-            >,
-            Evm: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes>,
-        >,
+    N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
     EthB: EthApiBuilder<N>,
     PVB: Send + PayloadValidatorBuilder<N>,
     EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
-    EthApiError: FromEvmError<N::Evm>,
-    EvmFactoryFor<N::Evm>: EvmFactory<Tx = TxEnv>,
 {
     type Handle = <RpcAddOns<N, EthB, PVB, EB, EVB> as NodeAddOns<N>>::Handle;
 
@@ -151,20 +136,11 @@ where
 
 impl<N, EthB, PVB, EB, EVB> RethRpcAddOns<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                ChainSpec: EthChainSpec + EthereumHardforks,
-                Primitives = EthPrimitives,
-                Payload: EngineTypes<ExecutionData = ExecutionData>,
-            >,
-            Evm: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes>,
-        >,
+    N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
     EthB: EthApiBuilder<N>,
     PVB: PayloadValidatorBuilder<N>,
     EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
-    EthApiError: FromEvmError<N::Evm>,
-    EvmFactoryFor<N::Evm>: EvmFactory<Tx = TxEnv>,
 {
     type EthApi = EthB::EthApi;
 
@@ -175,20 +151,11 @@ where
 
 impl<N, EthB, PVB, EB, EVB> EngineValidatorAddOn<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                ChainSpec: EthChainSpec + EthereumHardforks,
-                Primitives = EthPrimitives,
-                Payload: EngineTypes<ExecutionData = ExecutionData>,
-            >,
-            Evm: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes>,
-        >,
+    N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
     EthB: EthApiBuilder<N>,
     PVB: Send,
     EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
-    EthApiError: FromEvmError<N::Evm>,
-    EvmFactoryFor<N::Evm>: EvmFactory<Tx = TxEnv>,
 {
     type ValidatorBuilder = EVB;
 

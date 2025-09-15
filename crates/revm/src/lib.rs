@@ -6,5 +6,7 @@
 pub mod evm;
 pub mod exec;
 pub mod handler;
+mod tx;
 
 pub use evm::TempoEvm;
+pub use tx::TempoTxEnv;

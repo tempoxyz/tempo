@@ -1,4 +1,5 @@
 use crate::{
+    TempoTxEnv,
     evm::{TempoContext, TempoEvm},
     handler::TempoEvmHandler,
 };
@@ -27,7 +28,7 @@ impl<DB, I> ExecuteEvm for TempoEvm<DB, I>
 where
     DB: Database,
 {
-    type Tx = TxEnv;
+    type Tx = TempoTxEnv;
     type Block = BlockEnv;
     type State = EvmState;
     type Error = EVMError<DB::Error>;
@@ -102,11 +103,9 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0.ctx.set_tx(TxEnv::new_system_tx_with_caller(
-            caller,
-            system_contract_address,
-            data,
-        ));
+        self.0
+            .ctx
+            .set_tx(TxEnv::new_system_tx_with_caller(caller, system_contract_address, data).into());
         let mut h = TempoEvmHandler::new();
         h.run_system_call(self)
     }
@@ -123,11 +122,9 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0.ctx.set_tx(TxEnv::new_system_tx_with_caller(
-            caller,
-            system_contract_address,
-            data,
-        ));
+        self.0
+            .ctx
+            .set_tx(TxEnv::new_system_tx_with_caller(caller, system_contract_address, data).into());
         let mut h = TempoEvmHandler::new();
         h.inspect_run(self)
     }
