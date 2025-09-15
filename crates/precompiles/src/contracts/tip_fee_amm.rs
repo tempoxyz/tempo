@@ -644,16 +644,6 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_reserves() {
-        todo!()
-    }
-
-    #[test]
-    fn test_calculate_burn_amounts() {
-        todo!()
-    }
-
-    #[test]
     fn test_liquidity_balances() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);

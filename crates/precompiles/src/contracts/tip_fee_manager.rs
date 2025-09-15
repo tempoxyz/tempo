@@ -491,16 +491,49 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
     }
 
-    /// Retrieves pool data by ID (inherited from TIPFeeAMM)
+    /// Retrieves pool data by ID
     pub fn pools(&mut self, call: ITIPFeeAMM::poolsCall) -> ITIPFeeAMM::Pool {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.pools(call)
     }
 
-    /// Checks if a pool exists (inherited from TIPFeeAMM)
+    /// Checks if a pool exists
     pub fn pool_exists(&mut self, call: ITIPFeeAMM::poolExistsCall) -> bool {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.pool_exists(&call.poolId)
+    }
+
+    /// Mint liquidity tokens
+    pub fn mint(
+        &mut self,
+        msg_sender: Address,
+        call: ITIPFeeAMM::mintCall,
+    ) -> Result<U256, ITIPFeeAMM::ITIPFeeAMMErrors> {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        amm.mint(msg_sender, call)
+    }
+
+    /// Burn liquidity tokens
+    pub fn burn(
+        &mut self,
+        msg_sender: Address,
+        call: ITIPFeeAMM::burnCall,
+    ) -> Result<ITIPFeeAMM::burnReturn, ITIPFeeAMM::ITIPFeeAMMErrors> {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        amm.burn(msg_sender, call)
+            .map(|(amount0, amount1)| ITIPFeeAMM::burnReturn { amount0, amount1 })
+    }
+
+    /// Get total supply of LP tokens for a pool (inherited from TIPFeeAMM)
+    pub fn total_supply(&mut self, call: ITIPFeeAMM::totalSupplyCall) -> U256 {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        amm.total_supply(call)
+    }
+
+    /// Get liquidity balance of a user for a pool (inherited from TIPFeeAMM)
+    pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> U256 {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        amm.liquidity_balances(call)
     }
 }
 
