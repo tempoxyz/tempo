@@ -555,10 +555,15 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use reth_storage_api::errors::db;
+
     use super::*;
     use crate::contracts::{
-        HashMapStorageProvider, tip20::TIP20Token, tip20_factory::TIP20Factory,
-        token_id_to_address, types::ITIP20,
+        HashMapStorageProvider,
+        tip20::{ISSUER_ROLE, TIP20Token},
+        tip20_factory::TIP20Factory,
+        token_id_to_address,
+        types::ITIP20,
     };
 
     #[test]
@@ -628,9 +633,8 @@ mod tests {
 
         let pool_key = PoolKey::new(token0, token1);
         let pool_id = pool_key.get_id();
-
-        let reserve_0 = U256::random();
-        let reserve_1 = U256::random();
+        let reserve_0 = U256::from(rand::random::<u128>());
+        let reserve_1 = U256::from(rand::random::<u128>());
 
         amm.set_reserves(&pool_id, reserve_0, reserve_1);
         let reserves = amm.get_reserves(&pool_id);
@@ -705,6 +709,7 @@ mod tests {
         let amm_addr = Address::random();
         let user = Address::random();
 
+        // TODO: refactor pls
         // Create tokens via factory
         let mut factory = TIP20Factory::new(&mut storage);
         factory.initialize().unwrap();
@@ -736,8 +741,15 @@ mod tests {
             .to::<u64>();
 
         let amount_0 = U256::random();
-        let amount_1 = U256::random();
+        // Create, init and mint token 0
         let mut token_0 = TIP20Token::new(token_0_id, &mut storage);
+        token_0
+            .initialize("Token0", "TK0", "USD", &user)
+            .expect("Could not init token");
+
+        // Grant issuer role to admin
+        let mut roles = token_0.get_roles_contract();
+        roles.grant_role_internal(&user, *ISSUER_ROLE);
 
         // Mint tokens to user and approve AMM
         token_0
@@ -762,7 +774,17 @@ mod tests {
 
         let token_0_addr = token_0.token_address;
 
+        // Create, init and mint token 1
+        let amount_1 = U256::random();
         let mut token_1 = TIP20Token::new(token_1_id, &mut storage);
+        token_1
+            .initialize("Token1", "TK1", "USD", &user)
+            .expect("Could not init token");
+
+        // Grant issuer role to admin
+        let mut roles = token_1.get_roles_contract();
+        roles.grant_role_internal(&user, *ISSUER_ROLE);
+
         token_1
             .mint(
                 &user,
@@ -789,6 +811,15 @@ mod tests {
         let pool_id = pool_key.get_id();
 
         let mut amm = TIPFeeAMM::new(amm_addr, &mut storage);
+        amm.create_pool(ITIPFeeAMM::createPoolCall {
+            tokenA: token_0_addr,
+            tokenB: token_1_addr,
+        })
+        .expect("Could not create pool");
+
+        let (reserve0, reserve1) = amm.get_reserves(&pool_id);
+        dbg!(reserve0, reserve1);
+
         // Mint liquidity
         let liquidity = amm
             .mint(
