@@ -30,7 +30,7 @@ reth-codecs.workspace = true
 test-fuzz.workspace = true
 
 [features]
-default = ["serde", "reth-codec", "serde-bincode-compat"]
+default = []
 serde = ["dep:serde", "dep:alloy-serde"]
 reth-codec = ["dep:reth-codecs", "dep:modular-bitfield"]
 serde-bincode-compat = ["serde", "alloy-consensus/serde-bincode-compat", "reth-primitives-traits/serde-bincode-compat"]
