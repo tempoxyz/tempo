@@ -42,6 +42,8 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
+    tempo_node::init_version_metadata();
+
     let components = |spec: Arc<TempoChainSpec>| {
         (
             TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()),

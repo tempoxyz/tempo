@@ -19,3 +19,4 @@ indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 toml.workspace = true
+humantime-serde.workspace = true

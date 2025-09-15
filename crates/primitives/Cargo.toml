@@ -1,0 +1,44 @@
+[package]
+name = "tempo-primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Alloy
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+alloy-serde = { workspace = true, optional = true }
+arbitrary = { workspace = true, features = ["derive"], optional = true }
+
+# Reth
+reth-primitives-traits.workspace = true
+reth-codecs = { workspace = true, optional = true }
+
+# Utils
+serde = { workspace = true, features = ["derive"], optional = true }
+modular-bitfield = { version = "0.11.2", optional = true }
+
+[dev-dependencies]
+reth-codecs.workspace = true
+test-fuzz.workspace = true
+
+[features]
+default = ["serde", "reth-codec", "serde-bincode-compat"]
+serde = ["dep:serde", "dep:alloy-serde"]
+reth-codec = ["dep:reth-codecs", "dep:modular-bitfield"]
+serde-bincode-compat = ["serde", "alloy-consensus/serde-bincode-compat", "reth-primitives-traits/serde-bincode-compat"]
+arbitrary = [
+    "dep:arbitrary",
+    "serde",
+    "alloy-consensus/arbitrary",
+    "alloy-primitives/arbitrary",
+    "alloy-eips/arbitrary",
+    "reth-codecs?/arbitrary",
+]

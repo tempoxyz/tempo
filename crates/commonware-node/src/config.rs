@@ -9,7 +9,7 @@
 //! by the execution client/reth. This genesis block is entirely the domain
 //! of the chainspec, which is separate from the config.
 
-use std::{num::NonZeroU32, time::Duration};
+use std::num::NonZeroU32;
 
 use governor::Quota;
 
@@ -23,19 +23,6 @@ pub const RECOVERED_CHANNEL_IDENT: commonware_p2p::Channel = 1;
 pub const RESOLVER_CHANNEL_IDENT: commonware_p2p::Channel = 2;
 pub const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
 pub const BACKFILL_BY_DIGEST_CHANNE_IDENTL: commonware_p2p::Channel = 4;
-
-pub const LEADER_TIMEOUT: Duration = Duration::from_secs(1);
-
-pub const NOTARIZATION_TIMEOUT: Duration = Duration::from_secs(2);
-// XXX: alto calls this NULLIFY_RETRY
-pub const TIME_TO_NULLIFY_RETRY: Duration = Duration::from_secs(10);
-
-// XXX: alto calls this ACTIVITY_TIMEOUT
-pub const NUMBER_OF_VIEWS_TO_TRACK: u64 = 256;
-// XXX: alto calls this SKIP_TIMEOUT
-pub const NUMBER_OF_VIEWS_UNTIL_LEADER_SKIP: u64 = 32;
-
-pub const FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub const NUMBER_CONCURRENT_FETCHES: usize = 4;
 pub const NUMBER_MAX_FETCHES: usize = 16;
@@ -57,11 +44,3 @@ pub const RESOLVER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 
 pub const NAMESPACE: &[u8] = b"TEMPO";
-
-#[cfg(test)]
-mod tests {
-    // desired unit tests:
-    // round trips for all custom serde impls
-    //
-    // Possibly also snapshot tests
-}

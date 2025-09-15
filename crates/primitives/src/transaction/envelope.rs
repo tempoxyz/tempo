@@ -1,0 +1,230 @@
+use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+use alloy_primitives::{Address, B256};
+
+use super::fee_token::TxFeeToken;
+
+/// Tempo transaction envelope containing all supported transaction types
+///
+/// Transaction types included:
+/// - Legacy transactions
+/// - EIP-2930 access list transactions
+/// - EIP-1559 dynamic fee transactions
+/// - EIP-7702 authorization list transactions
+/// - Tempo fee token transactions (0x77)
+#[derive(Clone, Debug, alloy_consensus::TransactionEnvelope)]
+#[envelope(tx_type_name = TempoTxType)]
+pub enum TempoTxEnvelope {
+    /// Legacy transaction (type 0x00)
+    #[envelope(ty = 0)]
+    Legacy(Signed<TxLegacy>),
+
+    /// EIP-2930 access list transaction (type 0x01)
+    #[envelope(ty = 1)]
+    Eip2930(Signed<TxEip2930>),
+
+    /// EIP-1559 dynamic fee transaction (type 0x02)
+    #[envelope(ty = 2)]
+    Eip1559(Signed<TxEip1559>),
+
+    /// EIP-7702 authorization list transaction (type 0x04)
+    #[envelope(ty = 4)]
+    Eip7702(Signed<TxEip7702>),
+
+    /// Tempo fee token transaction (type 0x77)
+    #[envelope(ty = 0x77)]
+    FeeToken(Signed<TxFeeToken>),
+}
+
+impl TempoTxEnvelope {
+    /// Returns the fee token preference if this is a fee token transaction
+    pub fn fee_token(&self) -> Option<Address> {
+        match self {
+            Self::FeeToken(tx) => tx.tx().fee_token,
+            _ => None,
+        }
+    }
+
+    /// Returns true if this is a fee token transaction
+    pub fn is_fee_token(&self) -> bool {
+        matches!(self, Self::FeeToken(_))
+    }
+
+    /// Returns the authorization list if present
+    pub fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
+        match self {
+            Self::Eip7702(tx) => Some(&tx.tx().authorization_list),
+            Self::FeeToken(tx) => Some(&tx.tx().authorization_list),
+            _ => None,
+        }
+    }
+}
+
+impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
+    fn recover_signer(
+        &self,
+    ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
+        match self {
+            Self::Legacy(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer(tx),
+            Self::Eip2930(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
+            }
+            Self::Eip1559(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
+            }
+            Self::Eip7702(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
+            }
+            Self::FeeToken(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
+            }
+        }
+    }
+
+    fn recover_signer_unchecked(
+        &self,
+    ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
+        match self {
+            Self::Legacy(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
+            }
+            Self::Eip2930(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
+            }
+            Self::Eip1559(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
+            }
+            Self::Eip7702(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
+            }
+            Self::FeeToken(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
+            }
+        }
+    }
+}
+
+impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
+    fn size(&self) -> usize {
+        match self {
+            Self::Legacy(tx) => reth_primitives_traits::InMemorySize::size(tx),
+            Self::Eip2930(tx) => reth_primitives_traits::InMemorySize::size(tx),
+            Self::Eip1559(tx) => reth_primitives_traits::InMemorySize::size(tx),
+            Self::Eip7702(tx) => reth_primitives_traits::InMemorySize::size(tx),
+            Self::FeeToken(tx) => reth_primitives_traits::InMemorySize::size(tx),
+        }
+    }
+}
+
+impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
+    fn tx_hash(&self) -> &B256 {
+        match self {
+            Self::Legacy(tx) => tx.hash(),
+            Self::Eip2930(tx) => tx.hash(),
+            Self::Eip1559(tx) => tx.hash(),
+            Self::Eip7702(tx) => tx.hash(),
+            Self::FeeToken(tx) => tx.hash(),
+        }
+    }
+}
+
+impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {
+    fn tx_hash(&self) -> &B256 {
+        alloy_consensus::transaction::TxHashRef::tx_hash(self)
+    }
+}
+
+#[cfg(feature = "reth-codec")]
+impl reth_codecs::alloy::transaction::ToTxCompact for TempoTxEnvelope {
+    fn to_tx_compact(&self, buf: &mut (impl alloy_rlp::BufMut + AsMut<[u8]>)) {
+        use reth_codecs::Compact;
+
+        match self {
+            Self::Legacy(tx) => tx.tx().to_compact(buf),
+            Self::Eip2930(tx) => tx.tx().to_compact(buf),
+            Self::Eip1559(tx) => tx.tx().to_compact(buf),
+            Self::Eip7702(tx) => tx.tx().to_compact(buf),
+            Self::FeeToken(tx) => tx.tx().to_compact(buf),
+        };
+    }
+}
+
+#[cfg(feature = "reth-codec")]
+impl reth_codecs::alloy::transaction::FromTxCompact for TempoTxEnvelope {
+    type TxType = TempoTxType;
+
+    fn from_tx_compact(
+        buf: &[u8],
+        tx_type: Self::TxType,
+        signature: alloy_primitives::Signature,
+    ) -> (Self, &[u8]) {
+        use alloy_consensus::Signed;
+        use reth_codecs::Compact;
+
+        match tx_type {
+            TempoTxType::Legacy => {
+                let (tx, buf) = TxLegacy::from_compact(buf, buf.len());
+                let tx = Signed::new_unhashed(tx, signature);
+                (Self::Legacy(tx), buf)
+            }
+            TempoTxType::Eip2930 => {
+                let (tx, buf) = TxEip2930::from_compact(buf, buf.len());
+                let tx = Signed::new_unhashed(tx, signature);
+                (Self::Eip2930(tx), buf)
+            }
+            TempoTxType::Eip1559 => {
+                let (tx, buf) = TxEip1559::from_compact(buf, buf.len());
+                let tx = Signed::new_unhashed(tx, signature);
+                (Self::Eip1559(tx), buf)
+            }
+            TempoTxType::Eip7702 => {
+                let (tx, buf) = TxEip7702::from_compact(buf, buf.len());
+                let tx = Signed::new_unhashed(tx, signature);
+                (Self::Eip7702(tx), buf)
+            }
+            TempoTxType::FeeToken => {
+                let (tx, buf) = TxFeeToken::from_compact(buf, buf.len());
+                let tx = Signed::new_unhashed(tx, signature);
+                (Self::FeeToken(tx), buf)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Signature;
+
+    #[test]
+    fn test_fee_token_access() {
+        let fee_token_tx = TxFeeToken {
+            fee_token: Some(Address::ZERO),
+            ..Default::default()
+        };
+        let signature = Signature::new(
+            alloy_primitives::U256::ZERO,
+            alloy_primitives::U256::ZERO,
+            false,
+        );
+        let signed = Signed::new_unhashed(fee_token_tx, signature);
+        let envelope = TempoTxEnvelope::FeeToken(signed);
+
+        assert!(envelope.is_fee_token());
+        assert_eq!(envelope.fee_token(), Some(Address::ZERO));
+    }
+
+    #[test]
+    fn test_non_fee_token_access() {
+        let legacy_tx = TxLegacy::default();
+        let signature = Signature::new(
+            alloy_primitives::U256::ZERO,
+            alloy_primitives::U256::ZERO,
+            false,
+        );
+        let signed = Signed::new_unhashed(legacy_tx, signature);
+        let envelope = TempoTxEnvelope::Legacy(signed);
+
+        assert!(!envelope.is_fee_token());
+        assert_eq!(envelope.fee_token(), None);
+    }
+}

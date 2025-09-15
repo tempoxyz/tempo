@@ -21,6 +21,7 @@ members = [
   "crates/node",
   "crates/payload",
   "crates/precompiles",
+  "crates/primitives",
   "crates/contracts",
   "crates/reth-malachite",
   "crates/sequential-futures-queue",
@@ -105,6 +106,7 @@ tempo-eyre = { path = "crates/eyre" }
 tempo-revm = { path = "crates/revm" }
 tempo-payload-builder = { path = "crates/payload" }
 tempo-precompiles = { path = "crates/precompiles" }
+tempo-primitives = { path = "crates/primitives" }
 tempo-contracts = { path = "crates/contracts" }
 tempo-telemetry-util = { path = "crates/telemetry-util" }
 tempo-transaction-pool = { path = "crates/transaction-pool" }
@@ -115,6 +117,7 @@ reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "8c2d5cc" 
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "8c2d5cc" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "8c2d5cc" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "8c2d5cc" }
+reth-codecs = { git = "https://github.com/paradigmxyz/reth", rev = "8c2d5cc" }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "8c2d5cc" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "8c2d5cc" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "8c2d5cc" }
@@ -172,9 +175,11 @@ alloy-genesis = "1.0.30"
 alloy-primitives = "1.3.1"
 alloy-rlp = "0.3.12"
 alloy-rpc-types-engine = "1.0.30"
+alloy-serde = "1.0.30"
 alloy-signer = "1.0.30"
 alloy-signer-local = "1.0.30"
 alloy-trie = "0.9.1"
+arbitrary = { version = "1.3", features = ["derive"] }
 
 commonware-broadcast = "0.0.58"
 commonware-codec = "0.0.58"
@@ -201,18 +206,22 @@ malachitebft-proto = { git = "https://github.com/informalsystems/malachite", rev
 
 anyhow = "1.0.98"
 async-trait = "0.1"
+axum = "0.8.4"
 base64 = "0.22"
 bincode = "1.3"
 bytes = "1.8"
 camino = "1.1.12"
 clap = { version = "4.5.45", features = ["derive"] }
 const-hex = { version = "1.15.0" }
+derive_more = { version = "2.0.0" }
+test-fuzz = "7"
 eyre = "0.6.12"
 futures = "0.3.31"
 futures-channel = "0.3.31"
 futures-util = "0.3.31"
 hex = "0.4"
 governor = "0.6.3"
+humantime-serde = "1.1.1"
 indexmap = { version = "2.11.0" }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 multiaddr = "0.18"
@@ -233,3 +242,7 @@ toml = "0.8"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 criterion = "0.7.0"
+
+# build deps
+vergen = "9"
+vergen-git2 = "1"

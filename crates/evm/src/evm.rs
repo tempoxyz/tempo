@@ -1,11 +1,10 @@
 use alloy_evm::{
     Database, Evm, EvmEnv, EvmFactory,
-    eth::EthEvmContext,
     precompiles::PrecompilesMap,
     revm::{
-        Context, ExecuteEvm, InspectEvm, Inspector, MainContext, SystemCallEvm,
+        Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::{
-            BlockEnv, Host, TxEnv,
+            BlockEnv, Host,
             result::{EVMError, HaltReason, ResultAndState},
         },
         handler::{EthPrecompiles, EvmTr},
@@ -14,9 +13,10 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, Bytes};
+use reth_evm::revm::MainContext;
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
-use tempo_revm::evm::TempoContext;
+use tempo_revm::{TempoTxEnv, evm::TempoContext};
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -24,8 +24,8 @@ pub struct TempoEvmFactory;
 
 impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
-    type Context<DB: Database> = EthEvmContext<DB>;
-    type Tx = TxEnv;
+    type Context<DB: Database> = TempoContext<DB>;
+    type Tx = TempoTxEnv;
     type Error<DBError: std::error::Error + Send + Sync + 'static> = EVMError<DBError>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
@@ -39,7 +39,8 @@ impl EvmFactory for TempoEvmFactory {
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
-            .with_cfg(input.cfg_env);
+            .with_cfg(input.cfg_env)
+            .with_tx(Default::default());
 
         let mut evm_inner = tempo_revm::TempoEvm::new(ctx, NoOpInspector {});
         let chain_id = evm_inner.ctx().chain_id().to::<u64>();
@@ -64,7 +65,8 @@ impl EvmFactory for TempoEvmFactory {
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
-            .with_cfg(input.cfg_env);
+            .with_cfg(input.cfg_env)
+            .with_tx(Default::default());
 
         let mut evm_inner = tempo_revm::TempoEvm::new(ctx, inspector);
         let chain_id = evm_inner.ctx().chain_id().to::<u64>();
@@ -144,7 +146,7 @@ where
     I: Inspector<TempoContext<DB>>,
 {
     type DB = DB;
-    type Tx = TxEnv;
+    type Tx = TempoTxEnv;
     type Error = EVMError<DB::Error>;
     type HaltReason = HaltReason;
     type Spec = SpecId;

@@ -16,11 +16,19 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 use clap::Parser;
-use commonware_runtime::Runner;
-use eyre::Context;
+use commonware_runtime::{Metrics, Runner};
+use eyre::WrapErr as _;
+use futures::{
+    FutureExt as _,
+    future::{FusedFuture, pending},
+};
 use reth_ethereum::cli::Cli;
 use reth_node_builder::NodeHandle;
-use std::{sync::Arc, thread};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+    thread,
+};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
@@ -31,6 +39,7 @@ use tempo_faucet::{
 };
 use tempo_node::{TempoFullNode, node::TempoNode};
 use tokio::sync::oneshot;
+use tokio_util::either::Either;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -63,6 +72,8 @@ fn main() -> eyre::Result<()> {
     if std::env::var_os("RUST_BACKTRACE").is_none() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
+
+    tempo_node::init_version_metadata();
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
         oneshot::channel::<(TempoFullNode, TempoArgs)>();
@@ -97,15 +108,45 @@ fn main() -> eyre::Result<()> {
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
             runner.start(async move |ctx| {
-                tokio::select!(
-                    ret = run_consensus_stack(&ctx, &consensus_config, node) => {
-                        ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
-                        .wrap_err("consensus stack failed")
+                let mut metrics_server = match consensus_config
+                    .metrics_port {
+                    Some(port) => {
+                        Either::Left(
+                            tempo_commonware_node::metrics::install(
+                                ctx.with_label("metrics"),
+                                SocketAddr::new(
+                                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                                    port,
+                                ),
+                            )
+                        )
                     }
-                    () = shutdown_token_clone.cancelled() => {
-                        Ok(())
-                    }
-                )
+                    None => Either::Right(pending()),
+                }.fuse();
+                let consensus_stack = run_consensus_stack(&ctx, &consensus_config, node);
+                tokio::pin!(consensus_stack);
+                loop {
+                    tokio::select!(
+                        biased;
+
+                        () = shutdown_token_clone.cancelled() => {
+                            break Ok(());
+                        }
+
+                        ret = &mut consensus_stack => {
+                            break ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
+                            .wrap_err("consensus stack failed");
+                        }
+
+                        ret = &mut metrics_server, if !metrics_server.is_terminated() => {
+                            let reason = match ret.wrap_err("task_panicked") {
+                                Ok(Ok(())) => "unexpected regular exit".to_string(),
+                                Ok(Err(err)) | Err(err) => format!("{err}"),
+                            };
+                            tracing::warn!(reason, "the metrics server exited");
+                        }
+                    )
+                }
             })
         };
         let _ = consensus_dead_tx.send(());

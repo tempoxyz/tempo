@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod consensus;
+pub mod metrics;
 
 use std::net::SocketAddr;
 
@@ -16,12 +17,10 @@ use tempo_node::TempoFullNode;
 
 use crate::config::{
     BACKFILL_BY_DIGEST_CHANNE_IDENTL, BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, FETCH_TIMEOUT,
-    FINALIZED_FREEZER_TABLE_INITIAL_SIZE_BYTES, LEADER_TIMEOUT, MAX_FETCH_SIZE_BYTES,
-    NOTARIZATION_TIMEOUT, NUMBER_CONCURRENT_FETCHES, NUMBER_MAX_FETCHES, NUMBER_OF_VIEWS_TO_TRACK,
-    NUMBER_OF_VIEWS_UNTIL_LEADER_SKIP, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
-    RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
-    TIME_TO_NULLIFY_RETRY,
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, FINALIZED_FREEZER_TABLE_INITIAL_SIZE_BYTES,
+    MAX_FETCH_SIZE_BYTES, NUMBER_CONCURRENT_FETCHES, NUMBER_MAX_FETCHES, PENDING_CHANNEL_IDENT,
+    PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
+    RESOLVER_LIMIT,
 };
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
@@ -75,12 +74,12 @@ pub async fn run_consensus_stack(
         backfill_quota: BACKFILL_QUOTA,
         deque_size: config.deque_size,
 
-        leader_timeout: LEADER_TIMEOUT,
-        notarization_timeout: NOTARIZATION_TIMEOUT,
-        nullify_retry: TIME_TO_NULLIFY_RETRY,
-        fetch_timeout: FETCH_TIMEOUT,
-        activity_timeout: NUMBER_OF_VIEWS_TO_TRACK,
-        skip_timeout: NUMBER_OF_VIEWS_UNTIL_LEADER_SKIP,
+        leader_timeout: config.timeouts.time_to_propose,
+        notarization_timeout: config.timeouts.time_to_collect_notarizations,
+        nullify_retry: config.timeouts.time_to_retry_nullify_broadcast,
+        fetch_timeout: config.timeouts.time_for_peer_response,
+        activity_timeout: config.timeouts.views_to_track,
+        skip_timeout: config.timeouts.views_until_leader_skip,
         max_fetch_count: NUMBER_MAX_FETCHES,
         max_fetch_size: MAX_FETCH_SIZE_BYTES,
         fetch_concurrent: NUMBER_CONCURRENT_FETCHES,

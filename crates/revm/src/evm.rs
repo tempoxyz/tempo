@@ -1,9 +1,10 @@
+use crate::TempoTxEnv;
 use reth_evm::{
     Database,
     precompiles::PrecompilesMap,
     revm::{
         Context, Inspector,
-        context::{BlockEnv, CfgEnv, ContextError, Evm, FrameStack, TxEnv},
+        context::{BlockEnv, CfgEnv, ContextError, Evm, FrameStack},
         handler::{
             EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
             instructions::EthInstructions,
@@ -14,7 +15,7 @@ use reth_evm::{
 };
 
 /// The Tempo EVM context type.
-pub type TempoContext<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
+pub type TempoContext<DB> = Context<BlockEnv, TempoTxEnv, CfgEnv, DB>;
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug)]
@@ -180,7 +181,7 @@ mod tests {
             nonce: 0,
             ..Default::default()
         };
-        let res = tempo_evm.transact_one(tx_env)?;
+        let res = tempo_evm.transact_one(tx_env.into())?;
         assert!(res.is_success());
 
         let ctx = tempo_evm.ctx();

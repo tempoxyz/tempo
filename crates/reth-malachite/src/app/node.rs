@@ -12,26 +12,16 @@
 //! The configuration uses standard Ethereum components for most functionality
 //! (transaction pool, networking, execution) but replaces the consensus layer
 //! with Malachite.
-use crate::consensus_utils::MalachiteConsensusBuilder;
 use reth::{
     payload::{PayloadBuilderHandle, PayloadServiceCommand},
     transaction_pool::TransactionPool,
 };
 use reth_chainspec::ChainSpec;
 use reth_node_builder::{
-    BuilderContext, ConfigureEvm, FullNodeTypes, Node, NodeComponentsBuilder, NodeTypes,
-    PayloadBuilderConfig,
-    components::{
-        BasicPayloadServiceBuilder, ComponentsBuilder, ExecutorBuilder, PayloadServiceBuilder,
-    },
+    BuilderContext, ConfigureEvm, FullNodeTypes, NodeTypes, PayloadBuilderConfig,
+    components::{ExecutorBuilder, PayloadServiceBuilder},
 };
-use reth_node_ethereum::{
-    EthEvmConfig,
-    node::{
-        EthereumAddOns, EthereumEngineValidatorBuilder, EthereumEthApiBuilder,
-        EthereumNetworkBuilder, EthereumPoolBuilder,
-    },
-};
+use reth_node_ethereum::EthEvmConfig;
 
 use tempo_evm::evm::TempoEvmFactory;
 use tokio::sync::{broadcast, mpsc};
@@ -92,43 +82,6 @@ impl NodeTypes for TempoNode {
     type ChainSpec = ChainSpec;
     type Storage = reth_provider::EthStorage;
     type Payload = reth_node_ethereum::EthEngineTypes;
-}
-
-impl<N> Node<N> for TempoNode
-where
-    N: FullNodeTypes<Types = Self>,
-{
-    type ComponentsBuilder = ComponentsBuilder<
-        N,
-        EthereumPoolBuilder,
-        BasicPayloadServiceBuilder<reth_node_ethereum::EthereumPayloadBuilder>,
-        EthereumNetworkBuilder,
-        TempoExecutorBuilder,
-        MalachiteConsensusBuilder,
-    >;
-
-    type AddOns = EthereumAddOns<
-        reth_node_builder::NodeAdapter<
-            N,
-            <Self::ComponentsBuilder as NodeComponentsBuilder<N>>::Components,
-        >,
-        EthereumEthApiBuilder,
-        EthereumEngineValidatorBuilder,
-    >;
-
-    fn components_builder(&self) -> Self::ComponentsBuilder {
-        ComponentsBuilder::default()
-            .node_types::<N>()
-            .pool(EthereumPoolBuilder::default())
-            .executor(TempoExecutorBuilder::default())
-            .payload(BasicPayloadServiceBuilder::default())
-            .network(EthereumNetworkBuilder::default())
-            .consensus(MalachiteConsensusBuilder::new())
-    }
-
-    fn add_ons(&self) -> Self::AddOns {
-        EthereumAddOns::default()
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
