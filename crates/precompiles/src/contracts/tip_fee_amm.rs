@@ -579,8 +579,8 @@ mod tests {
         let token1 = Address::random();
 
         let result = amm.create_pool(ITIPFeeAMM::createPoolCall {
-            tokenA: token0,
-            tokenB: token1,
+            tokenA: token1,
+            tokenB: token0,
         });
 
         assert!(result.is_ok());

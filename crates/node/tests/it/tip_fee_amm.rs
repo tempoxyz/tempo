@@ -1,16 +1,12 @@
 use alloy::{
-    network::ReceiptResponse,
     primitives::U256,
-    providers::{Provider, ProviderBuilder},
+    providers::ProviderBuilder,
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
-use alloy_rpc_types_eth::TransactionRequest;
-use futures::future::try_join_all;
 use std::env;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager, ITIP20, tip_fee_amm::PoolKey, types::ITIPFeeAMM},
+    contracts::{tip_fee_amm::PoolKey, types::ITIPFeeAMM},
 };
 
 use crate::utils::{setup_test_node, setup_test_token};
@@ -37,7 +33,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let token_1 = setup_test_token(provider.clone(), caller).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
-    // Mint approve and create pool
+    // Mint, approve and create pool
     let mut pending = vec![];
     pending.push(token_0.mint(caller, amount).send().await?);
     pending.push(token_1.mint(caller, amount).send().await?);
@@ -65,30 +61,34 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
         assert!(receipt.status());
     }
 
-    let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
-    let pool_id = fee_amm.getPoolId(pool_key.clone().into()).call().await?;
-
-    // Check if pool exists
-    assert!(fee_amm.poolExists(pool_id).call().await?);
-
-    // Check initial state
-    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
-    let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
-    let pool = fee_amm.pools(pool_id).call().await?;
-
+    // Assert initial state
     let user_token0_balance = token_0.balanceOf(caller).call().await?;
     assert_eq!(user_token0_balance, amount);
+
     let user_token1_balance = token_1.balanceOf(caller).call().await?;
     assert_eq!(user_token1_balance, amount);
+
     let fee_manager_token0_balance = token_0.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     assert_eq!(fee_manager_token0_balance, U256::ZERO);
+
     let fee_manager_token1_balance = token_1.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     assert_eq!(fee_manager_token1_balance, U256::ZERO);
 
+    let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
+    let pool_id = pool_key.get_id();
+    assert!(fee_amm.poolExists(pool_id).call().await?);
+
+    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     assert_eq!(total_supply, U256::ZERO);
+
+    let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
     assert_eq!(lp_balance, U256::ZERO);
+
+    let pool = fee_amm.pools(pool_id).call().await?;
     assert_eq!(pool.reserve0, 0);
     assert_eq!(pool.reserve1, 0);
+    assert_eq!(pool.pendingReserve0, 0);
+    assert_eq!(pool.pendingReserve1, 0);
 
     // Mint liquidity
     let mint_receipt = fee_amm
