@@ -112,7 +112,7 @@ pub struct TIPFeeAMM<'a, S: StorageProvider> {
 }
 
 /// Square root function using Newton's method
-fn sqrt(x: U256) -> U256 {
+pub fn sqrt(x: U256) -> U256 {
     if x == U256::ZERO {
         return U256::ZERO;
     }
