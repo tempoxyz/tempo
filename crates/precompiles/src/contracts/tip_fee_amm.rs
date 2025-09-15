@@ -420,7 +420,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let token_0_id = address_to_token_id_unchecked(&call.token0);
         let _ = TIP20Token::new(token_0_id, self.storage)
             .transfer_from(
-                &msg_sender,
+                &self.contract_address,
                 ITIP20::transferFromCall {
                     from: msg_sender,
                     to: self.contract_address,
@@ -432,7 +432,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let token_1_id = address_to_token_id_unchecked(&call.token1);
         let _ = TIP20Token::new(token_1_id, self.storage)
             .transfer_from(
-                &msg_sender,
+                &self.contract_address,
                 ITIP20::transferFromCall {
                     from: msg_sender,
                     to: self.contract_address,
