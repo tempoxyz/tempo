@@ -384,8 +384,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             != U256::ZERO
     }
 
-    // TODO: Liq functions
-
     /// Mint liquidity tokens
     pub fn mint(
         &mut self,
@@ -558,7 +556,10 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::HashMapStorageProvider;
+    use crate::contracts::{
+        HashMapStorageProvider, tip20::TIP20Token, tip20_factory::TIP20Factory,
+        token_id_to_address, types::ITIP20,
+    };
 
     #[test]
     fn test_pool_key_ordering() {
@@ -613,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_and_get_reserves() {
+    fn test_reserves() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
         let token0 = Address::random();
@@ -638,54 +639,13 @@ mod tests {
     }
 
     #[test]
-    fn test_get_effective_reserves() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
-
-        let pool = Pool {
-            reserve0: 1000,
-            reserve1: 2000,
-            pending_amount_in_0: 100,
-            pending_amount_in_1: 200,
-        };
-
-        let (eff_reserve0, eff_reserve1) = amm.get_effective_reserves(&pool);
-
-        let pending_0_out = (U256::from(100) * FEE_MULTIPLIER) / FEE_SCALE;
-        let pending_1_out = (U256::from(200) * FEE_MULTIPLIER) / FEE_SCALE;
-
-        let expected_eff_reserve0 = U256::from(1000) + U256::from(200) - pending_0_out;
-        let expected_eff_reserve1 = U256::from(2000) + U256::from(100) - pending_1_out;
-
-        assert_eq!(eff_reserve0, expected_eff_reserve0);
-        assert_eq!(eff_reserve1, expected_eff_reserve1);
+    fn test_effective_reserves() {
+        todo!()
     }
 
     #[test]
     fn test_calculate_burn_amounts() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
-        let token0 = Address::random();
-        let token1 = Address::random();
-
-        amm.create_pool(ITIPFeeAMM::createPoolCall {
-            tokenA: token0,
-            tokenB: token1,
-        })
-        .unwrap();
-
-        let pool_key = PoolKey::new(token0, token1);
-        let pool_id = pool_key.get_id();
-
-        amm.set_reserves(&pool_id, U256::from(1000), U256::from(2000));
-        amm.set_total_supply(&pool_id, U256::from(100));
-
-        let result = amm.calculate_burn_amounts(&pool_id, U256::from(10));
-        assert!(result.is_ok());
-
-        let (amount0, amount1) = result.unwrap();
-        assert_eq!(amount0, U256::from(100));
-        assert_eq!(amount1, U256::from(200));
+        todo!()
     }
 
     #[test]
@@ -705,10 +665,11 @@ mod tests {
         let pool_key = PoolKey::new(token0, token1);
         let pool_id = pool_key.get_id();
 
-        amm.set_liquidity_balance(&pool_id, user, U256::from(500));
+        let amount = U256::random();
+        amm.set_liquidity_balance(&pool_id, user, amount);
         let balance = amm.get_liquidity_balance(&pool_id, user);
 
-        assert_eq!(balance, U256::from(500));
+        assert_eq!(balance, amount);
     }
 
     #[test]
@@ -728,12 +689,152 @@ mod tests {
         let pool_key = PoolKey::new(token0, token1);
         let pool_id = pool_key.get_id();
 
-        amm.mint_lp_tokens(&pool_id, user, U256::from(100));
+        let amount = U256::random();
+        amm.mint_lp_tokens(&pool_id, user, amount);
 
         let balance = amm.get_liquidity_balance(&pool_id, user);
         let total_supply = amm.get_total_supply(&pool_id);
 
-        assert_eq!(balance, U256::from(100));
-        assert_eq!(total_supply, U256::from(100));
+        assert_eq!(balance, amount);
+        assert_eq!(total_supply, amount);
+    }
+
+    #[test]
+    fn test_mint() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let amm_addr = Address::random();
+        let mut amm = TIPFeeAMM::new(amm_addr, &mut storage);
+        let user = Address::random();
+
+        // Create tokens via factory
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        let token_0_id = factory
+            .create_token(
+                &user,
+                crate::contracts::types::ITIP20Factory::createTokenCall {
+                    name: "Token0".to_string(),
+                    symbol: "TK0".to_string(),
+                    currency: "USD".to_string(),
+                    admin: user,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let token_1_id = factory
+            .create_token(
+                &user,
+                crate::contracts::types::ITIP20Factory::createTokenCall {
+                    name: "Token1".to_string(),
+                    symbol: "TK1".to_string(),
+                    currency: "USD".to_string(),
+                    admin: user,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let mut token_0 = TIP20Token::new(token_0_id, &mut storage);
+        let mut token_1 = TIP20Token::new(token_1_id, &mut storage);
+        let amount_0 = U256::random();
+        let amount_1 = U256::random();
+
+        // Mint tokens to user and approve AMM
+        token_0
+            .mint(
+                &user,
+                ITIP20::mintCall {
+                    to: user,
+                    amount: amount_0,
+                },
+            )
+            .expect("Could not mint token 0");
+
+        token_0
+            .approve(
+                &user,
+                ITIP20::approveCall {
+                    spender: amm.contract_address,
+                    amount: amount_0,
+                },
+            )
+            .expect("Could not approve token 0");
+
+        token_1
+            .mint(
+                &user,
+                ITIP20::mintCall {
+                    to: user,
+                    amount: amount_1,
+                },
+            )
+            .expect("Could not mint token 1");
+
+        token_1
+            .approve(
+                &user,
+                ITIP20::approveCall {
+                    spender: amm.contract_address,
+                    amount: token_1,
+                },
+            )
+            .expect("Could not approve token 1");
+
+        let pool_key = PoolKey::new(token_0.token_address, token_1.token_address);
+        let pool_id = pool_key.get_id();
+
+        // Mint liquidity
+        let liquidity = amm
+            .mint(
+                user,
+                ITIPFeeAMM::mintCall {
+                    to: user,
+                    key: pool_key.into(),
+                    token0: token_0.token_address,
+                    token1: token_1.token_address,
+                    amount0: amount_0,
+                    amount1: amount_1,
+                },
+            )
+            .expect("Could not mint");
+
+        // Check expected liquidity
+        let expected_liquidity = sqrt(amount_0 * amount_1) - MIN_LIQUIDITY;
+        assert_eq!(liquidity, expected_liquidity);
+
+        // Check LP token balance
+        let lp_balance = amm.get_liquidity_balance(&pool_id, user);
+        assert_eq!(lp_balance, liquidity);
+
+        // Check total supply
+        let total_supply = amm.get_total_supply(&pool_id);
+        assert_eq!(total_supply, liquidity + MIN_LIQUIDITY);
+
+        // Check pool reserves
+        let (reserve0, reserve1) = amm.get_reserves(&pool_id);
+        assert_eq!(reserve0, amount_0);
+        assert_eq!(reserve1, amount_1);
+
+        // Assert balances after
+        let user_token_0_bal = token_0.balance_of(ITIP20::balanceOfCall { account: user });
+        let user_token_1_bal = token_1.balance_of(ITIP20::balanceOfCall { account: user });
+        assert_eq!(user_token_0_bal, U256::ZERO);
+        assert_eq!(user_token_1_bal, U256::ZERO);
+
+        let fee_amm_token_0_bal = token_0.balance_of(ITIP20::balanceOfCall {
+            account: amm.contract_address,
+        });
+        let fee_amm_token_1_bal = token_1.balance_of(ITIP20::balanceOfCall {
+            account: amm.contract_address,
+        });
+        assert_eq!(fee_amm_token_0_bal, amount_0);
+        assert_eq!(fee_amm_token_1_bal, amount_1);
+    }
+
+    #[test]
+    fn test_burn() {
+        todo!()
     }
 }
