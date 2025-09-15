@@ -3,13 +3,12 @@
 use std::time::Duration;
 
 use crate::{app::State, context::MalachiteContext};
-use alloy_rpc_types_engine::ExecutionData;
 use eyre::{WrapErr, bail, eyre};
 use malachitebft_app_channel::{AppMsg, Channels, NetworkMsg, Reply, app::engine::host::Next};
 use malachitebft_core_consensus::LocallyProposedValue;
 use malachitebft_core_types::{Context, Height as _, Round, Validity};
-use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_builder::{NodeTypes, PayloadTypes};
+use reth_node_builder::NodeTypes;
+use tempo_payload_types::TempoPayloadTypes;
 use tempo_telemetry_util::{display_duration, error_field};
 use tracing::{error, info, instrument};
 
@@ -17,16 +16,12 @@ use tracing::{error, info, instrument};
 ///
 /// This function receives messages from the Malachite consensus engine and
 /// delegates them to the appropriate methods on the application state.
-pub async fn run_consensus_handler<N: NodeTypes>(
+pub async fn run_consensus_handler<N>(
     state: &State<N>,
     channels: &mut Channels<MalachiteContext>,
 ) -> eyre::Result<()>
 where
-    N::Payload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
+    N: NodeTypes<Payload = TempoPayloadTypes>,
 {
     info!("Starting consensus handler loop");
     while let Some(msg) = channels.consensus.recv().await {
@@ -343,7 +338,7 @@ where
     // to have errors emitted in instrument attributes that use dyn Stderr: Value
     err(Debug),
 )]
-async fn handle_get_value<N: NodeTypes>(
+async fn handle_get_value<N>(
     state: &State<N>,
     channels: &mut Channels<MalachiteContext>,
     height: <MalachiteContext as Context>::Height,
@@ -352,11 +347,7 @@ async fn handle_get_value<N: NodeTypes>(
     reply: Reply<LocallyProposedValue<MalachiteContext>>,
 ) -> eyre::Result<()>
 where
-    N::Payload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
+    N: NodeTypes<Payload = TempoPayloadTypes>,
 {
     let (proposal, block) =
         match tokio::time::timeout(timeout, get_or_propose_block(state, height, round)).await {
@@ -388,7 +379,7 @@ where
 /// Mainly used to to apply a timeout to the procedure.
 // FIXME: Returns `Option<Block>` only on a fully new proposal to be in line with
 // the previous implementation. But very likely this is wrong a block should always be returned.
-async fn get_or_propose_block<N: NodeTypes>(
+async fn get_or_propose_block<N>(
     state: &State<N>,
     height: <MalachiteContext as Context>::Height,
     round: Round,
@@ -397,11 +388,7 @@ async fn get_or_propose_block<N: NodeTypes>(
     Option<reth_ethereum_primitives::Block>,
 )>
 where
-    N::Payload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
+    N: NodeTypes<Payload = TempoPayloadTypes>,
 {
     match state.get_previously_built_value(height, round).await {
         Some(proposal) => {

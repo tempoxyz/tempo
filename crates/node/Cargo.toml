@@ -15,6 +15,7 @@ tempo-faucet.workspace = true
 tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
 tempo-payload-builder.workspace = true
+tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
 
 reth-malachite.workspace = true
@@ -36,13 +37,14 @@ reth-chainspec.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
 reth-engine-local.workspace = true
+
 alloy-eips.workspace = true
-alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
 alloy-primitives.workspace = true
-eyre.workspace = true
+
 clap.workspace = true
+eyre.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

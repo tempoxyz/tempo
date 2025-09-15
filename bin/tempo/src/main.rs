@@ -21,17 +21,13 @@ use reth_malachite::{
     context::MalachiteContext,
     types::Address,
 };
-use reth_node_builder::{
-    FullNode, FullNodeComponents, FullNodeTypes, NodeHandle, NodeTypes, PayloadTypes,
-    rpc::RethRpcAddOns,
-};
-use reth_provider::DatabaseProviderFactory;
+use reth_node_builder::NodeHandle;
 use std::{fs, future, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
-use tempo_node::{args::TempoArgs, node::TempoNode};
+use tempo_node::{TempoFullNode, args::TempoArgs, node::TempoNode};
 use tracing::info;
 
 fn main() {
@@ -112,21 +108,10 @@ fn main() {
 }
 
 /// Spawns malachite consensus
-async fn spawn_malachite<N, A>(
-    node: FullNode<N, A>,
+async fn spawn_malachite(
+    node: TempoFullNode,
     args: MalachiteArgs,
-) -> eyre::Result<reth_malachite::consensus::AppHandle>
-where
-    N: FullNodeComponents,
-    N::Types: NodeTypes,
-    <N::Types as NodeTypes>::Payload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = alloy_rpc_types_engine::ExecutionData,
-            BuiltPayload = reth_ethereum_engine_primitives::EthBuiltPayload,
-        >,
-    A: RethRpcAddOns<N>,
-    <<N as FullNodeTypes>::Provider as DatabaseProviderFactory>::ProviderRW: Send,
-{
+) -> eyre::Result<reth_malachite::consensus::AppHandle> {
     let ctx = MalachiteContext::default();
     let config = if args.consensus_config.is_some() && args.config_file().exists() {
         tracing::info!("Loading config from: {:?}", args.config_file());
@@ -181,7 +166,7 @@ where
         None
     };
 
-    let state: State<N::Types> = State::from_provider(
+    let state: State<TempoNode> = State::from_provider(
         ctx.clone(),
         config,
         genesis.clone(),

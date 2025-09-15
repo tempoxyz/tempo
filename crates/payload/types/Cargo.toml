@@ -1,0 +1,20 @@
+[package]
+name = "tempo-payload-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reth-ethereum-engine-primitives.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-node-api.workspace = true
+reth-primitives-traits.workspace = true
+
+alloy-primitives.workspace = true
+alloy-rpc-types-eth.workspace = true
+
+serde.workspace = true

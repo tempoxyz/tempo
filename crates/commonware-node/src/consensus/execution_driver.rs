@@ -3,7 +3,7 @@
 use std::{sync::Arc, time::SystemTime};
 
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::{ExecutionData, ForkchoiceState};
+use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 
@@ -16,11 +16,9 @@ use futures_util::{
 };
 use rand::{CryptoRng, Rng};
 use reth::payload::PayloadBuilderHandle;
-use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_builder::{ConsensusEngineHandle, PayloadTypes};
-use reth_node_ethereum::EthEngineTypes;
+use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
-use tempo_node::TempoFullNode;
+use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::BlockReader as _;
 use sequential_futures_queue::SequentialFuturesQueue;
@@ -225,10 +223,7 @@ where
     // XXX: I wish this could have been implemented a bit more elegantly and
     // without the extra RunPropose indirection, but the requirement of feeding
     // in the context/system time when spawning makes this necessary.
-    fn propose(
-        &self,
-        propose: Propose,
-    ) -> RunPropose<reth_ethereum_primitives::Block, EthEngineTypes> {
+    fn propose(&self, propose: Propose) -> RunPropose<reth_ethereum_primitives::Block> {
         RunPropose {
             request: propose,
             engine: self
@@ -374,9 +369,10 @@ where
         async move {
             let Finalized { block } = finalized;
 
-            let (block, hash) = block.clone().into_inner().split();
+            let block = block.clone().into_inner();
+            let hash = block.hash();
             let payload_status = engine
-                .new_payload(ExecutionData::from_block_unchecked(hash, &block))
+                .new_payload(TempoExecutionData(block))
                 .await
                 .wrap_err(
                     "failed sending new-payload request to execution \
@@ -422,33 +418,20 @@ where
 }
 
 /// Holds all objects to run a proposal via [`Self::given_timestamp`].
-struct RunPropose<TBlock, TPayload>
+struct RunPropose<TBlock>
 where
     TBlock: reth_primitives_traits::Block + 'static,
-    TPayload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
 {
     request: Propose,
-    engine: ConsensusEngineHandle<TPayload>,
+    engine: ConsensusEngineHandle<TempoPayloadTypes>,
     fee_recipient: alloy_primitives::Address,
     genesis_block: Arc<Block<TBlock>>,
     latest_proposed_block: Arc<RwLock<Option<Block<TBlock>>>>,
-    payload_builder: PayloadBuilderHandle<TPayload>,
+    payload_builder: PayloadBuilderHandle<TempoPayloadTypes>,
     syncer_mailbox: marshal::Mailbox<BlsScheme, Block<TBlock>>,
 }
 
-// impl<TBlock, TPayload> RunPropose<TBlock, TPayload>
-impl<TPayload> RunPropose<reth_ethereum_primitives::Block, TPayload>
-where
-    TPayload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
-{
+impl RunPropose<reth_ethereum_primitives::Block> {
     #[instrument(
         name = "propose",
         skip_all,
@@ -616,18 +599,11 @@ where
         parent.timestamp = parent.timestamp(),
     )
 )]
-async fn verify_block<TPayload>(
-    engine: ConsensusEngineHandle<TPayload>,
+async fn verify_block(
+    engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block<reth_ethereum_primitives::Block>,
     parent: &Block<reth_ethereum_primitives::Block>,
-) -> eyre::Result<bool>
-where
-    TPayload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
-{
+) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
     if block.parent_digest() != parent.digest() {
         info!(
@@ -645,9 +621,9 @@ where
         return Ok(false);
     }
 
-    let (block, hash) = block.clone().into_inner().split();
+    let block = block.clone().into_inner();
     let payload_status = engine
-        .new_payload(ExecutionData::from_block_unchecked(hash, &block))
+        .new_payload(TempoExecutionData(block))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {

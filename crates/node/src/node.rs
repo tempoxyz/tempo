@@ -1,4 +1,6 @@
-use crate::{args::TempoArgs, engine::TempoEngineValidator, rpc::TempoEthApiBuilder};
+use crate::{
+    TempoPayloadTypes, args::TempoArgs, engine::TempoEngineValidator, rpc::TempoEthApiBuilder,
+};
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
@@ -16,11 +18,11 @@ use reth_node_builder::{
         PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder,
     },
     rpc::{
-        BasicEngineApiBuilder, BasicEngineValidatorBuilder, EngineApiBuilder, EngineValidatorAddOn,
-        EngineValidatorBuilder, EthApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
+        BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
+        NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
     },
 };
-use reth_node_ethereum::{EthEngineTypes, EthereumNetworkBuilder};
+use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
 use reth_tracing::tracing::{debug, info};
@@ -75,7 +77,7 @@ impl NodeTypes for TempoNode {
     type Primitives = EthPrimitives;
     type ChainSpec = TempoChainSpec;
     type Storage = EthStorage;
-    type Payload = EthEngineTypes;
+    type Payload = TempoPayloadTypes;
 }
 
 #[derive(Debug)]
@@ -83,20 +85,21 @@ pub struct TempoAddOns<
     N: FullNodeComponents,
     EthB: EthApiBuilder<N> = TempoEthApiBuilder,
     PVB = TempoEngineValidatorBuilder,
-    EB = BasicEngineApiBuilder<PVB>,
     EVB = BasicEngineValidatorBuilder<PVB>,
     RpcMiddleware = Identity,
 > {
-    inner: RpcAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>,
+    inner: RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB, RpcMiddleware>,
 }
 
-impl<N, EthB, PVB, EB, EVB, RpcMiddleware> TempoAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>
+impl<N, EthB, PVB, EVB, RpcMiddleware> TempoAddOns<N, EthB, PVB, EVB, RpcMiddleware>
 where
     N: FullNodeComponents,
     EthB: EthApiBuilder<N>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub const fn new(inner: RpcAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>) -> Self {
+    pub const fn new(
+        inner: RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB, RpcMiddleware>,
+    ) -> Self {
         Self { inner }
     }
 }
@@ -109,22 +112,21 @@ where
         Self::new(RpcAddOns::new(
             TempoEthApiBuilder::default(),
             TempoEngineValidatorBuilder::default(),
-            BasicEngineApiBuilder::default(),
+            NoopEngineApiBuilder::default(),
             BasicEngineValidatorBuilder::default(),
             Default::default(),
         ))
     }
 }
 
-impl<N, EthB, PVB, EB, EVB> NodeAddOns<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
+impl<N, EthB, PVB, EVB> NodeAddOns<N> for TempoAddOns<N, EthB, PVB, EVB>
 where
     N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
     EthB: EthApiBuilder<N>,
     PVB: Send + PayloadValidatorBuilder<N>,
-    EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
 {
-    type Handle = <RpcAddOns<N, EthB, PVB, EB, EVB> as NodeAddOns<N>>::Handle;
+    type Handle = <RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB> as NodeAddOns<N>>::Handle;
 
     async fn launch_add_ons(
         self,
@@ -134,12 +136,11 @@ where
     }
 }
 
-impl<N, EthB, PVB, EB, EVB> RethRpcAddOns<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
+impl<N, EthB, PVB, EVB> RethRpcAddOns<N> for TempoAddOns<N, EthB, PVB, EVB>
 where
     N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
     EthB: EthApiBuilder<N>,
     PVB: PayloadValidatorBuilder<N>,
-    EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
 {
     type EthApi = EthB::EthApi;
@@ -149,12 +150,11 @@ where
     }
 }
 
-impl<N, EthB, PVB, EB, EVB> EngineValidatorAddOn<N> for TempoAddOns<N, EthB, PVB, EB, EVB>
+impl<N, EthB, PVB, EVB> EngineValidatorAddOn<N> for TempoAddOns<N, EthB, PVB, EVB>
 where
     N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
     EthB: EthApiBuilder<N>,
     PVB: Send,
-    EB: EngineApiBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
 {
     type ValidatorBuilder = EVB;
@@ -275,8 +275,8 @@ where
 {
     type Validator = TempoEngineValidator;
 
-    async fn build(self, ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
-        Ok(TempoEngineValidator::new(ctx.config.chain.clone()))
+    async fn build(self, _ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
+        Ok(TempoEngineValidator::new())
     }
 }
 

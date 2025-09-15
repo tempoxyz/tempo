@@ -9640,6 +9640,7 @@ dependencies = [
  "sha3",
  "tempfile",
  "tempo-evm",
+ "tempo-payload-types",
  "tempo-telemetry-util",
  "thiserror 2.0.16",
  "tokio",
@@ -12563,11 +12564,9 @@ dependencies = [
  "governor",
  "rand 0.8.5",
  "reth",
- "reth-ethereum-engine-primitives",
  "reth-ethereum-primitives",
  "reth-node-builder",
  "reth-node-core",
- "reth-node-ethereum",
  "reth-primitives-traits",
  "reth-provider",
  "sequential-futures-queue",
@@ -12635,12 +12634,12 @@ version = "0.1.0"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",
- "alloy-rpc-types-engine",
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-evm-ethereum",
  "reth-primitives-traits",
  "tempo-chainspec",
+ "tempo-payload-types",
  "tempo-precompiles",
  "tempo-revm",
 ]
@@ -12676,7 +12675,6 @@ dependencies = [
  "alloy",
  "alloy-eips",
  "alloy-primitives",
- "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "clap",
  "eyre",
@@ -12708,6 +12706,7 @@ dependencies = [
  "tempo-evm",
  "tempo-faucet",
  "tempo-payload-builder",
+ "tempo-payload-types",
  "tempo-precompiles",
  "tempo-transaction-pool",
  "tokio",
@@ -12736,6 +12735,19 @@ dependencies = [
  "tempo-evm",
  "tempo-transaction-pool",
  "tracing",
+]
+
+[[package]]
+name = "tempo-payload-types"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "reth-ethereum-engine-primitives",
+ "reth-ethereum-primitives",
+ "reth-node-api",
+ "reth-primitives-traits",
+ "serde",
 ]
 
 [[package]]

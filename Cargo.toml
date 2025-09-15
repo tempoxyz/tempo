@@ -19,7 +19,8 @@ members = [
   "crates/evm",
   "crates/faucet",
   "crates/node",
-  "crates/payload",
+  "crates/payload/builder",
+  "crates/payload/types",
   "crates/precompiles",
   "crates/primitives",
   "crates/contracts",
@@ -104,7 +105,8 @@ tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }
 tempo-eyre = { path = "crates/eyre" }
 tempo-revm = { path = "crates/revm" }
-tempo-payload-builder = { path = "crates/payload" }
+tempo-payload-builder = { path = "crates/payload/builder" }
+tempo-payload-types = { path = "crates/payload/types" }
 tempo-precompiles = { path = "crates/precompiles" }
 tempo-primitives = { path = "crates/primitives" }
 tempo-contracts = { path = "crates/contracts" }
