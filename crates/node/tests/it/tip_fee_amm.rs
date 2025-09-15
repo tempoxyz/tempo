@@ -5,6 +5,7 @@ use alloy::{
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
 use alloy_rpc_types_eth::TransactionRequest;
+use futures::future::try_join_all;
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
@@ -33,6 +34,9 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
 
     let amount = U256::from(rand::random::<u128>());
     let token_0 = setup_test_token(provider.clone(), caller).await?;
+    let token_1 = setup_test_token(provider.clone(), caller).await?;
+
+    // TODO: call these concurrently
     token_0
         .mint(caller, amount)
         .send()
@@ -40,33 +44,30 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let token_1 = setup_test_token(provider.clone(), caller).await?;
     token_1
         .mint(caller, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    token_0
+        .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    token_1
+        .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
         .send()
         .await?
         .get_receipt()
         .await?;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-
-    fee_amm
+    let receipt = fee_amm
         .createPool(*token_0.address(), *token_1.address())
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Approve fee manager to spend tokens
-    token_0
-        .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    token_1
-        .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
         .send()
         .await?
         .get_receipt()
@@ -97,6 +98,8 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     // Mint liquidity
     let mint_receipt = fee_amm
         .mint(pool_key.into(), amount, amount, caller)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas(300000)
         .send()
         .await?
         .get_receipt()
