@@ -20,10 +20,10 @@ deque_size = 10
 fee_recipient = "0x0000000000000000000000000000000000000000"
 
 [timeouts]
-time_for_peer_response_ms = 2_000
-time_to_collect_notarizations_ms = 2_000
-time_to_propose_ms = 2_000
-time_to_retry_nullify_broadcast_ms = 10_000
+time_for_peer_response = "2s"
+time_to_collect_notarizations = "2s"
+time_to_propose = "2s"
+time_to_retry_nullify_broadcast = "10s"
 views_to_track = 256
 views_until_leader_skip = 32
     
