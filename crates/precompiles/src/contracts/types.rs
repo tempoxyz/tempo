@@ -217,7 +217,7 @@ sol! {
 
         // Events
         event PoolCreated(address indexed token0, address indexed token1);
-        event Mint(address indexed sender, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity, address to);
+        event Mint(address indexed sender, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity);
         event Burn(address indexed sender, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity, address from, address to);
         event DepositQueued(address indexed user, address indexed token0, address indexed token1, uint256 amount, address token);
         event WithdrawQueued(address indexed user, address indexed token0, address indexed token1, uint256 liquidity);

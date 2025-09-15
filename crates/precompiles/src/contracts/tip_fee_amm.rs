@@ -5,12 +5,13 @@ use crate::contracts::{
         slots::{double_mapping_slot, mapping_slot},
     },
     tip20::TIP20Token,
-    types::{ITIP20, ITIPFeeAMM},
+    types::{ITIP20, ITIPFeeAMM, TIPFeeAMMEvent},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
+use alloy_primitives::IntoLogData;
 
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
@@ -400,7 +401,21 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.set_reserves(&pool_id, reserve_0 + call.amount0, reserve_1 + call.amount1);
         self.mint_lp_tokens(&pool_id, msg_sender, liquidity);
 
-        // TODO: emit mint event
+        self.storage
+            .emit_event(
+                self.contract_address,
+                TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
+                    sender: msg_sender,
+                    token0: call.token0,
+                    token1: call.token1,
+                    amount0: call.amount0,
+                    amount1: call.amount1,
+                    liquidity,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
+
         Ok(liquidity)
     }
 
