@@ -1,19 +1,21 @@
 use crate::contracts::{
     address_to_token_id_unchecked,
     storage::{
-        StorageProvider,
         slots::{double_mapping_slot, mapping_slot},
+        StorageProvider,
     },
     tip20::TIP20Token,
-    types::{ITIP20, ITIPFeeAMM, TIPFeeAMMEvent},
+    types::{ITIPFeeAMM, TIPFeeAMMEvent, ITIP20},
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
+    primitives::{keccak256, uint, Address, B256, U256},
     sol_types::SolValue,
 };
 use alloy_primitives::IntoLogData;
 
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
+pub const FEE_MULTIPLIER: U256 = uint!(9975_U256); // 0.9975 fee multiplier (scaled by 10000)
+pub const FEE_SCALE: U256 = uint!(10000_U256); // Scale factor for fee calculations
 
 /// Storage slots for TIPFeeAMM
 ///
@@ -21,14 +23,14 @@ pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 /// FeeManager uses the same slots (0-3) for AMM functionality and adds its own slots (4+).
 /// This allows FeeManager to operate as a full TIPFeeAMM while extending it with fee capabilities.
 pub mod slots {
-    use alloy::primitives::{U256, uint};
+    use alloy::primitives::{uint, U256};
 
     // Base AMM storage slots (also used by FeeManager)
     pub const POOLS: U256 = U256::ZERO; // Slot 0: Pool reserves mapping
     pub const TOTAL_SUPPLY: U256 = uint!(1_U256); // Slot 1: Pool total supply mapping
     pub const POOL_EXISTS: U256 = uint!(2_U256); // Slot 2: Pool existence mapping
     pub const LIQUIDITY_BALANCES: U256 = uint!(3_U256); // Slot 3: Nested mapping for LP balances
-    // Slots 4+ are reserved for FeeManager-specific data
+                                                        // Slots 4+ are reserved for FeeManager-specific data
 }
 
 /// Represents a liquidity pool
@@ -36,6 +38,8 @@ pub mod slots {
 pub struct Pool {
     pub reserve0: u128,
     pub reserve1: u128,
+    pub pending_amount_in_0: u128,
+    pub pending_amount_in_1: u128,
 }
 
 impl From<Pool> for ITIPFeeAMM::Pool {
@@ -158,7 +162,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
-        let exists_slot = self.get_pool_exists_slot(&pool_id);
+        let exists_slot = self.get_pool_exists_slot(pool_id);
         let exists = self
             .storage
             .sload(self.contract_address, exists_slot)
@@ -168,21 +172,21 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
-        let total_supply_slot = self.get_total_supply_slot(&pool_id);
+        let total_supply_slot = self.get_total_supply_slot(pool_id);
         self.storage
             .sload(self.contract_address, total_supply_slot)
             .expect("TODO: handle error")
     }
 
     fn set_total_supply(&mut self, pool_id: &B256, total_supply: U256) {
-        let total_supply_slot = self.get_total_supply_slot(&pool_id);
+        let total_supply_slot = self.get_total_supply_slot(pool_id);
         self.storage
             .sstore(self.contract_address, total_supply_slot, total_supply)
             .expect("TODO: handle error");
     }
 
     pub fn get_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
-        let pool_slot = self.get_pool_slot(&pool_id);
+        let pool_slot = self.get_pool_slot(pool_id);
         let pool = self
             .storage
             .sload(self.contract_address, pool_slot)
@@ -204,7 +208,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     fn set_reserves(&mut self, pool_id: &B256, reserve_0: U256, reserve_1: U256) {
-        let pool_slot = self.get_pool_slot(&pool_id);
+        let pool_slot = self.get_pool_slot(pool_id);
         // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
         let packed = (reserve_1.wrapping_shl(128)) | (reserve_0 & U256::from(u128::MAX));
         self.storage
@@ -225,49 +229,41 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             ));
         }
 
-        let (reserve0, reserve1) = self.get_reserves(pool_id);
+        let (reserve_0, reserve_1) = self.get_reserves(pool_id);
 
-        let amount0 = (liquidity * reserve0) / total_supply;
-        let amount1 = (liquidity * reserve1) / total_supply;
+        let amount_0 = (liquidity * reserve_0) / total_supply;
+        let amount_1 = (liquidity * reserve_1) / total_supply;
 
-        if amount0.is_zero() || amount1.is_zero() {
+        if amount_0.is_zero() || amount_1.is_zero() {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
                 ITIPFeeAMM::InsufficientLiquidity {},
             ));
         }
 
-        // // TODO:
-        // uint256 availableReserve0 = _getEffectiveReserve0(pool);
-        // uint256 availableReserve1 = _getEffectiveReserve1(pool);
+        // TODO: ensure
+        // let available_reserve_0 = self.get_effective_reserve_0(&pool);
+        // let available_reserve_1 = self.get_effective_reserve_1(&pool);
         //
-        // require(amount0 <= availableReserve0, "WITHDRAWAL_EXCEEDS_AVAILABLE_RESERVE0");
-        // require(amount1 <= availableReserve1, "WITHDRAWAL_EXCEEDS_AVAILABLE_RESERVE1");
+        // if amount0 > available_reserve_0 {
+        //     return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+        //         ITIPFeeAMM::InsufficientLiquidity {},
+        //     ));
+        // }
+        // if amount1 > available_reserve1 {
+        //     return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+        //         ITIPFeeAMM::InsufficientLiquidity {},
+        //     ));
+        // }
 
-        Ok((amount0, amount1))
+        Ok((amount_0, amount_1))
     }
 
-    fn transfer_from_user(
-        &mut self,
-        token: Address,
-        from: &Address,
-        amount: U256,
-    ) -> Result<(), ITIPFeeAMM::ITIPFeeAMMErrors> {
-        let mut token_contract = TIP20Token {
-            token_address: token,
-            storage: self.storage,
-        };
+    fn get_effective_reserve_0(&mut self, pool: &Pool) -> U256 {
+        todo!()
+    }
 
-        let call = ITIP20::transferFromCall {
-            from: *from,
-            to: self.contract_address,
-            amount,
-        };
-
-        token_contract
-            .transfer_from(from, call)
-            .expect("TODO: handle error");
-
-        Ok(())
+    fn get_effective_reserve_1(&mut self, pool: &Pool) -> U256 {
+        todo!()
     }
 
     /// Create a new liquidity pool
@@ -411,7 +407,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         // Transfer tokens from user to contract
         let token_0_id = address_to_token_id_unchecked(&call.token0);
-        TIP20Token::new(token_0_id, self.storage).transfer_from(
+        let _ = TIP20Token::new(token_0_id, self.storage).transfer_from(
             &msg_sender,
             ITIP20::transferFromCall {
                 from: msg_sender,
@@ -421,7 +417,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         );
 
         let token_1_id = address_to_token_id_unchecked(&call.token1);
-        TIP20Token::new(token_1_id, self.storage).transfer_from(
+        let _ = TIP20Token::new(token_1_id, self.storage).transfer_from(
             &msg_sender,
             ITIP20::transferFromCall {
                 from: msg_sender,
@@ -488,7 +484,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         // Transfer tokens from user to contract
         let token_0_id = address_to_token_id_unchecked(&pool_key.token0);
-        TIP20Token::new(token_0_id, self.storage).transfer(
+        let _ = TIP20Token::new(token_0_id, self.storage).transfer(
             &msg_sender,
             ITIP20::transferCall {
                 to: self.contract_address,
@@ -497,7 +493,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         );
 
         let token_1_id = address_to_token_id_unchecked(&pool_key.token1);
-        TIP20Token::new(token_1_id, self.storage).transfer_from(
+        let _ = TIP20Token::new(token_1_id, self.storage).transfer_from(
             &msg_sender,
             ITIP20::transferFromCall {
                 from: msg_sender,
