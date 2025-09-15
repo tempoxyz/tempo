@@ -18,6 +18,7 @@
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
+use futures::{FutureExt as _, future::FusedFuture, future::pending};
 use reth_ethereum::cli::Cli;
 use reth_node_builder::NodeHandle;
 use std::{
@@ -35,6 +36,7 @@ use tempo_faucet::{
 };
 use tempo_node::{TempoFullNode, node::TempoNode};
 use tokio::sync::oneshot;
+use tokio_util::either::Either;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -101,15 +103,21 @@ fn main() -> eyre::Result<()> {
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
             runner.start(async move |ctx| {
-                let mut metrics_server = consensus_config
-                    .metrics_port
-                    .map(|port| tempo_commonware_node::metrics::install(
-                        ctx.with_label("metrics"),
-                        SocketAddr::new(
-                            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                            port,
-                        ),
-                    ));
+                let mut metrics_server = match consensus_config
+                    .metrics_port {
+                    Some(port) => {
+                        Either::Left(
+                            tempo_commonware_node::metrics::install(
+                                ctx.with_label("metrics"),
+                                SocketAddr::new(
+                                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                                    port,
+                                ),
+                            )
+                        )
+                    }
+                    None => Either::Right(pending()),
+                }.fuse();
                 let consensus_stack = run_consensus_stack(&ctx, &consensus_config, node);
                 tokio::pin!(consensus_stack);
                 loop {
@@ -123,17 +131,12 @@ fn main() -> eyre::Result<()> {
                             break Ok(());
                         }
 
-                        // XXX: just exists to report if the metrics server went down.
-                        // The unwrap is ok because it is gated by is_some.
-                        ret = async { metrics_server.as_mut().unwrap().await },
-                            if metrics_server.is_some()
-                        => {
+                        ret = &mut metrics_server, if !metrics_server.is_terminated() => {
                             let reason = match ret.wrap_err("task_panicked") {
                                 Ok(Ok(())) => format!("unexpected normal exit"),
                                 Ok(Err(err)) | Err(err) => format!("{err}"),
                             };
                             tracing::warn!(reason, "the metrics server exited");
-                            metrics_server = None;
                         }
                     )
                 }
