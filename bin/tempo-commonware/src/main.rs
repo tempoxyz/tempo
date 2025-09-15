@@ -18,7 +18,10 @@
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
-use futures::{FutureExt as _, future::FusedFuture, future::pending};
+use futures::{
+    FutureExt as _,
+    future::{FusedFuture, pending},
+};
 use reth_ethereum::cli::Cli;
 use reth_node_builder::NodeHandle;
 use std::{
@@ -135,7 +138,7 @@ fn main() -> eyre::Result<()> {
 
                         ret = &mut metrics_server, if !metrics_server.is_terminated() => {
                             let reason = match ret.wrap_err("task_panicked") {
-                                Ok(Ok(())) => format!("unexpected normal exit"),
+                                Ok(Ok(())) => "unexpected regular exit".to_string(),
                                 Ok(Err(err)) | Err(err) => format!("{err}"),
                             };
                             tracing::warn!(reason, "the metrics server exited");
