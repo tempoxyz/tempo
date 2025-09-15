@@ -1,4 +1,5 @@
 use crate::contracts::{
+    address_to_token_id_unchecked,
     storage::{
         StorageProvider,
         slots::{double_mapping_slot, mapping_slot},
@@ -140,6 +141,31 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES)
     }
 
+    fn get_liquidity_balance(&mut self, pool_id: &B256, user: &Address) -> U256 {
+        let slot = double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES);
+
+        self.storage
+            .sload(self.contract_address, slot)
+            .expect("TODO: handle error ")
+    }
+
+    fn set_liquidity_balance(&mut self, pool_id: &B256, user: Address, balance: U256) {
+        let slot = double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES);
+        self.storage
+            .sstore(self.contract_address, slot, balance)
+            .expect("TODO: handle error");
+    }
+
+    fn pool_exists(&mut self, pool_id: &B256) -> bool {
+        let exists_slot = self.get_pool_exists_slot(&pool_id);
+        let exists = self
+            .storage
+            .sload(self.contract_address, exists_slot)
+            .expect("TODO: handle error");
+
+        exists.to::<bool>()
+    }
+
     fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
         let total_supply_slot = self.get_total_supply_slot(&pool_id);
         let total_supply = self
@@ -157,7 +183,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
-    fn get_pool_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
+    fn get_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
         let pool_slot = self.get_pool_slot(&pool_id);
         let pool = self
             .storage
@@ -167,6 +193,24 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let reserve_1 = pool.wrapping_shr(128);
 
         (reserve_0, reserve_1)
+    }
+
+    fn mint_lp_tokens(&mut self, pool_id: &B256, to: Address, amount: U256) {
+        // TODO: this could be more efficient since we have already loaded total supply when
+        // minting
+        let total_supply = self.get_total_supply(pool_id);
+        self.set_total_supply(pool_id, total_supply + amount);
+
+        let balance = self.get_liquidity_balance(pool_id, to);
+        self.set_liquidity_balance(pool_id, to, amount + balance);
+    }
+
+    // TODO: update to u128
+    fn set_reserves(&mut self, pool_id: &B256, reserve_0: U256, reserve_1: U256) -> (U256, U256) {
+        let pool_slot = self.get_pool_slot(&pool_id);
+        //TODO:
+
+        todo!()
     }
 
     fn transfer_from_user(
@@ -286,15 +330,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         ITIPFeeAMM::Pool { reserve0, reserve1 }
     }
 
-    /// Check if pool exists
-    pub fn pool_exists(&mut self, call: ITIPFeeAMM::poolExistsCall) -> bool {
-        let exists_slot = self.get_pool_exists_slot(&call.poolId);
-        self.storage
-            .sload(self.contract_address, exists_slot)
-            .expect("TODO: handle error")
-            != U256::ZERO
-    }
-
     /// Check if pool exists by key
     pub fn pool_exists_for_tokens(&mut self, token0: Address, token1: Address) -> bool {
         let pool_key = PoolKey::new(token0, token1);
@@ -312,30 +347,22 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     /// Mint liquidity tokens
     pub fn mint(
         &mut self,
+        msg_sender: Address,
         call: ITIPFeeAMM::mintCall,
     ) -> Result<U256, ITIPFeeAMM::ITIPFeeAMMErrors> {
         let pool_key = PoolKey::from(call.key);
         let pool_id = pool_key.get_id();
-
-        // Check if pool exists
-        let exists_slot = self.get_pool_exists_slot(&pool_id);
-        if self
-            .storage
-            .sload(self.contract_address, exists_slot)
-            .expect("TODO: handle error")
-            == U256::ZERO
-        {
+        if !self.pool_exists(&pool_id) {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
                 ITIPFeeAMM::PoolDoesNotExist {},
             ));
         }
 
         let total_supply = self.get_total_supply(&pool_id);
-        let (reserve_0, reserve_1) = self.get_pool_reserves(&pool_id);
+        let (reserve_0, reserve_1) = self.get_reserves(&pool_id);
 
         let liquidity = if total_supply.is_zero() {
             self.set_total_supply(&pool_id, MIN_LIQUIDITY);
-
             sqrt(call.amount0 * call.amount1) - MIN_LIQUIDITY
         } else {
             let liquidity_0 = (call.amount0 * total_supply) / reserve_0;
@@ -349,11 +376,31 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             ));
         }
 
-        // TODO: Transfer tokens from user
+        // Transfer tokens from user to contract
+        let token_0_id = address_to_token_id_unchecked(&call.token0);
+        TIP20Token::new(token_0_id, self.storage).transfer_from(
+            &msg_sender,
+            ITIP20::transferFromCall {
+                from: msg_sender,
+                to: self.contract_address,
+                amount: call.amount0,
+            },
+        );
 
-        // TODO: mint lp tokens
+        let token_1_id = address_to_token_id_unchecked(&call.token1);
+        TIP20Token::new(token_1_id, self.storage).transfer_from(
+            &msg_sender,
+            ITIP20::transferFromCall {
+                from: msg_sender,
+                to: self.contract_address,
+                amount: call.amount1,
+            },
+        );
 
-        // TODO: mint event
+        self.set_reserves(&pool_id, reserve_0 + call.amount0, reserve_1 + call.amount1);
+        self.mint_lp_tokens(&pool_id, msg_sender, liquidity);
+
+        // TODO: emit mint event
         Ok(liquidity)
     }
 
