@@ -190,7 +190,6 @@ fn generate_config(
         let eth_dst = cfg.storage_directory.with_file_name("reth_storage");
         let command = format!(
             "cargo run --release --bin tempo-commonware -- \
-                \\\n--filter-directives \"debug,net=warn,reth_ecies=warn\" \
                 \\\nnode \
                 \\\n--consensus-config {dst} \
                 \\\n--datadir {eth_dst} \
@@ -200,12 +199,13 @@ fn generate_config(
         );
         println!("{name}: {command}");
     }
-    // println!("To view metrics, run:");
-    // for (name, _, peer_config) in configurations {
-    //     println!(
-    //         "{}: curl http://localhost:{}/metrics",
-    //         name, peer_config.metrics_port
-    //     );
-    // }
+    println!("\nTo view metrics, run:");
+    for (name, _, peer_config) in &configurations {
+        let cmd = match peer_config.metrics_port {
+            None => "<metrics port not set>".to_string(),
+            Some(metrics_port) => format!("curl http://localhost:{metrics_port}/metrics",),
+        };
+        println!("{name}: {cmd}");
+    }
     Ok(())
 }
