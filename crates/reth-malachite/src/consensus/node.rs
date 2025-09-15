@@ -7,7 +7,6 @@ use crate::{
     provider::{Ed25519Provider, PrivateKey, PublicKey},
     types::Address,
 };
-use alloy_rpc_types_engine::ExecutionData;
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use malachitebft_app::{
@@ -15,10 +14,10 @@ use malachitebft_app::{
     node::{EngineHandle, Node, NodeHandle},
     types::Keypair,
 };
-use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_builder::{NodeTypes, PayloadTypes};
+use reth_node_builder::NodeTypes;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tempo_payload_types::TempoPayloadTypes;
 use tempo_telemetry_util::error_field;
 
 /// Tendermint-compatible private validator key file format
@@ -45,14 +44,7 @@ pub struct TendermintPrivKey {
 
 /// Implementation of Malachite's Node trait for reth-malachite
 #[derive(Clone)]
-pub struct MalachiteNode<N: NodeTypes>
-where
-    N::Payload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
-{
+pub struct MalachiteNode<N: NodeTypes> {
     /// Engine configuration
     pub config: EngineConfig,
     /// Path to the home directory
@@ -63,13 +55,9 @@ where
     pub app_state: State<N>,
 }
 
-impl<N: NodeTypes> MalachiteNode<N>
+impl<N> MalachiteNode<N>
 where
-    N::Payload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
+    N: NodeTypes<Payload = TempoPayloadTypes>,
 {
     /// Create a new node implementation
     pub fn new(config: EngineConfig, home_dir: PathBuf, app_state: State<N>) -> Self {
@@ -110,11 +98,7 @@ impl NodeHandle<MalachiteContext> for ConsensusHandle {
 #[async_trait]
 impl<N: NodeTypes> Node for MalachiteNode<N>
 where
-    N::Payload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
+    N: NodeTypes<Payload = TempoPayloadTypes>,
 {
     type Context = MalachiteContext;
     type Config = Config;

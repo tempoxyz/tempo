@@ -8,14 +8,14 @@ use std::{convert::Infallible, sync::Arc};
 
 use alloy_evm::eth::EthBlockExecutorFactory;
 use alloy_primitives::Bytes;
-use alloy_rpc_types_engine::ExecutionData;
 pub use evm::TempoEvmFactory;
 use reth_ethereum_primitives::{Block, EthPrimitives};
 use reth_evm::{
     self, ConfigureEngineEvm, ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator,
     ExecutionCtxFor, NextBlockEnvAttributes, eth::EthBlockExecutionCtx,
 };
-use reth_primitives_traits::{Header, SealedBlock, SealedHeader};
+use reth_primitives_traits::{Header, SealedBlock, SealedHeader, SignedTransaction};
+use tempo_payload_types::TempoExecutionData;
 
 use reth_evm_ethereum::{EthBlockAssembler, EthEvmConfig, RethReceiptBuilder};
 use tempo_chainspec::TempoChainSpec;
@@ -98,16 +98,28 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 }
 
-impl ConfigureEngineEvm<ExecutionData> for TempoEvmConfig {
-    fn evm_env_for_payload(&self, payload: &ExecutionData) -> EvmEnvFor<Self> {
-        self.inner.evm_env_for_payload(payload)
+impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
+    fn evm_env_for_payload(&self, payload: &TempoExecutionData) -> EvmEnvFor<Self> {
+        self.evm_env(&payload.0)
     }
 
-    fn context_for_payload<'a>(&self, payload: &'a ExecutionData) -> ExecutionCtxFor<'a, Self> {
-        self.inner.context_for_payload(payload)
+    fn context_for_payload<'a>(
+        &self,
+        payload: &'a TempoExecutionData,
+    ) -> ExecutionCtxFor<'a, Self> {
+        self.context_for_block(&payload.0)
     }
 
-    fn tx_iterator_for_payload(&self, payload: &ExecutionData) -> impl ExecutableTxIterator<Self> {
-        self.inner.tx_iterator_for_payload(payload)
+    fn tx_iterator_for_payload(
+        &self,
+        payload: &TempoExecutionData,
+    ) -> impl ExecutableTxIterator<Self> {
+        payload
+            .0
+            .body()
+            .transactions
+            .clone()
+            .into_iter()
+            .map(|tx| tx.try_recover().map(|signer| tx.with_signer(signer)))
     }
 }

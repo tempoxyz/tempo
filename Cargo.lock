@@ -685,7 +685,7 @@ dependencies = [
  "alloy-serde",
  "alloy-sol-types",
  "arbitrary",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -4617,7 +4617,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.0",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -5784,7 +5784,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if",
- "windows-targets 0.53.3",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -7838,7 +7838,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "once_cell",
@@ -7858,7 +7858,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -7981,7 +7981,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.6.0",
+ "socket2 0.5.10",
  "thiserror 2.0.16",
  "tokio",
  "tracing",
@@ -8018,7 +8018,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.0",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -9640,6 +9640,7 @@ dependencies = [
  "sha3",
  "tempfile",
  "tempo-evm",
+ "tempo-payload-types",
  "tempo-telemetry-util",
  "thiserror 2.0.16",
  "tokio",
@@ -12562,11 +12563,9 @@ dependencies = [
  "governor",
  "rand 0.8.5",
  "reth",
- "reth-ethereum-engine-primitives",
  "reth-ethereum-primitives",
  "reth-node-builder",
  "reth-node-core",
- "reth-node-ethereum",
  "reth-primitives-traits",
  "reth-provider",
  "sequential-futures-queue",
@@ -12633,12 +12632,12 @@ version = "0.1.0"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",
- "alloy-rpc-types-engine",
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-evm-ethereum",
  "reth-primitives-traits",
  "tempo-chainspec",
+ "tempo-payload-types",
  "tempo-precompiles",
  "tempo-revm",
 ]
@@ -12674,7 +12673,6 @@ dependencies = [
  "alloy",
  "alloy-eips",
  "alloy-primitives",
- "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "clap",
  "eyre",
@@ -12706,6 +12704,7 @@ dependencies = [
  "tempo-evm",
  "tempo-faucet",
  "tempo-payload-builder",
+ "tempo-payload-types",
  "tempo-precompiles",
  "tempo-transaction-pool",
  "tokio",
@@ -12734,6 +12733,19 @@ dependencies = [
  "tempo-evm",
  "tempo-transaction-pool",
  "tracing",
+]
+
+[[package]]
+name = "tempo-payload-types"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "reth-ethereum-engine-primitives",
+ "reth-ethereum-primitives",
+ "reth-node-api",
+ "reth-primitives-traits",
+ "serde",
 ]
 
 [[package]]
@@ -13989,7 +14001,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

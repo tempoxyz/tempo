@@ -1,36 +1,31 @@
-use alloy_rpc_types_engine::ExecutionData;
+use crate::{TempoExecutionData, TempoPayloadTypes};
 use reth_ethereum::{Block, engine::EthPayloadAttributes, primitives::Header};
-use reth_node_api::{
-    EngineApiMessageVersion, EngineApiValidator, EngineObjectValidationError,
-    InvalidPayloadAttributesError, NewPayloadError, PayloadOrAttributes, PayloadValidator,
-};
-use reth_node_ethereum::{EthEngineTypes, EthereumEngineValidator};
+use reth_node_api::{InvalidPayloadAttributesError, NewPayloadError, PayloadValidator};
 use reth_primitives_traits::RecoveredBlock;
-use std::sync::Arc;
-use tempo_chainspec::spec::TempoChainSpec;
 
 /// Type encapsulating Tempo engine validation logic. Wraps an inner [`EthereumEngineValidator`].
-pub struct TempoEngineValidator {
-    inner: EthereumEngineValidator<TempoChainSpec>,
-}
+#[derive(Debug, Default, Clone, Copy)]
+#[non_exhaustive]
+pub struct TempoEngineValidator;
 
 impl TempoEngineValidator {
     /// Creates a new [`TempoEngineValidator`] with the given chain spec.
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self {
-            inner: EthereumEngineValidator::new(chain_spec),
-        }
+    pub fn new() -> Self {
+        Self {}
     }
 }
 
-impl PayloadValidator<EthEngineTypes> for TempoEngineValidator {
+impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
     type Block = Block;
 
     fn ensure_well_formed_payload(
         &self,
-        payload: ExecutionData,
+        payload: TempoExecutionData,
     ) -> Result<RecoveredBlock<Block>, NewPayloadError> {
-        PayloadValidator::<EthEngineTypes>::ensure_well_formed_payload(&self.inner, payload)
+        let TempoExecutionData(block) = payload;
+        block
+            .try_recover()
+            .map_err(|e| NewPayloadError::Other(e.into()))
     }
 
     fn validate_payload_attributes_against_header(
@@ -43,31 +38,5 @@ impl PayloadValidator<EthEngineTypes> for TempoEngineValidator {
             return Err(InvalidPayloadAttributesError::InvalidTimestamp);
         }
         Ok(())
-    }
-}
-
-impl EngineApiValidator<EthEngineTypes> for TempoEngineValidator {
-    fn validate_version_specific_fields(
-        &self,
-        version: EngineApiMessageVersion,
-        payload_or_attrs: PayloadOrAttributes<'_, ExecutionData, EthPayloadAttributes>,
-    ) -> Result<(), EngineObjectValidationError> {
-        EngineApiValidator::<EthEngineTypes>::validate_version_specific_fields(
-            &self.inner,
-            version,
-            payload_or_attrs,
-        )
-    }
-
-    fn ensure_well_formed_attributes(
-        &self,
-        version: EngineApiMessageVersion,
-        attributes: &EthPayloadAttributes,
-    ) -> Result<(), EngineObjectValidationError> {
-        EngineApiValidator::<EthEngineTypes>::ensure_well_formed_attributes(
-            &self.inner,
-            version,
-            attributes,
-        )
     }
 }

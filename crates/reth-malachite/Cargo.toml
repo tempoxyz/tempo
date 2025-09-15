@@ -11,6 +11,7 @@ description = "TODO:"
 
 [dependencies]
 tempo-evm.workspace = true
+tempo-payload-types.workspace = true
 tempo-telemetry-util.workspace = true
 
 reth.workspace = true

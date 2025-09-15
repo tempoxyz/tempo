@@ -29,7 +29,7 @@ use crate::{
     utils::seed_from_address,
 };
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::{ExecutionData, ForkchoiceState, PayloadStatusEnum};
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use bytes::Bytes;
 use eyre::Result;
 use malachitebft_app_channel::app::{
@@ -40,9 +40,8 @@ use malachitebft_core_types::{
     CommitCertificate, Height as HeightTrait, Round, Validity, VoteExtensions,
 };
 use rand::{SeedableRng, rngs::StdRng};
-use reth_engine_primitives::ConsensusEngineHandle;
-use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_builder::{NodeTypes, PayloadTypes};
+use reth_engine_primitives::{ConsensusEngineHandle, ExecutionPayload};
+use reth_node_builder::NodeTypes;
 use reth_payload_builder::{PayloadBuilderHandle, PayloadStore};
 use reth_payload_primitives::{EngineApiMessageVersion, PayloadKind};
 use reth_primitives_traits::SealedBlock;
@@ -52,6 +51,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
 };
+use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
 use tempo_telemetry_util::error_field;
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, info, warn};
@@ -87,13 +87,9 @@ impl Clone for ThreadSafeRng {
 }
 
 // Manual Clone implementation for State since PayloadStore doesn't implement Clone
-impl<N: NodeTypes> Clone for State<N>
+impl<N> Clone for State<N>
 where
-    N::Payload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
+    N: NodeTypes,
 {
     fn clone(&self) -> Self {
         Self {
@@ -164,11 +160,7 @@ pub struct State<N: NodeTypes> {
 
 impl<N: NodeTypes> State<N>
 where
-    N::Payload: PayloadTypes<
-            PayloadAttributes = alloy_rpc_types_engine::PayloadAttributes,
-            ExecutionData = ExecutionData,
-            BuiltPayload = EthBuiltPayload,
-        >,
+    N: NodeTypes<Payload = TempoPayloadTypes>,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -744,8 +736,7 @@ where
                 eyre::eyre!("Block not found for decided value: {}", value.hash())
             })?;
         let sealed_block = SealedBlock::seal_slow(block);
-        let payload =
-            <reth_node_ethereum::EthEngineTypes as PayloadTypes>::block_to_payload(sealed_block);
+        let payload = TempoExecutionData(sealed_block);
 
         debug!(
             "Sending new_payload with block_number: {}, parent_hash: {}",
@@ -960,8 +951,7 @@ where
     ) -> Result<bool> {
         // Convert the block to execution payload
         let sealed_block = SealedBlock::seal_slow(block.clone());
-        let payload =
-            <reth_node_ethereum::EthEngineTypes as PayloadTypes>::block_to_payload(sealed_block);
+        let payload = TempoExecutionData(sealed_block);
         // Send new_payload to validate it
         let payload_status = self.engine_handle.new_payload(payload).await?;
 

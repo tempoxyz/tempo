@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 tempo-chainspec.workspace = true
+tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
 tempo-revm.workspace = true
 
@@ -21,4 +22,3 @@ reth-ethereum-primitives.workspace = true
 
 alloy-evm.workspace = true
 alloy-primitives.workspace = true
-alloy-rpc-types-engine.workspace = true
