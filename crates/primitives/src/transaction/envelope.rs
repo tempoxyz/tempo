@@ -196,6 +196,9 @@ impl InMemorySize for TempoTxType {
     }
 }
 
+#[cfg(feature = "serde-bincode-compat")]
+impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelope {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
