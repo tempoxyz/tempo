@@ -31,9 +31,9 @@ reth-codecs.workspace = true
 test-fuzz.workspace = true
 
 [features]
-default = ["serde", "reth-codec", "serde-bincode-compat"]
+default = ["serde", "reth-codec", "serde-bincode-compat", "reth-codec"]
 serde = ["dep:serde", "dep:alloy-serde", "alloy-consensus/serde", "reth-primitives-traits/serde", "reth-ethereum-primitives/serde"]
-reth-codec = ["dep:reth-codecs", "dep:modular-bitfield"]
+reth-codec = ["dep:reth-codecs", "dep:modular-bitfield", "reth-ethereum-primitives/reth-codec", "reth-codecs/alloy", "reth-primitives-traits/reth-codec"]
 serde-bincode-compat = ["serde", "alloy-consensus/serde-bincode-compat", "reth-primitives-traits/serde-bincode-compat", "reth-ethereum-primitives/serde-bincode-compat"]
 arbitrary = [
     "dep:arbitrary",
