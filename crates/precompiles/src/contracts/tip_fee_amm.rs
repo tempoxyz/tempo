@@ -11,6 +11,8 @@ use alloy::{
     sol_types::SolValue,
 };
 
+pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
+
 /// Storage slots for TIPFeeAMM
 ///
 /// IMPORTANT: These slots are shared with FeeManager when it inherits from TIPFeeAMM.
@@ -136,6 +138,35 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
     fn get_liquidity_balance_slot(&self, pool_id: &B256, user: &Address) -> U256 {
         double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES)
+    }
+
+    fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
+        let total_supply_slot = self.get_total_supply_slot(&pool_id);
+        let total_supply = self
+            .storage
+            .sload(self.contract_address, total_supply_slot)
+            .expect("TODO: handle error");
+
+        total_supply
+    }
+
+    fn set_total_supply(&mut self, pool_id: &B256, total_supply: U256) {
+        let total_supply_slot = self.get_total_supply_slot(&pool_id);
+        self.storage
+            .sstore(self.contract_address, total_supply_slot, total_supply)
+            .expect("TODO: handle error");
+    }
+
+    fn get_pool_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
+        let pool_slot = self.get_pool_slot(&pool_id);
+        let pool = self
+            .storage
+            .sload(self.contract_address, pool_slot)
+            .expect("TODO: handle error");
+        let reserve_0 = pool & U256::from(u128::MAX);
+        let reserve_1 = pool.wrapping_shr(128);
+
+        (reserve_0, reserve_1)
     }
 
     fn transfer_from_user(
@@ -276,20 +307,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             != U256::ZERO
     }
 
-    /// Get pool reserves for validation
-    pub fn get_pool_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
-        let pool_slot = self.get_pool_slot(pool_id);
-        let pool_value = self
-            .storage
-            .sload(self.contract_address, pool_slot)
-            .expect("TODO: handle error");
-
-        let reserve0 = U256::from((pool_value & U256::from(u128::MAX)).to::<u128>());
-        let reserve1 = U256::from(pool_value.wrapping_shr(128).to::<u128>());
-
-        (reserve0, reserve1)
-    }
-
     // TODO: Liq functions
 
     /// Mint liquidity tokens
@@ -313,91 +330,30 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             ));
         }
 
-        // Get current pool state
-        let pool_slot = self.get_pool_slot(&pool_id);
-        let pool_value = self
-            .storage
-            .sload(self.contract_address, pool_slot)
-            .expect("TODO: handle error");
+        let total_supply = self.get_total_supply(&pool_id);
+        let (reserve_0, reserve_1) = self.get_pool_reserves(&pool_id);
 
-        // TODO: use const
-        let reserve0 = pool_value & U256::from(u128::MAX);
-        let reserve1 = pool_value.wrapping_shr(128);
+        let liquidity = if total_supply.is_zero() {
+            self.set_total_supply(&pool_id, MIN_LIQUIDITY);
 
-        // Get total supply
-        let total_supply_slot = self.get_total_supply_slot(&pool_id);
-        let total_supply = self
-            .storage
-            .sload(self.contract_address, total_supply_slot)
-            .expect("TODO: handle error");
-
-        let liquidity = if total_supply == U256::ZERO {
-            // First liquidity provider
-            let liquidity = sqrt(call.amount0 * call.amount1);
-            // TODO: use const
-            if liquidity <= U256::from(1000) {
-                return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                    ITIPFeeAMM::InsufficientLiquidity {},
-                ));
-            }
-            liquidity - U256::from(1000) // Subtract MIN_LIQUIDITY
+            sqrt(call.amount0 * call.amount1) - MIN_LIQUIDITY
         } else {
-            // Subsequent liquidity providers - must provide proportional amounts
-            let liq_0 = (call.amount0 * total_supply) / reserve0;
-            let liq_1 = (call.amount1 * total_supply) / reserve1;
-            // TODO: rewrite this as min?
-            liq_0.min(liq_1)
+            let liquidity_0 = (call.amount0 * total_supply) / reserve_0;
+            let liquidity_1 = (call.amount1 * total_supply) / reserve_1;
+            liquidity_0.min(liquidity_1)
         };
 
-        if liquidity == U256::ZERO {
+        if liquidity.is_zero() {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
                 ITIPFeeAMM::InsufficientLiquidity {},
             ));
         }
 
         // TODO: Transfer tokens from user
-        // IERC20(token0).transferFrom(msg.sender, address(this), amount0);
-        // IERC20(token1).transferFrom(msg.sender, address(this), amount1);
 
-        // Update reserves
-        let new_reserve0 = reserve0 + call.amount0;
-        let new_reserve1 = reserve1 + call.amount1;
-        let new_pool_value = (new_reserve1 << 128) | new_reserve0;
+        // TODO: mint lp tokens
 
-        self.storage
-            .sstore(self.contract_address, pool_slot, new_pool_value)
-            .expect("TODO: handle error");
-
-        // Update total supply
-        let new_total_supply = if total_supply == U256::ZERO {
-            // TODO: use const, min liquidity
-            liquidity + U256::from(1000)
-        } else {
-            total_supply + liquidity
-        };
-
-        self.storage
-            .sstore(self.contract_address, total_supply_slot, new_total_supply)
-            .expect("TODO: handle error");
-
-        // Update user's liquidity balance
-        let balance_slot = self.get_liquidity_balance_slot(&pool_id, &call.to);
-        let current_balance = self
-            .storage
-            .sload(self.contract_address, balance_slot)
-            .expect("TODO: handle error");
-
-        self.storage
-            .sstore(
-                self.contract_address,
-                balance_slot,
-                current_balance + liquidity,
-            )
-            .expect("TODO: handle error");
-
-        // TODO: emit Mint event
-        // emit Mint(msg.sender, token0, token1, amount0, amount1, liquidity, to);
-
+        // TODO: mint event
         Ok(liquidity)
     }
 
