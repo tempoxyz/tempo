@@ -12,7 +12,7 @@ use super::fee_token::TxFeeToken;
 /// - EIP-7702 authorization list transactions
 /// - Tempo fee token transactions (0x77)
 #[derive(Clone, Debug, alloy_consensus::TransactionEnvelope)]
-#[envelope(tx_type_name = TempoTxType)]
+#[envelope(tx_type_name = TempoTxType, arbitrary_cfg(feature = "arbitrary"), serde_cfg(feature = "serde"))]
 pub enum TempoTxEnvelope {
     /// Legacy transaction (type 0x00)
     #[envelope(ty = 0)]
