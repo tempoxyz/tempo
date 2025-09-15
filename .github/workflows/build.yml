@@ -43,6 +43,8 @@ jobs:
         matrix-key: ${{ matrix.binary }}
         outputs: |-
           artifact_id: ${{ steps.binary_upload.outputs.artifact-id }}
+  # TODO: Vercel requires that the repo is either open sourced or contributors have deployment permissions. 
+  # This should be uncommented when the repo is public.
   # deploy:
   #   name: Deploy to devnet-1
   #   runs-on: depot-ubuntu-24.04-4
