@@ -335,6 +335,10 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.storage
             .sstore(self.contract_address, pool_slot, U256::ZERO)
             .expect("TODO: handle error");
+        // Store pending amount values
+        self.storage
+            .sstore(self.contract_address, pool_slot + U256::ONE, U256::ZERO)
+            .expect("TODO: handle error");
 
         // Mark pool as existing
         self.storage

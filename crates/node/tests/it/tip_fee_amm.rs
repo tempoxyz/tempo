@@ -35,46 +35,41 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let amount = U256::from(rand::random::<u128>());
     let token_0 = setup_test_token(provider.clone(), caller).await?;
     let token_1 = setup_test_token(provider.clone(), caller).await?;
-
-    // TODO: call these concurrently
-    token_0
-        .mint(caller, amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    token_1
-        .mint(caller, amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    token_0
-        .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    token_1
-        .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let receipt = fee_amm
-        .createPool(*token_0.address(), *token_1.address())
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+
+    // Mint approve and create pool
+    let mut pending = vec![];
+    pending.push(token_0.mint(caller, amount).send().await?);
+    pending.push(token_1.mint(caller, amount).send().await?);
+    pending.push(
+        token_0
+            .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    pending.push(
+        token_1
+            .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    pending.push(
+        fee_amm
+            .createPool(*token_0.address(), *token_1.address())
+            .send()
+            .await?,
+    );
+
+    for tx in pending {
+        let receipt = tx.get_receipt().await?;
+        assert!(receipt.status());
+    }
 
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = fee_amm.getPoolId(pool_key.clone().into()).call().await?;
+
+    // Check if pool exists
+    assert!(fee_amm.poolExists(pool_id).call().await?);
 
     // Check initial state
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
@@ -98,8 +93,6 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     // Mint liquidity
     let mint_receipt = fee_amm
         .mint(pool_key.into(), amount, amount, caller)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300000)
         .send()
         .await?
         .get_receipt()
