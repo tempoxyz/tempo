@@ -166,6 +166,8 @@ sol! {
         struct Pool {
             uint128 reserve0;
             uint128 reserve1;
+            uint128 pendingReserve0;
+            uint128 pendingReserve1;
         }
 
         struct QueuedOperation {

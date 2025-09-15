@@ -40,8 +40,8 @@ pub mod slots {
 pub struct Pool {
     pub reserve0: u128,
     pub reserve1: u128,
-    pub pending_amount_in_0: u128,
-    pub pending_amount_in_1: u128,
+    pub pending_reserve_0: u128,
+    pub pending_reserve_1: u128,
 }
 
 impl From<Pool> for ITIPFeeAMM::Pool {
@@ -49,6 +49,8 @@ impl From<Pool> for ITIPFeeAMM::Pool {
         Self {
             reserve0: pool.reserve0,
             reserve1: pool.reserve1,
+            pendingReserve0: pool.pending_reserve_0,
+            pendingReserve1: pool.pending_reserve_1,
         }
     }
 }
@@ -194,8 +196,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Pool {
             reserve0: reserve_0,
             reserve1: reserve_1,
-            pending_amount_in_0: pending_0,
-            pending_amount_in_1: pending_1,
+            pending_reserve_0: pending_0,
+            pending_reserve_1: pending_1,
         }
     }
 
@@ -213,14 +215,14 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     pub fn get_effective_reserves(&mut self, pool: &Pool) -> (U256, U256) {
-        let pending_0_out = (U256::from(pool.pending_amount_in_0) * FEE_MULTIPLIER) / FEE_SCALE;
-        let pending_1_out = (U256::from(pool.pending_amount_in_1) * FEE_MULTIPLIER) / FEE_SCALE;
+        let pending_0_out = (U256::from(pool.pending_reserve_0) * FEE_MULTIPLIER) / FEE_SCALE;
+        let pending_1_out = (U256::from(pool.pending_reserve_1) * FEE_MULTIPLIER) / FEE_SCALE;
 
         let effective_reserve_0 =
-            U256::from(pool.reserve0) + U256::from(pool.pending_amount_in_1) - pending_0_out;
+            U256::from(pool.reserve0) + U256::from(pool.pending_reserve_0) - pending_1_out;
 
         let effective_reserve_1 =
-            U256::from(pool.reserve1) + U256::from(pool.pending_amount_in_0) - pending_1_out;
+            U256::from(pool.reserve1) + U256::from(pool.pending_reserve_1) - pending_0_out;
 
         (effective_reserve_0, effective_reserve_1)
     }
@@ -358,22 +360,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
     /// Get pool data by ID
     pub fn pools(&mut self, call: ITIPFeeAMM::poolsCall) -> ITIPFeeAMM::Pool {
-        let pool_slot = self.get_pool_slot(&call.poolId);
-        let combined = self
-            .storage
-            .sload(self.contract_address, pool_slot)
-            .expect("TODO: handle error");
-
-        let reserve0 = combined.to_be_bytes::<32>()[16..32]
-            .try_into()
-            .map(u128::from_be_bytes)
-            .expect("TODO: handle error");
-        let reserve1 = combined.to_be_bytes::<32>()[0..16]
-            .try_into()
-            .map(u128::from_be_bytes)
-            .expect("TODO: handle error");
-
-        ITIPFeeAMM::Pool { reserve0, reserve1 }
+        let pool = self.get_pool(&call.poolId);
+        pool.into()
     }
 
     /// Check if pool exists by key
