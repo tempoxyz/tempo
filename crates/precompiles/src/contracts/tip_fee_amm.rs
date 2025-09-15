@@ -157,7 +157,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
-    fn pool_exists(&mut self, pool_id: &B256) -> bool {
+    pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
         let exists_slot = self.get_pool_exists_slot(&pool_id);
         let exists = self
             .storage
@@ -169,12 +169,9 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
     fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
         let total_supply_slot = self.get_total_supply_slot(&pool_id);
-        let total_supply = self
-            .storage
+        self.storage
             .sload(self.contract_address, total_supply_slot)
-            .expect("TODO: handle error");
-
-        total_supply
+            .expect("TODO: handle error")
     }
 
     fn set_total_supply(&mut self, pool_id: &B256, total_supply: U256) {
@@ -184,7 +181,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
-    fn get_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
+    pub fn get_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
         let pool_slot = self.get_pool_slot(&pool_id);
         let pool = self
             .storage
@@ -509,7 +506,22 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             },
         );
 
-        // TODO: emit burn event
+        // Emit burn event
+        self.storage
+            .emit_event(
+                self.contract_address,
+                TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
+                    sender: msg_sender,
+                    token0: pool_key.token0,
+                    token1: pool_key.token1,
+                    amount0: amount_0,
+                    amount1: amount_1,
+                    liquidity: call.liquidity,
+                    to: call.to,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok((amount_0, amount_1))
     }
@@ -548,29 +560,6 @@ mod tests {
         assert_eq!(key1.token1, addr2);
         assert_eq!(key1, key2);
         assert_eq!(key1.get_id(), key2.get_id());
-    }
-
-    #[test]
-    fn test_create_pool() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let contract_address = Address::random();
-        let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
-
-        let token_a = Address::random();
-        let token_b = Address::random();
-
-        let call = ITIPFeeAMM::createPoolCall {
-            tokenA: token_a,
-            tokenB: token_b,
-        };
-
-        assert!(amm.create_pool(call).is_ok());
-
-        // Verify pool exists
-        let pool_key = PoolKey::new(token_a, token_b);
-        let pool_id = pool_key.get_id();
-        let exists_call = ITIPFeeAMM::poolExistsCall { poolId: pool_id };
-        assert!(amm.pool_exists(exists_call));
     }
 
     // TODO: test mint

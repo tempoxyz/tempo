@@ -265,7 +265,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             // Check pool reserves
             let pool_key = PoolKey::new(user_token, validator_token);
             let pool_id = pool_key.get_id();
-            let (reserve0, reserve1) = amm.get_pool_reserves(&pool_id);
+            let (reserve0, reserve1) = amm.get_reserves(&pool_id);
 
             if reserve0 < Self::MINIMUM_BALANCE || reserve1 < Self::MINIMUM_BALANCE {
                 return Err(IFeeManager::IFeeManagerErrors::InsufficientPoolBalance(
@@ -499,7 +499,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     /// Checks if a pool exists (inherited from TIPFeeAMM)
     pub fn pool_exists(&mut self, call: ITIPFeeAMM::poolExistsCall) -> bool {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.pool_exists(call)
+        amm.pool_exists(&call.poolId)
     }
 }
 
