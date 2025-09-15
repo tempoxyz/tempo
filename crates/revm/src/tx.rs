@@ -16,7 +16,7 @@ use tempo_primitives::{TempoTxEnvelope, TxFeeToken};
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
-    /// Inner Ethereum [`TxEnv`]/
+    /// Inner Ethereum [`TxEnv`].
     #[deref]
     #[deref_mut]
     pub inner: TxEnv,
