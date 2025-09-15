@@ -122,13 +122,15 @@ fn main() -> eyre::Result<()> {
                 tokio::pin!(consensus_stack);
                 loop {
                     tokio::select!(
-                        ret = &mut consensus_stack => {
-                            break ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
-                            .wrap_err("consensus stack failed");
-                        }
+                        biased;
 
                         () = shutdown_token_clone.cancelled() => {
                             break Ok(());
+                        }
+
+                        ret = &mut consensus_stack => {
+                            break ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
+                            .wrap_err("consensus stack failed");
                         }
 
                         ret = &mut metrics_server, if !metrics_server.is_terminated() => {

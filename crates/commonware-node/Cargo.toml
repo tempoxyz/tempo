@@ -18,6 +18,7 @@ alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-rlp.workspace = true
 
+axum.workspace = true
 bytes.workspace = true
 
 commonware-broadcast.workspace = true
@@ -45,4 +46,3 @@ reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
-axum = "0.8.4"
