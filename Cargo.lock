@@ -12458,6 +12458,8 @@ dependencies = [
  "tempo-node",
  "tokio",
  "tracing",
+ "vergen",
+ "vergen-git2",
 ]
 
 [[package]]

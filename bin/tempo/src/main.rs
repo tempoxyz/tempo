@@ -12,8 +12,12 @@
 //!
 //! Configuration can be provided via command-line arguments or configuration files.
 
+mod version;
+
 use clap::Parser;
-use reth_ethereum::{chainspec::EthChainSpec, cli::Cli};
+use reth_ethereum::{
+    chainspec::EthChainSpec, cli::Cli, node::core::version::try_init_version_metadata,
+};
 use reth_malachite::{
     app::{Config, Genesis, State, ValidatorInfo},
     cli::MalachiteArgs,
@@ -41,6 +45,9 @@ fn main() {
     if std::env::var_os("RUST_BACKTRACE").is_none() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
+
+    try_init_version_metadata(version::tempo())
+        .expect("Version metadata should be generated in `build.rs`");
 
     let components = |spec: Arc<TempoChainSpec>| {
         (

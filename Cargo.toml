@@ -240,3 +240,7 @@ toml = "0.8"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 criterion = "0.7.0"
+
+# build deps
+vergen = "9"
+vergen-git2 = "1"
