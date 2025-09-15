@@ -559,14 +559,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use reth_storage_api::errors::db;
-
     use super::*;
     use crate::contracts::{
         HashMapStorageProvider,
         tip20::{ISSUER_ROLE, TIP20Token},
         tip20_factory::TIP20Factory,
-        token_id_to_address,
         types::ITIP20,
     };
 
@@ -873,6 +870,20 @@ mod tests {
         assert_eq!(user_token_1_bal, U256::ZERO);
         let fee_amm_token_1_bal = token_1.balance_of(ITIP20::balanceOfCall { account: amm_addr });
         assert_eq!(fee_amm_token_1_bal, amount_1);
+
+        // Assert event emission
+        let events = storage.events.get(&amm_addr).expect("Events should exist");
+        assert_eq!(events.len(), 1);
+        
+        let expected_event = TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
+            sender: user,
+            token0: token_0_addr,
+            token1: token_1_addr,
+            amount0: amount_0,
+            amount1: amount_1,
+            liquidity,
+        });
+        assert_eq!(events[0], expected_event.into_log_data());
     }
 
     #[test]
