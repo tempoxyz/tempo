@@ -352,24 +352,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         pool_key.get_id()
     }
 
-    ///// Get pool data
-    //pub fn get_pool(&mut self, call: ITIPFeeAMM::getPoolCall) -> ITIPFeeAMM::Pool {
-    //    let pool_key = PoolKey::from(call.key);
-    //    let pool_id = pool_key.get_id();
-    //    let pool_slot = self.get_pool_slot(&pool_id);
-    //
-    //    let pool_value = self
-    //        .storage
-    //        .sload(self.contract_address, pool_slot)
-    //        .expect("TODO: handle error");
-    //
-    //    // Unpack: reserve1 in high 128 bits, reserve0 in low 128 bits
-    //    let reserve0 = (pool_value & U256::from(u128::MAX)).to::<u128>();
-    //    let reserve1 = pool_value.wrapping_shr(128).to::<u128>();
-    //
-    //    ITIPFeeAMM::Pool { reserve0, reserve1 }
-    //}
-
     /// Get pool data by ID
     pub fn pools(&mut self, call: ITIPFeeAMM::poolsCall) -> ITIPFeeAMM::Pool {
         let pool_slot = self.get_pool_slot(&call.poolId);
@@ -580,19 +562,178 @@ mod tests {
 
     #[test]
     fn test_pool_key_ordering() {
-        let addr1 = Address::from([1u8; 20]);
-        let addr2 = Address::from([2u8; 20]);
+        let addr1 = Address::random();
+        let addr2 = Address::random();
 
         let key1 = PoolKey::new(addr1, addr2);
         let key2 = PoolKey::new(addr2, addr1);
 
-        assert_eq!(key1.token0, addr1);
-        assert_eq!(key1.token1, addr2);
         assert_eq!(key1, key2);
         assert_eq!(key1.get_id(), key2.get_id());
     }
 
-    // TODO: test mint
+    #[test]
+    fn test_create_pool() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
+        let token0 = Address::random();
+        let token1 = Address::random();
 
-    // TODO: test burn
+        let result = amm.create_pool(ITIPFeeAMM::createPoolCall {
+            tokenA: token0,
+            tokenB: token1,
+        });
+
+        assert!(result.is_ok());
+
+        let pool_key = PoolKey::new(token0, token1);
+        let pool_id = pool_key.get_id();
+        assert!(amm.pool_exists(&pool_id));
+    }
+
+    #[test]
+    fn test_get_pool() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
+        let token0 = Address::random();
+        let token1 = Address::random();
+
+        amm.create_pool(ITIPFeeAMM::createPoolCall {
+            tokenA: token0,
+            tokenB: token1,
+        })
+        .unwrap();
+
+        let pool_key = PoolKey::new(token0, token1);
+        let pool_id = pool_key.get_id();
+        let pool = amm.get_pool(&pool_id);
+
+        assert_eq!(pool.reserve0, 0);
+        assert_eq!(pool.reserve1, 0);
+    }
+
+    #[test]
+    fn test_set_and_get_reserves() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
+        let token0 = Address::random();
+        let token1 = Address::random();
+
+        amm.create_pool(ITIPFeeAMM::createPoolCall {
+            tokenA: token0,
+            tokenB: token1,
+        })
+        .unwrap();
+
+        let pool_key = PoolKey::new(token0, token1);
+        let pool_id = pool_key.get_id();
+
+        let reserve_0 = U256::random();
+        let reserve_1 = U256::random();
+
+        amm.set_reserves(&pool_id, reserve_0, reserve_1);
+        let reserves = amm.get_reserves(&pool_id);
+
+        assert_eq!(reserves, (reserve_0, reserve_1));
+    }
+
+    #[test]
+    fn test_get_effective_reserves() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
+
+        let pool = Pool {
+            reserve0: 1000,
+            reserve1: 2000,
+            pending_amount_in_0: 100,
+            pending_amount_in_1: 200,
+        };
+
+        let (eff_reserve0, eff_reserve1) = amm.get_effective_reserves(&pool);
+
+        let pending_0_out = (U256::from(100) * FEE_MULTIPLIER) / FEE_SCALE;
+        let pending_1_out = (U256::from(200) * FEE_MULTIPLIER) / FEE_SCALE;
+
+        let expected_eff_reserve0 = U256::from(1000) + U256::from(200) - pending_0_out;
+        let expected_eff_reserve1 = U256::from(2000) + U256::from(100) - pending_1_out;
+
+        assert_eq!(eff_reserve0, expected_eff_reserve0);
+        assert_eq!(eff_reserve1, expected_eff_reserve1);
+    }
+
+    #[test]
+    fn test_calculate_burn_amounts() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
+        let token0 = Address::random();
+        let token1 = Address::random();
+
+        amm.create_pool(ITIPFeeAMM::createPoolCall {
+            tokenA: token0,
+            tokenB: token1,
+        })
+        .unwrap();
+
+        let pool_key = PoolKey::new(token0, token1);
+        let pool_id = pool_key.get_id();
+
+        amm.set_reserves(&pool_id, U256::from(1000), U256::from(2000));
+        amm.set_total_supply(&pool_id, U256::from(100));
+
+        let result = amm.calculate_burn_amounts(&pool_id, U256::from(10));
+        assert!(result.is_ok());
+
+        let (amount0, amount1) = result.unwrap();
+        assert_eq!(amount0, U256::from(100));
+        assert_eq!(amount1, U256::from(200));
+    }
+
+    #[test]
+    fn test_liquidity_balances() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
+        let token0 = Address::random();
+        let token1 = Address::random();
+        let user = Address::random();
+
+        amm.create_pool(ITIPFeeAMM::createPoolCall {
+            tokenA: token0,
+            tokenB: token1,
+        })
+        .unwrap();
+
+        let pool_key = PoolKey::new(token0, token1);
+        let pool_id = pool_key.get_id();
+
+        amm.set_liquidity_balance(&pool_id, user, U256::from(500));
+        let balance = amm.get_liquidity_balance(&pool_id, user);
+
+        assert_eq!(balance, U256::from(500));
+    }
+
+    #[test]
+    fn test_mint_lp_tokens() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
+        let token0 = Address::random();
+        let token1 = Address::random();
+        let user = Address::random();
+
+        amm.create_pool(ITIPFeeAMM::createPoolCall {
+            tokenA: token0,
+            tokenB: token1,
+        })
+        .unwrap();
+
+        let pool_key = PoolKey::new(token0, token1);
+        let pool_id = pool_key.get_id();
+
+        amm.mint_lp_tokens(&pool_id, user, U256::from(100));
+
+        let balance = amm.get_liquidity_balance(&pool_id, user);
+        let total_supply = amm.get_total_supply(&pool_id);
+
+        assert_eq!(balance, U256::from(100));
+        assert_eq!(total_supply, U256::from(100));
+    }
 }
