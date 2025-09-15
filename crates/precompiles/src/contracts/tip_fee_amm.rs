@@ -13,10 +13,11 @@ use alloy::{
 };
 use alloy_primitives::IntoLogData;
 
+/// Minimum liquidity locked to prevent division by zero
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
-// 0.9975 fee multiplier (scaled by 10000)
+/// Fee multiplier of 0.9975 (99.75%) scaled by 10000
 pub const FEE_MULTIPLIER: U256 = uint!(9975_U256);
-//  Factor for fee calculations
+/// Scaling factor for percentage calculations
 pub const FEE_SCALE: U256 = uint!(10000_U256);
 
 /// Storage slots for TIPFeeAMM
@@ -35,12 +36,16 @@ pub mod slots {
     // Slots 4+ are reserved for FeeManager-specific data
 }
 
-/// Represents a liquidity pool
+/// Liquidity pool with current and pending reserves
 #[derive(Debug, Clone)]
 pub struct Pool {
+    /// Current reserve of token0
     pub reserve0: u128,
+    /// Current reserve of token1
     pub reserve1: u128,
+    /// Pending reserve of token0 from incomplete swaps
     pub pending_reserve_0: u128,
+    /// Pending reserve of token1 from incomplete swaps
     pub pending_reserve_1: u128,
 }
 
@@ -55,14 +60,17 @@ impl From<Pool> for ITIPFeeAMM::Pool {
     }
 }
 
-/// Pool key with ordered tokens
+/// Pool identifier with deterministically ordered tokens
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PoolKey {
+    /// Lower address token (deterministic ordering)
     pub token0: Address,
+    /// Higher address token (deterministic ordering)
     pub token1: Address,
 }
 
 impl PoolKey {
+    /// Create pool key with deterministic token ordering
     pub fn new(token_a: Address, token_b: Address) -> Self {
         let (token0, token1) = if token_a < token_b {
             (token_a, token_b)
@@ -73,6 +81,7 @@ impl PoolKey {
         Self { token0, token1 }
     }
 
+    /// Generate unique pool ID from token addresses
     pub fn get_id(&self) -> B256 {
         keccak256((self.token0, self.token1).abi_encode())
     }
@@ -106,12 +115,15 @@ impl From<ITIPFeeAMM::PoolKey> for PoolKey {
 /// - TIPFeeAMM uses slots 0-3, FeeManager extends with slots 4+
 ///
 /// This design allows FeeManager to be a full-featured AMM while adding fee-specific logic.
+/// AMM for stablecoin trading with fee management
 pub struct TIPFeeAMM<'a, S: StorageProvider> {
+    /// Contract address for storage operations
     pub contract_address: Address,
+    /// Storage provider interface
     pub storage: &'a mut S,
 }
 
-/// Square root function using Newton's method
+/// Calculate integer square root using Newton's method
 pub fn sqrt(x: U256) -> U256 {
     if x == U256::ZERO {
         return U256::ZERO;
@@ -126,6 +138,7 @@ pub fn sqrt(x: U256) -> U256 {
 }
 
 impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
+    /// Create new AMM instance
     pub fn new(contract_address: Address, storage: &'a mut S) -> Self {
         Self {
             contract_address,
@@ -133,23 +146,27 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
     }
 
-    // Storage slot helpers
+    /// Get storage slot for pool data
     fn get_pool_slot(&self, pool_id: &B256) -> U256 {
         mapping_slot(pool_id, slots::POOLS)
     }
 
+    /// Get storage slot for pool existence flag
     fn get_pool_exists_slot(&self, pool_id: &B256) -> U256 {
         mapping_slot(pool_id, slots::POOL_EXISTS)
     }
 
+    /// Get storage slot for LP token total supply
     fn get_total_supply_slot(&self, pool_id: &B256) -> U256 {
         mapping_slot(pool_id, slots::TOTAL_SUPPLY)
     }
 
+    /// Get storage slot for user's LP token balance
     fn get_liquidity_balance_slot(&self, pool_id: &B256, user: &Address) -> U256 {
         double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES)
     }
 
+    /// Get user's LP token balance for pool
     fn get_liquidity_balance(&mut self, pool_id: &B256, user: Address) -> U256 {
         let slot = double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES);
 
@@ -158,6 +175,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error ")
     }
 
+    /// Set user's LP token balance for pool
     fn set_liquidity_balance(&mut self, pool_id: &B256, user: Address, balance: U256) {
         let slot = double_mapping_slot(pool_id, user, slots::LIQUIDITY_BALANCES);
         self.storage
@@ -165,6 +183,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
+    /// Get complete pool data including reserves and pending amounts
     pub fn get_pool(&mut self, pool_id: &B256) -> Pool {
         let pool_slot = self.get_pool_slot(pool_id);
         let reserves = self
@@ -191,6 +210,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
     }
 
+    /// Get current pool reserves
     pub fn get_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
         let pool_slot = self.get_pool_slot(pool_id);
         let reserves = self
@@ -204,6 +224,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         (reserve_0, reserve_1)
     }
 
+    /// Calculate effective reserves accounting for pending swaps and fees
     pub fn get_effective_reserves(&mut self, pool: &Pool) -> (U256, U256) {
         let pending_0_out = (U256::from(pool.pending_reserve_0) * FEE_MULTIPLIER) / FEE_SCALE;
         let pending_1_out = (U256::from(pool.pending_reserve_1) * FEE_MULTIPLIER) / FEE_SCALE;
@@ -217,6 +238,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         (effective_reserve_0, effective_reserve_1)
     }
 
+    /// Get total supply of LP tokens for pool
     fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
         let total_supply_slot = self.get_total_supply_slot(pool_id);
         self.storage
@@ -224,6 +246,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error")
     }
 
+    /// Set total supply of LP tokens for pool
     fn set_total_supply(&mut self, pool_id: &B256, total_supply: U256) {
         let total_supply_slot = self.get_total_supply_slot(pool_id);
         self.storage
@@ -231,6 +254,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
+    /// Mint LP tokens to user and update total supply
     fn mint_lp_tokens(&mut self, pool_id: &B256, to: Address, amount: U256) {
         // TODO: this could be more efficient since we have already loaded total supply when
         // minting
@@ -241,6 +265,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.set_liquidity_balance(pool_id, to, amount + balance);
     }
 
+    /// Update pool reserves in storage
     fn set_reserves(&mut self, pool_id: &B256, reserve_0: U256, reserve_1: U256) {
         let pool_slot = self.get_pool_slot(pool_id);
         // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
@@ -250,6 +275,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
+    /// Update pending reserves from incomplete swaps
     fn set_pending_reserves(
         &mut self,
         pool_id: &B256,
@@ -265,6 +291,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
+    /// Mark pool as existing in storage
     fn set_pool_exists(&mut self, pool_id: &B256) {
         let exists_slot = self.get_pool_exists_slot(pool_id);
         self.storage
@@ -272,6 +299,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
+    /// Check if pool with the provided pool ID exists
     pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
         let exists_slot = self.get_pool_exists_slot(pool_id);
         let exists = self
@@ -282,7 +310,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         exists.to::<bool>()
     }
 
-    /// Calculate amounts to return when burning liquidity
+    /// Calculate token amounts to return when burning LP tokens
     fn calculate_burn_amounts(
         &mut self,
         pool_id: &B256,
@@ -321,7 +349,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok((amount_0, amount_1))
     }
 
-    /// Create a new liquidity pool
+    /// Create new liquidity pool for token pair
     pub fn create_pool(
         &mut self,
         call: ITIPFeeAMM::createPoolCall,
@@ -353,24 +381,34 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.set_pending_reserves(&pool_id, U256::ZERO, U256::ZERO);
         self.set_pool_exists(&pool_id);
 
-        // TODO: emit event
+        // Emit PoolCreated event
+        self.storage
+            .emit_event(
+                self.contract_address,
+                TIPFeeAMMEvent::PoolCreated(ITIPFeeAMM::PoolCreated {
+                    token0: pool_key.token0,
+                    token1: pool_key.token1,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
 
-    /// Get pool ID for a given key
+    /// Get pool ID for given token pair
     pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> B256 {
         let pool_key = PoolKey::from(call.key);
         pool_key.get_id()
     }
 
-    /// Get pool data by ID
+    /// Get pool data by pool ID
     pub fn pools(&mut self, call: ITIPFeeAMM::poolsCall) -> ITIPFeeAMM::Pool {
         let pool = self.get_pool(&call.poolId);
         pool.into()
     }
 
-    /// Check if pool exists by key
+    /// Check if pool exists for token pair
     pub fn pool_exists_for_tokens(&mut self, token0: Address, token1: Address) -> bool {
         let pool_key = PoolKey::new(token0, token1);
         let pool_id = pool_key.get_id();
@@ -382,7 +420,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             != U256::ZERO
     }
 
-    /// Mint liquidity tokens
+    /// Mint LP tokens by providing liquidity
     pub fn mint(
         &mut self,
         msg_sender: Address,
@@ -460,7 +498,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok(liquidity)
     }
 
-    /// Burn liquidity tokens and return proportional amounts
+    /// Burn LP tokens and withdraw proportional token amounts
     pub fn burn(
         &mut self,
         msg_sender: Address,
@@ -538,7 +576,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok((amount_0, amount_1))
     }
 
-    /// Get total supply of LP tokens for a pool
+    /// Get total supply of LP tokens for pool
     pub fn total_supply(&mut self, call: ITIPFeeAMM::totalSupplyCall) -> U256 {
         let total_supply_slot = self.get_total_supply_slot(&call.poolId);
         self.storage
@@ -546,7 +584,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error")
     }
 
-    /// Get liquidity balance of a user for a pool
+    /// Get user's LP token balance for pool
     pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> U256 {
         let balance_slot = self.get_liquidity_balance_slot(&call.poolId, &call.user);
         self.storage
@@ -580,7 +618,8 @@ mod tests {
     #[test]
     fn test_create_pool() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut amm = TIPFeeAMM::new(Address::random(), &mut storage);
+        let amm_addr = Address::random();
+        let mut amm = TIPFeeAMM::new(amm_addr, &mut storage);
         let token0 = Address::random();
         let token1 = Address::random();
 
@@ -594,6 +633,16 @@ mod tests {
         let pool_key = PoolKey::new(token0, token1);
         let pool_id = pool_key.get_id();
         assert!(amm.pool_exists(&pool_id));
+
+        // Assert PoolCreated event emission
+        let events = storage.events.get(&amm_addr).expect("Events should exist");
+        assert_eq!(events.len(), 1);
+
+        let expected_event = TIPFeeAMMEvent::PoolCreated(ITIPFeeAMM::PoolCreated {
+            token0: pool_key.token0,
+            token1: pool_key.token1,
+        });
+        assert_eq!(events[0], expected_event.into_log_data());
     }
 
     #[test]
@@ -859,7 +908,7 @@ mod tests {
 
         // Assert event emission
         let events = storage.events.get(&amm_addr).expect("Events should exist");
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
 
         let expected_event = TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
             sender: user,
@@ -955,7 +1004,7 @@ mod tests {
 
         // Assert event emission
         let events = storage.events.get(&amm_addr).expect("Events should exist");
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
 
         let expected_burn_event = TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
             sender: user,

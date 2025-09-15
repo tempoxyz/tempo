@@ -2,7 +2,9 @@ use alloy::{
     primitives::U256,
     providers::ProviderBuilder,
     signers::local::{MnemonicBuilder, coins_bip39::English},
+    sol_types::SolEvent,
 };
+use alloy_primitives::Address;
 use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -13,6 +15,66 @@ use tempo_precompiles::{
 };
 
 use crate::utils::{setup_test_node, setup_test_token};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_create_pool() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Setup test tokens and fee AMM
+    let token_0 = Address::random();
+    let token_1 = Address::random();
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    // Create pool
+    let create_pool_receipt = fee_amm
+        .createPool(token_0, token_1)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(create_pool_receipt.status());
+
+    // Assert pool exists
+    let pool_key = PoolKey::new(token_0, token_1);
+    let pool_id = pool_key.get_id();
+    assert!(fee_amm.poolExists(pool_id).call().await?);
+
+    // Assert pool initial state
+    let pool = fee_amm.pools(pool_id).call().await?;
+    assert_eq!(pool.reserve0, 0);
+    assert_eq!(pool.reserve1, 0);
+    assert_eq!(pool.pendingReserve0, 0);
+    assert_eq!(pool.pendingReserve1, 0);
+
+    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
+    assert_eq!(total_supply, U256::ZERO);
+
+    // Assert PoolCreated event was emitted
+    let pool_created_event = create_pool_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIPFeeAMM::PoolCreated::decode_log(&log.inner).ok())
+        .next()
+        .expect("PoolCreated event should be emitted");
+
+    // Assert event values match the pool key
+    assert_eq!(pool_created_event.token0, pool_key.token0);
+    assert_eq!(pool_created_event.token1, pool_key.token1);
+
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_mint_liquidity() -> eyre::Result<()> {

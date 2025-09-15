@@ -213,8 +213,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
-    /// Creates a new liquidity pool. This demonstrates the inheritance relationship:
-    /// FeeManager delegates to TIPFeeAMM for core AMM operations while adding fee tracking.
+    /// Creates a new liquidity pool. Calls inner [`TIPFeeAMM::create_pool`] to initialize storage
+    /// pool related variables.
     pub fn create_pool(
         &mut self,
         call: ITIPFeeAMM::createPoolCall,
