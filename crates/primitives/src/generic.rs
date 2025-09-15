@@ -1,5 +1,6 @@
 use crate::{TempoTxEnvelope, TempoTxType};
-use alloy_consensus::{Block, BlockBody, Header, Receipt};
+use alloy_consensus::{Block, BlockBody, Header};
+use reth_ethereum_primitives::Receipt;
 use reth_primitives_traits::NodePrimitives;
 
 /// A [`NodePrimitives`] implementation for Tempo.
