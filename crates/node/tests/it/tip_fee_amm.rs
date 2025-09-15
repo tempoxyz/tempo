@@ -29,6 +29,8 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let amount = U256::from(rand::random::<u128>());
+
+    // Setup test token and fee AMM
     let token_0 = setup_test_token(provider.clone(), caller).await?;
     let token_1 = setup_test_token(provider.clone(), caller).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
@@ -61,7 +63,26 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
         assert!(receipt.status());
     }
 
+    dbg!(token_0.balanceOf(caller).call().await?);
+    dbg!(token_1.balanceOf(caller).call().await?);
+    dbg!(
+        token_0
+            .allowance(caller, TIP_FEE_MANAGER_ADDRESS)
+            .call()
+            .await?
+    );
+    dbg!(
+        token_1
+            .allowance(caller, TIP_FEE_MANAGER_ADDRESS)
+            .call()
+            .await?
+    );
+
     // Assert initial state
+    let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
+    let pool_id = pool_key.get_id();
+    assert!(fee_amm.poolExists(pool_id).call().await?);
+
     let user_token0_balance = token_0.balanceOf(caller).call().await?;
     assert_eq!(user_token0_balance, amount);
 
@@ -73,10 +94,6 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
 
     let fee_manager_token1_balance = token_1.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     assert_eq!(fee_manager_token1_balance, U256::ZERO);
-
-    let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
-    let pool_id = pool_key.get_id();
-    assert!(fee_amm.poolExists(pool_id).call().await?);
 
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     assert_eq!(total_supply, U256::ZERO);

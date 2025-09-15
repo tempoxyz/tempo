@@ -219,6 +219,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             .sstore(self.contract_address, token1_fees_slot, fee_info_value)
             .expect("TODO: handle error");
 
+        dbg!("Successfully created pool");
+
         Ok(())
     }
 

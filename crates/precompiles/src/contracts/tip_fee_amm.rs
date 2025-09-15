@@ -12,6 +12,7 @@ use alloy::{
     sol_types::SolValue,
 };
 use alloy_primitives::IntoLogData;
+use reth_storage_api::errors::db;
 
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 // 0.9975 fee multiplier (scaled by 10000)
@@ -165,14 +166,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
-    pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
-        let exists_slot = self.get_pool_exists_slot(pool_id);
-        self.storage
-            .sload(self.contract_address, exists_slot)
-            .expect("TODO: handle error")
-            != U256::ZERO
-    }
-
     pub fn get_pool(&mut self, pool_id: &B256) -> Pool {
         let pool_slot = self.get_pool_slot(pool_id);
         let reserves = self
@@ -258,6 +251,42 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
     }
 
+    fn set_pending_reserves(
+        &mut self,
+        pool_id: &B256,
+        pending_reserve_0: U256,
+        pending_reserve_1: U256,
+    ) {
+        let pool_slot = self.get_pool_slot(pool_id) + U256::ONE;
+        // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
+        let packed =
+            (pending_reserve_1.wrapping_shl(128)) | (pending_reserve_0 & U256::from(u128::MAX));
+        self.storage
+            .sstore(self.contract_address, pool_slot, packed)
+            .expect("TODO: handle error");
+    }
+
+    fn set_pool_exists(&mut self, pool_id: &B256) {
+        dbg!("target: set_pool_exists", pool_id);
+        let exists_slot = self.get_pool_exists_slot(pool_id);
+        dbg!("target: set_pool_exists", exists_slot);
+        self.storage
+            .sstore(self.contract_address, exists_slot, U256::from(true))
+            .expect("TODO: handle error");
+    }
+
+    pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
+        dbg!("target: pool_exists", pool_id);
+        let exists_slot = self.get_pool_exists_slot(pool_id);
+        dbg!("target: pool_exists:", exists_slot);
+        let exists = self
+            .storage
+            .sload(self.contract_address, exists_slot)
+            .expect("TODO: handle error");
+
+        exists.to::<bool>()
+    }
+
     /// Calculate amounts to return when burning liquidity
     fn calculate_burn_amounts(
         &mut self,
@@ -318,32 +347,16 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let pool_id = pool_key.get_id();
 
         // Check if pool already exists
-        let exists_slot = self.get_pool_exists_slot(&pool_id);
-        if self
-            .storage
-            .sload(self.contract_address, exists_slot)
-            .expect("TODO: handle error")
-            != U256::ZERO
-        {
+        if self.pool_exists(&pool_id) {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolExists(
                 ITIPFeeAMM::PoolExists {},
             ));
         }
 
-        let pool_slot = self.get_pool_slot(&pool_id);
-        // Store as packed uint128 values. reserve1 in high 128 bits, reserve0 in low 128 bits
-        self.storage
-            .sstore(self.contract_address, pool_slot, U256::ZERO)
-            .expect("TODO: handle error");
-        // Store pending amount values
-        self.storage
-            .sstore(self.contract_address, pool_slot + U256::ONE, U256::ZERO)
-            .expect("TODO: handle error");
-
-        // Mark pool as existing
-        self.storage
-            .sstore(self.contract_address, exists_slot, U256::ONE)
-            .expect("TODO: handle error");
+        // Init the pool
+        self.set_reserves(&pool_id, U256::ZERO, U256::ZERO);
+        self.set_pending_reserves(&pool_id, U256::ZERO, U256::ZERO);
+        self.set_pool_exists(&pool_id);
 
         // TODO: emit event
 
