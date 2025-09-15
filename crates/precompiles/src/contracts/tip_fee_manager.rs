@@ -231,7 +231,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     /// Delegates pool data retrieval to TIPFeeAMM (inherited functionality)
     pub fn get_pool(&mut self, call: ITIPFeeAMM::getPoolCall) -> ITIPFeeAMM::Pool {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.get_pool(call)
+        let pool_id = amm.get_pool_id(ITIPFeeAMM::getPoolIdCall { key: call.key });
+        amm.get_pool(&pool_id).into()
     }
 
     // TODO: swap function
