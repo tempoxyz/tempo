@@ -12458,8 +12458,6 @@ dependencies = [
  "tempo-node",
  "tokio",
  "tracing",
- "vergen",
- "vergen-git2",
 ]
 
 [[package]]
@@ -12711,6 +12709,8 @@ dependencies = [
  "tempo-precompiles",
  "tempo-transaction-pool",
  "tokio",
+ "vergen",
+ "vergen-git2",
 ]
 
 [[package]]

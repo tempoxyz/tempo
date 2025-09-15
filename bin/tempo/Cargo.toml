@@ -28,10 +28,6 @@ eyre.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-[build-dependencies]
-vergen.workspace = true
-vergen-git2.workspace = true
-
 [[bin]]
 name = "tempo"
 path = "src/main.rs"

@@ -49,14 +49,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Set formatted version strings
     let pkg_version = env!("CARGO_PKG_VERSION");
 
-    // The short version information for reth.
+    // The short version information for tempo.
     // - The latest version from Cargo.toml
     // - The short SHA of the latest commit.
     // Example: 0.1.0 (defa64b2)
     println!("cargo:rustc-env=RETH_SHORT_VERSION={pkg_version}{version_suffix} ({sha_short})");
 
     // LONG_VERSION
-    // The long version information for reth.
+    // The long version information for tempo.
     //
     // - The latest version from Cargo.toml + version suffix (if any)
     // - The full SHA of the latest commit
@@ -85,15 +85,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     println!("cargo:rustc-env=RETH_LONG_VERSION_4=Build Profile: {profile}");
 
-    // The version information for reth formatted for P2P (devp2p).
+    // The version information for tempo formatted for P2P (devp2p).
     // - The latest version from Cargo.toml
     // - The target triple
     //
-    // Example: reth/v0.1.0-alpha.1-428a6dc2f/aarch64-apple-darwin
+    // Example: tempo/v0.1.0-alpha.1-428a6dc2f/aarch64-apple-darwin
     println!(
         "cargo:rustc-env=RETH_P2P_CLIENT_VERSION={}",
         format_args!(
-            "reth/v{pkg_version}-{sha_short}/{}",
+            "tempo/v{pkg_version}-{sha_short}/{}",
             env::var("VERGEN_CARGO_TARGET_TRIPLE")?
         )
     );

@@ -64,6 +64,8 @@ fn main() -> eyre::Result<()> {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
+    tempo_node::init_version_metadata();
+
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
         oneshot::channel::<(TempoFullNode, TempoArgs)>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
