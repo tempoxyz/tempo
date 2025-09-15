@@ -1017,4 +1017,15 @@ mod tests {
         });
         assert_eq!(events[2], expected_burn_event.into_log_data());
     }
+
+    #[test]
+    fn test_sqrt() {
+        for _ in 0..1000 {
+            let val = rand::random::<u64>();
+            let expected = (val as f64).sqrt().floor() as u64;
+            let result = sqrt(U256::from(val)).to::<u64>();
+
+            assert_eq!(result, expected);
+        }
+    }
 }
