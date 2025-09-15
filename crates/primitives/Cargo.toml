@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 # Alloy
-alloy-consensus = { workspace = true, features = ["serde", "serde-bincode-compat"] }
+alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -18,8 +18,8 @@ alloy-serde = { workspace = true, optional = true }
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 
 # Reth
-reth-ethereum-primitives = { workspace = true, features = ["serde-bincode-compat"] }
-reth-primitives-traits = { workspace = true, features = ["serde-bincode-compat"] }
+reth-ethereum-primitives.workspace = true
+reth-primitives-traits.workspace = true
 reth-codecs = { workspace = true, optional = true }
 
 # Utils
@@ -32,9 +32,9 @@ test-fuzz.workspace = true
 
 [features]
 default = ["serde", "reth-codec", "serde-bincode-compat"]
-serde = ["dep:serde", "dep:alloy-serde"]
+serde = ["dep:serde", "dep:alloy-serde", "alloy-consensus/serde", "reth-primitives-traits/serde", "reth-ethereum-primitives/serde"]
 reth-codec = ["dep:reth-codecs", "dep:modular-bitfield"]
-serde-bincode-compat = ["serde", "alloy-consensus/serde-bincode-compat", "reth-primitives-traits/serde-bincode-compat"]
+serde-bincode-compat = ["serde", "alloy-consensus/serde-bincode-compat", "reth-primitives-traits/serde-bincode-compat", "reth-ethereum-primitives/serde-bincode-compat"]
 arbitrary = [
     "dep:arbitrary",
     "serde",
