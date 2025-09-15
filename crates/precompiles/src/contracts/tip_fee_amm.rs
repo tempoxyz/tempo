@@ -948,11 +948,11 @@ mod tests {
         assert_eq!(final_lp_balance, lp_balance - burn_amount);
 
         let final_total_supply = amm.get_total_supply(&pool_id);
-        assert_eq!(final_total_supply, lp_balance - burn_amount);
+        assert_eq!(final_total_supply, total_supply - burn_amount);
 
         let (final_reserve_0, final_reserve_1) = amm.get_reserves(&pool_id);
         assert_eq!(final_reserve_0, reserve_0 - amount_0_out);
-        assert_eq!(final_reserve_1, reserve_0 - amount_1_out);
+        assert_eq!(final_reserve_1, reserve_1 - amount_1_out);
 
         // Assert token balances
         let mut token_0 =
