@@ -133,6 +133,7 @@ fn main() -> eyre::Result<()> {
                                 Ok(Err(err)) | Err(err) => format!("{err}"),
                             };
                             tracing::warn!(reason, "the metrics server exited");
+                            metrics_server = None;
                         }
                     )
                 }
