@@ -417,7 +417,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
 
         // Transfer tokens from user to contract
-        let token_0_id = address_to_token_id_unchecked(&call.token0);
+        let token_0_id = address_to_token_id_unchecked(&pool_key.token0);
         let _ = TIP20Token::new(token_0_id, self.storage)
             .transfer_from(
                 &self.contract_address,
@@ -429,7 +429,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             )
             .expect("TODO: handle err");
 
-        let token_1_id = address_to_token_id_unchecked(&call.token1);
+        let token_1_id = address_to_token_id_unchecked(&pool_key.token1);
         let _ = TIP20Token::new(token_1_id, self.storage)
             .transfer_from(
                 &self.contract_address,
@@ -449,8 +449,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 self.contract_address,
                 TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
                     sender: msg_sender,
-                    token0: call.token0,
-                    token1: call.token1,
+                    token0: pool_key.token0,
+                    token1: pool_key.token1,
                     amount0: call.amount0,
                     amount1: call.amount1,
                     liquidity,
@@ -821,8 +821,6 @@ mod tests {
                 ITIPFeeAMM::mintCall {
                     to: user,
                     key: pool_key.into(),
-                    token0: token_0_addr,
-                    token1: token_1_addr,
                     amount0: amount_0,
                     amount1: amount_1,
                 },
@@ -903,8 +901,6 @@ mod tests {
                 ITIPFeeAMM::mintCall {
                     to: user,
                     key: pool_key.clone().into(),
-                    token0: token_0_addr,
-                    token1: token_1_addr,
                     amount0: amount_0,
                     amount1: amount_1,
                 },
