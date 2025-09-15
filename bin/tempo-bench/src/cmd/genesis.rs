@@ -108,6 +108,7 @@ impl GenesisArgs {
             }
 
             let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, token.storage);
+            fee_manager.initialize();
             for address in addresses.iter().tqdm() {
                 fee_manager
                     .set_user_token(address, IFeeManager::setUserTokenCall { token: fee_token })

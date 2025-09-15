@@ -8,7 +8,11 @@ use crate::contracts::{
 // Re-export PoolKey for backward compatibility with tests
 pub use crate::contracts::tip_fee_amm::PoolKey;
 use alloy::primitives::{Address, U256};
-use reth_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use alloy_primitives::Bytes;
+use reth_evm::revm::{
+    interpreter::instructions::utility::{IntoAddress, IntoU256},
+    state::Bytecode,
+};
 
 /// Storage slots for FeeManager-specific data.
 ///
@@ -149,6 +153,18 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
     }
 
+    /// Initializes the TIP20 factory contract.
+    ///
+    /// This ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
+    pub fn initialize(&mut self) {
+        // must ensure the account is not empty, by setting some code
+        self.storage
+            .set_code(
+                self.contract_address,
+                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+            )
+            .expect("TODO: handle error");
+    }
     pub fn set_validator_token(
         &mut self,
         sender: &Address,
@@ -578,7 +594,7 @@ mod tests {
         let result = fee_manager.create_pool(call);
         assert!(result.is_ok());
 
-        let pool_key = PoolKey::new(token_a, token_b);
+        let pool_key = PoolKey::new(token_b, token_a);
         let pool_id = pool_key.get_id();
         let exists_call = ITIPFeeAMM::poolExistsCall { poolId: pool_id };
         assert!(fee_manager.pool_exists(exists_call));
