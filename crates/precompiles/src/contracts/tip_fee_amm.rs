@@ -874,7 +874,7 @@ mod tests {
         // Assert event emission
         let events = storage.events.get(&amm_addr).expect("Events should exist");
         assert_eq!(events.len(), 1);
-        
+
         let expected_event = TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
             sender: user,
             token0: token_0_addr,
@@ -888,6 +888,105 @@ mod tests {
 
     #[test]
     fn test_burn() {
-        todo!()
+        let mut storage = HashMapStorageProvider::new(1);
+        let amm_addr = Address::random();
+        let user = Address::random();
+
+        let amount_0 = U256::from(rand::random::<u128>());
+        let amount_1 = U256::from(rand::random::<u128>());
+        let (token_0_addr, token_1_addr) =
+            setup_test_tokens(&mut storage, user, amm_addr, amount_0, amount_1);
+
+        let pool_key = PoolKey::new(token_0_addr, token_1_addr);
+        let pool_id = pool_key.get_id();
+
+        let mut amm = TIPFeeAMM::new(amm_addr, &mut storage);
+        amm.create_pool(ITIPFeeAMM::createPoolCall {
+            tokenA: token_0_addr,
+            tokenB: token_1_addr,
+        })
+        .expect("Could not create pool");
+
+        let liquidity = amm
+            .mint(
+                user,
+                ITIPFeeAMM::mintCall {
+                    to: user,
+                    key: pool_key.clone().into(),
+                    token0: token_0_addr,
+                    token1: token_1_addr,
+                    amount0: amount_0,
+                    amount1: amount_1,
+                },
+            )
+            .expect("Could not mint");
+
+        // Store initial state for comparison
+        let initial_user_lp_balance = amm.get_liquidity_balance(&pool_id, user);
+        let initial_total_supply = amm.get_total_supply(&pool_id);
+        let (initial_reserve0, initial_reserve1) = amm.get_reserves(&pool_id);
+
+        // Burn half of the liquidity
+        let burn_amount = liquidity / U256::from(2);
+        let (amount_0_out, amount_1_out) = amm
+            .burn(
+                user,
+                ITIPFeeAMM::burnCall {
+                    key: pool_key.into(),
+                    liquidity: burn_amount,
+                    to: user,
+                },
+            )
+            .expect("Could not burn amount");
+
+        // Calculate expected amounts based on proportional share
+        let expected_amount_0 = (burn_amount * initial_reserve0) / initial_total_supply;
+        let expected_amount_1 = (burn_amount * initial_reserve1) / initial_total_supply;
+        assert_eq!(amount_0_out, expected_amount_0);
+        assert_eq!(amount_1_out, expected_amount_1);
+
+        // Check LP token balance decreased
+        let final_lp_balance = amm.get_liquidity_balance(&pool_id, user);
+        assert_eq!(final_lp_balance, initial_user_lp_balance - burn_amount);
+
+        // Check total supply decreased
+        let final_total_supply = amm.get_total_supply(&pool_id);
+        assert_eq!(final_total_supply, initial_total_supply - burn_amount);
+
+        // Check pool reserves decreased
+        let (final_reserve0, final_reserve1) = amm.get_reserves(&pool_id);
+        assert_eq!(final_reserve0, initial_reserve0 - amount_0_out);
+        assert_eq!(final_reserve1, initial_reserve1 - amount_1_out);
+
+        // Check user received tokens back and AMM contract balances for token0
+        let mut token_0 =
+            TIP20Token::new(address_to_token_id_unchecked(&token_0_addr), &mut storage);
+        let user_token_0_bal = token_0.balance_of(ITIP20::balanceOfCall { account: user });
+        assert_eq!(user_token_0_bal, amount_0_out);
+        let fee_amm_token_0_bal = token_0.balance_of(ITIP20::balanceOfCall { account: amm_addr });
+        assert_eq!(fee_amm_token_0_bal, initial_reserve0 - amount_0_out);
+
+        // Check user received tokens back and AMM contract balances for token1
+        let mut token_1 =
+            TIP20Token::new(address_to_token_id_unchecked(&token_1_addr), &mut storage);
+        let user_token_1_bal = token_1.balance_of(ITIP20::balanceOfCall { account: user });
+        assert_eq!(user_token_1_bal, amount_1_out);
+        let fee_amm_token_1_bal = token_1.balance_of(ITIP20::balanceOfCall { account: amm_addr });
+        assert_eq!(fee_amm_token_1_bal, initial_reserve1 - amount_1_out);
+
+        // Assert burn event emission
+        let events = storage.events.get(&amm_addr).expect("Events should exist");
+        assert_eq!(events.len(), 2); // Mint + Burn events
+
+        let expected_burn_event = TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
+            sender: user,
+            token0: token_0_addr,
+            token1: token_1_addr,
+            amount0: amount_0_out,
+            amount1: amount_1_out,
+            liquidity: burn_amount,
+            to: user,
+        });
+        assert_eq!(events[1], expected_burn_event.into_log_data());
     }
 }
