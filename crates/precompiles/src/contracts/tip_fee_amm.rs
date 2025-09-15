@@ -12,7 +12,6 @@ use alloy::{
     sol_types::SolValue,
 };
 use alloy_primitives::IntoLogData;
-use reth_storage_api::errors::db;
 
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 // 0.9975 fee multiplier (scaled by 10000)
@@ -267,18 +266,14 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     fn set_pool_exists(&mut self, pool_id: &B256) {
-        dbg!("target: set_pool_exists", pool_id);
         let exists_slot = self.get_pool_exists_slot(pool_id);
-        dbg!("target: set_pool_exists", exists_slot);
         self.storage
             .sstore(self.contract_address, exists_slot, U256::from(true))
             .expect("TODO: handle error");
     }
 
     pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
-        dbg!("target: pool_exists", pool_id);
         let exists_slot = self.get_pool_exists_slot(pool_id);
-        dbg!("target: pool_exists:", exists_slot);
         let exists = self
             .storage
             .sload(self.contract_address, exists_slot)

@@ -63,21 +63,6 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
         assert!(receipt.status());
     }
 
-    dbg!(token_0.balanceOf(caller).call().await?);
-    dbg!(token_1.balanceOf(caller).call().await?);
-    dbg!(
-        token_0
-            .allowance(caller, TIP_FEE_MANAGER_ADDRESS)
-            .call()
-            .await?
-    );
-    dbg!(
-        token_1
-            .allowance(caller, TIP_FEE_MANAGER_ADDRESS)
-            .call()
-            .await?
-    );
-
     // Assert initial state
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = pool_key.get_id();

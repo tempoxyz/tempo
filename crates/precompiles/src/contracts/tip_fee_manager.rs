@@ -153,9 +153,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
     }
 
-    /// Initializes the TIP20 factory contract.
+    /// Initializes the contract
     ///
-    /// This ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
+    /// This ensures the [`TipFeeManager`] isn't empty and prevents state clear.
     pub fn initialize(&mut self) {
         // must ensure the account is not empty, by setting some code
         self.storage
@@ -165,6 +165,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             )
             .expect("TODO: handle error");
     }
+
     pub fn set_validator_token(
         &mut self,
         sender: &Address,
