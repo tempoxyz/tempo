@@ -9,9 +9,12 @@ use alloy_primitives::Address;
 use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::types::{
-        IFeeManager, ITIP20,
-        ITIPFeeAMM::{self, PoolKey},
+    contracts::{
+        tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, sqrt},
+        types::{
+            IFeeManager, ITIP20,
+            ITIPFeeAMM::{self},
+        },
     },
 };
 
