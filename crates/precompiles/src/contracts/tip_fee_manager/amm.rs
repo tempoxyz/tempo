@@ -2,7 +2,6 @@ use crate::contracts::{
     address_to_token_id_unchecked,
     storage::{StorageOps, StorageProvider},
     tip_fee_manager::{
-        self,
         amm::slots::{liquidity_balance_slot, pool_exists_slot, pool_slot, total_supply_slot},
         pool::{Pool, PoolKey},
     },

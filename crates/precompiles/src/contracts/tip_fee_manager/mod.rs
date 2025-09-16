@@ -139,22 +139,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
-    fn get_validator_token(
-        &mut self,
-        validator: &Address,
-    ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
-        let validator_slot = validator_token_slot(validator);
-        let validator_token = self.sload(validator_slot).into_address();
-
-        if validator_token.is_zero() {
-            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
-                IFeeManager::InvalidToken {},
-            ));
-        }
-
-        Ok(validator_token)
-    }
-
     pub fn set_user_token(
         &mut self,
         sender: &Address,
@@ -182,17 +166,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             .expect("TODO: handle error");
 
         Ok(())
-    }
-
-    fn get_user_token(&mut self, user: &Address, validator_token: &Address) -> Address {
-        let user_slot = user_token_slot(user);
-        let user_token = self.sload(user_slot).into_address();
-
-        if user_token.is_zero() {
-            *validator_token
-        } else {
-            user_token
-        }
     }
 
     pub fn collect_fee_pre_tx(
@@ -414,10 +387,7 @@ impl FeeToken {
 mod tests {
 
     use super::*;
-    use crate::{
-        TIP_FEE_MANAGER_ADDRESS,
-        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE},
-    };
+    use crate::{TIP_FEE_MANAGER_ADDRESS, contracts::HashMapStorageProvider};
 
     #[test]
     fn test_pool_key_ordering() {
