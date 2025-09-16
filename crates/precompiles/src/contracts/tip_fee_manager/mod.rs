@@ -11,11 +11,11 @@ use crate::contracts::{
             collected_fees_slot, token_in_fees_array_slot, user_token_slot, validator_token_slot,
         },
     },
-    types::{IFeeManager, ITIP20, ITIPFeeAMM},
+    types::{FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
 };
 
 // Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, U256, uint};
+use alloy::primitives::{Address, IntoLogData, U256, uint};
 use alloy_primitives::Bytes;
 use reth_evm::revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
@@ -124,7 +124,17 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let slot = validator_token_slot(sender);
         self.sstore(slot, call.token.into_u256());
 
-        // TODO: emit event
+        // Emit ValidatorTokenSet event
+        self.storage
+            .emit_event(
+                self.contract_address,
+                FeeManagerEvent::ValidatorTokenSet(IFeeManager::ValidatorTokenSet {
+                    validator: *sender,
+                    token: call.token,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -159,7 +169,17 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let slot = user_token_slot(sender);
         self.sstore(slot, call.token.into_u256());
 
-        // TODO: emit event
+        // Emit UserTokenSet event
+        self.storage
+            .emit_event(
+                self.contract_address,
+                FeeManagerEvent::UserTokenSet(IFeeManager::UserTokenSet {
+                    user: *sender,
+                    token: call.token,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
