@@ -23,7 +23,7 @@ use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use reth_provider::BlockReader as _;
 use sequential_futures_queue::SequentialFuturesQueue;
 use tokio::sync::RwLock;
-use tracing::{Level, info, instrument};
+use tracing::{Level, info, info_span, instrument, warn};
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 
@@ -116,8 +116,23 @@ where
     async fn run(mut self) {
         loop {
             tokio::select!(
-                // NOTE: biased because we prefer running finalizations above all else.
+                // NOTE: biased because shutdown signal > finalization > rest
                 biased;
+
+                ret = self.context.stopped() => {
+                    info_span!("execution driver shutdown signal").in_scope(||
+                        match ret {
+                            Ok(value) => info!(
+                                value,
+                                "received shutdown signal; exiting consensus stack",
+                            ),
+                            Err(error) => warn!(
+                                error = %eyre::Report::new(error),
+                                "global shutdown signal was cancelled; this really should not happen - exiting execution driver",
+                            ),
+                    });
+                    break;
+                }
 
                 Some(_res) = self.finalization_queue.next() => {
                     // TODO: decide what to do if finalizations fail.
@@ -131,8 +146,6 @@ where
                 Some(msg) = self.from_consensus.next() => {
                     self.handle_message(msg);
                 }
-
-                else => break,
             )
         }
     }

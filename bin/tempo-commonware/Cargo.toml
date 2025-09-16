@@ -14,6 +14,7 @@ tempo-commonware-node-config.workspace = true
 tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
 tempo-faucet.workspace = true
+tempo-telemetry-util.workspace = true
 
 camino = { workspace = true, features = ["serde1"] }
 commonware-runtime.workspace = true

@@ -11,9 +11,10 @@ use std::net::SocketAddr;
 
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated::discovery;
-use commonware_runtime::{Handle, Metrics as _};
+use commonware_runtime::{Handle, Metrics as _, Spawner as _};
 use eyre::{WrapErr as _, eyre};
 use tempo_node::TempoFullNode;
+use tracing::{info, info_span, warn};
 
 use crate::config::{
     BACKFILL_BY_DIGEST_CHANNE_IDENTL, BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
@@ -29,13 +30,17 @@ pub struct ConsensusStack {
     pub consensus_engine: Handle<eyre::Result<()>>,
 }
 
+/// Runs the threshold simplex consensus stack.
+///
+/// Returns the reason why it exited (usually because of a shutdown signal),
+/// or an error if instantiation or one of its constituent tasks failed.
 pub async fn run_consensus_stack(
-    context: &commonware_runtime::tokio::Context,
+    context: commonware_runtime::tokio::Context,
     config: &tempo_commonware_node_config::Config,
     execution_node: TempoFullNode,
 ) -> eyre::Result<()> {
     let (mut network, mut oracle) =
-        instantiate_network(context, config).wrap_err("failed to start network")?;
+        instantiate_network(&context, config).wrap_err("failed to start network")?;
 
     oracle
         .register(0, config.peers.keys().cloned().collect())
@@ -96,6 +101,22 @@ pub async fn run_consensus_stack(
     );
 
     tokio::select! {
+        biased;
+
+        ret = context.stopped() => {
+            info_span!("consensus stack signal").in_scope(|| match ret {
+                Ok(value) => info!(
+                    value,
+                    "received shutdown signal; exiting consensus stack",
+                ),
+                Err(error) => warn!(
+                    error = %eyre::Report::new(error),
+                    "global shutdown signal was cancelled; this really should not happen - exiting consensus stack",
+                ),
+            });
+            Ok(())
+        }
+
         ret = network => {
             ret.map_err(eyre::Report::from)
                 .and_then(|()| Err(eyre!("exited unexpectedly")))

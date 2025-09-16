@@ -16,7 +16,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 use clap::Parser;
-use commonware_runtime::{Metrics, Runner};
+use commonware_runtime::{Metrics as _, Runner as _, Spawner as _};
 use eyre::WrapErr as _;
 use futures::{
     FutureExt as _,
@@ -38,8 +38,10 @@ use tempo_faucet::{
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
 use tempo_node::{TempoFullNode, node::TempoNode};
+use tempo_telemetry_util::display_duration;
 use tokio::sync::oneshot;
 use tokio_util::either::Either;
+use tracing::{Instrument as _, info, info_span, warn};
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -123,18 +125,24 @@ fn main() -> eyre::Result<()> {
                     }
                     None => Either::Right(pending()),
                 }.fuse();
-                let consensus_stack = run_consensus_stack(&ctx, &consensus_config, node);
+                let consensus_stack = run_consensus_stack(
+                    ctx.clone(),
+                    &consensus_config,
+                    node,
+                );
                 tokio::pin!(consensus_stack);
-                loop {
+                let reason = loop {
                     tokio::select!(
                         biased;
 
                         () = shutdown_token_clone.cancelled() => {
-                            break Ok(());
+                            break Ok("received shutdown signal");
                         }
 
                         ret = &mut consensus_stack => {
-                            break ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
+                            break ret.and_then(|()| Err(
+                                eyre::eyre!("consensus stack exited unexpectedly"
+                            )))
                             .wrap_err("consensus stack failed");
                         }
 
@@ -143,10 +151,35 @@ fn main() -> eyre::Result<()> {
                                 Ok(Ok(())) => "unexpected regular exit".to_string(),
                                 Ok(Err(err)) | Err(err) => format!("{err}"),
                             };
+                            // TODO: handle this in a span.
                             tracing::warn!(reason, "the metrics server exited");
                         }
                     )
-                }
+                };
+
+                let shutdown_span = info_span!("exit consensus thread");
+                async move {
+                    info!(
+                        reason = reason.as_ref().map_or_else(
+                            ToString::to_string,
+                            ToString::to_string,
+                        ),
+                        "exiting consensus thread",
+                    );
+                    let deadline = Some(std::time::Duration::from_secs(5));
+                    info!(
+                        deadline = deadline.map(display_duration).map(tracing::field::display),
+                        "signaling all consensus tasks to shut down",
+                    );
+                    match ctx.stop(0, deadline).await {
+                        Ok(()) => info!("all consensus tasks have exited in time"),
+                        Err(error) => warn!(
+                            error = %eyre::Report::new(error),
+                            "some consensus tasks are still alive past the designated deadline; they will die",
+                        ),
+                    }
+                    reason.map(|_| ())
+                }.instrument(shutdown_span).await
             })
         };
         let _ = consensus_dead_tx.send(());
