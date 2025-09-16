@@ -122,161 +122,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
     }
 
-    /// Get user's LP token balance for pool
-    fn get_liquidity_balance(&mut self, pool_id: &B256, user: Address) -> U256 {
-        let slot = get_liquidity_balance_slot(pool_id, &user);
-        self.sload(slot)
-    }
-
-    /// Set user's LP token balance for pool
-    fn set_liquidity_balance(&mut self, pool_id: &B256, user: Address, balance: U256) {
-        let slot = get_liquidity_balance_slot(pool_id, &user);
-        self.sstore(slot, balance);
-    }
-
-    /// Get complete pool data including reserves and pending amounts
-    pub fn get_pool(&mut self, pool_id: &B256) -> Pool {
-        let pool_slot = get_pool_slot(pool_id);
-        let reserves = self.sload(pool_slot);
-        let reserve_0 = (reserves & U256::from(u128::MAX)).to::<u128>();
-        let reserve_1 = reserves.wrapping_shr(128).to::<u128>();
-
-        let pending = self.sload(pool_slot + U256::ONE);
-        let pending_0 = (pending & U256::from(u128::MAX)).to::<u128>();
-        let pending_1 = pending.wrapping_shr(128).to::<u128>();
-
-        Pool {
-            reserve0: reserve_0,
-            reserve1: reserve_1,
-            pending_reserve_0: pending_0,
-            pending_reserve_1: pending_1,
-        }
-    }
-
-    /// Get current pool reserves
-    pub fn get_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
-        let pool_slot = get_pool_slot(pool_id);
-        let reserves = self
-            .storage
-            .sload(self.contract_address, pool_slot)
-            .expect("TODO: handle error");
-
-        let reserve_0 = reserves & U256::from(u128::MAX);
-        let reserve_1 = reserves.wrapping_shr(128);
-
-        (reserve_0, reserve_1)
-    }
-
-    /// Calculate effective reserves accounting for pending swaps and fees
-    pub fn get_effective_reserves(&mut self, pool: &Pool) -> (U256, U256) {
-        let pending_0_out = (U256::from(pool.pending_reserve_0) * FEE_MULTIPLIER) / FEE_SCALE;
-        let pending_1_out = (U256::from(pool.pending_reserve_1) * FEE_MULTIPLIER) / FEE_SCALE;
-
-        let effective_reserve_0 =
-            U256::from(pool.reserve0) + U256::from(pool.pending_reserve_0) - pending_1_out;
-
-        let effective_reserve_1 =
-            U256::from(pool.reserve1) + U256::from(pool.pending_reserve_1) - pending_0_out;
-
-        (effective_reserve_0, effective_reserve_1)
-    }
-
-    /// Get total supply of LP tokens for pool
-    fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
-        let slot = get_total_supply_slot(pool_id);
-        self.sload(slot)
-    }
-
-    /// Set total supply of LP tokens for pool
-    fn set_total_supply(&mut self, pool_id: &B256, total_supply: U256) {
-        let slot = get_total_supply_slot(pool_id);
-        self.sstore(slot, total_supply);
-    }
-
-    /// Mint LP tokens to user and update total supply
-    fn mint_lp_tokens(&mut self, pool_id: &B256, to: Address, amount: U256) {
-        // TODO: this could be more efficient since we have already loaded total supply when
-        // minting
-        let total_supply = self.get_total_supply(pool_id);
-        self.set_total_supply(pool_id, total_supply + amount);
-
-        let balance = self.get_liquidity_balance(pool_id, to);
-        self.set_liquidity_balance(pool_id, to, amount + balance);
-    }
-
-    /// Update pool reserves in storage
-    fn set_reserves(&mut self, pool_id: &B256, reserve_0: U256, reserve_1: U256) {
-        let slot = get_pool_slot(pool_id);
-        // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
-        let packed = (reserve_1.wrapping_shl(128)) | (reserve_0 & U256::from(u128::MAX));
-        self.sstore(slot, packed);
-    }
-
-    /// Update pending reserves from incomplete swaps
-    fn set_pending_reserves(
-        &mut self,
-        pool_id: &B256,
-        pending_reserve_0: U256,
-        pending_reserve_1: U256,
-    ) {
-        let slot = get_pool_slot(pool_id) + U256::ONE;
-        // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
-        let packed =
-            (pending_reserve_1.wrapping_shl(128)) | (pending_reserve_0 & U256::from(u128::MAX));
-        self.sstore(slot, packed);
-    }
-
-    /// Mark pool as existing in storage
-    fn set_pool_exists(&mut self, pool_id: &B256) {
-        let slot = get_pool_exists_slot(pool_id);
-        self.sstore(slot, U256::from(true));
-    }
-
-    /// Check if pool with the provided pool ID exists
-    pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
-        let slot = get_pool_exists_slot(pool_id);
-        self.sload(slot).to::<bool>()
-    }
-
-    /// Calculate token amounts to return when burning LP tokens
-    fn calculate_burn_amounts(
-        &mut self,
-        pool_id: &B256,
-        liquidity: U256,
-    ) -> Result<(U256, U256), ITIPFeeAMM::ITIPFeeAMMErrors> {
-        let total_supply = self.get_total_supply(pool_id);
-        if total_supply.is_zero() {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
-        }
-
-        let pool = self.get_pool(pool_id);
-        let amount_0 = (liquidity * U256::from(pool.reserve0)) / total_supply;
-        let amount_1 = (liquidity * U256::from(pool.reserve1)) / total_supply;
-
-        if amount_0.is_zero() || amount_1.is_zero() {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
-        }
-
-        // Check that withdrawal does not violate pending swaps
-        let (reserve_0, reserve_1) = self.get_effective_reserves(&pool);
-        if amount_0 > reserve_0 {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
-        }
-        if amount_1 > reserve_1 {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
-        }
-
-        Ok((amount_0, amount_1))
-    }
-
     /// Create new liquidity pool for token pair
     pub fn create_pool(
         &mut self,
@@ -322,30 +167,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
 
         Ok(())
-    }
-
-    /// Get pool ID for given token pair
-    pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> B256 {
-        let pool_key = PoolKey::from(call.key);
-        pool_key.get_id()
-    }
-
-    /// Get pool data by pool ID
-    pub fn pools(&mut self, call: ITIPFeeAMM::poolsCall) -> ITIPFeeAMM::Pool {
-        let pool = self.get_pool(&call.poolId);
-        pool.into()
-    }
-
-    /// Check if pool exists for token pair
-    pub fn pool_exists_for_tokens(&mut self, token0: Address, token1: Address) -> bool {
-        let pool_key = PoolKey::new(token0, token1);
-        let pool_id = pool_key.get_id();
-        let exists_slot = self.get_pool_exists_slot(&pool_id);
-
-        self.storage
-            .sload(self.contract_address, exists_slot)
-            .expect("TODO: handle error")
-            != U256::ZERO
     }
 
     /// Mint LP tokens by providing liquidity
@@ -426,6 +247,17 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok(liquidity)
     }
 
+    /// Mint LP tokens to user and update total supply
+    fn mint_lp_tokens(&mut self, pool_id: &B256, to: Address, amount: U256) {
+        // TODO: this could be more efficient since we have already loaded total supply when
+        // minting
+        let total_supply = self.get_total_supply(pool_id);
+        self.set_total_supply(pool_id, total_supply + amount);
+
+        let balance = self.get_liquidity_balance(pool_id, to);
+        self.set_liquidity_balance(pool_id, to, amount + balance);
+    }
+
     /// Burn LP tokens and withdraw proportional token amounts
     pub fn burn(
         &mut self,
@@ -504,20 +336,172 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok((amount_0, amount_1))
     }
 
+    /// Calculate token amounts to return when burning LP tokens
+    fn calculate_burn_amounts(
+        &mut self,
+        pool_id: &B256,
+        liquidity: U256,
+    ) -> Result<(U256, U256), ITIPFeeAMM::ITIPFeeAMMErrors> {
+        let total_supply = self.get_total_supply(pool_id);
+        if total_supply.is_zero() {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+
+        let pool = self.get_pool(pool_id);
+        let amount_0 = (liquidity * U256::from(pool.reserve0)) / total_supply;
+        let amount_1 = (liquidity * U256::from(pool.reserve1)) / total_supply;
+
+        if amount_0.is_zero() || amount_1.is_zero() {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+
+        // Check that withdrawal does not violate pending swaps
+        let (reserve_0, reserve_1) = self.get_effective_reserves(&pool);
+        if amount_0 > reserve_0 {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+        if amount_1 > reserve_1 {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+
+        Ok((amount_0, amount_1))
+    }
+
+    /// Get user's LP token balance for pool
+    fn get_liquidity_balance(&mut self, pool_id: &B256, user: Address) -> U256 {
+        let slot = get_liquidity_balance_slot(pool_id, &user);
+        self.sload(slot)
+    }
+
+    /// Set user's LP token balance for pool
+    fn set_liquidity_balance(&mut self, pool_id: &B256, user: Address, balance: U256) {
+        let slot = get_liquidity_balance_slot(pool_id, &user);
+        self.sstore(slot, balance);
+    }
+
+    /// Get complete pool data including reserves and pending amounts
+    pub fn get_pool(&mut self, pool_id: &B256) -> Pool {
+        let pool_slot = get_pool_slot(pool_id);
+        let reserves = self.sload(pool_slot);
+        let reserve_0 = (reserves & U256::from(u128::MAX)).to::<u128>();
+        let reserve_1 = reserves.wrapping_shr(128).to::<u128>();
+
+        let pending = self.sload(pool_slot + U256::ONE);
+        let pending_0 = (pending & U256::from(u128::MAX)).to::<u128>();
+        let pending_1 = pending.wrapping_shr(128).to::<u128>();
+
+        Pool {
+            reserve0: reserve_0,
+            reserve1: reserve_1,
+            pending_reserve_0: pending_0,
+            pending_reserve_1: pending_1,
+        }
+    }
+
+    /// Get current pool reserves
+    pub fn get_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
+        let pool_slot = get_pool_slot(pool_id);
+        let reserves = self
+            .storage
+            .sload(self.contract_address, pool_slot)
+            .expect("TODO: handle error");
+
+        let reserve_0 = reserves & U256::from(u128::MAX);
+        let reserve_1 = reserves.wrapping_shr(128);
+
+        (reserve_0, reserve_1)
+    }
+
+    /// Update pool reserves in storage
+    fn set_reserves(&mut self, pool_id: &B256, reserve_0: U256, reserve_1: U256) {
+        let slot = get_pool_slot(pool_id);
+        // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
+        let packed = (reserve_1.wrapping_shl(128)) | (reserve_0 & U256::from(u128::MAX));
+        self.sstore(slot, packed);
+    }
+
+    /// Calculate effective reserves accounting for pending swaps and fees
+    pub fn get_effective_reserves(&mut self, pool: &Pool) -> (U256, U256) {
+        let pending_0_out = (U256::from(pool.pending_reserve_0) * FEE_MULTIPLIER) / FEE_SCALE;
+        let pending_1_out = (U256::from(pool.pending_reserve_1) * FEE_MULTIPLIER) / FEE_SCALE;
+
+        let effective_reserve_0 =
+            U256::from(pool.reserve0) + U256::from(pool.pending_reserve_0) - pending_1_out;
+
+        let effective_reserve_1 =
+            U256::from(pool.reserve1) + U256::from(pool.pending_reserve_1) - pending_0_out;
+
+        (effective_reserve_0, effective_reserve_1)
+    }
+
+    /// Update pending reserves from incomplete swaps
+    fn set_pending_reserves(
+        &mut self,
+        pool_id: &B256,
+        pending_reserve_0: U256,
+        pending_reserve_1: U256,
+    ) {
+        let slot = get_pool_slot(pool_id) + U256::ONE;
+        // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
+        let packed =
+            (pending_reserve_1.wrapping_shl(128)) | (pending_reserve_0 & U256::from(u128::MAX));
+        self.sstore(slot, packed);
+    }
+
+    /// Get total supply of LP tokens for pool
+    fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
+        let slot = get_total_supply_slot(pool_id);
+        self.sload(slot)
+    }
+
+    /// Set total supply of LP tokens for pool
+    fn set_total_supply(&mut self, pool_id: &B256, total_supply: U256) {
+        let slot = get_total_supply_slot(pool_id);
+        self.sstore(slot, total_supply);
+    }
+
+    /// Mark pool as existing in storage
+    fn set_pool_exists(&mut self, pool_id: &B256) {
+        let slot = get_pool_exists_slot(pool_id);
+        self.sstore(slot, U256::from(true));
+    }
+
+    /// Check if pool with the provided pool ID exists
+    pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
+        let slot = get_pool_exists_slot(pool_id);
+        self.sload(slot).to::<bool>()
+    }
+
+    /// Get pool ID for given token pair
+    pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> B256 {
+        let pool_key = PoolKey::from(call.key);
+        pool_key.get_id()
+    }
+
+    /// Get pool data by pool ID
+    pub fn pools(&mut self, call: ITIPFeeAMM::poolsCall) -> ITIPFeeAMM::Pool {
+        let pool = self.get_pool(&call.poolId);
+        pool.into()
+    }
+
     /// Get total supply of LP tokens for pool
     pub fn total_supply(&mut self, call: ITIPFeeAMM::totalSupplyCall) -> U256 {
-        let total_supply_slot = self.get_total_supply_slot(&call.poolId);
-        self.storage
-            .sload(self.contract_address, total_supply_slot)
-            .expect("TODO: handle error")
+        let slot = get_total_supply_slot(&call.poolId);
+        self.sload(slot)
     }
 
     /// Get user's LP token balance for pool
     pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> U256 {
-        let balance_slot = self.get_liquidity_balance_slot(&call.poolId, &call.user);
-        self.storage
-            .sload(self.contract_address, balance_slot)
-            .expect("TODO: handle error")
+        let slot = get_liquidity_balance_slot(&call.poolId, &call.user);
+        self.sload(slot)
     }
 }
 

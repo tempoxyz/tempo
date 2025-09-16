@@ -277,7 +277,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
 
             // Check if pool exists (using inherited TIPFeeAMM functionality)
-            if !amm.pool_exists_for_tokens(user_token, validator_token) {
+            if !amm.pool_exists(&PoolKey::new(user_token, validator_token).get_id()) {
                 return Err(IFeeManager::IFeeManagerErrors::PoolDoesNotExist(
                     IFeeManager::PoolDoesNotExist {},
                 ));
