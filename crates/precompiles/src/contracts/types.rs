@@ -275,8 +275,7 @@ sol! {
 
         // Fee functions
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
-        function collectFee(address user, address coinbase, uint256 amount) external;
-        function collectFeePreTx(address user, address coinbase, uint256 amount) external;
+        function collectFeePreTx(address user, uint256 maxAmount) external;
         function collectFeePostTx(address user) external;
         function executeBlock() external;
 

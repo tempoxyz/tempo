@@ -60,7 +60,7 @@ pub mod slots {
         mapping_slot(token, TOKEN_IN_FEES_ARRAY)
     }
 
-    pub fn tokens_with_fees_array_slot(index: U256) -> U256 {
+    pub fn tokens_with_fees_array_slot(_index: U256) -> U256 {
         todo!()
     }
 }
@@ -177,30 +177,23 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn collect_fee_pre_tx(
         &mut self,
-        sender: &Address,
-        call: IFeeManager::collectFeeCall,
+        _sender: &Address,
+        _call: IFeeManager::collectFeePreTxCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         todo!()
     }
 
     pub fn collect_fee_post_tx(
         &mut self,
-        sender: &Address,
+        _sender: &Address,
+        _call: IFeeManager::collectFeePostTxCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         todo!()
     }
 
     pub fn execute_block(
         &mut self,
-        sender: &Address,
-    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        todo!()
-    }
-
-    pub fn collect_fee(
-        &mut self,
-        sender: &Address,
-        call: IFeeManager::collectFeeCall,
+        _sender: &Address,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         todo!()
     }
@@ -215,7 +208,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         self.sload(TOKENS_WITH_FEES_LENGTH)
     }
 
-    pub fn get_token_with_fees(&mut self, index: U256) -> Address {
+    pub fn get_token_with_fees(&mut self, _index: U256) -> Address {
         todo!()
     }
 
@@ -473,83 +466,5 @@ mod tests {
         let query_call = IFeeManager::validatorTokensCall { validator };
         let returned_token = fee_manager.validator_tokens(query_call);
         assert_eq!(returned_token, token);
-    }
-
-    #[test]
-    fn test_collect_fee() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let user = Address::random();
-        let validator = Address::random();
-        let token = Address::random();
-        let amount = U256::from(1000);
-
-        // Setup TIP20 token
-        let token_id = address_to_token_id_unchecked(&token);
-        let mut tip20_token = TIP20Token::new(token_id, &mut storage);
-
-        // Initialize token with admin, set the transfer policy to always allow
-        tip20_token
-            .initialize("TestToken", "TEST", "USD", &user)
-            .unwrap();
-
-        // Grant issuer role to admin and mint tokens to user
-        let mut roles = tip20_token.get_roles_contract();
-        roles.grant_role_internal(&user, *ISSUER_ROLE);
-        tip20_token
-            .mint(
-                &user,
-                ITIP20::mintCall {
-                    to: user,
-                    amount: U256::MAX,
-                },
-            )
-            .unwrap();
-
-        // Set allowance for fee manager to transfer tokens
-        tip20_token
-            .approve(
-                &user,
-                ITIP20::approveCall {
-                    spender: TIP_FEE_MANAGER_ADDRESS,
-                    amount: U256::MAX,
-                },
-            )
-            .unwrap();
-
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, tip20_token.storage);
-
-        // Set fee tokens
-        fee_manager
-            .set_validator_token(&validator, IFeeManager::setValidatorTokenCall { token })
-            .unwrap();
-
-        fee_manager
-            .set_user_token(&user, IFeeManager::setUserTokenCall { token })
-            .unwrap();
-
-        let initial_balance = fee_manager
-            .get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall {
-                validator: Address::ZERO,
-                sender: user,
-            })
-            ._1;
-
-        // Collect fee and verify balances
-        let result = fee_manager.collect_fee(
-            &Address::ZERO,
-            IFeeManager::collectFeeCall {
-                user,
-                coinbase: validator,
-                amount,
-            },
-        );
-        assert!(result.is_ok());
-
-        let result = fee_manager.get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall {
-            validator: Address::ZERO,
-            sender: user,
-        });
-        assert_eq!(result._0, token);
-        assert_eq!(result._1, initial_balance - amount);
     }
 }
