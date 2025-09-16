@@ -448,7 +448,18 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let pool_id = pool_key.get_id();
     assert!(fee_amm.poolExists(pool_id).call().await?);
 
-    //  Approve tokens for the fee manager
+    let liquidity = U256::from(u16::MAX);
+
+    // Transfer validator tokens to user so the user can LP
+    pending.push(
+        validator_token
+            .transfer(user_address, liquidity)
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    // Approve tokens for the fee manager
     pending.push(
         user_token
             .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
@@ -456,17 +467,8 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
             .await?,
     );
     pending.push(
-        validator_token
+        ITIP20::new(*validator_token.address(), user_provider.clone())
             .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-            .send()
-            .await?,
-    );
-
-    let liquidity = U256::from(u16::MAX);
-    // Transfer validator tokens to user so the user can LP
-    pending.push(
-        validator_token
-            .transfer(user_address, liquidity)
             .send()
             .await?,
     );
