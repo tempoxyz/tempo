@@ -332,13 +332,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
-    /// Delegates pool ID calculation to TIPFeeAMM
     pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> alloy::primitives::B256 {
         let amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.get_pool_id(call.userToken, call.validatorToken)
     }
 
-    /// Delegates pool data retrieval to TIPFeeAMM (inherited functionality)
     pub fn get_pool(&mut self, call: ITIPFeeAMM::getPoolCall) -> ITIPFeeAMM::Pool {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         let pool_key = PoolKey::new(call.userToken, call.validatorToken);
