@@ -210,7 +210,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use std::fmt::Write as _;
         f.write_char('[')?;
-        let mut elems = (&self.0).into_iter().peekable();
+        let mut elems = &self.0.into_iter().peekable();
         while let Some(elem) = elems.next() {
             f.write_fmt(format_args!("{elem}"))?;
             if elems.peek().is_some() {
