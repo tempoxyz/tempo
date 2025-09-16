@@ -1,4 +1,5 @@
 pub mod amm;
+pub mod fee_amm;
 pub mod pool;
 
 use crate::contracts::{
