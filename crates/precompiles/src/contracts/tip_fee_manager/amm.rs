@@ -293,8 +293,40 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Execute rebalance swap implementation
-    fn execute_rebalance_swap(&mut self, _pool: &mut Pool, _amount_in: U256) -> U256 {
-        todo!()
+    fn execute_rebalance_swap(&mut self, pool: &mut Pool, amount_in: U256) -> U256 {
+        // Use current reserves for pricing
+        let x = U256::from(pool.reserve_user_token);
+        let y = U256::from(pool.reserve_validator_token);
+
+        // For rebalancing, we are adding validatorToken (y), removing userToken (x)
+        // This is valid only when y < x
+        if y >= x {
+            todo!("TODO: handle error")
+        }
+
+        // Calculate dynamic liquidity L based on current reserves
+        let l = self.calculate_liquidity(x, y);
+        let y_1 = y + amount_in;
+        let x_1 = self.calculate_new_reserve(y_1, l);
+
+        if x_1 >= x {
+            todo!("TOOD: handle error")
+        }
+
+        if y_1 > x_1 {
+            todo!("TOOD: handle error")
+        }
+
+        // Check that the new reserves can support pending fee swaps
+        if !self._can_support_pending_swap(x_1, y_1) {
+            panic!("SWAP_REVERSES_IMBALANCE");
+        }
+
+        // Update pool reserves
+        pool.reserve_user_token = x_1.to::<u128>();
+        pool.reserve_validator_token = y_1.to::<u128>();
+
+        x - x_1
     }
 
     /// Calculate liquidity based on reserves
