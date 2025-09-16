@@ -12,6 +12,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, sqrt},
+        token_id_to_address,
         types::{
             IFeeManager, ITIP20,
             ITIPFeeAMM::{self},
@@ -503,76 +504,24 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?;
     assert_eq!(user_lp_balance, expected_initial_liquidity);
 
-    //
-    // // Test payment functionality by performing a fee swap
-    // let swap_amount = U256::from(1000000000_u128); // 1 token
-    //
-    // // Transfer some user tokens to validator for the swap
-    // pending.push(
-    //     user_token
-    //         .transfer(validator_address, swap_amount * U256::from(2))
-    //         .send()
-    //         .await?,
-    // );
-    // await_receipts(&mut pending).await?;
-    //
-    // // Validator approves user tokens for swap
-    // let validator_user_token = ITIP20::new(*user_token.address(), validator_provider.clone());
-    // pending.push(
-    //     validator_user_token
-    //         .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-    //         .send()
-    //         .await?,
-    // );
-    // await_receipts(&mut pending).await?;
-    //
-    // // Perform a fee swap from user token to validator token
-    // let validator_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, validator_provider.clone());
-    // pending.push(
-    //     validator_amm
-    //         .feeSwap(
-    //             *user_token.address(),
-    //             *validator_token.address(),
-    //             swap_amount,
-    //             validator_address,
-    //         )
-    //         .send()
-    //         .await?,
-    // );
-    // await_receipts(&mut pending).await?;
-    //
-    // // Verify pool reserves changed after swap
-    // let pool_after_swap = fee_amm.pools(pool_id).call().await?;
-    // assert!(pool_after_swap.reserveUserToken > pool.reserveUserToken);
-    // assert!(pool_after_swap.reserveValidatorToken < pool.reserveValidatorToken);
-    //
-    // // Test rebalance swap in the opposite direction
-    // let rebalance_amount = U256::from(500000000_u128); // 0.5 tokens
-    //
-    // pending.push(
-    //     validator_amm
-    //         .rebalanceSwap(
-    //             *validator_token.address(),
-    //             *user_token.address(),
-    //             rebalance_amount,
-    //             validator_address,
-    //         )
-    //         .send()
-    //         .await?,
-    // );
-    // await_receipts(&mut pending).await?;
-    //
-    // // Verify pool is more balanced after rebalance
-    // let pool_after_rebalance = fee_amm.pools(pool_id).call().await?;
-    // let reserve_diff_before = pool_after_swap
-    //     .reserveUserToken
-    //     .abs_diff(pool_after_swap.reserveValidatorToken);
-    // let reserve_diff_after = pool_after_rebalance
-    //     .reserveUserToken
-    //     .abs_diff(pool_after_rebalance.reserveValidatorToken);
-    // assert!(
-    //     reserve_diff_after < reserve_diff_before,
-    //     "Pool should be more balanced after rebalance"
-    // );
+    // Get initial validator token balance
+    let initial_validator_balance = validator_token.balanceOf(validator_address).call().await?;
+
+    // Transfer using predeployed TIP20
+    let transfer_token = ITIP20::new(token_id_to_address(0), user_provider);
+    let transfer_amount = U256::from(rand::random::<u16>());
+
+    let transfer_receipt = transfer_token
+        .transfer(Address::random(), transfer_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(transfer_receipt.status());
+
+    // Assert that gas token in was swapped to the validator token
+    let validator_balance = validator_token.balanceOf(validator_address).call().await?;
+    assert!(validator_balance > initial_validator_balance);
+
     Ok(())
 }
