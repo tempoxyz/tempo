@@ -332,17 +332,53 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
-    /// Delegates pool ID calculation to TIPFeeAMM
     pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> alloy::primitives::B256 {
         let amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.get_pool_id(call.userToken, call.validatorToken)
     }
 
-    /// Delegates pool data retrieval to TIPFeeAMM (inherited functionality)
     pub fn get_pool(&mut self, call: ITIPFeeAMM::getPoolCall) -> ITIPFeeAMM::Pool {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         let pool_key = PoolKey::new(call.userToken, call.validatorToken);
         amm.get_pool(&pool_key.get_id()).into()
+    }
+
+    /// Execute a fee swap
+    pub fn fee_swap(
+        &mut self,
+        msg_sender: Address,
+        call: ITIPFeeAMM::feeSwapCall,
+    ) -> Result<U256, ITIPFeeAMM::ITIPFeeAMMErrors> {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        amm.fee_swap(
+            msg_sender,
+            call.userToken,
+            call.validatorToken,
+            call.amountIn,
+            call.to,
+        )
+    }
+
+    /// Execute a rebalance swap
+    pub fn rebalance_swap(
+        &mut self,
+        msg_sender: Address,
+        call: ITIPFeeAMM::rebalanceSwapCall,
+    ) -> Result<U256, ITIPFeeAMM::ITIPFeeAMMErrors> {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        amm.rebalance_swap(
+            msg_sender,
+            call.userToken,
+            call.validatorToken,
+            call.amountIn,
+            call.to,
+        )
+    }
+
+    /// Calculate liquidity
+    pub fn calculate_liquidity(&mut self, call: ITIPFeeAMM::calculateLiquidityCall) -> U256 {
+        let amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        amm.calculate_liquidity(call.x, call.y)
     }
 }
 
