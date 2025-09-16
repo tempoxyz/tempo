@@ -21,7 +21,7 @@
 
 - name: commonware
   include_tasks: commonware.yml
-  when: tempo_commonware == 'true'
+  when: tempo_commonware == "true"
 
 - name: Include discovery key generation tasks
   include_tasks: disc_keygen.yml

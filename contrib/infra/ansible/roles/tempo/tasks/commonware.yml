@@ -1,0 +1,76 @@
+- name: Create temporary build directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: cmwr
+    path: "/tmp"
+  register: commonware_config
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate configuration files
+  command: |
+    cargo x generate-config --output {{ commonware_config.path }} \
+                            --peers {{ play_hosts | length }} \
+                            --bootstrappers 1 \
+                            --message-backlog 16384 \
+                            --mailbox-size 16384 \
+                            --deque-size 10 \
+                            --from-port 8000 \
+                            --fee-recipient 0x0000000000000000000000000000000000000000
+  delegate_to: localhost
+  run_once: true
+
+- name: debg
+  debug:
+    var: commonware_config.path
+
+- name: List configuration files
+  find:
+    paths: "{{ commonware_config.path }}"
+    file_type: file
+  register: config_files
+  delegate_to: localhost
+  run_once: true
+
+- name: Modify listen port in configuration files
+  ini_file:
+    path: "{{ item.path }}"
+    section: ""
+    option: "listen_port"
+    value: "8000"
+  loop: "{{ config_files.files }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Modify metrics port in configuration files
+  ini_file:
+    path: "{{ item.path }}"
+    section: ""
+    option: "metrics_port"
+    value: "8001"
+  loop: "{{ config_files.files }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Assign each node a config file
+  set_fact:
+    config_path: "{{ config_files.files[index].path }}"
+    node_id: "{{ config_files.files[index].path | basename | splitext | first }}"
+  delegate_to: "{{ item }}"
+  loop: "{{ play_hosts }}"
+  loop_control:
+    index_var: "index"
+  delegate_facts: true
+
+- name: Copy Commonware config file
+  copy:
+    src: "{{ config_path }}"
+    dest: "{{ ansible_env.HOME }}/malachite/config/commonware.toml"
+
+- name: Modify peers in configuration files
+  ini_file:
+    path: "{{ ansible_env.HOME }}/malachite/config/commonware.toml"
+    section: "peers"
+    option: "0x{{ hostvars[item]['node_id'] }}"
+    value: "\"{{ hostvars[item]['ansible_tailscale0']['ipv4']['address'] }}:8000\""
+  loop: "{{ play_hosts }}"
