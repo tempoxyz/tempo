@@ -5,13 +5,13 @@ use crate::contracts::{
         slots::{double_mapping_slot, mapping_slot},
     },
     tip20::TIP20Token,
-    types::{ITIP20, ITIPFeeAMM, TIPFeeAMMError},
+    types::{ITIP20, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
-use alloy_primitives::FixedBytes;
+use alloy_primitives::{FixedBytes, IntoLogData};
 
 /// Constants from the Solidity reference implementation
 pub const M: U256 = uint!(9975_U256);
@@ -188,6 +188,7 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
     /// Mint liquidity tokens
     pub fn mint(
         &mut self,
+        msg_sender: Address,
         user_token: Address,
         validator_token: Address,
         amount_user_token: U256,
@@ -221,7 +222,30 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
             ));
         }
 
-        // TODO: transfer tokens to user
+        // Transfer tokens from user to contract
+        let user_token_id = address_to_token_id_unchecked(&user_token);
+        let _ = TIP20Token::new(user_token_id, self.storage)
+            .transfer_from(
+                &self.contract_address,
+                ITIP20::transferFromCall {
+                    from: to, // 'to' is actually the sender in this context
+                    to: self.contract_address,
+                    amount: amount_user_token,
+                },
+            )
+            .expect("TODO: handle error");
+
+        let validator_token_id = address_to_token_id_unchecked(&validator_token);
+        let _ = TIP20Token::new(validator_token_id, self.storage)
+            .transfer_from(
+                &self.contract_address,
+                ITIP20::transferFromCall {
+                    from: to,
+                    to: self.contract_address,
+                    amount: amount_validator_token,
+                },
+            )
+            .expect("TODO: handle error");
 
         // Update reserves
         pool.reserve_user_token += amount_user_token.to::<u128>();
@@ -233,8 +257,21 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
         let balance = self.get_balance_of(&pool_id, &to);
         self.set_balance_of(&pool_id, &to, balance + liquidity);
 
-        //    TODO:
-        //    emit Mint(msg.sender, userToken, validatorToken, amountUserToken, amountValidatorToken, liquidity);
+        // Emit Mint event
+        self.storage
+            .emit_event(
+                self.contract_address,
+                TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
+                    sender: msg_sender,
+                    token0: user_token,
+                    token1: validator_token,
+                    amount0: amount_user_token,
+                    amount1: amount_validator_token,
+                    liquidity,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(liquidity)
     }
