@@ -6,7 +6,10 @@ use crate::{
     },
     precompiles::{Precompile, mutate, mutate_void, view},
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolValue},
+};
 use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 
 #[rustfmt::skip]
@@ -38,18 +41,23 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),
             ITIPFeeAMM::createPoolCall::SELECTOR => mutate_void::<ITIPFeeAMM::createPoolCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |_s, call| self.create_pool(call)),
             IFeeManager::collectFeePreTxCall::SELECTOR => {
-                mutate_void::<IFeeManager::collectFeePreTxCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee_pre_tx(s, call))
+                let call = IFeeManager::collectFeePreTxCall::abi_decode(calldata)
+                    .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+                let result = self.collect_fee_pre_tx(msg_sender, call)
+                    .map_err(|e| PrecompileError::Other(format!("FeeManager error: {e:?}")))?;
+                Ok(reth_evm::revm::precompile::PrecompileOutput::new(
+                    super::MUTATE_FUNC_GAS,
+                    result.abi_encode().into(),
+                ))
             }
             IFeeManager::collectFeePostTxCall::SELECTOR => {
                 mutate_void::<IFeeManager::collectFeePostTxCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee_post_tx(s, call))
             }
             IFeeManager::executeBlockCall::SELECTOR => {
-                mutate_void::<IFeeManager::executeBlockCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, _call| self.execute_block(s))
+                mutate_void::<IFeeManager::executeBlockCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.execute_block(s, call))
             }
             ITIPFeeAMM::mintCall::SELECTOR => mutate::<ITIPFeeAMM::mintCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.mint(*s, call)),
             ITIPFeeAMM::burnCall::SELECTOR => mutate::<ITIPFeeAMM::burnCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.burn(*s, call)),
-
-
             _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
         }
     }
@@ -63,17 +71,40 @@ mod tests {
         contracts::{
             HashMapStorageProvider,
             tip_fee_manager::amm::PoolKey,
-            types::{IFeeManager, ITIPFeeAMM},
+            types::{IFeeManager, ITIPFeeAMM, ITIP20},
+            TIP20Token, address_to_token_id_unchecked,
         },
         fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
         tip_fee_amm_err,
     };
     use alloy::{
-        primitives::{Address, B256, Bytes},
+        primitives::{Address, B256, Bytes, U256},
         sol_types::SolValue,
     };
     use eyre::Result;
+
+    fn setup_token_with_balance(
+        storage: &mut HashMapStorageProvider,
+        token: Address,
+        user: Address,
+        balance: U256,
+    ) {
+        let token_id = address_to_token_id_unchecked(&token);
+        let mut tip20_token = TIP20Token::new(token_id, storage);
+
+        // Mint tokens to user
+        tip20_token.mint(&user, ITIP20::mintCall {
+            to: user,
+            amount: balance,
+        }).unwrap();
+
+        // Approve fee manager to spend user's tokens
+        tip20_token.approve(&user, ITIP20::approveCall {
+            spender: TIP_FEE_MANAGER_ADDRESS,
+            amount: balance,
+        }).unwrap();
+    }
 
     #[test]
     fn test_set_validator_token() -> Result<()> {
@@ -374,5 +405,138 @@ mod tests {
         };
         let result = fee_manager.call(&Bytes::from(set_user_call.abi_encode()), &user);
         expect_precompile_error(&result, fee_manager_err!(InvalidToken));
+    }
+
+    #[test]
+    fn test_collect_fee_only_system_contract() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let user = Address::random();
+        let validator = Address::random();
+        let non_system = Address::random();
+
+        let collect_call = IFeeManager::collectFeeCall {
+            user,
+            coinbase: validator,
+            amount: U256::from(100),
+        };
+
+        // Non-system contract should fail
+        let result = fee_manager.call(&Bytes::from(collect_call.abi_encode()), &non_system);
+        expect_precompile_error(&result, fee_manager_err!(OnlySystemContract));
+    }
+
+    #[test]
+    fn test_collect_fee_pre_tx() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let validator = Address::random();
+        let token = Address::random();
+        let max_amount = U256::from(10000);
+
+        // Setup token with balance and approvals
+        setup_token_with_balance(&mut storage, token, user, U256::MAX);
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+
+        // Set validator token
+        fee_manager.call(
+            &Bytes::from(IFeeManager::setValidatorTokenCall { token }.abi_encode()),
+            &validator,
+        )?;
+
+        // Set user token (same as validator for simplicity)
+        fee_manager.call(
+            &Bytes::from(IFeeManager::setUserTokenCall { token }.abi_encode()),
+            &user,
+        )?;
+
+        // Call collectFeePreTx (only system contract can call)
+        let call = IFeeManager::collectFeePreTxCall {
+            user,
+            maxAmount: max_amount,
+            validator,
+        };
+        let result = fee_manager.call(&Bytes::from(call.abi_encode()), &Address::ZERO)?;
+
+        // Decode the returned user token
+        let returned_token = Address::abi_decode(&result.bytes)?;
+        assert_eq!(returned_token, token);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_collect_fee_post_tx() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let token = Address::random();
+        let max_amount = U256::from(10000);
+        let actual_used = U256::from(6000);
+
+        // Setup token with balance
+        setup_token_with_balance(&mut storage, token, user, U256::MAX);
+
+        // Transfer tokens to fee manager first (simulating collectFeePreTx)
+        {
+            let token_id = address_to_token_id_unchecked(&token);
+            let mut tip20_token = TIP20Token::new(token_id, &mut storage);
+            tip20_token
+                .transfer(
+                    &user,
+                    ITIP20::transferCall {
+                        to: TIP_FEE_MANAGER_ADDRESS,
+                        amount: max_amount,
+                    },
+                )
+                .unwrap();
+        }
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+
+        // Call collectFeePostTx
+        let call = IFeeManager::collectFeePostTxCall {
+            user,
+            maxAmount: max_amount,
+            actualUsed: actual_used,
+            userToken: token,
+        };
+        let result = fee_manager.call(&Bytes::from(call.abi_encode()), &Address::ZERO)?;
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        // Verify refund was processed (user should get back max - actual)
+        let token_id = address_to_token_id_unchecked(&token);
+        let mut tip20_token = TIP20Token::new(token_id, &mut storage);
+        let balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: user });
+        let expected_balance = U256::MAX - max_amount + (max_amount - actual_used);
+        assert_eq!(balance, expected_balance);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_block() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let validator = Address::random();
+        let token = Address::random();
+
+        // Setup token
+        let user = Address::random();
+        setup_token_with_balance(&mut storage, token, user, U256::MAX);
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+
+        // Set validator token
+        fee_manager.call(
+            &Bytes::from(IFeeManager::setValidatorTokenCall { token }.abi_encode()),
+            &validator,
+        )?;
+
+        // Call executeBlock (only system contract can call)
+        let call = IFeeManager::executeBlockCall { validator };
+        let result = fee_manager.call(&Bytes::from(call.abi_encode()), &Address::ZERO)?;
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        Ok(())
     }
 }
