@@ -202,6 +202,7 @@ sol! {
         error PoolDoesNotExist();
         error InvalidToken();
         error InsufficientLiquidity();
+        error OnlyProtocol();
         error InsufficientPoolBalance();
         error InsufficientReserves();
         error InsufficientLiquidityBalance();
