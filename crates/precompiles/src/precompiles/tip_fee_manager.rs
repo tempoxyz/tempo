@@ -52,7 +52,7 @@ mod tests {
         TIP_FEE_MANAGER_ADDRESS,
         contracts::{
             HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
-            tip_fee_manager::PoolKey,
+            tip_fee_manager::pool::PoolKey,
             tip20::ISSUER_ROLE,
             types::{IFeeManager, ITIP20, ITIPFeeAMM},
         },

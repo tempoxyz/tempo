@@ -10,6 +10,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         tip_fee_amm::{self, MIN_LIQUIDITY, PoolKey},
+        tip_fee_manager::pool::PoolKey,
         types::ITIPFeeAMM,
     },
 };

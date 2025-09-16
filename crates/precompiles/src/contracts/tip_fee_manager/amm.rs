@@ -1,9 +1,6 @@
 use crate::contracts::{
     address_to_token_id_unchecked,
-    storage::{
-        Sstore, StorageOps, StorageProvider,
-        slots::{double_mapping_slot, mapping_slot},
-    },
+    storage::{StorageOps, StorageProvider},
     tip_fee_manager::{
         amm::slots::{
             get_liquidity_balance_slot, get_pool_exists_slot, get_pool_slot, get_total_supply_slot,
@@ -13,10 +10,7 @@ use crate::contracts::{
     tip20::TIP20Token,
     types::{ITIP20, ITIPFeeAMM, TIPFeeAMMEvent},
 };
-use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
-    sol_types::SolValue,
-};
+use alloy::primitives::{Address, B256, U256, uint};
 use alloy_primitives::IntoLogData;
 
 /// Minimum liquidity locked to prevent division by zero
