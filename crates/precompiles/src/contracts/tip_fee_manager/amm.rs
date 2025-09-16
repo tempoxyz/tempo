@@ -9,7 +9,6 @@ use alloy::{
     sol_types::SolValue,
 };
 use alloy_primitives::IntoLogData;
-use reth_storage_api::errors::db;
 
 /// Constants from the Solidity reference implementation
 pub const M: U256 = uint!(9975_U256);
@@ -393,7 +392,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let liquidity = if total_supply.is_zero() {
             let mean = (amount_user_token + amount_validator_token) / uint!(2_U256);
             if mean <= MIN_LIQUIDITY {
-                dbg!("InsufficientLiquidity");
+                "InsufficientLiquidity";
                 return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
                     ITIPFeeAMM::InsufficientLiquidity {},
                 ));

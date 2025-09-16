@@ -442,14 +442,12 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?;
     assert!(create_pool_receipt.status());
 
-    // Verify pool was created
     let pool_key = PoolKey::new(*user_token.address(), *validator_token.address());
     let pool_id = pool_key.get_id();
     assert!(fee_amm.poolExists(pool_id).call().await?);
 
-    let liquidity = U256::from(u16::MAX);
-
     // Transfer validator tokens to user so the user can LP
+    let liquidity = U256::from(u16::MAX);
     pending.push(
         validator_token
             .transfer(user_address, liquidity)
