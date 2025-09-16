@@ -14,7 +14,10 @@ use std::{env, str::FromStr};
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
 use tempo_precompiles::{
     TIP_ACCOUNT_REGISTRAR,
-    contracts::{token_id_to_address, types::{ITIP20, ITipAccountRegistrar}},
+    contracts::{
+        token_id_to_address,
+        types::{ITIP20, ITipAccountRegistrar},
+    },
 };
 
 sol! {
