@@ -483,6 +483,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.check_transfer_authorized(&from, &to)?;
 
         // Check and update allowance
+        // Skip allowance check if the caller is the fee manager
         if *msg_sender != TIP_FEE_MANAGER_ADDRESS {
             let allowed = self.get_allowance(&from, msg_sender);
             if amount > allowed {

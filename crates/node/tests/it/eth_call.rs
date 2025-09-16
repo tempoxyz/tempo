@@ -1,4 +1,4 @@
-use crate::utils::{NodeSource, approve_fee_manager, setup_test_node, setup_test_token};
+use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
     primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},

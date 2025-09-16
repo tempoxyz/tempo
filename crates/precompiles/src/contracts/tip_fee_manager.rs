@@ -272,16 +272,20 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let token_id = address_to_token_id_unchecked(&user_token);
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
-        dbg!("getting here");
         tip20_token
-            .transfer(
-                &user,
-                ITIP20::transferCall {
+            .transfer_from(
+                &self.contract_address,
+                ITIP20::transferFromCall {
+                    from: user,
                     to: self.contract_address,
                     amount,
                 },
             )
-            .expect("TODO: handle error");
+            .map_err(|_| {
+                IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                    IFeeManager::InsufficientFeeTokenBalance {},
+                )
+            })?;
 
         // Cache fee info to minimize storage access
         let mut fee_info = self.get_fee_info(&user_token);
