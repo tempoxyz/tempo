@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use std::{net::SocketAddr, path::Path};
+use std::path::Path;
 
 use commonware_codec::Decode;
 use commonware_utils::quorum;
@@ -67,7 +67,7 @@ pub struct Config {
     //
     // TODO: enforce the invariant that `signer.public_key` is part of `peers`.
     #[serde(with = "crate::_serde::peers")]
-    pub peers: IndexMap<PublicKey, SocketAddr>,
+    pub peers: IndexMap<PublicKey, String>,
 
     // TODO: enforce the invariant that all `bootstrappers` are part of `peers`.
     pub bootstrappers: Bootstrappers,
@@ -94,21 +94,21 @@ impl Config {
         Ok(this)
     }
 
-    /// Returns a iterator over the bootstrappers and their socket address.
+    /// Returns a iterator over the bootstrappers and their domain names.
     ///
     /// # Panics
     ///
     /// This iterator will panic if one of the bootstrappers is not a member
     /// of `peers`. This invariant is enforced when deserialing and can only
     /// be violated by setting the field manually.
-    pub fn bootstrappers(&self) -> impl Iterator<Item = (PublicKey, SocketAddr)> {
+    pub fn bootstrappers(&self) -> impl Iterator<Item = (PublicKey, &str)> {
         self.bootstrappers.iter().map(|key| {
-            let addr = self.peers.get(key).expect(
+            let dns = self.peers.get(key).expect(
                 "all bootstrappers must be contained in the peers map; \
                     this invariant is enforced when deserializing and can only \
                     be violated by mutating manually",
             );
-            (key.clone(), *addr)
+            (key.clone(), &**dns)
         })
     }
 }
@@ -175,7 +175,7 @@ struct DeserConfig {
     //
     // TODO: enforce the invariant that `signer.public_key` is part of `peers`.
     #[serde(deserialize_with = "crate::_serde::peers::deserialize")]
-    peers: IndexMap<PublicKey, SocketAddr>,
+    peers: IndexMap<PublicKey, String>,
 
     bootstrappers: Bootstrappers,
 
@@ -376,8 +376,6 @@ mod _serde {
     }
 
     pub(crate) mod peers {
-        use std::net::SocketAddr;
-
         use indexmap::IndexMap;
         use serde::{Deserializer, Serializer, de::Visitor, ser::SerializeMap}; // # codespell:ignore ser
 
@@ -388,10 +386,10 @@ mod _serde {
         struct PeersVisitor;
 
         impl<'de> Visitor<'de> for PeersVisitor {
-            type Value = IndexMap<PublicKey, SocketAddr>;
+            type Value = IndexMap<PublicKey, String>;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a map of hex-formatted ed25519 public keys to ip addresses")
+                formatter.write_str("a map of hex-formatted ed25519 public keys to DNS name")
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -408,7 +406,7 @@ mod _serde {
         }
 
         pub(crate) fn serialize<S>(
-            peers: &IndexMap<PublicKey, SocketAddr>,
+            peers: &IndexMap<PublicKey, String>,
             serializer: S,
         ) -> Result<S::Ok, S::Error>
         where
@@ -423,7 +421,7 @@ mod _serde {
 
         pub(crate) fn deserialize<'de, D>(
             deserializer: D,
-        ) -> Result<IndexMap<PublicKey, SocketAddr>, D::Error>
+        ) -> Result<IndexMap<PublicKey, String>, D::Error>
         where
             D: Deserializer<'de>,
         {

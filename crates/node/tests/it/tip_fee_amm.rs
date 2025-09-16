@@ -1,3 +1,4 @@
+use crate::utils::{await_receipts, setup_test_node, setup_test_token};
 use alloy::{
     primitives::U256,
     providers::ProviderBuilder,
@@ -8,13 +9,11 @@ use alloy_primitives::Address;
 use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, sqrt},
-        types::{IFeeManager, ITIP20, ITIPFeeAMM},
+    contracts::types::{
+        IFeeManager, ITIP20,
+        ITIPFeeAMM::{self, PoolKey},
     },
 };
-
-use crate::utils::{await_receipts, setup_test_node, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_pool() -> eyre::Result<()> {

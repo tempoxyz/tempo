@@ -140,7 +140,7 @@ fn generate_config(
         let name = signer.public_key().to_string();
         these_will_be_peers.insert(
             signer.public_key(),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port).to_string(),
         );
         let dst = {
             let mut p = output.join(&name);

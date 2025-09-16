@@ -34,6 +34,7 @@ eyre.workspace = true
 futures-channel.workspace = true
 futures-util.workspace = true
 governor.workspace = true
+indexmap.workspace = true
 
 rand.workspace = true
 reth.workspace = true
