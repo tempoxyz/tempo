@@ -1,9 +1,6 @@
 use crate::contracts::{
     address_to_token_id_unchecked,
-    storage::{
-        StorageOps, StorageProvider,
-        slots::{double_mapping_slot, mapping_slot},
-    },
+    storage::{StorageOps, StorageProvider},
     tip20::TIP20Token,
     types::{ITIP20, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
 };
@@ -30,7 +27,7 @@ pub struct Pool {
 
 impl From<Pool> for ITIPFeeAMM::Pool {
     fn from(value: Pool) -> Self {
-        ITIPFeeAMM::Pool {
+        Self {
             reserveUserToken: value.reserve_user_token,
             reserveValidatorToken: value.reserve_validator_token,
             pendingFeeSwapIn: value.pending_fee_swap_in,
@@ -191,7 +188,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Execute rebalance swap implementation
-    fn execute_rebalance_swap(&mut self, _pool: &mut Pool, _amount_in: U256) -> U256 {
+    fn _execute_rebalance_swap(&mut self, _pool: &mut Pool, _amount_in: U256) -> U256 {
         todo!()
     }
 
@@ -427,7 +424,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         todo!()
     }
 
-    fn get_total_pending_swaps() {
+    fn _get_total_pending_swaps() {
         todo!()
     }
 
@@ -444,7 +441,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Check if swap can be supported by current reserves
-    fn can_support_pending_swap(
+    fn _can_support_pending_swap(
         &self,
         _new_user_reserve: U256,
         _new_validator_reserve: U256,
@@ -498,7 +495,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 }
 
-/// Integer square root implementation
+/// Integer square root
 pub fn sqrt(x: U256) -> U256 {
     if x == U256::ZERO {
         return U256::ZERO;

@@ -61,55 +61,19 @@ mod tests {
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
         contracts::{
-            HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
+            HashMapStorageProvider,
             tip_fee_manager::amm::PoolKey,
-            tip20::ISSUER_ROLE,
-            types::{IFeeManager, ITIP20, ITIPFeeAMM},
+            types::{IFeeManager, ITIPFeeAMM},
         },
         fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
         tip_fee_amm_err,
     };
     use alloy::{
-        primitives::{Address, B256, Bytes, U256},
+        primitives::{Address, B256, Bytes},
         sol_types::SolValue,
     };
     use eyre::Result;
-
-    fn setup_token_with_balance(
-        storage: &mut HashMapStorageProvider,
-        token: Address,
-        user: Address,
-        amount: U256,
-    ) -> TIP20Token<'_, HashMapStorageProvider> {
-        let token_id = address_to_token_id_unchecked(&token);
-        let mut tip20_token = TIP20Token::new(token_id, storage);
-
-        // Initialize token
-        tip20_token
-            .initialize("TestToken", "TEST", "USD", &user)
-            .unwrap();
-
-        // Grant issuer role to user and mint tokens
-        let mut roles = tip20_token.get_roles_contract();
-        roles.grant_role_internal(&user, *ISSUER_ROLE);
-        tip20_token
-            .mint(&user, ITIP20::mintCall { to: user, amount })
-            .unwrap();
-
-        // Approve fee manager to transfer tokens
-        tip20_token
-            .approve(
-                &user,
-                ITIP20::approveCall {
-                    spender: TIP_FEE_MANAGER_ADDRESS,
-                    amount: U256::MAX,
-                },
-            )
-            .unwrap();
-
-        tip20_token
-    }
 
     #[test]
     fn test_set_validator_token() -> Result<()> {
