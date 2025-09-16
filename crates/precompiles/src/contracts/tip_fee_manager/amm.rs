@@ -132,6 +132,17 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.set_pool(&pool_id, &Pool::default());
         self.set_pool_exists(&pool_id);
 
+        self.storage
+            .emit_event(
+                self.contract_address,
+                TIPFeeAMMEvent::PoolCreated(ITIPFeeAMM::PoolCreated {
+                    userToken: user_token,
+                    validatorToken: validator_token,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
+
         Ok(())
     }
 
@@ -148,7 +159,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let reserve_validator_token = reserves.wrapping_shr(128).to::<u128>();
 
         let slot = slots::pool_slot(pool_id);
-        let pending_fee_swap_in = self.sload(slot).to::<u128>();
+        let pending_fee_swap_in = self.sload(slot + U256::ONE).to::<u128>();
 
         Pool {
             reserve_user_token,
@@ -387,6 +398,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
 
         // Check that withdrawal does not violate pending swaps
+
         let available_user_token = self.get_effective_user_reserve(pool);
         let available_validator_token = self.get_effective_validator_reserve(pool);
 
@@ -418,14 +430,16 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         todo!()
     }
 
-    /// Get effective user token reserve (current + pending)
-    fn get_effective_user_reserve(&self, _pool: &Pool) -> U256 {
-        todo!()
+    /// Get effective user token reserve
+    // NOTE: this function will be used for swap logic
+    fn get_effective_user_reserve(&self, pool: &Pool) -> U256 {
+        U256::from(pool.reserve_user_token + pool.pending_fee_swap_in)
     }
 
     /// Get effective validator token reserve (current - pending out)
-    fn get_effective_validator_reserve(&self, _pool: &Pool) -> U256 {
-        todo!("Implement get_effective_validator_reserve")
+    fn get_effective_validator_reserve(&self, pool: &Pool) -> U256 {
+        let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
+        U256::from(pool.reserve_validator_token) - pending_out
     }
 
     /// Check if swap can be supported by current reserves
