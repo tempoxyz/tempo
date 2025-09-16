@@ -310,16 +310,16 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let x_1 = self.calculate_new_reserve(y_1, l);
 
         if x_1 >= x {
-            todo!("TOOD: handle error")
+            todo!("TODO: handle error")
         }
 
         if y_1 > x_1 {
-            todo!("TOOD: handle error")
+            todo!("TODO: handle error")
         }
 
         // Check that the new reserves can support pending fee swaps
         if !self._can_support_pending_swap(x_1, y_1) {
-            todo!("TOOD: handle error")
+            todo!("TODO: handle error")
         }
 
         // Update pool reserves
@@ -358,12 +358,12 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let denominator = known_validator_reserve + l_sqrt_m;
 
         if denominator.is_zero() {
-            todo!("TOOD: handle error")
+            todo!("TODO: handle error")
         }
 
         let result = l2 / denominator;
         if result <= l {
-            todo!("TOOD: handle error")
+            todo!("TODO: handle error")
         }
 
         result - l
