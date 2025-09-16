@@ -6,6 +6,7 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_primitives::Address;
+use reth_ethereum::provider::db;
 use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -260,6 +261,7 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = pool_key.get_id();
+    assert!(fee_amm.poolExists(pool_id).call().await?);
 
     // Mint liquidity first
     let mint_receipt = fee_amm
@@ -459,30 +461,26 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
             .send()
             .await?,
     );
+
+    let liquidity = U256::from(u16::MAX);
+    // Transfer validator tokens to user so the user can LP
+    pending.push(
+        validator_token
+            .transfer(user_address, liquidity)
+            .send()
+            .await?,
+    );
     await_receipts(&mut pending).await?;
 
-    // Add liquidity to the pool
-    let liquidity = U256::from(10000000000_u128);
+    // User provides both tokens for liquidity
     pending.push(
         fee_amm
             .mint(
                 *user_token.address(),
                 *validator_token.address(),
                 liquidity,
-                U256::ZERO,
-                user_address,
-            )
-            .send()
-            .await?,
-    );
-    pending.push(
-        ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, validator_provider.clone())
-            .mint(
-                *user_token.address(),
-                *validator_token.address(),
-                U256::ZERO,
                 liquidity,
-                validator_address,
+                user_address,
             )
             .send()
             .await?,
@@ -496,22 +494,16 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     // Check total supply and individual LP balances
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
-    let expected_total_liquidity = sqrt(liquidity * liquidity) - MIN_LIQUIDITY;
-    assert_eq!(total_supply, expected_total_liquidity + MIN_LIQUIDITY);
+    let expected_initial_liquidity = (liquidity + liquidity) / U256::from(2) - MIN_LIQUIDITY;
+    assert_eq!(total_supply, expected_initial_liquidity + MIN_LIQUIDITY);
 
-    let user_expected_lp = liquidity - MIN_LIQUIDITY / U256::from(2);
-    let validator_expected_lp = liquidity - MIN_LIQUIDITY / U256::from(2);
     let user_lp_balance = fee_amm
         .liquidityBalances(pool_id, user_address)
         .call()
         .await?;
-    assert_eq!(user_lp_balance, user_expected_lp);
+    assert_eq!(user_lp_balance, expected_initial_liquidity);
 
-    let validator_lp_balance = fee_amm
-        .liquidityBalances(pool_id, validator_address)
-        .call()
-        .await?;
-    assert_eq!(validator_lp_balance, validator_expected_lp);
+    todo!();
 
     // Test fee token balance retrieval for user
     let user_balance_result = fee_manager

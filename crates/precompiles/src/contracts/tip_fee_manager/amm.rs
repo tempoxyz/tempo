@@ -9,6 +9,7 @@ use alloy::{
     sol_types::SolValue,
 };
 use alloy_primitives::IntoLogData;
+use reth_storage_api::errors::db;
 
 /// Constants from the Solidity reference implementation
 pub const M: U256 = uint!(9975_U256);
@@ -390,13 +391,28 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let total_supply = self.get_total_supply(&pool_id);
 
         let liquidity = if total_supply.is_zero() {
+            let mean = (amount_user_token + amount_validator_token) / uint!(2_U256);
+            if mean <= MIN_LIQUIDITY {
+                dbg!("InsufficientLiquidity");
+                return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                    ITIPFeeAMM::InsufficientLiquidity {},
+                ));
+            }
             self.set_total_supply(&pool_id, MIN_LIQUIDITY);
-            sqrt(amount_user_token * amount_validator_token) - MIN_LIQUIDITY
+            mean - MIN_LIQUIDITY
         } else {
-            let liquidity_user =
-                (amount_user_token * total_supply) / U256::from(pool.reserve_user_token);
-            let liquidity_validator =
-                (amount_validator_token * total_supply) / U256::from(pool.reserve_validator_token);
+            let liquidity_user = if pool.reserve_user_token > 0 {
+                (amount_user_token * total_supply) / U256::from(pool.reserve_user_token)
+            } else {
+                U256::MAX
+            };
+
+            let liquidity_validator = if pool.reserve_validator_token > 0 {
+                (amount_validator_token * total_supply) / U256::from(pool.reserve_validator_token)
+            } else {
+                U256::MAX
+            };
+
             liquidity_user.min(liquidity_validator)
         };
 
