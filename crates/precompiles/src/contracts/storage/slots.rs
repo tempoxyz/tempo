@@ -85,7 +85,10 @@ mod tests {
 
         let allowance_slot = double_mapping_slot(alice, tip_fee_mgr, U256::from(11));
 
-        println!("Alice->TipFeeManager allowance slot: 0x{:064x}", allowance_slot);
+        println!(
+            "Alice->TipFeeManager allowance slot: 0x{:064x}",
+            allowance_slot
+        );
 
         // Just verify it's calculated consistently
         let allowance_slot2 = double_mapping_slot(alice, tip_fee_mgr, U256::from(11));

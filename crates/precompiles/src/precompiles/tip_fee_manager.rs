@@ -69,10 +69,9 @@ mod tests {
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
         contracts::{
-            HashMapStorageProvider,
+            HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
             tip_fee_manager::amm::PoolKey,
-            types::{IFeeManager, ITIPFeeAMM, ITIP20},
-            TIP20Token, address_to_token_id_unchecked,
+            types::{IFeeManager, ITIP20, ITIPFeeAMM},
         },
         fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
@@ -104,16 +103,20 @@ mod tests {
         let mut roles = tip20_token.get_roles_contract();
         roles.grant_role_internal(&user, *ISSUER_ROLE);
 
-        tip20_token.mint(&user, ITIP20::mintCall {
-            to: user,
-            amount
-        }).unwrap();
+        tip20_token
+            .mint(&user, ITIP20::mintCall { to: user, amount })
+            .unwrap();
 
         // Approve fee manager to spend user's tokens
-        tip20_token.approve(&user, ITIP20::approveCall {
-            spender: TIP_FEE_MANAGER_ADDRESS,
-            amount,
-        }).unwrap();
+        tip20_token
+            .approve(
+                &user,
+                ITIP20::approveCall {
+                    spender: TIP_FEE_MANAGER_ADDRESS,
+                    amount,
+                },
+            )
+            .unwrap();
     }
 
     #[test]
