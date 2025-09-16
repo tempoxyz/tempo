@@ -1,6 +1,6 @@
-use crate::utils::{NodeSource, setup_test_node, setup_test_token};
+use crate::utils::{NodeSource, setup_test_node};
 use alloy::{
-    providers::{Provider, ProviderBuilder, WalletProvider},
+    providers::{Provider, ProviderBuilder},
     signers::{
         SignerSync,
         local::{MnemonicBuilder, coins_bip39::English},
@@ -12,7 +12,10 @@ use alloy_primitives::{Address, B256, U256, b256, keccak256};
 use reth_evm::revm::state::Bytecode;
 use std::{env, str::FromStr};
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
-use tempo_precompiles::{TIP_ACCOUNT_REGISTRAR, contracts::types::ITipAccountRegistrar};
+use tempo_precompiles::{
+    TIP_ACCOUNT_REGISTRAR,
+    contracts::{token_id_to_address, types::{ITIP20, ITipAccountRegistrar}},
+};
 
 sol! {
     struct Call {
@@ -39,10 +42,10 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(alice)
         .connect_http(http_url.clone());
-    let _deployer = provider.default_signer_address();
 
-    // Deploy a test token
-    let token = setup_test_token(provider.clone(), _deployer).await?;
+    // Use the pre-deployed token from genesis (token 0)
+    let token_addr = token_id_to_address(0);
+    let token = ITIP20::new(token_addr, provider.clone());
 
     // Init a fresh wallet with nonce 0
     let bob = MnemonicBuilder::<English>::default()
@@ -51,9 +54,10 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         .build()?;
     let bob_addr = bob.address();
 
-    let amount = U256::random();
+    // Transfer some tokens from alice to bob (enough for gas and transfers)
+    let amount = U256::from(1_000_000u64);
     token
-        .mint(bob_addr, amount)
+        .transfer(bob_addr, amount)
         .send()
         .await?
         .get_receipt()
@@ -86,8 +90,13 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         B256::from_str("0x0100000000007821000100000000000000000000000000000000000000000000")
             .unwrap();
 
+    println!("Executing 7702 delegate call from bob_addr: {}", bob_addr);
     let execute_call = delegate_account.execute(execution_mode, calls.abi_encode().into());
-    let receipt = execute_call.send().await?.get_receipt().await?;
+    println!("Sending transaction...");
+    let pending = execute_call.send().await?;
+    println!("Transaction sent, waiting for receipt...");
+    let receipt = pending.get_receipt().await?;
+    println!("Got receipt: {:?}", receipt.status());
 
     assert!(receipt.status(), "7702 delegate execution tx failed");
     assert_eq!(bob_provider.get_transaction_count(bob_addr).await?, 1);
@@ -185,8 +194,9 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(alice)
         .connect_http(http_url.clone());
-    let deployer = provider.default_signer_address();
-    let token = setup_test_token(provider.clone(), deployer).await?;
+    // Use the pre-deployed token from genesis (token 0)
+    let token_addr = token_id_to_address(0);
+    let token = ITIP20::new(token_addr, provider.clone());
 
     let bob = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
@@ -194,9 +204,10 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
         .build()?;
     let bob_addr = bob.address();
 
-    let amount = U256::random();
+    // Transfer some tokens from alice to bob (enough for gas and transfers)
+    let amount = U256::from(1_000_000u64);
     token
-        .mint(bob_addr, amount)
+        .transfer(bob_addr, amount)
         .send()
         .await?
         .get_receipt()
