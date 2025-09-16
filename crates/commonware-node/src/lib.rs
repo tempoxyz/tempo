@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated::discovery;
 use commonware_runtime::{Handle, Metrics as _};
-use eyre::{WrapErr as _, eyre};
+use eyre::{WrapErr as _, bail, eyre};
 use indexmap::IndexMap;
 use tempo_node::TempoFullNode;
 use tracing::info;
@@ -129,9 +129,11 @@ async fn instantiate_network(
         .await
         .wrap_err("failed resolving peers")?;
 
-    let (_, my_addr) = all_resolved_peers.get(&config.signer.public_key()).ok_or_else(||
-        eyre!("peers entry does not contain an entry for this node's public key (generated from the signer key): `{my_public_key}`")
-    )?;
+    let Some((_, my_addr)) = all_resolved_peers.get(&config.signer.public_key()) else {
+        bail!(
+            "peers entry does not contain an entry for this node's public key (generated from the signer key): `{my_public_key}`"
+        )
+    };
 
     // TODO: rework this entire peer and bootstrapper resolution so that it
     // becomes clear that bootstrappers fall out of the peers && get their
