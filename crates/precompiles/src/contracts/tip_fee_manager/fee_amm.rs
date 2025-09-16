@@ -4,6 +4,7 @@ use crate::contracts::{
         StorageOps, StorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
+    tip_fee_manager::pool::PoolKey,
     tip20::TIP20Token,
     types::{ITIP20, ITIPFeeAMM, TIPFeeAMMError},
 };
@@ -26,6 +27,25 @@ pub struct Pool {
     pub reserve_user_token: u128,
     pub reserve_validator_token: u128,
     pub pending_fee_swap_in: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PoolKey {
+    pub user_token: Address,
+    pub validator_token: Address,
+}
+
+impl PoolKey {
+    pub fn new(user_token: Address, validator_token: Address) -> Self {
+        Self {
+            user_token,
+            validator_token,
+        }
+    }
+
+    pub fn get_id(&self) -> B256 {
+        keccak256((self.user_token, self.validator_token).abi_encode())
+    }
 }
 
 /// Storage slots for FeeAMM
@@ -107,22 +127,20 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
         Ok(())
     }
 
-    /// Get pool ID for a token pair (unordered, following Solidity reference)
+    /// Get pool ID for a token pair
     pub fn get_pool_id(&self, user_token: Address, validator_token: Address) -> B256 {
-        // Note: Unlike TIPFeeAMM, FeeAMM uses unordered pairs for pool ID
-        keccak256((user_token, validator_token).abi_encode())
+        PoolKey::new(user_token, validator_token).get_id()
     }
 
     /// Get pool data for the given pool ID
     pub fn get_pool(&mut self, pool_id: &B256) -> Pool {
         let slot = slots::pool_slot(pool_id);
-        let packed_data = self.sload(slot);
+        let reserves = self.sload(slot);
+        let reserve_user_token = (reserves & U256::from(u128::MAX)).to::<u128>();
+        let reserve_validator_token = reserves.wrapping_shr(128).to::<u128>();
 
-        // Unpack pool data from storage
-        let reserve_user_token = (packed_data & U256::from(u128::MAX)).to::<u128>();
-        let remaining = packed_data >> 128;
-        let reserve_validator_token = (remaining & U256::from(u128::MAX)).to::<u128>();
-        let pending_fee_swap_in = (remaining >> 128).to::<u128>();
+        let slot = slots::pool_slot(pool_id);
+        let pending_fee_swap_in = self.sload(slot).to::<u128>();
 
         Pool {
             reserve_user_token,

@@ -28,12 +28,9 @@ impl From<Pool> for ITIPFeeAMM::Pool {
     }
 }
 
-/// Pool identifier with deterministically ordered tokens
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PoolKey {
-    /// Lower address token (deterministic ordering)
     pub token0: Address,
-    /// Higher address token (deterministic ordering)
     pub token1: Address,
 }
 
