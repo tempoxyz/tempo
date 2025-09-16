@@ -14,7 +14,7 @@ use tempo_precompiles::{
     },
 };
 
-use crate::utils::{setup_test_node, setup_test_token};
+use crate::utils::{await_receipts, setup_test_node, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_pool() -> eyre::Result<()> {
@@ -401,10 +401,8 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    for tx in pending {
-        let receipt = tx.get_receipt().await?;
-        assert!(receipt.status());
-    }
+    await_receipts(&mut pending).await?;
+
     // Set different tokens for user and validator
     let set_user_token_receipt = fee_manager
         .setUserToken(*user_token.address())
@@ -446,70 +444,83 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let pool_id = pool_key.get_id();
     assert!(fee_amm.poolExists(pool_id).call().await?);
 
-    // // Approve tokens for the fee manager
-    // let liquidity_amount = U256::from(10u128.pow(20)); // 100 tokens
-    // let mut approvals = vec![];
-    //
-    // // User approves user tokens
-    // approvals.push(
-    //     user_token
-    //         .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-    //         .send()
-    //         .await?,
-    // );
-    // // Validator approves validator tokens
-    // approvals.push(
-    //     validator_token
-    //         .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-    //         .send()
-    //         .await?,
-    // );
-    //
-    // for tx in approvals {
-    //     let receipt = tx.get_receipt().await?;
-    //     assert!(receipt.status());
-    // }
-    //
-    // // Add liquidity to the pool (user provides both tokens for simplicity)
-    // let mint_receipt = user_amm
-    //     .mint(
-    //         *user_token.address(),
-    //         *validator_token.address(),
-    //         liquidity_amount,
-    //         liquidity_amount,
-    //         user_address,
-    //     )
-    //     .send()
-    //     .await?
-    //     .get_receipt()
-    //     .await?;
-    // assert!(mint_receipt.status());
-    //
-    // // Verify liquidity was added
-    // let pool = user_amm.pools(pool_id).call().await?;
-    // assert_eq!(pool.reserveUserToken, liquidity_amount.to::<u128>());
-    // assert_eq!(pool.reserveValidatorToken, liquidity_amount.to::<u128>());
-    //
-    // let total_supply = user_amm.totalSupply(pool_id).call().await?;
-    // let expected_liquidity = sqrt(liquidity_amount * liquidity_amount) - MIN_LIQUIDITY;
-    // assert_eq!(total_supply, expected_liquidity + MIN_LIQUIDITY);
-    //
-    // let lp_balance = user_amm
-    //     .liquidityBalances(pool_id, user_address)
-    //     .call()
-    //     .await?;
-    // assert_eq!(lp_balance, expected_liquidity);
-    //
-    // // Test fee token balance retrieval for user
-    // let user_balance_result = user_fee_manager
-    //     .getFeeTokenBalance(user_address, validator_address)
-    //     .call()
-    //     .await?;
+    //  Approve tokens for the fee manager
+    pending.push(
+        user_token
+            .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    pending.push(
+        validator_token
+            .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    // Add liquidity to the pool
+    let liquidity = U256::from(10000000000_u128);
+    pending.push(
+        fee_amm
+            .mint(
+                *user_token.address(),
+                *validator_token.address(),
+                liquidity,
+                U256::ZERO,
+                user_address,
+            )
+            .send()
+            .await?,
+    );
+    pending.push(
+        ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, validator_provider.clone())
+            .mint(
+                *user_token.address(),
+                *validator_token.address(),
+                U256::ZERO,
+                liquidity,
+                validator_address,
+            )
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    // Verify liquidity was added
+    let pool = fee_amm.pools(pool_id).call().await?;
+    assert_eq!(pool.reserveUserToken, liquidity.to::<u128>());
+    assert_eq!(pool.reserveValidatorToken, liquidity.to::<u128>());
+
+    // Check total supply and individual LP balances
+    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
+    let expected_total_liquidity = sqrt(liquidity * liquidity) - MIN_LIQUIDITY;
+    assert_eq!(total_supply, expected_total_liquidity + MIN_LIQUIDITY);
+
+    let user_expected_lp = liquidity - MIN_LIQUIDITY / U256::from(2);
+    let validator_expected_lp = liquidity - MIN_LIQUIDITY / U256::from(2);
+    let user_lp_balance = fee_amm
+        .liquidityBalances(pool_id, user_address)
+        .call()
+        .await?;
+    assert_eq!(user_lp_balance, user_expected_lp);
+
+    let validator_lp_balance = fee_amm
+        .liquidityBalances(pool_id, validator_address)
+        .call()
+        .await?;
+    assert_eq!(validator_lp_balance, validator_expected_lp);
+
+    // Test fee token balance retrieval for user
+    let user_balance_result = fee_manager
+        .getFeeTokenBalance(user_address, validator_address)
+        .call()
+        .await?;
+    // // TODO: assert actual values
     // assert_eq!(user_balance_result._0, *user_token.address());
     // assert!(user_balance_result._1 > U256::ZERO);
     //
-    // // Test fee token balance retrieval for validator (should use validator token)
-    // let validator_balance_result = validator_fee_manager
+    // let validator_balance_result = fee_manager
     //     .getFeeTokenBalance(validator_address, validator_address)
     //     .call()
     //     .await?;
@@ -517,64 +528,65 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     // assert!(validator_balance_result._1 > U256::ZERO);
     //
     // // Test payment functionality by performing a fee swap
-    // let swap_amount = U256::from(10u128.pow(18)); // 1 token
+    // let swap_amount = U256::from(1000000000_u128); // 1 token
     //
-    // // First transfer some user tokens to validator for the swap
-    // let transfer_receipt = user_token
-    //     .transfer(validator_address, swap_amount * U256::from(2))
-    //     .send()
-    //     .await?
-    //     .get_receipt()
-    //     .await?;
-    // assert!(transfer_receipt.status());
+    // // Transfer some user tokens to validator for the swap
+    // pending.push(
+    //     user_token
+    //         .transfer(validator_address, swap_amount * U256::from(2))
+    //         .send()
+    //         .await?,
+    // );
+    // await_receipts(&mut pending).await?;
     //
-    // // Validator approves tokens for swap
+    // // Validator approves user tokens for swap
     // let validator_user_token = ITIP20::new(*user_token.address(), validator_provider.clone());
-    // let approve_receipt = validator_user_token
-    //     .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-    //     .send()
-    //     .await?
-    //     .get_receipt()
-    //     .await?;
-    // assert!(approve_receipt.status());
+    // pending.push(
+    //     validator_user_token
+    //         .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+    //         .send()
+    //         .await?,
+    // );
+    // await_receipts(&mut pending).await?;
     //
     // // Perform a fee swap from user token to validator token
-    // let fee_swap_receipt = validator_amm
-    //     .feeSwap(
-    //         *user_token.address(),
-    //         *validator_token.address(),
-    //         swap_amount,
-    //         validator_address,
-    //     )
-    //     .send()
-    //     .await?
-    //     .get_receipt()
-    //     .await?;
-    // assert!(fee_swap_receipt.status());
+    // let validator_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, validator_provider.clone());
+    // pending.push(
+    //     validator_amm
+    //         .feeSwap(
+    //             *user_token.address(),
+    //             *validator_token.address(),
+    //             swap_amount,
+    //             validator_address,
+    //         )
+    //         .send()
+    //         .await?,
+    // );
+    // await_receipts(&mut pending).await?;
     //
     // // Verify pool reserves changed after swap
-    // let pool_after_swap = user_amm.pools(pool_id).call().await?;
+    // let pool_after_swap = fee_amm.pools(pool_id).call().await?;
     // assert!(pool_after_swap.reserveUserToken > pool.reserveUserToken);
     // assert!(pool_after_swap.reserveValidatorToken < pool.reserveValidatorToken);
     //
     // // Test rebalance swap in the opposite direction
-    // let rebalance_amount = U256::from(5 * 10u128.pow(17)); // 0.5 tokens
+    // let rebalance_amount = U256::from(500000000_u128); // 0.5 tokens
     //
-    // let rebalance_receipt = validator_amm
-    //     .rebalanceSwap(
-    //         *validator_token.address(),
-    //         *user_token.address(),
-    //         rebalance_amount,
-    //         validator_address,
-    //     )
-    //     .send()
-    //     .await?
-    //     .get_receipt()
-    //     .await?;
-    // assert!(rebalance_receipt.status());
+    // pending.push(
+    //     validator_amm
+    //         .rebalanceSwap(
+    //             *validator_token.address(),
+    //             *user_token.address(),
+    //             rebalance_amount,
+    //             validator_address,
+    //         )
+    //         .send()
+    //         .await?,
+    // );
+    // await_receipts(&mut pending).await?;
     //
     // // Verify pool is more balanced after rebalance
-    // let pool_after_rebalance = user_amm.pools(pool_id).call().await?;
+    // let pool_after_rebalance = fee_amm.pools(pool_id).call().await?;
     // let reserve_diff_before = pool_after_swap
     //     .reserveUserToken
     //     .abs_diff(pool_after_swap.reserveValidatorToken);
@@ -585,6 +597,5 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     //     reserve_diff_after < reserve_diff_before,
     //     "Pool should be more balanced after rebalance"
     // );
-    //
     Ok(())
 }

@@ -4,7 +4,11 @@
 //! including test token creation and node setup for integration testing.
 
 use alloy::{
-    primitives::Address, providers::Provider, sol_types::SolEvent, transports::http::reqwest::Url,
+    network::Ethereum,
+    primitives::Address,
+    providers::{PendingTransactionBuilder, Provider},
+    sol_types::SolEvent,
+    transports::http::reqwest::Url,
 };
 use reth_ethereum::tasks::TaskManager;
 use reth_node_api::FullNodeComponents;
@@ -116,4 +120,15 @@ pub(crate) async fn setup_test_node(
             Ok((http_url, Some((Box::new(node_handle), tasks))))
         }
     }
+}
+
+pub async fn await_receipts(
+    pending_txs: &mut Vec<PendingTransactionBuilder<Ethereum>>,
+) -> eyre::Result<()> {
+    for tx in pending_txs.drain(..) {
+        let receipt = tx.get_receipt().await?;
+        assert!(receipt.status());
+    }
+
+    Ok(())
 }
