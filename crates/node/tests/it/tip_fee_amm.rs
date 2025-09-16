@@ -9,10 +9,7 @@ use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
-        tip_fee_manager::{
-            amm::{MIN_LIQUIDITY, sqrt},
-            pool::PoolKey,
-        },
+        tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, sqrt},
         types::ITIPFeeAMM,
     },
 };
@@ -56,10 +53,9 @@ async fn test_create_pool() -> eyre::Result<()> {
 
     // Assert pool initial state
     let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserve0, 0);
-    assert_eq!(pool.reserve1, 0);
-    assert_eq!(pool.pendingReserve0, 0);
-    assert_eq!(pool.pendingReserve1, 0);
+    assert_eq!(pool.reserveUserToken, 0);
+    assert_eq!(pool.reserveValidatorToken, 0);
+    assert_eq!(pool.pendingFeeSwapIn, 0);
 
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     assert_eq!(total_supply, U256::ZERO);
@@ -73,8 +69,8 @@ async fn test_create_pool() -> eyre::Result<()> {
         .expect("PoolCreated event should be emitted");
 
     // Assert event values match the pool key
-    assert_eq!(pool_created_event.token0, pool_key.token0);
-    assert_eq!(pool_created_event.token1, pool_key.token1);
+    assert_eq!(pool_created_event.userToken, pool_key.user_token);
+    assert_eq!(pool_created_event.validatorToken, pool_key.validator_token);
 
     Ok(())
 }
@@ -155,14 +151,19 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     assert_eq!(lp_balance, U256::ZERO);
 
     let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserve0, 0);
-    assert_eq!(pool.reserve1, 0);
-    assert_eq!(pool.pendingReserve0, 0);
-    assert_eq!(pool.pendingReserve1, 0);
+    assert_eq!(pool.reserveUserToken, 0);
+    assert_eq!(pool.reserveValidatorToken, 0);
+    assert_eq!(pool.pendingFeeSwapIn, 0);
 
     // Mint liquidity
     let mint_receipt = fee_amm
-        .mint(pool_key.into(), amount, amount, caller)
+        .mint(
+            pool_key.user_token,
+            pool_key.validator_token,
+            amount,
+            amount,
+            caller,
+        )
         .send()
         .await?
         .get_receipt()
@@ -179,8 +180,8 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     assert_eq!(total_supply, expected_total_supply);
 
     let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserve0, amount.to::<u128>());
-    assert_eq!(pool.reserve1, amount.to::<u128>());
+    assert_eq!(pool.reserveUserToken, amount.to::<u128>());
+    assert_eq!(pool.reserveValidatorToken, amount.to::<u128>());
 
     let final_token0_balance = token_0.balanceOf(caller).call().await?;
     assert_eq!(final_token0_balance, user_token0_balance - amount);
@@ -260,7 +261,13 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     // Mint liquidity first
     let mint_receipt = fee_amm
-        .mint(pool_key.clone().into(), amount, amount, caller)
+        .mint(
+            pool_key.user_token,
+            pool_key.validator_token,
+            amount,
+            amount,
+            caller,
+        )
         .send()
         .await?
         .get_receipt()
@@ -281,7 +288,12 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     // Burn half of the liquidity
     let burn_amount = lp_balance_before_burn / U256::from(2);
     let burn_receipt = fee_amm
-        .burn(pool_key.into(), burn_amount, caller)
+        .burn(
+            pool_key.user_token,
+            pool_key.validator_token,
+            burn_amount,
+            caller,
+        )
         .send()
         .await?
         .get_receipt()
@@ -290,9 +302,9 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     // Calculate expected amounts returned
     let expected_amount0 =
-        (burn_amount * U256::from(pool_before_burn.reserve0)) / total_supply_before_burn;
-    let expected_amount1 =
-        (burn_amount * U256::from(pool_before_burn.reserve1)) / total_supply_before_burn;
+        (burn_amount * U256::from(pool_before_burn.reserveUserToken)) / total_supply_before_burn;
+    let expected_amount1 = (burn_amount * U256::from(pool_before_burn.reserveValidatorToken))
+        / total_supply_before_burn;
 
     // Assert state changes
     let total_supply_after_burn = fee_amm.totalSupply(pool_id).call().await?;
@@ -306,12 +318,12 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     let pool_after_burn = fee_amm.pools(pool_id).call().await?;
     assert_eq!(
-        pool_after_burn.reserve0,
-        pool_before_burn.reserve0 - expected_amount0.to::<u128>()
+        pool_after_burn.reserveUserToken,
+        pool_before_burn.reserveUserToken - expected_amount0.to::<u128>()
     );
     assert_eq!(
-        pool_after_burn.reserve1,
-        pool_before_burn.reserve1 - expected_amount1.to::<u128>()
+        pool_after_burn.reserveValidatorToken,
+        pool_before_burn.reserveValidatorToken - expected_amount1.to::<u128>()
     );
 
     let user_token0_balance_after_burn = token_0.balanceOf(caller).call().await?;

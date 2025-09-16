@@ -5,7 +5,6 @@ use crate::contracts::{
     storage::{StorageOps, StorageProvider},
     tip_fee_manager::{
         amm::{PoolKey, TIPFeeAMM},
-        pool::PoolKey,
         slots::{
             collected_fees_slot, token_in_fees_array_slot, user_token_slot, validator_token_slot,
         },
@@ -411,14 +410,14 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
         let call = ITIPFeeAMM::createPoolCall {
-            tokenA: token_a,
-            tokenB: token_b,
+            userToken: token_a,
+            validatorToken: token_b,
         };
 
         let result = fee_manager.create_pool(call);
         assert!(result.is_ok());
 
-        let pool_key = PoolKey::new(token_b, token_a);
+        let pool_key = PoolKey::new(token_a, token_b);
         let pool_id = pool_key.get_id();
         let exists_call = ITIPFeeAMM::poolExistsCall { poolId: pool_id };
         assert!(fee_manager.pool_exists(exists_call));

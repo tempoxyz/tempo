@@ -191,9 +191,9 @@ sol! {
         function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
 
         // Events
-        event PoolCreated(address indexed token0, address indexed token1);
-        event Mint(address indexed sender, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity);
-        event Burn(address indexed sender, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity, address to);
+        event PoolCreated(address indexed userToken, address indexed validatorToken);
+        event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
+        event Burn(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity, address to);
 
         // Errors
         error IdenticalAddresses();

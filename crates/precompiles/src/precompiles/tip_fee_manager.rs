@@ -62,7 +62,7 @@ mod tests {
         TIP_FEE_MANAGER_ADDRESS,
         contracts::{
             HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
-            tip_fee_manager::pool::PoolKey,
+            tip_fee_manager::amm::PoolKey,
             tip20::ISSUER_ROLE,
             types::{IFeeManager, ITIP20, ITIPFeeAMM},
         },
@@ -191,8 +191,8 @@ mod tests {
         let token_b = Address::random();
 
         let calldata = ITIPFeeAMM::createPoolCall {
-            tokenA: token_a,
-            tokenB: token_b,
+            userToken: token_a,
+            validatorToken: token_b,
         }
         .abi_encode();
         let result = fee_manager
@@ -220,8 +220,8 @@ mod tests {
         let token = Address::random();
 
         let calldata = ITIPFeeAMM::createPoolCall {
-            tokenA: token,
-            tokenB: token,
+            userToken: token,
+            validatorToken: token,
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
@@ -235,8 +235,8 @@ mod tests {
         let token = Address::random();
 
         let calldata = ITIPFeeAMM::createPoolCall {
-            tokenA: Address::ZERO,
-            tokenB: token,
+            userToken: Address::ZERO,
+            validatorToken: token,
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
@@ -251,8 +251,8 @@ mod tests {
         let token_b = Address::random();
 
         let calldata = ITIPFeeAMM::createPoolCall {
-            tokenA: token_a,
-            tokenB: token_b,
+            userToken: token_a,
+            validatorToken: token_b,
         }
         .abi_encode();
 
@@ -274,11 +274,11 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
 
-        let key = ITIPFeeAMM::PoolKey {
-            token0: token_a,
-            token1: token_b,
+        let calldata = ITIPFeeAMM::getPoolIdCall {
+            userToken: token_a,
+            validatorToken: token_b,
         };
-        let calldata = ITIPFeeAMM::getPoolIdCall { key }.abi_encode();
+        let calldata = calldata.abi_encode();
         let result = fee_manager
             .call(&Bytes::from(calldata), &Address::random())
             .unwrap();
@@ -298,27 +298,26 @@ mod tests {
 
         // Create pool using ITIPFeeAMM interface
         let create_call = ITIPFeeAMM::createPoolCall {
-            tokenA: token_a,
-            tokenB: token_b,
+            userToken: token_a,
+            validatorToken: token_b,
         };
         let calldata = create_call.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random())?;
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Get pool using ITIPFeeAMM interface
-        let pool_key = ITIPFeeAMM::PoolKey {
-            token0: if token_a < token_b { token_a } else { token_b },
-            token1: if token_a < token_b { token_b } else { token_a },
+        let get_pool_call = ITIPFeeAMM::getPoolCall {
+            userToken: token_a,
+            validatorToken: token_b,
         };
-        let get_pool_call = ITIPFeeAMM::getPoolCall { key: pool_key };
         let calldata = get_pool_call.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random())?;
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
 
         // Decode and verify pool
         let pool = ITIPFeeAMM::Pool::abi_decode(&result.bytes)?;
-        assert_eq!(pool.reserve0, 0);
-        assert_eq!(pool.reserve1, 0);
+        assert_eq!(pool.reserveUserToken, 0);
+        assert_eq!(pool.reserveValidatorToken, 0);
 
         Ok(())
     }
@@ -331,29 +330,28 @@ mod tests {
         let token_b = Address::random();
 
         // Test that pool ID is same regardless of token order
-        let key1 = ITIPFeeAMM::PoolKey {
-            token0: token_a,
-            token1: token_b,
-        };
-        let key2 = ITIPFeeAMM::PoolKey {
-            token0: token_b,
-            token1: token_a,
-        };
-
-        let calldata1 = ITIPFeeAMM::getPoolIdCall { key: key1 }.abi_encode();
+        let calldata1 = ITIPFeeAMM::getPoolIdCall {
+            userToken: token_a,
+            validatorToken: token_b,
+        }
+        .abi_encode();
         let result1 = fee_manager
             .call(&Bytes::from(calldata1), &Address::random())
             .unwrap();
         let id1 = B256::abi_decode(&result1.bytes).unwrap();
 
-        let calldata2 = ITIPFeeAMM::getPoolIdCall { key: key2 }.abi_encode();
+        let calldata2 = ITIPFeeAMM::getPoolIdCall {
+            userToken: token_b,
+            validatorToken: token_a,
+        }
+        .abi_encode();
         let result2 = fee_manager
             .call(&Bytes::from(calldata2), &Address::random())
             .unwrap();
         let id2 = B256::abi_decode(&result2.bytes).unwrap();
 
-        // Pool IDs should be the same since tokens are ordered internally
-        assert_eq!(id1, id2);
+        // Pool IDs should be the same since tokens are not ordered in FeeAMM (unlike TIPFeeAMM)
+        assert_ne!(id1, id2);
     }
 
     #[test]
@@ -378,8 +376,8 @@ mod tests {
 
         // Create pool
         let create_call = ITIPFeeAMM::createPoolCall {
-            tokenA: token_a,
-            tokenB: token_b,
+            userToken: token_a,
+            validatorToken: token_b,
         };
         fee_manager
             .call(&Bytes::from(create_call.abi_encode()), &Address::random())

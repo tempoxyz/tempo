@@ -11,7 +11,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
-use alloy_primitives::{FixedBytes, IntoLogData};
+use alloy_primitives::IntoLogData;
 
 /// Constants from the Solidity reference implementation
 pub const M: U256 = uint!(9975_U256);
@@ -180,17 +180,17 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Execute rebalance swap implementation
-    fn execute_rebalance_swap(&mut self, pool: &mut Pool, amount_in: U256) -> U256 {
+    fn execute_rebalance_swap(&mut self, _pool: &mut Pool, _amount_in: U256) -> U256 {
         todo!()
     }
 
     /// Calculate liquidity based on reserves
-    pub fn calculate_liquidity(&self, x: U256, y: U256) -> U256 {
+    pub fn calculate_liquidity(&self, _x: U256, _y: U256) -> U256 {
         todo!()
     }
 
     /// Calculate new reserve after swap
-    pub fn calculate_new_reserve(&self, new_y: U256, l: U256) -> U256 {
+    pub fn calculate_new_reserve(&self, _new_y: U256, _l: U256) -> U256 {
         todo!()
     }
 
@@ -272,10 +272,10 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 self.contract_address,
                 TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
                     sender: msg_sender,
-                    token0: user_token,
-                    token1: validator_token,
-                    amount0: amount_user_token,
-                    amount1: amount_validator_token,
+                    userToken: user_token,
+                    validatorToken: validator_token,
+                    amountUserToken: amount_user_token,
+                    amountValidatorToken: amount_validator_token,
                     liquidity,
                 })
                 .into_log_data(),
@@ -354,10 +354,10 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 self.contract_address,
                 TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
                     sender: msg_sender,
-                    token0: user_token,
-                    token1: validator_token,
-                    amount0: amount_user_token,
-                    amount1: amount_validator_token,
+                    userToken: user_token,
+                    validatorToken: validator_token,
+                    amountUserToken: amount_user_token,
+                    amountValidatorToken: amount_validator_token,
                     liquidity,
                     to,
                 })
@@ -419,20 +419,20 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Get effective user token reserve (current + pending)
-    fn get_effective_user_reserve(&self, pool: &Pool) -> U256 {
+    fn get_effective_user_reserve(&self, _pool: &Pool) -> U256 {
         todo!()
     }
 
     /// Get effective validator token reserve (current - pending out)
-    fn get_effective_validator_reserve(&self, pool: &Pool) -> U256 {
+    fn get_effective_validator_reserve(&self, _pool: &Pool) -> U256 {
         todo!("Implement get_effective_validator_reserve")
     }
 
     /// Check if swap can be supported by current reserves
     fn can_support_pending_swap(
         &self,
-        new_user_reserve: U256,
-        new_validator_reserve: U256,
+        _new_user_reserve: U256,
+        _new_validator_reserve: U256,
     ) -> bool {
         todo!()
     }
@@ -484,7 +484,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 }
 
 /// Integer square root implementation
-fn sqrt(x: U256) -> U256 {
+pub fn sqrt(x: U256) -> U256 {
     if x == U256::ZERO {
         return U256::ZERO;
     }
