@@ -301,9 +301,10 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
             ));
         }
 
+        let mut pool = self.get_pool(&pool_id);
         // Calculate amounts to return
         let (amount_user_token, amount_validator_token) =
-            self.calculate_burn_amounts(&pool_id, liquidity)?;
+            self.calculate_burn_amounts(&pool, &pool_id, liquidity)?;
 
         // Burn LP tokens
         self.set_balance_of(&pool_id, &to, balance - liquidity);
@@ -311,7 +312,6 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
         self.set_total_supply(&pool_id, total_supply - liquidity);
 
         // Update reserves
-        let mut pool = self.get_pool(&pool_id);
         pool.reserve_user_token -= amount_user_token.to::<u128>();
         pool.reserve_validator_token -= amount_validator_token.to::<u128>();
         self.set_pool(&pool_id, &pool);
@@ -363,10 +363,37 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
     fn calculate_burn_amounts(
         &mut self,
         pool: &Pool,
+        pool_id: &B256,
         liquidity: U256,
-        total_supply: U256,
-    ) -> Result<(U256, U256), &'static str> {
-        todo!()
+    ) -> Result<(U256, U256), TIPFeeAMMError> {
+        let total_supply = self.get_total_supply(pool_id);
+        let amount_user_token = (liquidity * U256::from(pool.reserve_user_token)) / total_supply;
+        let amount_validator_token =
+            (liquidity * U256::from(pool.reserve_validator_token)) / total_supply;
+
+        if amount_user_token.is_zero() || amount_validator_token.is_zero() {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+
+        // Check that withdrawal does not violate pending swaps
+        let available_user_token = self.get_effective_user_reserve(&pool);
+        let available_validator_token = self.get_effective_validator_reserve(&pool);
+
+        if amount_user_token > available_user_token {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientReserves(
+                ITIPFeeAMM::InsufficientReserves {},
+            ));
+        }
+
+        if amount_validator_token > available_validator_token {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientReserves(
+                ITIPFeeAMM::InsufficientReserves {},
+            ));
+        }
+
+        Ok((amount_user_token, amount_validator_token))
     }
 
     /// Execute pending fee swap
