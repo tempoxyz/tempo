@@ -209,51 +209,6 @@ sol! {
         error InvalidAmount();
     }
 
-    /// FeeAMM interface matching the Solidity reference implementation.
-    /// This interface provides specialized AMM functionality for fee swapping
-    /// between user tokens and validator tokens with pending fee tracking.
-    #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
-    #[allow(clippy::too_many_arguments)]
-    interface IFeeAMM {
-        // Structs
-        struct Pool {
-            uint128 reserveUserToken;
-            uint128 reserveValidatorToken;
-            uint128 pendingFeeSwapIn;
-        }
-
-        // Pool Management
-        function createPool(address userToken, address validatorToken) external;
-        function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
-        function getPool(address userToken, address validatorToken) external view returns (Pool memory);
-
-        // Liquidity Operations
-        function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
-        function burn(address userToken, address validatorToken, uint256 liquidity, address to) external returns (uint256 amountUserToken, uint256 amountValidatorToken);
-
-        // Swapping
-        function feeSwap(address userToken, address validatorToken, uint256 amountIn, address to) external returns (uint256 amountOut);
-        function rebalanceSwap(address userToken, address validatorToken, uint256 amountIn, address to) external returns (uint256 amountOut);
-        function executePendingFeeSwaps(address userToken, address validatorToken) external returns (uint256 pendingUserToken);
-
-        function getPendingUserToken(address userToken, address validatorToken) external view returns (uint256 pendingUserToken);
-        function calculateLiquidity(uint256 x, uint256 y) external pure returns (uint256);
-        function calculateNewReserve(uint256 knownValidatorReserve, uint256 l) external pure returns (uint256);
-
-        // Public mappings
-        function pools(bytes32 poolId) external view returns (Pool memory);
-        function totalSupply(bytes32 poolId) external view returns (uint256);
-        function balanceOf(bytes32 poolId, address user) external view returns (uint256);
-        function poolExists(bytes32 poolId) external view returns (bool);
-
-        // Events
-        event PoolCreated(address indexed userToken, address indexed validatorToken);
-        event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
-        event Burn(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity, address to);
-        event FeeSwap(address indexed userToken, address indexed validatorToken, uint256 amountIn, uint256 amountOut);
-        event RebalanceSwap(address indexed userToken, address indexed validatorToken, uint256 amountIn, uint256 amountOut);
-    }
 
     /// FeeManager interface for managing gas fee collection and distribution.
     ///
