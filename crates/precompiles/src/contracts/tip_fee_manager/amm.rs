@@ -2,9 +2,8 @@ use crate::contracts::{
     address_to_token_id_unchecked,
     storage::{StorageOps, StorageProvider},
     tip_fee_manager::{
-        amm::slots::{
-            get_liquidity_balance_slot, get_pool_exists_slot, get_pool_slot, get_total_supply_slot,
-        },
+        self,
+        amm::slots::{liquidity_balance_slot, pool_exists_slot, pool_slot, total_supply_slot},
         pool::{Pool, PoolKey},
     },
     tip20::TIP20Token,
@@ -38,22 +37,22 @@ pub mod slots {
     pub const LIQUIDITY_BALANCES: U256 = uint!(3_U256);
     // Slots 4+ are reserved for FeeManager-specific data
     //
-    pub fn get_pool_slot(pool_id: &B256) -> U256 {
+    pub fn pool_slot(pool_id: &B256) -> U256 {
         mapping_slot(pool_id, POOLS)
     }
 
     /// Get storage slot for pool existence flag
-    pub fn get_pool_exists_slot(pool_id: &B256) -> U256 {
+    pub fn pool_exists_slot(pool_id: &B256) -> U256 {
         mapping_slot(pool_id, POOL_EXISTS)
     }
 
     /// Get storage slot for LP token total supply
-    pub fn get_total_supply_slot(pool_id: &B256) -> U256 {
+    pub fn total_supply_slot(pool_id: &B256) -> U256 {
         mapping_slot(pool_id, TOTAL_SUPPLY)
     }
 
     /// Get storage slot for user's LP token balance
-    pub fn get_liquidity_balance_slot(pool_id: &B256, user: &Address) -> U256 {
+    pub fn liquidity_balance_slot(pool_id: &B256, user: &Address) -> U256 {
         double_mapping_slot(pool_id, user, LIQUIDITY_BALANCES)
     }
 }
@@ -371,19 +370,19 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
     /// Get user's LP token balance for pool
     fn get_liquidity_balance(&mut self, pool_id: &B256, user: Address) -> U256 {
-        let slot = get_liquidity_balance_slot(pool_id, &user);
+        let slot = liquidity_balance_slot(pool_id, &user);
         self.sload(slot)
     }
 
     /// Set user's LP token balance for pool
     fn set_liquidity_balance(&mut self, pool_id: &B256, user: Address, balance: U256) {
-        let slot = get_liquidity_balance_slot(pool_id, &user);
+        let slot = liquidity_balance_slot(pool_id, &user);
         self.sstore(slot, balance);
     }
 
     /// Get complete pool data including reserves and pending amounts
     pub fn get_pool(&mut self, pool_id: &B256) -> Pool {
-        let pool_slot = get_pool_slot(pool_id);
+        let pool_slot = pool_slot(pool_id);
         let reserves = self.sload(pool_slot);
         let reserve_0 = (reserves & U256::from(u128::MAX)).to::<u128>();
         let reserve_1 = reserves.wrapping_shr(128).to::<u128>();
@@ -402,7 +401,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
     /// Get current pool reserves
     pub fn get_reserves(&mut self, pool_id: &B256) -> (U256, U256) {
-        let pool_slot = get_pool_slot(pool_id);
+        let pool_slot = pool_slot(pool_id);
         let reserves = self
             .storage
             .sload(self.contract_address, pool_slot)
@@ -416,7 +415,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
     /// Update pool reserves in storage
     fn set_reserves(&mut self, pool_id: &B256, reserve_0: U256, reserve_1: U256) {
-        let slot = get_pool_slot(pool_id);
+        let slot = pool_slot(pool_id);
         // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
         let packed = (reserve_1.wrapping_shl(128)) | (reserve_0 & U256::from(u128::MAX));
         self.sstore(slot, packed);
@@ -443,7 +442,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         pending_reserve_0: U256,
         pending_reserve_1: U256,
     ) {
-        let slot = get_pool_slot(pool_id) + U256::ONE;
+        let slot = pool_slot(pool_id) + U256::ONE;
         // Pack reserves: reserve1 in high 128 bits, reserve0 in low 128 bits
         let packed =
             (pending_reserve_1.wrapping_shl(128)) | (pending_reserve_0 & U256::from(u128::MAX));
@@ -452,25 +451,25 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
     /// Get total supply of LP tokens for pool
     fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
-        let slot = get_total_supply_slot(pool_id);
+        let slot = total_supply_slot(pool_id);
         self.sload(slot)
     }
 
     /// Set total supply of LP tokens for pool
     fn set_total_supply(&mut self, pool_id: &B256, total_supply: U256) {
-        let slot = get_total_supply_slot(pool_id);
+        let slot = total_supply_slot(pool_id);
         self.sstore(slot, total_supply);
     }
 
     /// Mark pool as existing in storage
     fn set_pool_exists(&mut self, pool_id: &B256) {
-        let slot = get_pool_exists_slot(pool_id);
+        let slot = pool_exists_slot(pool_id);
         self.sstore(slot, U256::from(true));
     }
 
     /// Check if pool with the provided pool ID exists
     pub fn pool_exists(&mut self, pool_id: &B256) -> bool {
-        let slot = get_pool_exists_slot(pool_id);
+        let slot = pool_exists_slot(pool_id);
         self.sload(slot).to::<bool>()
     }
 
@@ -488,13 +487,13 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
     /// Get total supply of LP tokens for pool
     pub fn total_supply(&mut self, call: ITIPFeeAMM::totalSupplyCall) -> U256 {
-        let slot = get_total_supply_slot(&call.poolId);
+        let slot = total_supply_slot(&call.poolId);
         self.sload(slot)
     }
 
     /// Get user's LP token balance for pool
     pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> U256 {
-        let slot = get_liquidity_balance_slot(&call.poolId, &call.user);
+        let slot = liquidity_balance_slot(&call.poolId, &call.user);
         self.sload(slot)
     }
 }

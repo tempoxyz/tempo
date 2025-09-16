@@ -1,18 +1,9 @@
-use crate::contracts::{
-    address_to_token_id_unchecked,
-    storage::{
-        StorageProvider,
-        slots::{double_mapping_slot, mapping_slot},
-    },
-    tip20::TIP20Token,
-    types::{ITIP20, ITIPFeeAMM, TIPFeeAMMEvent},
-};
+use crate::contracts::types::ITIPFeeAMM;
 use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
+    primitives::{Address, B256, keccak256},
     sol_types::SolValue,
 };
 
-use alloy_primitives::IntoLogData;
 /// Liquidity pool with current and pending reserves
 #[derive(Debug, Clone)]
 pub struct Pool {

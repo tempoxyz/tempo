@@ -1,16 +1,21 @@
 pub mod amm;
 pub mod pool;
-// pub mod slots;
 
 use crate::contracts::{
     TIP20Token, address_to_token_id_unchecked,
-    storage::{StorageProvider, slots::mapping_slot},
-    tip_fee_manager::{amm::TIPFeeAMM, pool::PoolKey},
+    storage::{StorageOps, StorageProvider, slots::mapping_slot},
+    tip_fee_manager::{
+        amm::TIPFeeAMM,
+        pool::PoolKey,
+        slots::{
+            collected_fees_slot, token_in_fees_array_slot, user_token_slot, validator_token_slot,
+        },
+    },
     types::{IFeeManager, ITIP20, ITIPFeeAMM},
 };
 
 // Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, uint};
 use alloy_primitives::Bytes;
 use reth_evm::revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
@@ -27,6 +32,9 @@ use reth_evm::revm::{
 /// AMM pool data using the same storage slots that TIPFeeAMM would use.
 pub mod slots {
     use alloy::primitives::{U256, uint};
+    use alloy_primitives::Address;
+
+    use crate::contracts::storage::slots::mapping_slot;
 
     // FeeManager-specific slots start at slot 4 to avoid collision with TIPFeeAMM slots (0-3)
     pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
@@ -34,6 +42,22 @@ pub mod slots {
     pub const COLLECTED_FEES: U256 = uint!(6_U256);
     pub const TOKENS_WITH_FEES_LENGTH: U256 = uint!(11_U256);
     pub const TOKEN_IN_FEES_ARRAY: U256 = uint!(15_U256);
+
+    pub fn validator_token_slot(validator: &Address) -> U256 {
+        mapping_slot(validator, VALIDATOR_TOKENS)
+    }
+
+    pub fn user_token_slot(user: &Address) -> U256 {
+        mapping_slot(user, USER_TOKENS)
+    }
+
+    pub fn collected_fees_slot(token: &Address) -> U256 {
+        mapping_slot(token, COLLECTED_FEES)
+    }
+
+    pub fn token_in_fees_array_slot(token: &Address) -> U256 {
+        mapping_slot(token, TOKEN_IN_FEES_ARRAY)
+    }
 }
 
 #[derive(Debug)]
@@ -143,11 +167,25 @@ pub struct TipFeeManager<'a, S: StorageProvider> {
     storage: &'a mut S,
 }
 
+impl<'a, S: StorageProvider> StorageOps for TipFeeManager<'a, S> {
+    fn sstore(&mut self, slot: U256, value: U256) {
+        self.storage
+            .sstore(self.contract_address, slot, value)
+            .expect("TODO: handle error");
+    }
+
+    fn sload(&mut self, slot: U256) -> U256 {
+        self.storage
+            .sload(self.contract_address, slot)
+            .expect("TODO: handle error")
+    }
+}
+
 impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     // Constants
     pub const FEE_BPS: u64 = 25; // 0.25% fee
     pub const BASIS_POINTS: u64 = 10000;
-    pub const MINIMUM_BALANCE: U256 = U256::from_limbs([1_000_000_000u64, 0, 0, 0]); // 1e9
+    pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256); // 1e9
 
     pub fn new(contract_address: Address, storage: &'a mut S) -> Self {
         Self {
@@ -182,12 +220,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             ));
         }
 
-        let slot = self.get_validator_token_slot(sender);
-        let token = call.token.into_u256();
-
-        self.storage
-            .sstore(self.contract_address, slot, token)
-            .expect("TODO: handle error");
+        let slot = validator_token_slot(sender);
+        self.sstore(slot, call.token.into_u256());
 
         // TODO: emit event
 
@@ -205,11 +239,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             ));
         }
 
-        let slot = self.get_user_token_slot(sender);
-        let token = call.token.into_u256();
-        self.storage
-            .sstore(self.contract_address, slot, token)
-            .expect("TODO: handle error");
+        let slot = user_token_slot(sender);
+        self.sstore(slot, call.token.into_u256());
 
         // TODO: emit event
 
@@ -229,15 +260,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         // Initialize fee tracking for the pool tokens
         let pool_key = PoolKey::new(call.tokenA, call.tokenB);
-        let token0_fees_slot = self.get_collected_fees_slot(&pool_key.token0);
-        let token1_fees_slot = self.get_collected_fees_slot(&pool_key.token1);
+        let token_0_slot = collected_fees_slot(&pool_key.token0);
+        let token_1_slot = collected_fees_slot(&pool_key.token1);
         let fee_info_value = U256::from(1u128) << 128;
-        self.storage
-            .sstore(self.contract_address, token0_fees_slot, fee_info_value)
-            .expect("TODO: handle error");
-        self.storage
-            .sstore(self.contract_address, token1_fees_slot, fee_info_value)
-            .expect("TODO: handle error");
+        self.sstore(token_0_slot, fee_info_value);
+        self.sstore(token_1_slot, fee_info_value);
 
         Ok(())
     }
@@ -318,30 +345,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         // Add to tracking array only if this is the first time collecting fees for this token
         if fee_info.amount == 0 && !fee_info.has_been_set {
-            let in_array_slot = self.get_token_in_fees_array_slot(&user_token);
-            let in_array = self
-                .storage
-                .sload(self.contract_address, in_array_slot)
-                .expect("TODO: handle error")
-                != U256::ZERO;
+            let in_array_slot = token_in_fees_array_slot(&user_token);
+            let in_array = self.sload(in_array_slot) != U256::ZERO;
 
             if !in_array {
-                self.storage
-                    .sstore(self.contract_address, in_array_slot, U256::ONE)
-                    .expect("TODO: handle error");
+                self.sstore(in_array_slot, U256::ONE);
 
-                let length_value = self
-                    .storage
-                    .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH)
-                    .expect("TODO: handle error");
-
-                self.storage
-                    .sstore(
-                        self.contract_address,
-                        slots::TOKENS_WITH_FEES_LENGTH,
-                        length_value + U256::from(1),
-                    )
-                    .expect("TODO: handle error");
+                let length_value = self.sload(slots::TOKENS_WITH_FEES_LENGTH);
+                self.sstore(slots::TOKENS_WITH_FEES_LENGTH, length_value + U256::ONE);
             }
         }
 
@@ -358,12 +369,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         &mut self,
         validator: &Address,
     ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
-        let validator_slot = self.get_validator_token_slot(validator);
-        let validator_token = self
-            .storage
-            .sload(self.contract_address, validator_slot)
-            .expect("TODO: handle error")
-            .into_address();
+        let validator_slot = validator_token_slot(validator);
+        let validator_token = self.sload(validator_slot).into_address();
 
         if validator_token.is_zero() {
             return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
@@ -375,12 +382,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     }
 
     fn get_user_token(&mut self, user: &Address, validator_token: &Address) -> Address {
-        let user_slot = self.get_user_token_slot(user);
-        let user_token = self
-            .storage
-            .sload(self.contract_address, user_slot)
-            .expect("TODO: handle error")
-            .into_address();
+        let user_slot = user_token_slot(user);
+        let user_token = self.sload(user_slot).into_address();
 
         if user_token.is_zero() {
             *validator_token
@@ -390,11 +393,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     }
 
     fn get_fee_info(&mut self, token: &Address) -> FeeInfo {
-        let fees_slot = self.get_collected_fees_slot(token);
-        let fees_value = self
-            .storage
-            .sload(self.contract_address, fees_slot)
-            .expect("TODO: handle error");
+        let fees_slot = collected_fees_slot(token);
+        let fees_value = self.sload(fees_slot);
 
         let amount = (fees_value & U256::from(u128::MAX)).to::<u128>();
         let has_been_set = fees_value >= (U256::from(1u128) << 128);
@@ -406,15 +406,13 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     }
 
     fn set_fee_info(&mut self, token: &Address, fee_info: &FeeInfo) {
-        let fees_slot = self.get_collected_fees_slot(token);
+        let fees_slot = collected_fees_slot(token);
         let fees_value = if fee_info.has_been_set {
             (U256::from(1u128) << 128) | U256::from(fee_info.amount)
         } else {
             U256::from(fee_info.amount)
         };
-        self.storage
-            .sstore(self.contract_address, fees_slot, fees_value)
-            .expect("TODO: handle error");
+        self.sstore(fees_slot, fees_value);
     }
 
     // TODO: swap for validator token
@@ -439,56 +437,26 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     // Helper methods for storage slots
 
-    fn get_validator_token_slot(&self, validator: &Address) -> U256 {
-        mapping_slot(validator, slots::VALIDATOR_TOKENS)
-    }
-
-    fn get_user_token_slot(&self, user: &Address) -> U256 {
-        mapping_slot(user, slots::USER_TOKENS)
-    }
-
-    fn get_collected_fees_slot(&self, token: &Address) -> U256 {
-        mapping_slot(token, slots::COLLECTED_FEES)
-    }
-
-    fn get_token_in_fees_array_slot(&self, token: &Address) -> U256 {
-        mapping_slot(token, slots::TOKEN_IN_FEES_ARRAY)
-    }
-
     pub fn user_tokens(&mut self, call: IFeeManager::userTokensCall) -> Address {
-        let slot = self.get_user_token_slot(&call.user);
-        self.storage
-            .sload(self.contract_address, slot)
-            .expect("TODO: handle error")
-            .into_address()
+        let slot = user_token_slot(&call.user);
+        self.sload(slot).into_address()
     }
 
     pub fn validator_tokens(&mut self, call: IFeeManager::validatorTokensCall) -> Address {
-        let slot = self.get_validator_token_slot(&call.validator);
-        self.storage
-            .sload(self.contract_address, slot)
-            .expect("TODO: handle error")
-            .into_address()
+        let slot = validator_token_slot(&call.validator);
+        self.sload(slot).into_address()
     }
 
     pub fn get_fee_token_balance(
         &mut self,
         call: IFeeManager::getFeeTokenBalanceCall,
     ) -> IFeeManager::getFeeTokenBalanceReturn {
-        let user_slot = self.get_user_token_slot(&call.sender);
-        let mut token = self
-            .storage
-            .sload(self.contract_address, user_slot)
-            .expect("TODO: handle error")
-            .into_address();
+        let user_slot = user_token_slot(&call.sender);
+        let mut token = self.sload(user_slot).into_address();
 
         if token.is_zero() {
-            let validator_slot = self.get_validator_token_slot(&call.validator);
-            let validator_token = self
-                .storage
-                .sload(self.contract_address, validator_slot)
-                .expect("TODO: handle error")
-                .into_address();
+            let validator_slot = validator_token_slot(&call.validator);
+            let validator_token = self.sload(validator_slot).into_address();
             if validator_token.is_zero() {
                 return IFeeManager::getFeeTokenBalanceReturn {
                     _0: Address::ZERO,
