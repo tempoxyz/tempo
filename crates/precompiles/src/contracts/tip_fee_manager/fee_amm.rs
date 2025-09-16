@@ -4,7 +4,6 @@ use crate::contracts::{
         StorageOps, StorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
-    tip_fee_manager::pool::PoolKey,
     tip20::TIP20Token,
     types::{ITIP20, ITIPFeeAMM, TIPFeeAMMError},
 };
@@ -152,33 +151,38 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
     /// Execute a fee swap (protocol only)
     pub fn fee_swap(
         &mut self,
-        user_token: Address,
-        validator_token: Address,
-        amount_in: U256,
-        to: Address,
-    ) -> Result<U256, &'static str> {
-        todo!("Implement fee_swap")
+        _user_token: Address,
+        _validator_token: Address,
+        _amount_in: U256,
+        _to: Address,
+    ) -> Result<U256, TIPFeeAMMError> {
+        todo!()
     }
 
     /// Execute a rebalancing swap
     pub fn rebalance_swap(
         &mut self,
-        user_token: Address,
-        validator_token: Address,
-        amount_in: U256,
-        to: Address,
-    ) -> Result<U256, &'static str> {
-        todo!("Implement rebalance_swap")
+        _user_token: Address,
+        _validator_token: Address,
+        _amount_in: U256,
+        _to: Address,
+    ) -> Result<U256, TIPFeeAMMError> {
+        todo!()
+    }
+
+    /// Execute rebalance swap implementation
+    fn execute_rebalance_swap(&mut self, pool: &mut Pool, amount_in: U256) -> U256 {
+        todo!()
     }
 
     /// Calculate liquidity based on reserves
     pub fn calculate_liquidity(&self, x: U256, y: U256) -> U256 {
-        todo!("Implement calculate_liquidity")
+        todo!()
     }
 
     /// Calculate new reserve after swap
     pub fn calculate_new_reserve(&self, new_y: U256, l: U256) -> U256 {
-        todo!("Implement calculate_new_reserve")
+        todo!()
     }
 
     /// Mint liquidity tokens
@@ -189,8 +193,50 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
         amount_user_token: U256,
         amount_validator_token: U256,
         to: Address,
-    ) -> Result<U256, &'static str> {
-        todo!("Implement mint")
+    ) -> Result<U256, TIPFeeAMMError> {
+        let pool_id = self.get_pool_id(user_token, validator_token);
+        if !self.pool_exists(&pool_id) {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
+                ITIPFeeAMM::PoolDoesNotExist {},
+            ));
+        }
+
+        let mut pool = self.get_pool(&pool_id);
+        let total_supply = self.get_total_supply(&pool_id);
+
+        let liquidity = if total_supply.is_zero() {
+            self.set_total_supply(&pool_id, MIN_LIQUIDITY);
+            sqrt(amount_user_token * amount_validator_token) - MIN_LIQUIDITY
+        } else {
+            let liquidity_user =
+                (amount_user_token * total_supply) / U256::from(pool.reserve_user_token);
+            let liquidity_validator =
+                (amount_validator_token * total_supply) / U256::from(pool.reserve_validator_token);
+            liquidity_user.min(liquidity_validator)
+        };
+
+        if liquidity.is_zero() {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+
+        // TODO: transfer tokens to user
+
+        // Update reserves
+        pool.reserve_user_token += amount_user_token.to::<u128>();
+        pool.reserve_validator_token += amount_validator_token.to::<u128>();
+        self.set_pool(&pool_id, &pool);
+
+        // Mint LP tokens
+        self.set_total_supply(&pool_id, total_supply + liquidity);
+        let balance = self.get_balance_of(&pool_id, &to);
+        self.set_balance_of(&pool_id, &to, balance + liquidity);
+
+        //    TODO:
+        //    emit Mint(msg.sender, userToken, validatorToken, amountUserToken, amountValidatorToken, liquidity);
+
+        Ok(liquidity)
     }
 
     /// Burn liquidity tokens
@@ -201,35 +247,7 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
         liquidity: U256,
         to: Address,
     ) -> Result<(U256, U256), &'static str> {
-        todo!("Implement burn")
-    }
-
-    /// Execute pending fee swap
-    pub fn execute_pending_fee_swap(
-        &mut self,
-        user_token: Address,
-        validator_token: Address,
-    ) -> Result<U256, &'static str> {
-        todo!("Implement execute_pending_fee_swap")
-    }
-
-    /// Get pending user token amount for fee swap
-    pub fn get_pending_user_token(
-        &mut self,
-        user_token: Address,
-        validator_token: Address,
-    ) -> U256 {
-        todo!("Implement get_pending_user_token")
-    }
-
-    /// Check if swap can be supported by current reserves
-    fn can_support_swap(&self, new_user_reserve: U256, new_validator_reserve: U256) -> bool {
-        todo!("Implement can_support_swap")
-    }
-
-    /// Execute rebalance swap implementation
-    fn execute_rebalance_swap(&mut self, pool: &mut Pool, amount_in: U256) -> U256 {
-        todo!("Implement execute_rebalance_swap")
+        todo!()
     }
 
     /// Calculate burn amounts for liquidity withdrawal
@@ -239,12 +257,25 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
         liquidity: U256,
         total_supply: U256,
     ) -> Result<(U256, U256), &'static str> {
-        todo!("Implement calculate_burn_amounts")
+        todo!()
+    }
+
+    /// Execute pending fee swap
+    pub fn execute_pending_fee_swap(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+    ) -> Result<U256, &'static str> {
+        todo!()
+    }
+
+    fn get_total_pending_swaps() {
+        todo!()
     }
 
     /// Get effective user token reserve (current + pending)
     fn get_effective_user_reserve(&self, pool: &Pool) -> U256 {
-        todo!("Implement get_effective_user_reserve")
+        todo!()
     }
 
     /// Get effective validator token reserve (current - pending out)
@@ -252,14 +283,22 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
         todo!("Implement get_effective_validator_reserve")
     }
 
+    /// Check if swap can be supported by current reserves
+    fn can_support_pending_swap(
+        &self,
+        new_user_reserve: U256,
+        new_validator_reserve: U256,
+    ) -> bool {
+        todo!()
+    }
+
     /// Set pool data in storage
     fn set_pool(&mut self, pool_id: &B256, pool: &Pool) {
         let slot = slots::pool_slot(pool_id);
-        // Pack pool data: pending_fee_swap_in (128) | reserve_validator_token (128) | reserve_user_token (128)
-        let packed = U256::from(pool.reserve_user_token)
-            | (U256::from(pool.reserve_validator_token) << 128)
-            | (U256::from(pool.pending_fee_swap_in) << 256);
+        let packed =
+            U256::from(pool.reserve_user_token) | (U256::from(pool.reserve_validator_token) << 128);
         self.sstore(slot, packed);
+        self.sstore(slot + U256::ONE, U256::from(pool.pending_fee_swap_in));
     }
 
     /// Check if pool exists
@@ -297,20 +336,20 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
         let slot = slots::balance_of_slot(pool_id, user);
         self.sstore(slot, balance);
     }
+}
 
-    /// Integer square root implementation
-    fn sqrt(&self, x: U256) -> U256 {
-        if x == U256::ZERO {
-            return U256::ZERO;
-        }
-        let mut z = (x + U256::from(1)) / U256::from(2);
-        let mut y = x;
-        while z < y {
-            y = z;
-            z = (x / z + z) / U256::from(2);
-        }
-        y
+/// Integer square root implementation
+fn sqrt(x: U256) -> U256 {
+    if x == U256::ZERO {
+        return U256::ZERO;
     }
+    let mut z = (x + U256::from(1)) / U256::from(2);
+    let mut y = x;
+    while z < y {
+        y = z;
+        z = (x / z + z) / U256::from(2);
+    }
+    y
 }
 
 impl<'a, S: StorageProvider> StorageOps for FeeAMM<'a, S> {
