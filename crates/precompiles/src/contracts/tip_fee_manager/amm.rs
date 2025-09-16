@@ -392,7 +392,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let liquidity = if total_supply.is_zero() {
             let mean = (amount_user_token + amount_validator_token) / uint!(2_U256);
             if mean <= MIN_LIQUIDITY {
-                "InsufficientLiquidity";
                 return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
                     ITIPFeeAMM::InsufficientLiquidity {},
                 ));
