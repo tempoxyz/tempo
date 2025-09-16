@@ -408,25 +408,23 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     // Set different tokens for user and validator
-    let set_user_token_receipt = fee_manager
-        .setUserToken(*user_token.address())
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(set_user_token_receipt.status());
-    let token = fee_manager.userTokens(user_address).call().await?;
-    assert_eq!(token, *user_token.address());
-
-    // Create fee manager with validator provider and set token
-    let set_validator_token_receipt =
+    pending.push(
+        fee_manager
+            .setUserToken(*user_token.address())
+            .send()
+            .await?,
+    );
+    pending.push(
         IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator_provider.clone())
             .setValidatorToken(*validator_token.address())
             .send()
-            .await?
-            .get_receipt()
-            .await?;
-    assert!(set_validator_token_receipt.status());
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    // Verify tokens are set correctly
+    let token = fee_manager.userTokens(user_address).call().await?;
+    assert_eq!(token, *user_token.address());
     let token = fee_manager
         .validatorTokens(validator_address)
         .call()
@@ -505,23 +503,6 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?;
     assert_eq!(user_lp_balance, expected_initial_liquidity);
 
-    todo!();
-
-    // Test fee token balance retrieval for user
-    let user_balance_result = fee_manager
-        .getFeeTokenBalance(user_address, validator_address)
-        .call()
-        .await?;
-    // // TODO: assert actual values
-    // assert_eq!(user_balance_result._0, *user_token.address());
-    // assert!(user_balance_result._1 > U256::ZERO);
-    //
-    // let validator_balance_result = fee_manager
-    //     .getFeeTokenBalance(validator_address, validator_address)
-    //     .call()
-    //     .await?;
-    // assert_eq!(validator_balance_result._0, *validator_token.address());
-    // assert!(validator_balance_result._1 > U256::ZERO);
     //
     // // Test payment functionality by performing a fee swap
     // let swap_amount = U256::from(1000000000_u128); // 1 token
