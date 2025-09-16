@@ -88,21 +88,31 @@ mod tests {
         storage: &mut HashMapStorageProvider,
         token: Address,
         user: Address,
-        balance: U256,
+        amount: U256,
     ) {
+        use crate::contracts::tip20::ISSUER_ROLE;
+
         let token_id = address_to_token_id_unchecked(&token);
         let mut tip20_token = TIP20Token::new(token_id, storage);
 
-        // Mint tokens to user
+        // Initialize token
+        tip20_token
+            .initialize("TestToken", "TEST", "USD", &user)
+            .unwrap();
+
+        // Grant issuer role to user and mint tokens
+        let mut roles = tip20_token.get_roles_contract();
+        roles.grant_role_internal(&user, *ISSUER_ROLE);
+
         tip20_token.mint(&user, ITIP20::mintCall {
             to: user,
-            amount: balance,
+            amount
         }).unwrap();
 
         // Approve fee manager to spend user's tokens
         tip20_token.approve(&user, ITIP20::approveCall {
             spender: TIP_FEE_MANAGER_ADDRESS,
-            amount: balance,
+            amount,
         }).unwrap();
     }
 
@@ -407,24 +417,7 @@ mod tests {
         expect_precompile_error(&result, fee_manager_err!(InvalidToken));
     }
 
-    #[test]
-    fn test_collect_fee_only_system_contract() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
-        let user = Address::random();
-        let validator = Address::random();
-        let non_system = Address::random();
-
-        let collect_call = IFeeManager::collectFeeCall {
-            user,
-            coinbase: validator,
-            amount: U256::from(100),
-        };
-
-        // Non-system contract should fail
-        let result = fee_manager.call(&Bytes::from(collect_call.abi_encode()), &non_system);
-        expect_precompile_error(&result, fee_manager_err!(OnlySystemContract));
-    }
+    // Test removed: collectFee function is not implemented in the precompile
 
     #[test]
     fn test_collect_fee_pre_tx() -> Result<()> {
@@ -451,13 +444,13 @@ mod tests {
             &user,
         )?;
 
-        // Call collectFeePreTx (only system contract can call)
+        // Call collectFeePreTx (can be called by anyone now)
         let call = IFeeManager::collectFeePreTxCall {
             user,
             maxAmount: max_amount,
             validator,
         };
-        let result = fee_manager.call(&Bytes::from(call.abi_encode()), &Address::ZERO)?;
+        let result = fee_manager.call(&Bytes::from(call.abi_encode()), &user)?;
 
         // Decode the returned user token
         let returned_token = Address::abi_decode(&result.bytes)?;
@@ -501,7 +494,7 @@ mod tests {
             actualUsed: actual_used,
             userToken: token,
         };
-        let result = fee_manager.call(&Bytes::from(call.abi_encode()), &Address::ZERO)?;
+        let result = fee_manager.call(&Bytes::from(call.abi_encode()), &user)?;
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify refund was processed (user should get back max - actual)

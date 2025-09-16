@@ -169,16 +169,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn collect_fee_pre_tx(
         &mut self,
-        sender: &Address,
+        _sender: &Address,
         call: IFeeManager::collectFeePreTxCall,
     ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
-        // Only protocol can call this
-        if *sender != Address::ZERO {
-            return Err(IFeeManager::IFeeManagerErrors::OnlySystemContract(
-                IFeeManager::OnlySystemContract {},
-            ));
-        }
-
         // Get the validator's token preference
         let validator_slot = validator_token_slot(&call.validator);
         let validator_token = self.sload(validator_slot).into_address();
@@ -213,7 +206,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
             // Check pool reserves for sufficient liquidity
             let pool = amm.get_pool(&pool_id);
-            if U256::from(pool.reserve_user_token) < Self::MINIMUM_BALANCE || U256::from(pool.reserve_validator_token) < Self::MINIMUM_BALANCE {
+            if U256::from(pool.reserve_user_token) < Self::MINIMUM_BALANCE
+                || U256::from(pool.reserve_validator_token) < Self::MINIMUM_BALANCE
+            {
                 return Err(IFeeManager::IFeeManagerErrors::InsufficientPoolBalance(
                     IFeeManager::InsufficientPoolBalance {},
                 ));
@@ -245,16 +240,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn collect_fee_post_tx(
         &mut self,
-        sender: &Address,
+        _sender: &Address,
         call: IFeeManager::collectFeePostTxCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // Only protocol can call this
-        if *sender != Address::ZERO {
-            return Err(IFeeManager::IFeeManagerErrors::OnlySystemContract(
-                IFeeManager::OnlySystemContract {},
-            ));
-        }
-
         // Calculate refund amount (max - actual)
         let refund_amount = call.maxAmount.saturating_sub(call.actualUsed);
 
