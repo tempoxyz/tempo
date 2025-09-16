@@ -78,20 +78,6 @@ pub struct TIPFeeAMM<'a, S: StorageProvider> {
     pub storage: &'a mut S,
 }
 
-impl<'a, S: StorageProvider> StorageOps for TIPFeeAMM<'a, S> {
-    fn sstore(&mut self, slot: U256, value: U256) {
-        self.storage
-            .sstore(self.contract_address, slot, value)
-            .expect("TODO: handle error");
-    }
-
-    fn sload(&mut self, slot: U256) -> U256 {
-        self.storage
-            .sload(self.contract_address, slot)
-            .expect("TODO: handle error")
-    }
-}
-
 /// Calculate integer square root using Newton's method
 pub fn sqrt(x: U256) -> U256 {
     if x == U256::ZERO {
@@ -495,6 +481,20 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> U256 {
         let slot = liquidity_balance_slot(&call.poolId, &call.user);
         self.sload(slot)
+    }
+}
+
+impl<'a, S: StorageProvider> StorageOps for TIPFeeAMM<'a, S> {
+    fn sstore(&mut self, slot: U256, value: U256) {
+        self.storage
+            .sstore(self.contract_address, slot, value)
+            .expect("TODO: handle error");
+    }
+
+    fn sload(&mut self, slot: U256) -> U256 {
+        self.storage
+            .sload(self.contract_address, slot)
+            .expect("TODO: handle error")
     }
 }
 
