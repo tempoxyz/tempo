@@ -12571,7 +12571,6 @@ dependencies = [
  "indexmap 2.11.1",
  "rand 0.8.5",
  "reth",
- "reth-ethereum-primitives",
  "reth-node-builder",
  "reth-node-core",
  "reth-primitives-traits",
@@ -12580,6 +12579,7 @@ dependencies = [
  "tempo-commonware-node-config",
  "tempo-commonware-node-cryptography",
  "tempo-node",
+ "tempo-primitives",
  "tokio",
  "tracing",
 ]
@@ -12791,6 +12791,7 @@ dependencies = [
  "arbitrary",
  "modular-bitfield",
  "reth-codecs",
+ "reth-db-api",
  "reth-ethereum-primitives",
  "reth-primitives-traits",
  "reth-rpc-convert",

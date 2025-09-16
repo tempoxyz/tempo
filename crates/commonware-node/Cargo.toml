@@ -10,6 +10,7 @@ workspace = true
 tempo-commonware-node-config.workspace = true
 tempo-commonware-node-cryptography.workspace = true
 tempo-node.workspace = true
+tempo-primitives.workspace = true
 
 sequential-futures-queue.workspace = true
 
@@ -38,7 +39,6 @@ indexmap.workspace = true
 
 rand.workspace = true
 reth.workspace = true
-reth-ethereum-primitives.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-primitives-traits.workspace = true

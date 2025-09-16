@@ -76,7 +76,7 @@ impl TempoNode {
 impl NodeTypes for TempoNode {
     type Primitives = TempoPrimitives;
     type ChainSpec = TempoChainSpec;
-    type Storage = EthStorage;
+    type Storage = EthStorage<TempoTxEnvelope>;
     type Payload = TempoPayloadTypes;
 }
 

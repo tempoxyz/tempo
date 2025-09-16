@@ -263,11 +263,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
         EthTransactions::signers(&self.inner)
     }
 
-    async fn send_raw_transaction(
+    fn send_raw_transaction(
         &self,
         tx: alloy::primitives::Bytes,
-    ) -> Result<alloy::primitives::B256, Self::Error> {
-        self.inner.send_raw_transaction(tx).await
+    ) -> impl Future<Output = Result<alloy::primitives::B256, Self::Error>> + Send {
+        self.inner.send_raw_transaction(tx)
     }
 }
 

@@ -19,6 +19,7 @@ alloy-rpc-types-eth = { workspace = true, optional = true }
 alloy-network = { workspace = true, optional = true }
 
 # Reth
+reth-db-api = { workspace = true, optional = true }
 reth-ethereum-primitives.workspace = true
 reth-primitives-traits.workspace = true
 reth-codecs = { workspace = true, optional = true }
@@ -34,7 +35,7 @@ reth-codecs.workspace = true
 test-fuzz.workspace = true
 
 [features]
-default = ["serde", "reth-codec", "serde-bincode-compat", "reth-codec", "rpc"]
+default = ["serde", "reth-codec", "serde-bincode-compat", "rpc"]
 serde = [
 	"dep:serde",
 	"dep:alloy-serde",
@@ -45,7 +46,7 @@ serde = [
 	"alloy-primitives/serde",
 	"reth-codecs?/serde"
 ]
-reth-codec = ["dep:reth-codecs", "dep:modular-bitfield", "reth-ethereum-primitives/reth-codec", "reth-codecs/alloy", "reth-primitives-traits/reth-codec"]
+reth-codec = ["dep:reth-codecs", "dep:reth-db-api", "dep:modular-bitfield", "reth-ethereum-primitives/reth-codec", "reth-codecs/alloy", "reth-primitives-traits/reth-codec"]
 serde-bincode-compat = [
 	"serde",
 	"alloy-consensus/serde-bincode-compat",
