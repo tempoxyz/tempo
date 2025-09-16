@@ -118,19 +118,3 @@ pub(crate) async fn setup_test_node(
         }
     }
 }
-
-/// Approves max allowance for fee manager
-pub(crate) async fn approve_fee_manager<P>(token: Address, provider: P) -> eyre::Result<()>
-where
-    P: Provider + Clone,
-{
-    let receipt = ITIP20Instance::new(token, provider)
-        .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status());
-
-    Ok(())
-}

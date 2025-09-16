@@ -238,10 +238,6 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
         .build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-    dbg!("approve");
-    approve_fee_manager(token_id_to_address(0), provider.clone()).await?;
-
-    dbg!("approved");
 
     let token = setup_test_token(provider.clone(), caller).await?;
     let calldata = token.mint(caller, U256::from(1000)).calldata().clone();

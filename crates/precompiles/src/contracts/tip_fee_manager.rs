@@ -272,6 +272,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let token_id = address_to_token_id_unchecked(&user_token);
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
+        dbg!("getting here");
         tip20_token
             .transfer(
                 &user,
