@@ -231,6 +231,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     /// Execute a rebalancing swap
     pub fn rebalance_swap(
         &mut self,
+        msg_sender: Address,
         user_token: Address,
         validator_token: Address,
         amount_in: U256,
@@ -245,8 +246,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         let mut pool = self.get_pool(&pool_id);
 
-        // Rebalancing swaps are always from validatorToken to userToken
-        let amount_out = self._execute_rebalance_swap(&mut pool, amount_in);
+        let amount_out = self.execute_rebalance_swap(&mut pool, amount_in);
 
         // Transfer tokens
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
@@ -254,16 +254,12 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .transfer_from(
                 &self.contract_address,
                 ITIP20::transferFromCall {
-                    from: to, // sender in this context
+                    from: msg_sender,
                     to: self.contract_address,
                     amount: amount_in,
                 },
             )
-            .map_err(|_| {
-                ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                    ITIPFeeAMM::InsufficientLiquidity {},
-                )
-            })?;
+            .expect("TODO: handle error");
 
         let user_token_id = address_to_token_id_unchecked(&user_token);
         let _ = TIP20Token::new(user_token_id, self.storage)
@@ -274,13 +270,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_out,
                 },
             )
-            .map_err(|_| {
-                ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                    ITIPFeeAMM::InsufficientLiquidity {},
-                )
-            })?;
+            .expect("TODO: handle error");
 
-        // Save updated pool
         self.set_pool(&pool_id, &pool);
 
         // Emit RebalanceSwap event
@@ -290,7 +281,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 TIPFeeAMMEvent::RebalanceSwap(ITIPFeeAMM::RebalanceSwap {
                     userToken: user_token,
                     validatorToken: validator_token,
-                    sender: to,
+                    swapper: msg_sender,
                     amountIn: amount_in,
                     amountOut: amount_out,
                 })
@@ -302,7 +293,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Execute rebalance swap implementation
-    fn _execute_rebalance_swap(&mut self, _pool: &mut Pool, _amount_in: U256) -> U256 {
+    fn execute_rebalance_swap(&mut self, _pool: &mut Pool, _amount_in: U256) -> U256 {
         todo!()
     }
 
