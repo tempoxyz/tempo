@@ -206,7 +206,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .transfer_from(
                 &self.contract_address,
                 ITIP20::transferFromCall {
-                    // TODO: should this be self.contract_address
+                    // TODO: this is to spec but should this be self.contract_address?
                     from: msg_sender,
                     to: self.contract_address,
                     amount: amount_in,
@@ -319,7 +319,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         // Check that the new reserves can support pending fee swaps
         if !self._can_support_pending_swap(x_1, y_1) {
-            panic!("SWAP_REVERSES_IMBALANCE");
+            todo!("TOOD: handle error")
         }
 
         // Update pool reserves
@@ -330,13 +330,43 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Calculate liquidity based on reserves
-    pub fn calculate_liquidity(&self, _x: U256, _y: U256) -> U256 {
-        todo!()
+    pub fn calculate_liquidity(&self, x: U256, y: U256) -> U256 {
+        //  L = (y + sqrt(m)*x + sqrt(y^2 + m*x^2 + (4-2*sqrt(m))*x*y)) / (2*(1-sqrt(m)))
+        let sqrt_m_x = (SQRT_M * x) / SQRT_SCALE;
+        let m_x2 = (M * x * x) / SCALE;
+        let y2 = y * y;
+
+        let coefficient = uint!(4_U256) * SQRT_SCALE - uint!(2_U256) * SQRT_M;
+        let coeff_xy = (coefficient * x * y) / SQRT_SCALE;
+        let under_sqrt = y2 + m_x2 + coeff_xy;
+
+        let sqrt_term = sqrt(under_sqrt);
+        let numerator = y + sqrt_m_x + sqrt_term;
+        let denominator = uint!(2_U256) * (SQRT_SCALE - SQRT_M);
+
+        (numerator * SQRT_SCALE) / denominator
     }
 
     /// Calculate new reserve after swap
-    pub fn calculate_new_reserve(&self, _new_y: U256, _l: U256) -> U256 {
-        todo!()
+    pub fn calculate_new_reserve(&self, known_validator_reserve: U256, l: U256) -> U256 {
+        // From the invariant: (x + L)(y + L*sqrt(m)) = L^2
+        // For rebalancing swaps (validatorToken → userToken), we know new y, solve for new x:
+        // x = L^2 / (y + L*sqrt(m)) - L
+
+        let l_sqrt_m = (l * SQRT_M) / SQRT_SCALE;
+        let l2 = l * l;
+        let denominator = known_validator_reserve + l_sqrt_m;
+
+        if denominator.is_zero() {
+            todo!("TOOD: handle error")
+        }
+
+        let result = l2 / denominator;
+        if result <= l {
+            todo!("TOOD: handle error")
+        }
+
+        result - l
     }
 
     /// Mint liquidity tokens
