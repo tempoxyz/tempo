@@ -9,7 +9,7 @@ jobs:
     runs-on: depot-ubuntu-24.04-16
     strategy:
       matrix:
-        binary: [tempo, tempo-bench, tempo-sidecar]
+        binary: [tempo, tempo-bench, tempo-sidecar, tempo-commonware]
     steps:
     - uses: actions/checkout@v2
     - uses: rui314/setup-mold@v1
