@@ -273,7 +273,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.set_pool(&pool_id, &pool);
 
         // Mint LP tokens
-        self.set_total_supply(&pool_id, total_supply + liquidity);
+        let current_total_supply = self.get_total_supply(&pool_id);
+        self.set_total_supply(&pool_id, current_total_supply + liquidity);
         let balance = self.get_balance_of(&pool_id, &to);
         self.set_balance_of(&pool_id, &to, balance + liquidity);
 
