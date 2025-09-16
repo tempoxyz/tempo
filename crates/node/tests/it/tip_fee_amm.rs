@@ -9,8 +9,10 @@ use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
-        tip_fee_amm::{self, MIN_LIQUIDITY, PoolKey},
-        tip_fee_manager::pool::PoolKey,
+        tip_fee_manager::{
+            amm::{MIN_LIQUIDITY, sqrt},
+            pool::PoolKey,
+        },
         types::ITIPFeeAMM,
     },
 };
@@ -171,7 +173,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
 
-    let expected_liquidity = tip_fee_amm::sqrt(amount * amount) - MIN_LIQUIDITY;
+    let expected_liquidity = sqrt(amount * amount) - MIN_LIQUIDITY;
     assert_eq!(lp_balance, expected_liquidity);
     let expected_total_supply = expected_liquidity + MIN_LIQUIDITY;
     assert_eq!(total_supply, expected_total_supply);
