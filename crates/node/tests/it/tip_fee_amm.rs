@@ -6,7 +6,6 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_primitives::Address;
-use reth_ethereum::provider::db;
 use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,

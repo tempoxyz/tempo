@@ -122,7 +122,7 @@ pub(crate) async fn setup_test_node(
     }
 }
 
-pub async fn await_receipts(
+pub(crate) async fn await_receipts(
     pending_txs: &mut Vec<PendingTransactionBuilder<Ethereum>>,
 ) -> eyre::Result<()> {
     for tx in pending_txs.drain(..) {
