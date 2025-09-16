@@ -77,6 +77,22 @@ jobs:
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check advisories bans sources
 
+  zepter:
+    name: zepter
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: fetch deps
+        run: |
+          # Eagerly pull dependencies
+          time cargo metadata --format-version=1 --locked > /dev/null
+      - name: run zepter
+        run: |
+          cargo install zepter -f --locked
+          zepter --version
+          time zepter run check
 
   lint-success:
     name: lint success
@@ -88,6 +104,7 @@ jobs:
       - docs
       - codespell
       - deny
+      - zepter
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed

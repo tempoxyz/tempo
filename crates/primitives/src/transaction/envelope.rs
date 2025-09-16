@@ -1,7 +1,7 @@
+use super::fee_token::TxFeeToken;
 use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
 use alloy_primitives::{Address, B256};
-
-use super::fee_token::TxFeeToken;
+use reth_primitives_traits::InMemorySize;
 
 /// Tempo transaction envelope containing all supported transaction types
 ///
@@ -41,6 +41,16 @@ impl TempoTxEnvelope {
         match self {
             Self::FeeToken(tx) => tx.tx().fee_token,
             _ => None,
+        }
+    }
+    /// Return the [`TempoTxType`] of the inner txn.
+    pub const fn tx_type(&self) -> TempoTxType {
+        match self {
+            Self::Legacy(_) => TempoTxType::Legacy,
+            Self::Eip2930(_) => TempoTxType::Eip2930,
+            Self::Eip1559(_) => TempoTxType::Eip1559,
+            Self::Eip7702(_) => TempoTxType::Eip7702,
+            Self::FeeToken(_) => TempoTxType::FeeToken,
         }
     }
 
@@ -133,59 +143,154 @@ impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {
     }
 }
 
-#[cfg(feature = "reth-codec")]
-impl reth_codecs::alloy::transaction::ToTxCompact for TempoTxEnvelope {
-    fn to_tx_compact(&self, buf: &mut (impl alloy_rlp::BufMut + AsMut<[u8]>)) {
-        use reth_codecs::Compact;
-
-        match self {
-            Self::Legacy(tx) => tx.tx().to_compact(buf),
-            Self::Eip2930(tx) => tx.tx().to_compact(buf),
-            Self::Eip1559(tx) => tx.tx().to_compact(buf),
-            Self::Eip7702(tx) => tx.tx().to_compact(buf),
-            Self::FeeToken(tx) => tx.tx().to_compact(buf),
-        };
+impl InMemorySize for TempoTxType {
+    fn size(&self) -> usize {
+        core::mem::size_of::<Self>()
     }
 }
 
+#[cfg(feature = "serde-bincode-compat")]
+impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelope {}
+
 #[cfg(feature = "reth-codec")]
-impl reth_codecs::alloy::transaction::FromTxCompact for TempoTxEnvelope {
-    type TxType = TempoTxType;
+mod codec {
+    use super::*;
+    use crate::FEE_TOKEN_TX_TYPE_ID;
+    use alloy_eips::eip2718::EIP7702_TX_TYPE_ID;
+    use alloy_primitives::{Signature, bytes, bytes::BufMut};
+    use reth_codecs::{
+        Compact,
+        alloy::transaction::{CompactEnvelope, Envelope},
+        txtype::{
+            COMPACT_EXTENDED_IDENTIFIER_FLAG, COMPACT_IDENTIFIER_EIP1559,
+            COMPACT_IDENTIFIER_EIP2930, COMPACT_IDENTIFIER_LEGACY,
+        },
+    };
 
-    fn from_tx_compact(
-        buf: &[u8],
-        tx_type: Self::TxType,
-        signature: alloy_primitives::Signature,
-    ) -> (Self, &[u8]) {
-        use alloy_consensus::Signed;
-        use reth_codecs::Compact;
+    impl reth_codecs::alloy::transaction::FromTxCompact for TempoTxEnvelope {
+        type TxType = TempoTxType;
 
-        match tx_type {
-            TempoTxType::Legacy => {
-                let (tx, buf) = TxLegacy::from_compact(buf, buf.len());
-                let tx = Signed::new_unhashed(tx, signature);
-                (Self::Legacy(tx), buf)
+        fn from_tx_compact(
+            buf: &[u8],
+            tx_type: Self::TxType,
+            signature: Signature,
+        ) -> (Self, &[u8]) {
+            use alloy_consensus::Signed;
+            use reth_codecs::Compact;
+
+            match tx_type {
+                TempoTxType::Legacy => {
+                    let (tx, buf) = TxLegacy::from_compact(buf, buf.len());
+                    let tx = Signed::new_unhashed(tx, signature);
+                    (Self::Legacy(tx), buf)
+                }
+                TempoTxType::Eip2930 => {
+                    let (tx, buf) = TxEip2930::from_compact(buf, buf.len());
+                    let tx = Signed::new_unhashed(tx, signature);
+                    (Self::Eip2930(tx), buf)
+                }
+                TempoTxType::Eip1559 => {
+                    let (tx, buf) = TxEip1559::from_compact(buf, buf.len());
+                    let tx = Signed::new_unhashed(tx, signature);
+                    (Self::Eip1559(tx), buf)
+                }
+                TempoTxType::Eip7702 => {
+                    let (tx, buf) = TxEip7702::from_compact(buf, buf.len());
+                    let tx = Signed::new_unhashed(tx, signature);
+                    (Self::Eip7702(tx), buf)
+                }
+                TempoTxType::FeeToken => {
+                    let (tx, buf) = TxFeeToken::from_compact(buf, buf.len());
+                    let tx = Signed::new_unhashed(tx, signature);
+                    (Self::FeeToken(tx), buf)
+                }
             }
-            TempoTxType::Eip2930 => {
-                let (tx, buf) = TxEip2930::from_compact(buf, buf.len());
-                let tx = Signed::new_unhashed(tx, signature);
-                (Self::Eip2930(tx), buf)
+        }
+    }
+
+    impl reth_codecs::alloy::transaction::ToTxCompact for TempoTxEnvelope {
+        fn to_tx_compact(&self, buf: &mut (impl BufMut + AsMut<[u8]>)) {
+            match self {
+                Self::Legacy(tx) => tx.tx().to_compact(buf),
+                Self::Eip2930(tx) => tx.tx().to_compact(buf),
+                Self::Eip1559(tx) => tx.tx().to_compact(buf),
+                Self::Eip7702(tx) => tx.tx().to_compact(buf),
+                Self::FeeToken(tx) => tx.tx().to_compact(buf),
+            };
+        }
+    }
+
+    impl Envelope for TempoTxEnvelope {
+        fn signature(&self) -> &Signature {
+            match self {
+                Self::Legacy(tx) => tx.signature(),
+                Self::Eip2930(tx) => tx.signature(),
+                Self::Eip1559(tx) => tx.signature(),
+                Self::Eip7702(tx) => tx.signature(),
+                Self::FeeToken(tx) => tx.signature(),
             }
-            TempoTxType::Eip1559 => {
-                let (tx, buf) = TxEip1559::from_compact(buf, buf.len());
-                let tx = Signed::new_unhashed(tx, signature);
-                (Self::Eip1559(tx), buf)
+        }
+
+        fn tx_type(&self) -> Self::TxType {
+            Self::tx_type(self)
+        }
+    }
+
+    impl Compact for TempoTxType {
+        fn to_compact<B>(&self, buf: &mut B) -> usize
+        where
+            B: BufMut + AsMut<[u8]>,
+        {
+            match self {
+                Self::Legacy => COMPACT_IDENTIFIER_LEGACY,
+                Self::Eip2930 => COMPACT_IDENTIFIER_EIP2930,
+                Self::Eip1559 => COMPACT_IDENTIFIER_EIP1559,
+                Self::Eip7702 => {
+                    buf.put_u8(EIP7702_TX_TYPE_ID);
+                    COMPACT_EXTENDED_IDENTIFIER_FLAG
+                }
+                Self::FeeToken => {
+                    buf.put_u8(FEE_TOKEN_TX_TYPE_ID);
+                    COMPACT_EXTENDED_IDENTIFIER_FLAG
+                }
             }
-            TempoTxType::Eip7702 => {
-                let (tx, buf) = TxEip7702::from_compact(buf, buf.len());
-                let tx = Signed::new_unhashed(tx, signature);
-                (Self::Eip7702(tx), buf)
-            }
-            TempoTxType::FeeToken => {
-                let (tx, buf) = TxFeeToken::from_compact(buf, buf.len());
-                let tx = Signed::new_unhashed(tx, signature);
-                (Self::FeeToken(tx), buf)
-            }
+        }
+
+        // For backwards compatibility purposes only 2 bits of the type are encoded in the identifier
+        // parameter. In the case of a [`COMPACT_EXTENDED_IDENTIFIER_FLAG`], the full transaction type
+        // is read from the buffer as a single byte.
+        fn from_compact(mut buf: &[u8], identifier: usize) -> (Self, &[u8]) {
+            use bytes::Buf;
+            (
+                match identifier {
+                    COMPACT_IDENTIFIER_LEGACY => Self::Legacy,
+                    COMPACT_IDENTIFIER_EIP2930 => Self::Eip2930,
+                    COMPACT_IDENTIFIER_EIP1559 => Self::Eip1559,
+                    COMPACT_EXTENDED_IDENTIFIER_FLAG => {
+                        let extended_identifier = buf.get_u8();
+                        match extended_identifier {
+                            EIP7702_TX_TYPE_ID => Self::Eip7702,
+                            FEE_TOKEN_TX_TYPE_ID => Self::FeeToken,
+                            _ => panic!("Unsupported TxType identifier: {extended_identifier}"),
+                        }
+                    }
+                    _ => panic!("Unknown identifier for TxType: {identifier}"),
+                },
+                buf,
+            )
+        }
+    }
+
+    impl Compact for TempoTxEnvelope {
+        fn to_compact<B>(&self, buf: &mut B) -> usize
+        where
+            B: BufMut + AsMut<[u8]>,
+        {
+            CompactEnvelope::to_compact(self, buf)
+        }
+
+        fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
+            CompactEnvelope::from_compact(buf, len)
         }
     }
 }
