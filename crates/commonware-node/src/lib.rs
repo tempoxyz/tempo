@@ -173,7 +173,6 @@ async fn resolve_all_peers(
     peers: impl IntoIterator<Item = (&PublicKey, &String)>,
 ) -> eyre::Result<IndexMap<PublicKey, (String, SocketAddr)>> {
     use futures_util::stream::{FuturesOrdered, TryStreamExt as _};
-    use itertools::Itertools as _;
     let resolve_all = peers
         .into_iter()
         .map(|(peer, name)| async move {
@@ -186,7 +185,7 @@ async fn resolve_all_peers(
                 })?
                 .collect::<Vec<_>>();
             info!(
-                %peer, name, potential_addresses = %addrs.iter().format(", "),
+                %peer, name, potential_addresses = %FmtAddrs(&addrs),
                 "resolved DNS name to IPs; taking the first one"
             );
             let addr = addrs.first().ok_or_else(|| {
@@ -199,4 +198,26 @@ async fn resolve_all_peers(
         .try_collect::<IndexMap<_, _>>()
         .await
         .wrap_err("failed resolving at least one peer")
+}
+
+struct FmtAddrs<'a, I>(&'a I);
+
+impl<'a, I> std::fmt::Display for FmtAddrs<'a, I>
+where
+    &'a I: IntoIterator,
+    <&'a I as IntoIterator>::Item: std::fmt::Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        f.write_char('[')?;
+        let mut elems = (&self.0).into_iter().peekable();
+        while let Some(elem) = elems.next() {
+            f.write_fmt(format_args!("{elem}"))?;
+            if elems.peek().is_some() {
+                f.write_str(", ")?;
+            }
+        }
+        f.write_char(']')?;
+        Ok(())
+    }
 }
