@@ -66,7 +66,7 @@ impl Store {
     pub async fn store_undecided_proposal(
         &self,
         proposal: ProposedValue<MalachiteContext>,
-        block: reth_ethereum_primitives::Block,
+        block: tempo_primitives::Block,
     ) -> Result<()> {
         // Store the block first
         self.inner.store_block(block).await?;
@@ -92,12 +92,12 @@ impl Store {
     }
 
     /// Store a block indexed by its hash
-    pub async fn store_block(&self, block: reth_ethereum_primitives::Block) -> Result<()> {
+    pub async fn store_block(&self, block: tempo_primitives::Block) -> Result<()> {
         self.inner.store_block(block).await
     }
 
     /// Get a block by its hash
-    pub async fn get_block(&self, hash: &B256) -> Result<Option<reth_ethereum_primitives::Block>> {
+    pub async fn get_block(&self, hash: &B256) -> Result<Option<tempo_primitives::Block>> {
         self.inner.get_block(hash).await
     }
 
@@ -168,10 +168,10 @@ trait StoreOps {
     // Block storage operations:
 
     /// Store a block by its hash
-    async fn store_block(&self, block: reth_ethereum_primitives::Block) -> Result<()>;
+    async fn store_block(&self, block: tempo_primitives::Block) -> Result<()>;
 
     /// Get a block by its hash
-    async fn get_block(&self, hash: &B256) -> Result<Option<reth_ethereum_primitives::Block>>;
+    async fn get_block(&self, hash: &B256) -> Result<Option<tempo_primitives::Block>>;
 
     /// Check if a block exists
     async fn has_block(&self, hash: &B256) -> Result<bool>;
@@ -239,11 +239,11 @@ where
             .map_err(Into::into)
     }
 
-    async fn store_block(&self, block: reth_ethereum_primitives::Block) -> Result<()> {
+    async fn store_block(&self, block: tempo_primitives::Block) -> Result<()> {
         BlockStore::store_block(self, block)
     }
 
-    async fn get_block(&self, hash: &B256) -> Result<Option<reth_ethereum_primitives::Block>> {
+    async fn get_block(&self, hash: &B256) -> Result<Option<tempo_primitives::Block>> {
         BlockStore::get_block(self, hash)
     }
 

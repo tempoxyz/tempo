@@ -9,8 +9,9 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+tempo-primitives.workspace = true
+
 reth-ethereum-engine-primitives.workspace = true
-reth-ethereum-primitives.workspace = true
 reth-node-api.workspace = true
 reth-primitives-traits.workspace = true
 

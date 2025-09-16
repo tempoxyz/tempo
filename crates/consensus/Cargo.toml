@@ -10,12 +10,12 @@ workspace = true
 
 [dependencies]
 tempo-chainspec.workspace = true
+tempo-primitives.workspace = true
 
 reth-chainspec.workspace = true
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-ethereum-consensus.workspace = true
-reth-ethereum-primitives.workspace = true
 reth-primitives-traits.workspace = true
 
 alloy-consensus.workspace = true

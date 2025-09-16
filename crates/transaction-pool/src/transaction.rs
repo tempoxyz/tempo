@@ -1,35 +1,35 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{convert::Infallible, fmt::Debug, sync::Arc};
 
-use alloy_consensus::{BlobTransactionValidationError, Transaction, error::ValueError};
+use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
-    eip2718::{Encodable2718, Typed2718, WithEncoded},
+    eip2718::{Encodable2718, Typed2718},
     eip2930::AccessList,
     eip4844::env_settings::KzgSettings,
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
-use reth_ethereum_primitives::{PooledTransactionVariant, TransactionSigned};
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
 };
+use tempo_primitives::TempoTxEnvelope;
 
 /// Tempo pooled transaction representation.
 ///
 /// This is a wrapper around the regular ethereum [`EthPooledTransaction`], but with tempo specific implementations.
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
-    inner: EthPooledTransaction,
+    inner: EthPooledTransaction<TempoTxEnvelope>,
 }
 
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
-    pub fn new(transaction: Recovered<TransactionSigned>, encoded_length: usize) -> Self {
+    pub fn new(transaction: Recovered<TempoTxEnvelope>, encoded_length: usize) -> Self {
         Self::from_eth(EthPooledTransaction::new(transaction, encoded_length))
     }
 
-    pub fn from_eth(eth_pooled: EthPooledTransaction) -> Self {
+    pub fn from_eth(eth_pooled: EthPooledTransaction<TempoTxEnvelope>) -> Self {
         Self { inner: eth_pooled }
     }
 
@@ -66,24 +66,21 @@ impl Encodable2718 for TempoPooledTransaction {
 }
 
 impl PoolTransaction for TempoPooledTransaction {
-    type TryFromConsensusError = ValueError<TransactionSigned>;
-    type Consensus = TransactionSigned;
-    type Pooled = PooledTransactionVariant;
+    type TryFromConsensusError = Infallible;
+    type Consensus = TempoTxEnvelope;
+    type Pooled = TempoTxEnvelope;
 
     fn clone_into_consensus(&self) -> Recovered<Self::Consensus> {
-        self.inner.clone_into_consensus()
+        self.inner.transaction.clone()
     }
 
     fn into_consensus(self) -> Recovered<Self::Consensus> {
         self.inner.transaction
     }
 
-    fn into_consensus_with2718(self) -> WithEncoded<Recovered<Self::Consensus>> {
-        self.inner.into_consensus_with2718()
-    }
-
     fn from_pooled(tx: Recovered<Self::Pooled>) -> Self {
-        Self::from_eth(EthPooledTransaction::from_pooled(tx))
+        let len = tx.encode_2718_len();
+        Self::from_eth(EthPooledTransaction::new(tx, len))
     }
 
     fn hash(&self) -> &TxHash {
@@ -179,28 +176,30 @@ impl alloy_consensus::Transaction for TempoPooledTransaction {
 
 impl EthPoolTransaction for TempoPooledTransaction {
     fn take_blob(&mut self) -> EthBlobTransactionSidecar {
-        self.inner.take_blob()
+        EthBlobTransactionSidecar::None
     }
 
     fn try_into_pooled_eip4844(
         self,
-        sidecar: Arc<BlobTransactionSidecarVariant>,
+        _sidecar: Arc<BlobTransactionSidecarVariant>,
     ) -> Option<Recovered<Self::Pooled>> {
-        self.inner.try_into_pooled_eip4844(sidecar)
+        None
     }
 
     fn try_from_eip4844(
-        tx: Recovered<Self::Consensus>,
-        sidecar: BlobTransactionSidecarVariant,
+        _tx: Recovered<Self::Consensus>,
+        _sidecar: BlobTransactionSidecarVariant,
     ) -> Option<Self> {
-        EthPooledTransaction::try_from_eip4844(tx, sidecar).map(Self::from_eth)
+        None
     }
 
     fn validate_blob(
         &self,
-        sidecar: &BlobTransactionSidecarVariant,
-        settings: &KzgSettings,
+        _sidecar: &BlobTransactionSidecarVariant,
+        _settings: &KzgSettings,
     ) -> Result<(), BlobTransactionValidationError> {
-        self.inner.validate_blob(sidecar, settings)
+        Err(BlobTransactionValidationError::NotBlobTransaction(
+            self.ty(),
+        ))
     }
 }

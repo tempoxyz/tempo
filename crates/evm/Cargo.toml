@@ -13,12 +13,12 @@ workspace = true
 tempo-chainspec.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
+tempo-primitives.workspace = true
 tempo-revm.workspace = true
 
 reth-evm.workspace = true
 reth-evm-ethereum.workspace = true
 reth-primitives-traits.workspace = true
-reth-ethereum-primitives.workspace = true
 
 alloy-evm.workspace = true
 alloy-primitives.workspace = true

@@ -1,7 +1,8 @@
 use crate::{TempoExecutionData, TempoPayloadTypes};
-use reth_ethereum::{Block, engine::EthPayloadAttributes, primitives::Header};
+use reth_ethereum::{engine::EthPayloadAttributes, primitives::Header};
 use reth_node_api::{InvalidPayloadAttributesError, NewPayloadError, PayloadValidator};
 use reth_primitives_traits::RecoveredBlock;
+use tempo_primitives::Block;
 
 /// Type encapsulating Tempo engine validation logic.
 #[derive(Debug, Default, Clone, Copy)]

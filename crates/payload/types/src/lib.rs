@@ -5,10 +5,10 @@
 
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadBuilderAttributes};
-use reth_ethereum_primitives::Block;
 use reth_node_api::{ExecutionPayload, PayloadBuilderAttributes, PayloadTypes};
 use reth_primitives_traits::SealedBlock;
 use serde::{Deserialize, Serialize};
+use tempo_primitives::{Block, TempoPrimitives};
 
 /// Payload types for Tempo node.
 #[derive(Debug, Clone, Copy, Default)]
@@ -58,7 +58,7 @@ impl PayloadTypes for TempoPayloadTypes {
         <Self::PayloadBuilderAttributes as PayloadBuilderAttributes>::RpcPayloadAttributes;
     type PayloadBuilderAttributes = EthPayloadBuilderAttributes;
     type ExecutionData = TempoExecutionData;
-    type BuiltPayload = EthBuiltPayload;
+    type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
 
     fn block_to_payload(block: SealedBlock<Block>) -> Self::ExecutionData {
         TempoExecutionData(block)

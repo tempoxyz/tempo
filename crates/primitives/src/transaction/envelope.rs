@@ -1,5 +1,7 @@
 use super::fee_token::TxFeeToken;
-use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+use alloy_consensus::{
+    EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError,
+};
 use alloy_primitives::{Address, B256};
 use reth_primitives_traits::InMemorySize;
 
@@ -146,6 +148,51 @@ impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {
 impl InMemorySize for TempoTxType {
     fn size(&self) -> usize {
         core::mem::size_of::<Self>()
+    }
+}
+
+impl<Eip4844> TryFrom<EthereumTxEnvelope<Eip4844>> for TempoTxEnvelope {
+    type Error = ValueError<EthereumTxEnvelope<Eip4844>>;
+
+    fn try_from(value: EthereumTxEnvelope<Eip4844>) -> Result<Self, Self::Error> {
+        match value {
+            EthereumTxEnvelope::Legacy(tx) => Ok(Self::Legacy(tx)),
+            EthereumTxEnvelope::Eip2930(tx) => Ok(Self::Eip2930(tx)),
+            tx @ EthereumTxEnvelope::Eip4844(_) => Err(ValueError::new_static(
+                tx,
+                "EIP-4844 transactions are not supported",
+            )),
+            EthereumTxEnvelope::Eip1559(tx) => Ok(Self::Eip1559(tx)),
+            EthereumTxEnvelope::Eip7702(tx) => Ok(Self::Eip7702(tx)),
+        }
+    }
+}
+
+#[cfg(feature = "rpc")]
+impl reth_rpc_convert::SignableTxRequest<TempoTxEnvelope>
+    for alloy_rpc_types_eth::TransactionRequest
+{
+    async fn try_build_and_sign(
+        self,
+        signer: impl alloy_network::TxSigner<alloy_primitives::Signature> + Send,
+    ) -> Result<TempoTxEnvelope, reth_rpc_convert::SignTxRequestError> {
+        reth_rpc_convert::SignableTxRequest::<
+            EthereumTxEnvelope<alloy_consensus::TxEip4844>,
+        >::try_build_and_sign(self, signer)
+        .await
+        .and_then(|tx| {
+            tx.try_into()
+                .map_err(|_| reth_rpc_convert::SignTxRequestError::InvalidTransactionRequest)
+        })
+    }
+}
+
+#[cfg(feature = "rpc")]
+impl reth_rpc_convert::TryIntoSimTx<TempoTxEnvelope> for alloy_rpc_types_eth::TransactionRequest {
+    fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
+        let tx = self.clone().build_typed_simulate_transaction()?;
+        tx.try_into()
+            .map_err(|_| ValueError::new_static(self, "Invalid transaction request"))
     }
 }
 

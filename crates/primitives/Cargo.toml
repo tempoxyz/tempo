@@ -15,14 +15,17 @@ alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-serde = { workspace = true, optional = true }
-arbitrary = { workspace = true, features = ["derive"], optional = true }
+alloy-rpc-types-eth = { workspace = true, optional = true }
+alloy-network = { workspace = true, optional = true }
 
 # Reth
 reth-ethereum-primitives.workspace = true
 reth-primitives-traits.workspace = true
 reth-codecs = { workspace = true, optional = true }
+reth-rpc-convert = { workspace = true, optional = true }
 
 # Utils
+arbitrary = { workspace = true, features = ["derive"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 modular-bitfield = { version = "0.11.2", optional = true }
 
@@ -31,7 +34,7 @@ reth-codecs.workspace = true
 test-fuzz.workspace = true
 
 [features]
-default = ["serde", "reth-codec", "serde-bincode-compat", "reth-codec"]
+default = ["serde", "reth-codec", "serde-bincode-compat", "reth-codec", "rpc"]
 serde = [
 	"dep:serde",
 	"dep:alloy-serde",
@@ -61,3 +64,4 @@ arbitrary = [
 	"reth-ethereum-primitives/arbitrary",
 	"reth-primitives-traits/arbitrary"
 ]
+rpc = ["reth-ethereum-primitives/rpc", "dep:alloy-rpc-types-eth", "dep:reth-rpc-convert", "dep:alloy-network"]

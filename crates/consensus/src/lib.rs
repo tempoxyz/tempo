@@ -12,10 +12,10 @@ use reth_consensus_common::validation::{
     validate_against_parent_gas_limit, validate_against_parent_hash_number,
 };
 use reth_ethereum_consensus::EthBeaconConsensus;
-use reth_ethereum_primitives::{Block, BlockBody, EthPrimitives, Receipt};
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
+use tempo_primitives::{Block, BlockBody, TempoPrimitives, TempoReceipt};
 
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
@@ -81,12 +81,12 @@ impl Consensus<Block> for TempoConsensus {
     }
 }
 
-impl FullConsensus<EthPrimitives> for TempoConsensus {
+impl FullConsensus<TempoPrimitives> for TempoConsensus {
     fn validate_block_post_execution(
         &self,
         block: &RecoveredBlock<Block>,
-        result: &BlockExecutionResult<Receipt>,
+        result: &BlockExecutionResult<TempoReceipt>,
     ) -> Result<(), ConsensusError> {
-        FullConsensus::<EthPrimitives>::validate_block_post_execution(&self.inner, block, result)
+        FullConsensus::<TempoPrimitives>::validate_block_post_execution(&self.inner, block, result)
     }
 }
