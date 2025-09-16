@@ -6,6 +6,7 @@
 use alloy::{
     primitives::Address, providers::Provider, sol_types::SolEvent, transports::http::reqwest::Url,
 };
+use alloy_primitives::U256;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    TIP20_FACTORY_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     contracts::{
         ITIP20::ITIP20Instance, ITIP20Factory, tip20::ISSUER_ROLE, token_id_to_address,
         types::IRolesAuth,
@@ -116,4 +117,20 @@ pub(crate) async fn setup_test_node(
             Ok((http_url, Some((Box::new(node_handle), tasks))))
         }
     }
+}
+
+/// Approves max allowance for fee manager
+pub(crate) async fn approve_fee_manager<P>(token: Address, provider: P) -> eyre::Result<()>
+where
+    P: Provider + Clone,
+{
+    let receipt = ITIP20Instance::new(token, provider)
+        .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+
+    Ok(())
 }

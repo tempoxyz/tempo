@@ -1,4 +1,4 @@
-use crate::utils::{NodeSource, setup_test_node, setup_test_token};
+use crate::utils::{NodeSource, approve_fee_manager, setup_test_node, setup_test_token};
 use alloy::{
     primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
@@ -16,7 +16,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::contracts::{
     ITIP20::{self, transferCall},
     storage::slots::mapping_slot,
-    tip20,
+    tip20, token_id_to_address,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -238,6 +238,10 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
         .build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+    dbg!("approve");
+    approve_fee_manager(token_id_to_address(0), provider.clone()).await?;
+
+    dbg!("approved");
 
     let token = setup_test_token(provider.clone(), caller).await?;
     let calldata = token.mint(caller, U256::from(1000)).calldata().clone();

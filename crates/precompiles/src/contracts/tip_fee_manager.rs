@@ -236,20 +236,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     }
 
     // TODO: swap function
-
     pub fn collect_fee(
         &mut self,
-        sender: &Address,
-        call: IFeeManager::collectFeeCall,
+        user: Address,
+        coinbase: Address,
+        amount: U256,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        if *sender != Address::ZERO {
-            return Err(IFeeManager::IFeeManagerErrors::OnlySystemContract(
-                IFeeManager::OnlySystemContract {},
-            ));
-        }
-
-        let validator_token = self.get_validator_token(&call.coinbase)?;
-        let user_token = self.get_user_token(&call.user, &validator_token);
+        let validator_token = self.get_validator_token(&coinbase)?;
+        let user_token = self.get_user_token(&user, &validator_token);
 
         if user_token != validator_token {
             // Create TIPFeeAMM instance to access inherited pool functionality
@@ -278,20 +272,21 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let token_id = address_to_token_id_unchecked(&user_token);
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
-        tip20_token
-            .transfer_from(
-                &self.contract_address,
-                ITIP20::transferFromCall {
-                    from: call.user,
-                    to: self.contract_address,
-                    amount: call.amount,
-                },
-            )
-            .map_err(|_| {
-                IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                    IFeeManager::InsufficientFeeTokenBalance {},
-                )
-            })?;
+        // TODO: transfer from
+        // tip20_token
+        //     .transfer_from(
+        //         &self.contract_address,
+        //         ITIP20::transferFromCall {
+        //             from: call.user,
+        //             to: self.contract_address,
+        //             amount: call.amount,
+        //         },
+        //     )
+        //     .map_err(|_| {
+        //         IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+        //             IFeeManager::InsufficientFeeTokenBalance {},
+        //         )
+        //     })?;
 
         // Cache fee info to minimize storage access
         let mut fee_info = self.get_fee_info(&user_token);
@@ -335,7 +330,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         // Update fee info in single storage write
-        fee_info.amount = fee_info.amount.saturating_add(call.amount.to::<u128>());
+        fee_info.amount = fee_info.amount.saturating_add(amount.to::<u128>());
         fee_info.has_been_set = true;
 
         self.set_fee_info(&user_token, &fee_info);
@@ -409,7 +404,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn collect_fee_pre_tx(
         &mut self,
         sender: &Address,
-        call: IFeeManager::collectFeePreTxCall,
+        user: Address,
+        max_amount: U256,
+        validator: Address,
     ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
         // Only protocol can call this
         if *sender != Address::ZERO {
@@ -419,9 +416,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         // Get the validator's token preference
-        let validator_token = self.get_validator_token(&call.validator)?;
+        let validator_token = self.get_validator_token(&validator)?;
         // Get the user's fee token preference (falls back to validator token if not set)
-        let user_token = self.get_user_token(&call.user, &validator_token);
+        let user_token = self.get_user_token(&user, &validator_token);
 
         // Verify pool liquidity if user token differs from validator token
         if user_token != validator_token {
@@ -454,9 +451,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             .transfer_from(
                 &self.contract_address,
                 ITIP20::transferFromCall {
-                    from: call.user,
+                    from: user,
                     to: self.contract_address,
-                    amount: call.maxAmount,
+                    amount: max_amount,
                 },
             )
             .map_err(|_| {
@@ -472,7 +469,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn collect_fee_post_tx(
         &mut self,
         sender: &Address,
-        call: IFeeManager::collectFeePostTxCall,
+        user: Address,
+        max_amount: U256,
+        actual_used: U256,
+        user_token: Address,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         // Only protocol can call this
         if *sender != Address::ZERO {
@@ -482,18 +482,18 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         // Calculate refund amount (max - actual)
-        let refund_amount = call.maxAmount.saturating_sub(call.actualUsed);
+        let refund_amount = max_amount.saturating_sub(actual_used);
 
         // Refund unused tokens to user
         if refund_amount > U256::ZERO {
-            let token_id = address_to_token_id_unchecked(&call.userToken);
+            let token_id = address_to_token_id_unchecked(&user_token);
             let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
             tip20_token
                 .transfer(
                     &self.contract_address,
                     ITIP20::transferCall {
-                        to: call.user,
+                        to: user,
                         amount: refund_amount,
                     },
                 )
@@ -506,11 +506,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         // Queue the actual used amount for fee swaps
         // Track fee info for later swap execution
-        let mut fee_info = self.get_fee_info(&call.userToken);
+        let mut fee_info = self.get_fee_info(&user_token);
 
         // Add to tracking array if first time collecting fees for this token
         if fee_info.amount == 0 && !fee_info.has_been_set {
-            let in_array_slot = self.get_token_in_fees_array_slot(&call.userToken);
+            let in_array_slot = self.get_token_in_fees_array_slot(&user_token);
             let in_array = self
                 .storage
                 .sload(self.contract_address, in_array_slot)
@@ -535,7 +535,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                     .sstore(
                         self.contract_address,
                         token_slot,
-                        call.userToken.into_u256(),
+                        user_token.into_u256(),
                     )
                     .expect("TODO: handle error");
 
@@ -551,9 +551,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         // Update fee info with actual used amount
-        fee_info.amount = fee_info.amount.saturating_add(call.actualUsed.to::<u128>());
+        fee_info.amount = fee_info.amount.saturating_add(actual_used.to::<u128>());
         fee_info.has_been_set = true;
-        self.set_fee_info(&call.userToken, &fee_info);
+        self.set_fee_info(&user_token, &fee_info);
 
         Ok(())
     }
@@ -926,14 +926,7 @@ mod tests {
             ._1;
 
         // Collect fee and verify balances
-        let result = fee_manager.collect_fee(
-            &Address::ZERO,
-            IFeeManager::collectFeeCall {
-                user,
-                coinbase: validator,
-                amount,
-            },
-        );
+        let result = fee_manager.collect_fee(user, validator, amount);
         assert!(result.is_ok());
 
         let result = fee_manager.get_fee_token_balance(IFeeManager::getFeeTokenBalanceCall {
