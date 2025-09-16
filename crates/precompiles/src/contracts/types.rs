@@ -275,10 +275,15 @@ sol! {
 
         // Fee functions
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
-        function collectFee(address user, address coinbase, uint256 amount) external;
+        function collectFeePreTx(address user, uint256 maxAmount) external;
+        function collectFeePostTx(address user) external;
+        function executeBlock() external;
 
-        // View functions
+        // Fee tracking view functions
+        function collectedFees(address token) external view returns (uint256);
         function getTokensWithFeesLength() external view returns (uint256);
+        function getTokenWithFees(uint256 index) external view returns (address);
+        function tokenInFeesArray(address token) external view returns (bool);
 
         // Events
         event UserTokenSet(address indexed user, address indexed token);

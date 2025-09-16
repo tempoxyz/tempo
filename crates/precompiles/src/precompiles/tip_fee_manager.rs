@@ -22,6 +22,10 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             IFeeManager::userTokensCall::SELECTOR => view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call)),
             IFeeManager::validatorTokensCall::SELECTOR => view::<IFeeManager::validatorTokensCall>(calldata, |call| self.validator_tokens(call)),
             IFeeManager::getFeeTokenBalanceCall::SELECTOR => view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| self.get_fee_token_balance(call)),
+            IFeeManager::collectedFeesCall::SELECTOR => view::<IFeeManager::collectedFeesCall>(calldata, |call| self.collected_fees(&call.token)),
+            IFeeManager::getTokensWithFeesLengthCall::SELECTOR => view::<IFeeManager::getTokensWithFeesLengthCall>(calldata, |_call| self.get_tokens_with_fees_length()),
+            IFeeManager::getTokenWithFeesCall::SELECTOR => view::<IFeeManager::getTokenWithFeesCall>(calldata, |call| self.get_token_with_fees(call.index)),
+            IFeeManager::tokenInFeesArrayCall::SELECTOR => view::<IFeeManager::tokenInFeesArrayCall>(calldata, |call| self.token_in_fees_array(&call.token)),
             ITIPFeeAMM::getPoolIdCall::SELECTOR => view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| self.get_pool_id(call)),
             ITIPFeeAMM::getPoolCall::SELECTOR => view::<ITIPFeeAMM::getPoolCall>(calldata, |call| self.get_pool(call)),
             ITIPFeeAMM::poolsCall::SELECTOR => view::<ITIPFeeAMM::poolsCall>(calldata, |call| self.pools(call)),
@@ -33,8 +37,14 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             IFeeManager::setValidatorTokenCall::SELECTOR => mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_validator_token(s, call)),
             IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),
             ITIPFeeAMM::createPoolCall::SELECTOR => mutate_void::<ITIPFeeAMM::createPoolCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |_s, call| self.create_pool(call)),
-            IFeeManager::collectFeeCall::SELECTOR => {
-                mutate_void::<IFeeManager::collectFeeCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee(s, call))
+            IFeeManager::collectFeePreTxCall::SELECTOR => {
+                mutate_void::<IFeeManager::collectFeePreTxCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee_pre_tx(s, call))
+            }
+            IFeeManager::collectFeePostTxCall::SELECTOR => {
+                mutate_void::<IFeeManager::collectFeePostTxCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee_post_tx(s, call))
+            }
+            IFeeManager::executeBlockCall::SELECTOR => {
+                mutate_void::<IFeeManager::executeBlockCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, _call| self.execute_block(s))
             }
             ITIPFeeAMM::mintCall::SELECTOR => mutate::<ITIPFeeAMM::mintCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.mint(*s, call)),
             ITIPFeeAMM::burnCall::SELECTOR => mutate::<ITIPFeeAMM::burnCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.burn(*s, call)),
@@ -52,7 +62,7 @@ mod tests {
         TIP_FEE_MANAGER_ADDRESS,
         contracts::{
             HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
-            tip_fee_manager::PoolKey,
+            tip_fee_manager::pool::PoolKey,
             tip20::ISSUER_ROLE,
             types::{IFeeManager, ITIP20, ITIPFeeAMM},
         },
@@ -280,54 +290,6 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_fee() -> Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let user = Address::random();
-        let validator = Address::random();
-        let token = Address::random();
-        let amount = U256::from(1000);
-
-        // Setup token with balance and approvals
-        setup_token_with_balance(&mut storage, token, user, U256::MAX);
-
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
-
-        // Set fee tokens (same for user and validator)
-        let set_validator_call = IFeeManager::setValidatorTokenCall { token };
-        let set_validator_calldata = set_validator_call.abi_encode();
-        fee_manager.call(&Bytes::from(set_validator_calldata), &validator)?;
-
-        let set_user_call = IFeeManager::setUserTokenCall { token };
-        let set_user_calldata = set_user_call.abi_encode();
-        fee_manager.call(&Bytes::from(set_user_calldata), &user)?;
-
-        // Collect fee (only system contract can call)
-        let collect_call = IFeeManager::collectFeeCall {
-            user,
-            coinbase: validator,
-            amount,
-        };
-        let collect_calldata = collect_call.abi_encode();
-
-        let result = fee_manager.call(&Bytes::from(collect_calldata), &Address::ZERO)?;
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
-
-        // Verify fee balance was updated
-        let balance_call = IFeeManager::getFeeTokenBalanceCall {
-            validator: Address::ZERO,
-            sender: user,
-        };
-        let balance_calldata = balance_call.abi_encode();
-        let result = fee_manager.call(&Bytes::from(balance_calldata), &user)?;
-        let balance_result =
-            IFeeManager::getFeeTokenBalanceCall::abi_decode_returns(&result.bytes)?;
-        assert_eq!(balance_result._0, token);
-        assert_eq!(balance_result._1, U256::MAX - amount);
-
-        Ok(())
-    }
-
-    #[test]
     fn test_tip_fee_amm_pool_operations() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
@@ -357,43 +319,6 @@ mod tests {
         let pool = ITIPFeeAMM::Pool::abi_decode(&result.bytes)?;
         assert_eq!(pool.reserve0, 0);
         assert_eq!(pool.reserve1, 0);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_fee_manager_with_nonexistent_pool() -> Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let user = Address::random();
-        let validator = Address::random();
-        let token_a = Address::random();
-        let token_b = Address::random();
-
-        // Setup tokens with balance
-        setup_token_with_balance(&mut storage, token_a, user, U256::MAX);
-
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
-
-        // Set different tokens for user and validator (requires pool)
-        fee_manager.call(
-            &Bytes::from(IFeeManager::setValidatorTokenCall { token: token_b }.abi_encode()),
-            &validator,
-        )?;
-        fee_manager.call(
-            &Bytes::from(IFeeManager::setUserTokenCall { token: token_a }.abi_encode()),
-            &user,
-        )?;
-
-        // Try to collect fee without pool existing - should fail
-        let collect_call = IFeeManager::collectFeeCall {
-            user,
-            coinbase: validator,
-            amount: U256::from(100),
-        };
-        let result = fee_manager.call(&Bytes::from(collect_call.abi_encode()), &Address::ZERO);
-
-        // Should fail with PoolDoesNotExist error
-        expect_precompile_error(&result, fee_manager_err!(PoolDoesNotExist));
 
         Ok(())
     }
@@ -487,24 +412,5 @@ mod tests {
         };
         let result = fee_manager.call(&Bytes::from(set_user_call.abi_encode()), &user);
         expect_precompile_error(&result, fee_manager_err!(InvalidToken));
-    }
-
-    #[test]
-    fn test_collect_fee_only_system_contract() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
-        let user = Address::random();
-        let validator = Address::random();
-        let non_system = Address::random();
-
-        let collect_call = IFeeManager::collectFeeCall {
-            user,
-            coinbase: validator,
-            amount: U256::from(100),
-        };
-
-        // Non-system contract should fail
-        let result = fee_manager.call(&Bytes::from(collect_call.abi_encode()), &non_system);
-        expect_precompile_error(&result, fee_manager_err!(OnlySystemContract));
     }
 }

@@ -17,3 +17,9 @@ pub trait StorageProvider {
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error>;
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error>;
 }
+
+pub trait StorageOps {
+    // TODO: error handling
+    fn sstore(&mut self, slot: U256, value: U256);
+    fn sload(&mut self, slot: U256) -> U256;
+}
