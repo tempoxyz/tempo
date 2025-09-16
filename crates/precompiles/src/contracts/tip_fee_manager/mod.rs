@@ -205,7 +205,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn token_in_fees_array(&mut self, token: &Address) -> bool {
         let slot = token_in_fees_array_slot(token);
-        self.sload(slot) != U256::ZERO
+        !self.sload(slot).is_zero()
     }
 
     pub fn user_tokens(&mut self, call: IFeeManager::userTokensCall) -> Address {
