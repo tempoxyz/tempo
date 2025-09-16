@@ -6,7 +6,10 @@ use crate::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         storage::slots::mapping_slot,
-        tip_fee_manager::{self, FeeToken, TokenBalance},
+        tip_fee_manager::{
+            self,
+            fee::{FeeToken, TokenBalance},
+        },
         tip20,
     },
 };
