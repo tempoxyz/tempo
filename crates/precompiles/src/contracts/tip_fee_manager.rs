@@ -25,6 +25,7 @@ pub mod slots {
     pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
     pub const USER_TOKENS: U256 = uint!(5_U256);
     pub const COLLECTED_FEES: U256 = uint!(6_U256);
+    pub const TOKENS_WITH_FEES: U256 = uint!(7_U256); // Array of tokens with pending fees
     pub const TOKENS_WITH_FEES_LENGTH: U256 = uint!(11_U256);
     pub const TOKEN_IN_FEES_ARRAY: U256 = uint!(15_U256);
 }
@@ -305,15 +306,24 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 != U256::ZERO;
 
             if !in_array {
+                // Mark token as being in the array
                 self.storage
                     .sstore(self.contract_address, in_array_slot, U256::ONE)
                     .expect("TODO: handle error");
 
+                // Get current array length
                 let length_value = self
                     .storage
                     .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH)
                     .expect("TODO: handle error");
 
+                // Store token address in the array at current index
+                let token_slot = slots::TOKENS_WITH_FEES + length_value;
+                self.storage
+                    .sstore(self.contract_address, token_slot, user_token.into_u256())
+                    .expect("TODO: handle error");
+
+                // Increment array length
                 self.storage
                     .sstore(
                         self.contract_address,
@@ -396,13 +406,288 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             .expect("TODO: handle error");
     }
 
+    pub fn collect_fee_pre_tx(
+        &mut self,
+        sender: &Address,
+        call: IFeeManager::collectFeePreTxCall,
+    ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
+        // Only protocol can call this
+        if *sender != Address::ZERO {
+            return Err(IFeeManager::IFeeManagerErrors::OnlySystemContract(
+                IFeeManager::OnlySystemContract {},
+            ));
+        }
+
+        // Get the validator's token preference
+        let validator_token = self.get_validator_token(&call.validator)?;
+        // Get the user's fee token preference (falls back to validator token if not set)
+        let user_token = self.get_user_token(&call.user, &validator_token);
+
+        // Verify pool liquidity if user token differs from validator token
+        if user_token != validator_token {
+            let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+
+            // Check if pool exists
+            if !amm.pool_exists_for_tokens(user_token, validator_token) {
+                return Err(IFeeManager::IFeeManagerErrors::PoolDoesNotExist(
+                    IFeeManager::PoolDoesNotExist {},
+                ));
+            }
+
+            // Check pool reserves for sufficient liquidity
+            let pool_key = PoolKey::new(user_token, validator_token);
+            let pool_id = pool_key.get_id();
+            let (reserve0, reserve1) = amm.get_pool_reserves(&pool_id);
+
+            if reserve0 < Self::MINIMUM_BALANCE || reserve1 < Self::MINIMUM_BALANCE {
+                return Err(IFeeManager::IFeeManagerErrors::InsufficientPoolBalance(
+                    IFeeManager::InsufficientPoolBalance {},
+                ));
+            }
+        }
+
+        // Transfer maximum fee from user to fee manager
+        let token_id = address_to_token_id_unchecked(&user_token);
+        let mut tip20_token = TIP20Token::new(token_id, self.storage);
+
+        tip20_token
+            .transfer_from(
+                &self.contract_address,
+                ITIP20::transferFromCall {
+                    from: call.user,
+                    to: self.contract_address,
+                    amount: call.maxAmount,
+                },
+            )
+            .map_err(|_| {
+                IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                    IFeeManager::InsufficientFeeTokenBalance {},
+                )
+            })?;
+
+        // Return the user's token preference
+        Ok(user_token)
+    }
+
+    pub fn collect_fee_post_tx(
+        &mut self,
+        sender: &Address,
+        call: IFeeManager::collectFeePostTxCall,
+    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
+        // Only protocol can call this
+        if *sender != Address::ZERO {
+            return Err(IFeeManager::IFeeManagerErrors::OnlySystemContract(
+                IFeeManager::OnlySystemContract {},
+            ));
+        }
+
+        // Calculate refund amount (max - actual)
+        let refund_amount = call.maxAmount.saturating_sub(call.actualUsed);
+
+        // Refund unused tokens to user
+        if refund_amount > U256::ZERO {
+            let token_id = address_to_token_id_unchecked(&call.userToken);
+            let mut tip20_token = TIP20Token::new(token_id, self.storage);
+
+            tip20_token
+                .transfer(
+                    &self.contract_address,
+                    ITIP20::transferCall {
+                        to: call.user,
+                        amount: refund_amount,
+                    },
+                )
+                .map_err(|_| {
+                    IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                        IFeeManager::InsufficientFeeTokenBalance {},
+                    )
+                })?;
+        }
+
+        // Queue the actual used amount for fee swaps
+        // Track fee info for later swap execution
+        let mut fee_info = self.get_fee_info(&call.userToken);
+
+        // Add to tracking array if first time collecting fees for this token
+        if fee_info.amount == 0 && !fee_info.has_been_set {
+            let in_array_slot = self.get_token_in_fees_array_slot(&call.userToken);
+            let in_array = self
+                .storage
+                .sload(self.contract_address, in_array_slot)
+                .expect("TODO: handle error")
+                != U256::ZERO;
+
+            if !in_array {
+                // Mark token as being in the array
+                self.storage
+                    .sstore(self.contract_address, in_array_slot, U256::ONE)
+                    .expect("TODO: handle error");
+
+                // Get current array length
+                let length_value = self
+                    .storage
+                    .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH)
+                    .expect("TODO: handle error");
+
+                // Store token address in the array at current index
+                let token_slot = slots::TOKENS_WITH_FEES + length_value;
+                self.storage
+                    .sstore(
+                        self.contract_address,
+                        token_slot,
+                        call.userToken.into_u256(),
+                    )
+                    .expect("TODO: handle error");
+
+                // Increment array length
+                self.storage
+                    .sstore(
+                        self.contract_address,
+                        slots::TOKENS_WITH_FEES_LENGTH,
+                        length_value + U256::from(1),
+                    )
+                    .expect("TODO: handle error");
+            }
+        }
+
+        // Update fee info with actual used amount
+        fee_info.amount = fee_info.amount.saturating_add(call.actualUsed.to::<u128>());
+        fee_info.has_been_set = true;
+        self.set_fee_info(&call.userToken, &fee_info);
+
+        Ok(())
+    }
+
+    pub fn execute_block(
+        &mut self,
+        sender: &Address,
+        call: IFeeManager::executeBlockCall,
+    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
+        // Only protocol can call this (block-end execution)
+        if *sender != Address::ZERO {
+            return Err(IFeeManager::IFeeManagerErrors::OnlySystemContract(
+                IFeeManager::OnlySystemContract {},
+            ));
+        }
+
+        let validator = call.validator;
+
+        // Get validator's preferred token
+        let validator_token = match self.get_validator_token(&validator) {
+            Ok(token) => token,
+            Err(_) => {
+                // If no validator token set, nothing to do
+                return Ok(());
+            }
+        };
+
+        // Get the number of tokens with pending fees
+        let tokens_with_fees_length = self
+            .storage
+            .sload(self.contract_address, slots::TOKENS_WITH_FEES_LENGTH)
+            .expect("TODO: handle error")
+            .to::<usize>();
+
+        // Process each token with pending fees
+        for i in 0..tokens_with_fees_length {
+            // Get token address from array using dynamic array access
+            let token_slot = slots::TOKENS_WITH_FEES + U256::from(i);
+            let token_address = self
+                .storage
+                .sload(self.contract_address, token_slot)
+                .expect("TODO: handle error")
+                .into_address();
+
+            if token_address == Address::ZERO {
+                continue;
+            }
+
+            // Get collected fee amount for this token
+            let fee_info = self.get_fee_info(&token_address);
+            if fee_info.amount == 0 {
+                continue;
+            }
+
+            let fee_amount = U256::from(fee_info.amount);
+
+            if token_address == validator_token {
+                // Token is already validator's preferred token, just transfer
+                let token_id = address_to_token_id_unchecked(&validator_token);
+                let mut tip20_token = TIP20Token::new(token_id, self.storage);
+
+                tip20_token
+                    .transfer(
+                        &self.contract_address,
+                        ITIP20::transferCall {
+                            to: validator,
+                            amount: fee_amount,
+                        },
+                    )
+                    .map_err(|_| {
+                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                            IFeeManager::InsufficientFeeTokenBalance {},
+                        )
+                    })?;
+            } else {
+                // Need to swap to validator's token via AMM
+                // TODO: Implement swap when the AMM swap function is available
+                // For now, just transfer the tokens as-is
+                let token_id = address_to_token_id_unchecked(&token_address);
+                let mut tip20_token = TIP20Token::new(token_id, self.storage);
+
+                tip20_token
+                    .transfer(
+                        &self.contract_address,
+                        ITIP20::transferCall {
+                            to: validator,
+                            amount: fee_amount,
+                        },
+                    )
+                    .map_err(|_| {
+                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                            IFeeManager::InsufficientFeeTokenBalance {},
+                        )
+                    })?;
+            }
+
+            // Clear the fee info for this token
+            self.set_fee_info(
+                &token_address,
+                &FeeInfo {
+                    amount: 0,
+                    has_been_set: false,
+                },
+            );
+
+            // Clear token from array
+            self.storage
+                .sstore(self.contract_address, token_slot, U256::ZERO)
+                .expect("TODO: handle error");
+
+            // Clear token from tracking map
+            let in_array_slot = self.get_token_in_fees_array_slot(&token_address);
+            self.storage
+                .sstore(self.contract_address, in_array_slot, U256::ZERO)
+                .expect("TODO: handle error");
+        }
+
+        // Reset tokens with fees tracking
+        self.storage
+            .sstore(
+                self.contract_address,
+                slots::TOKENS_WITH_FEES_LENGTH,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        Ok(())
+    }
+
     // TODO: swap for validator token
 
     // TODO: queue deposit
 
     // TODO: queue withdrawal
-
-    // TODO: executeBlock
 
     // TODO: _executeDeposit
 
