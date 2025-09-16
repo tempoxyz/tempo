@@ -6,13 +6,13 @@ use reth_ethereum::{
     primitives::SignerRecoverable,
     tasks::TaskManager,
 };
-use reth_ethereum_primitives::TransactionSigned;
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_transaction_pool::{TransactionOrigin, pool::AddedTransactionState};
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::{args::TempoArgs, node::TempoNode};
 use tempo_precompiles::contracts::{storage::slots, tip_fee_manager};
+use tempo_primitives::TempoTxEnvelope;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
@@ -42,7 +42,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         "0x02f8ae820539800184ee6b2800831e84809420c000000000000000000000000000000000000080b844a9059cbb0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc0000000000000000000000000000000000000000000000000000000005f5e100c001a07c453d4ffe1b391089656e70658aa839435e18a5edab6113076166035c7d7afca06f454ef1b016bbf55cc147f4b20cda2719c5be22169b9c5c31366bde0c546d67"
     );
 
-    let tx = TransactionSigned::decode_2718_exact(&raw[..])?.try_into_recovered()?;
+    let tx = TempoTxEnvelope::decode_2718_exact(&raw[..])?.try_into_recovered()?;
     let signer = tx.signer();
     let slot = slots::mapping_slot(signer, tip_fee_manager::slots::USER_TOKENS);
     println!("Submitting tx from {signer} with fee manager token slot 0x{slot:x}");
