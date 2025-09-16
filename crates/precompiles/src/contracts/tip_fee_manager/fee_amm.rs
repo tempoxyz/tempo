@@ -279,12 +279,84 @@ impl<'a, S: StorageProvider> FeeAMM<'a, S> {
     /// Burn liquidity tokens
     pub fn burn(
         &mut self,
+        msg_sender: Address,
         user_token: Address,
         validator_token: Address,
         liquidity: U256,
         to: Address,
-    ) -> Result<(U256, U256), &'static str> {
-        todo!()
+    ) -> Result<(U256, U256), TIPFeeAMMError> {
+        let pool_id = self.get_pool_id(user_token, validator_token);
+
+        if !self.pool_exists(&pool_id) {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
+                ITIPFeeAMM::PoolDoesNotExist {},
+            ));
+        }
+
+        // Check user has sufficient liquidity
+        let balance = self.get_balance_of(&pool_id, &to);
+        if balance < liquidity {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+
+        // Calculate amounts to return
+        let (amount_user_token, amount_validator_token) =
+            self.calculate_burn_amounts(&pool_id, liquidity)?;
+
+        // Burn LP tokens
+        self.set_balance_of(&pool_id, &to, balance - liquidity);
+        let total_supply = self.get_total_supply(&pool_id);
+        self.set_total_supply(&pool_id, total_supply - liquidity);
+
+        // Update reserves
+        let mut pool = self.get_pool(&pool_id);
+        pool.reserve_user_token -= amount_user_token.to::<u128>();
+        pool.reserve_validator_token -= amount_validator_token.to::<u128>();
+        self.set_pool(&pool_id, &pool);
+
+        // Transfer tokens to user
+        let user_token_id = address_to_token_id_unchecked(&user_token);
+        let _ = TIP20Token::new(user_token_id, self.storage)
+            .transfer(
+                &self.contract_address,
+                ITIP20::transferCall {
+                    to,
+                    amount: amount_user_token,
+                },
+            )
+            .expect("TODO: handle error");
+
+        let validator_token_id = address_to_token_id_unchecked(&validator_token);
+        let _ = TIP20Token::new(validator_token_id, self.storage)
+            .transfer(
+                &self.contract_address,
+                ITIP20::transferCall {
+                    to,
+                    amount: amount_validator_token,
+                },
+            )
+            .expect("TODO: handle error");
+
+        // Emit Burn event
+        self.storage
+            .emit_event(
+                self.contract_address,
+                TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
+                    sender: msg_sender,
+                    token0: user_token,
+                    token1: validator_token,
+                    amount0: amount_user_token,
+                    amount1: amount_validator_token,
+                    liquidity,
+                    to,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
+
+        Ok((amount_user_token, amount_validator_token))
     }
 
     /// Calculate burn amounts for liquidity withdrawal
