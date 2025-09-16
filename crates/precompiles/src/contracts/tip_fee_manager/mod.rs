@@ -1,13 +1,10 @@
 pub mod amm;
-pub mod fee_amm;
-pub mod pool;
 
 use crate::contracts::{
     TIP20Token, address_to_token_id_unchecked,
     storage::{StorageOps, StorageProvider},
     tip_fee_manager::{
         amm::TIPFeeAMM,
-        pool::PoolKey,
         slots::{
             collected_fees_slot, token_in_fees_array_slot, user_token_slot, validator_token_slot,
         },

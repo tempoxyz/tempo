@@ -190,43 +190,18 @@ sol! {
         function pools(bytes32 poolId) external view returns (Pool memory);
         function poolExists(bytes32 poolId) external view returns (bool);
 
-        // Swapping
-        function swap(PoolKey memory key, address tokenIn, uint256 amountIn, address to) external;
-
         // Liquidity Operations
         function mint(PoolKey memory key, uint256 amount0, uint256 amount1, address to) external returns (uint256 liquidity);
         function burn(PoolKey memory key, uint256 liquidity, address to) external returns (uint256 amount0, uint256 amount1);
-        function queueDeposit(PoolKey memory key, uint256 amount, address depositToken) external;
-        function queueWithdraw(PoolKey memory key, uint256 liquidity) external;
-        function executeBlock() external;
-
-        // Pool Queries
-        function isPoolBalanced(PoolKey memory key) external view returns (bool);
-        function getLowerBalanceToken(PoolKey memory key) external view returns (address);
-        function getHigherBalanceToken(PoolKey memory key) external view returns (address);
-        function getTotalValue(PoolKey memory key) external view returns (uint256);
-        function pendingReserve0(bytes32 poolId) external view returns (uint256);
-        function pendingReserve1(bytes32 poolId) external view returns (uint256);
 
         // Liquidity Balances
         function totalSupply(bytes32 poolId) external view returns (uint256);
         function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
 
-        // Queue Information
-        function getOperationQueueLength() external view returns (uint256);
-        function getDepositQueueLength() external view returns (uint256);
-        function getWithdrawQueueLength() external view returns (uint256);
-
         // Events
         event PoolCreated(address indexed token0, address indexed token1);
         event Mint(address indexed sender, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity);
         event Burn(address indexed sender, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity, address to);
-        event DepositQueued(address indexed user, address indexed token0, address indexed token1, uint256 amount, address token);
-        event WithdrawQueued(address indexed user, address indexed token0, address indexed token1, uint256 liquidity);
-        event BlockExecuted(uint256 deposits, uint256 withdraws, uint256 feeSwaps);
-        event Deposit(address indexed user, address indexed token0, address indexed token1, address depositToken, uint256 amount, uint256 liquidity);
-        event Withdrawal(address indexed user, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity);
-        event Swap(address indexed token0, address indexed token1, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
 
         // Errors
         error IdenticalAddresses();
@@ -240,6 +215,46 @@ sol! {
         error InsufficientLiquidityBalance();
         error MustDepositLowerBalanceToken();
         error InvalidAmount();
+    }
+
+    /// FeeAMM interface matching the Solidity reference implementation.
+    /// This interface provides specialized AMM functionality for fee swapping
+    /// between user tokens and validator tokens with pending fee tracking.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
+    #[allow(clippy::too_many_arguments)]
+    interface IFeeAMM {
+        // Structs
+        struct Pool {
+            uint128 reserveUserToken;
+            uint128 reserveValidatorToken;
+            uint128 pendingFeeSwapIn;
+        }
+
+        // Pool Management
+        function createPool(address userToken, address validatorToken) external;
+        function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
+        function getPool(address userToken, address validatorToken) external view returns (Pool memory);
+
+        // Liquidity Operations
+        function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
+        function burn(address userToken, address validatorToken, uint256 liquidity, address to) external returns (uint256 amountUserToken, uint256 amountValidatorToken);
+
+        // Swapping
+        function feeSwap(address userToken, address validatorToken, uint256 amountIn, address to) external returns (uint256 amountOut);
+        function rebalanceSwap(address userToken, address validatorToken, uint256 amountIn, address to) external returns (uint256 amountOut);
+        function executePendingFeeSwaps(address userToken, address validatorToken) external returns (uint256 pendingUserToken);
+
+        function getPendingUserToken(address userToken, address validatorToken) external view returns (uint256 pendingUserToken);
+        function calculateLiquidity(uint256 x, uint256 y) external pure returns (uint256);
+        function calculateNewReserve(uint256 knownValidatorReserve, uint256 l) external pure returns (uint256);
+
+        // Events
+        event PoolCreated(address indexed userToken, address indexed validatorToken);
+        event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
+        event Burn(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity, address to);
+        event FeeSwap(address indexed userToken, address indexed validatorToken, uint256 amountIn, uint256 amountOut);
+        event RebalanceSwap(address indexed userToken, address indexed validatorToken, uint256 amountIn, uint256 amountOut);
     }
 
     /// FeeManager interface for managing gas fee collection and distribution.
