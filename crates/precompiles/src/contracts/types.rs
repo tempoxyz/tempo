@@ -162,20 +162,12 @@ sol! {
     #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
     interface ITIPFeeAMM {
+
         // Structs
         struct Pool {
-            uint128 reserve0;
-            uint128 reserve1;
-            uint128 pendingReserve0;
-            uint128 pendingReserve1;
-        }
-
-        struct QueuedOperation {
-            uint8 opType; // 0 = Deposit, 1 = Withdraw
-            address user;
-            bytes32 poolKey;
-            uint256 amount;
-            address token;
+            uint128 reserveUserToken;
+            uint128 reserveValidatorToken;
+            uint128 pendingFeeSwapIn;
         }
 
         struct PoolKey {
@@ -184,15 +176,15 @@ sol! {
         }
 
         // Pool Management
-        function createPool(address tokenA, address tokenB) external;
-        function getPoolId(PoolKey memory key) external pure returns (bytes32);
-        function getPool(PoolKey memory key) external view returns (Pool memory);
+        function createPool(address userToken, address validatorToken) external;
+        function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
+        function getPool(address userToken, address validatorToken) external view returns (Pool memory);
         function pools(bytes32 poolId) external view returns (Pool memory);
         function poolExists(bytes32 poolId) external view returns (bool);
 
         // Liquidity Operations
-        function mint(PoolKey memory key, uint256 amount0, uint256 amount1, address to) external returns (uint256 liquidity);
-        function burn(PoolKey memory key, uint256 liquidity, address to) external returns (uint256 amount0, uint256 amount1);
+        function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
+        function burn(address userToken, address validatorToken, uint256 liquidity, address to) returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
         // Liquidity Balances
         function totalSupply(bytes32 poolId) external view returns (uint256);
@@ -248,6 +240,12 @@ sol! {
         function getPendingUserToken(address userToken, address validatorToken) external view returns (uint256 pendingUserToken);
         function calculateLiquidity(uint256 x, uint256 y) external pure returns (uint256);
         function calculateNewReserve(uint256 knownValidatorReserve, uint256 l) external pure returns (uint256);
+
+        // Public mappings
+        function pools(bytes32 poolId) external view returns (Pool memory);
+        function totalSupply(bytes32 poolId) external view returns (uint256);
+        function balanceOf(bytes32 poolId, address user) external view returns (uint256);
+        function poolExists(bytes32 poolId) external view returns (bool);
 
         // Events
         event PoolCreated(address indexed userToken, address indexed validatorToken);

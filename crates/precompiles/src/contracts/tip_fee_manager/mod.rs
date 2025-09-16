@@ -4,7 +4,8 @@ use crate::contracts::{
     TIP20Token, address_to_token_id_unchecked,
     storage::{StorageOps, StorageProvider},
     tip_fee_manager::{
-        amm::TIPFeeAMM,
+        amm::{PoolKey, TIPFeeAMM},
+        pool::PoolKey,
         slots::{
             collected_fees_slot, token_in_fees_array_slot, user_token_slot, validator_token_slot,
         },
@@ -253,7 +254,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     /// Retrieves pool data by ID
     pub fn pools(&mut self, call: ITIPFeeAMM::poolsCall) -> ITIPFeeAMM::Pool {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.pools(call)
+        amm.get_pool(&call.poolId).into()
     }
 
     /// Checks if a pool exists
@@ -269,7 +270,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         call: ITIPFeeAMM::mintCall,
     ) -> Result<U256, ITIPFeeAMM::ITIPFeeAMMErrors> {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.mint(msg_sender, call)
+        amm.mint(
+            msg_sender,
+            call.userToken,
+            call.validatorToken,
+            call.amountUserToken,
+            call.amountValidatorToken,
+            call.to,
+        )
     }
 
     /// Burn liquidity tokens
@@ -279,20 +287,29 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         call: ITIPFeeAMM::burnCall,
     ) -> Result<ITIPFeeAMM::burnReturn, ITIPFeeAMM::ITIPFeeAMMErrors> {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.burn(msg_sender, call)
-            .map(|(amount0, amount1)| ITIPFeeAMM::burnReturn { amount0, amount1 })
+        amm.burn(
+            msg_sender,
+            call.userToken,
+            call.validatorToken,
+            call.liquidity,
+            call.to,
+        )
+        .map(|(amount0, amount1)| ITIPFeeAMM::burnReturn {
+            amountUserToken: amount0,
+            amountValidatorToken: amount1,
+        })
     }
 
     /// Get total supply of LP tokens for a pool (inherited from TIPFeeAMM)
     pub fn total_supply(&mut self, call: ITIPFeeAMM::totalSupplyCall) -> U256 {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.total_supply(call)
+        amm.get_total_supply(&call.poolId)
     }
 
     /// Get liquidity balance of a user for a pool (inherited from TIPFeeAMM)
     pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> U256 {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.liquidity_balances(call)
+        amm.get_balance_of(&call.poolId, &call.user)
     }
 
     /// Creates a new liquidity pool. Calls inner [`TIPFeeAMM::create_pool`] to initialize storage
@@ -304,30 +321,29 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         // Delegate to TIPFeeAMM using the SAME contract address and storage
         // This works because FeeManager "is" a TIPFeeAMM at the storage level
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.create_pool(call.clone())?;
+        amm.create_pool(call.userToken, call.validatorToken)?;
 
         // Initialize fee tracking for the pool tokens
-        let pool_key = PoolKey::new(call.tokenA, call.tokenB);
-        let token_0_slot = collected_fees_slot(&pool_key.token0);
-        let token_1_slot = collected_fees_slot(&pool_key.token1);
+        let user_token_slot = collected_fees_slot(&call.userToken);
+        let validator_token_slot = collected_fees_slot(&call.validatorToken);
         let fee_info_value = U256::from(1u128) << 128;
-        self.sstore(token_0_slot, fee_info_value);
-        self.sstore(token_1_slot, fee_info_value);
+        self.sstore(user_token_slot, fee_info_value);
+        self.sstore(validator_token_slot, fee_info_value);
 
         Ok(())
     }
 
-    /// Delegates pool ID calculation to TIPFeeAMM (inherited functionality)
+    /// Delegates pool ID calculation to TIPFeeAMM
     pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> alloy::primitives::B256 {
-        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.get_pool_id(call)
+        let amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        amm.get_pool_id(call.userToken, call.validatorToken)
     }
 
     /// Delegates pool data retrieval to TIPFeeAMM (inherited functionality)
     pub fn get_pool(&mut self, call: ITIPFeeAMM::getPoolCall) -> ITIPFeeAMM::Pool {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        let pool_id = amm.get_pool_id(ITIPFeeAMM::getPoolIdCall { key: call.key });
-        amm.get_pool(&pool_id).into()
+        let pool_key = PoolKey::new(call.userToken, call.validatorToken);
+        amm.get_pool(&pool_key.get_id()).into()
     }
 }
 
@@ -386,21 +402,6 @@ mod tests {
 
     use super::*;
     use crate::{TIP_FEE_MANAGER_ADDRESS, contracts::HashMapStorageProvider};
-
-    #[test]
-    fn test_pool_key_ordering() {
-        let addr1 = Address::from([1u8; 20]);
-        let addr2 = Address::from([2u8; 20]);
-
-        let key1 = PoolKey::new(addr1, addr2);
-        assert_eq!(key1.token0, addr1);
-        assert_eq!(key1.token1, addr2);
-
-        let key2 = PoolKey::new(addr2, addr1);
-        assert_eq!(key2.token0, addr1);
-        assert_eq!(key2.token1, addr2);
-        assert_eq!(key1, key2);
-    }
 
     #[test]
     fn test_create_pool() {

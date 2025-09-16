@@ -28,6 +28,16 @@ pub struct Pool {
     pub pending_fee_swap_in: u128,
 }
 
+impl From<Pool> for ITIPFeeAMM::Pool {
+    fn from(value: Pool) -> Self {
+        ITIPFeeAMM::Pool {
+            reserveUserToken: value.reserve_user_token,
+            reserveValidatorToken: value.reserve_validator_token,
+            pendingFeeSwapIn: value.pending_fee_swap_in,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PoolKey {
     pub user_token: Address,
@@ -449,7 +459,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Get total supply of LP tokens for a pool
-    fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
+    pub fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
         let slot = slots::total_supply_slot(pool_id);
         self.sload(slot)
     }
@@ -461,7 +471,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Get user's LP token balance
-    fn get_balance_of(&mut self, pool_id: &B256, user: &Address) -> U256 {
+    pub fn get_balance_of(&mut self, pool_id: &B256, user: &Address) -> U256 {
         let slot = slots::balance_of_slot(pool_id, user);
         self.sload(slot)
     }
