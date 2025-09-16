@@ -21,7 +21,6 @@ use tempo_precompiles::{
         storage::slots::mapping_slot,
         tip_fee_manager::{self, TipFeeManager},
         tip20,
-        types::IFeeManager,
     },
 };
 use tracing::trace;

@@ -8,7 +8,7 @@ use crate::{
 };
 use alloy::{
     primitives::Address,
-    sol_types::{SolCall, SolValue},
+    sol_types::SolCall,
 };
 use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
 

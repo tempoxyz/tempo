@@ -15,8 +15,6 @@ use alloy::primitives::{Address, B256, IntoLogData, Signature as EthSignature, U
 use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
 use alloy_primitives::Bytes;
 use reth_evm::revm::state::Bytecode;
-use reth_storage_api::errors::db;
-use tracing::trace;
 
 pub mod slots {
     use alloy::primitives::{U256, uint};

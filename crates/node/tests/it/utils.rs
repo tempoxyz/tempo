@@ -6,7 +6,6 @@
 use alloy::{
     primitives::Address, providers::Provider, sol_types::SolEvent, transports::http::reqwest::Url,
 };
-use alloy_primitives::U256;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
@@ -16,7 +15,7 @@ use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP20_FACTORY_ADDRESS,
     contracts::{
         ITIP20::ITIP20Instance, ITIP20Factory, tip20::ISSUER_ROLE, token_id_to_address,
         types::IRolesAuth,

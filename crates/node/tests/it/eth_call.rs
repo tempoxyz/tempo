@@ -16,7 +16,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::contracts::{
     ITIP20::{self, transferCall},
     storage::slots::mapping_slot,
-    tip20, token_id_to_address,
+    tip20,
 };
 
 #[tokio::test(flavor = "multi_thread")]
