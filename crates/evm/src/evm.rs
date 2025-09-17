@@ -12,8 +12,11 @@ use alloy_evm::{
         primitives::hardfork::SpecId,
     },
 };
-use alloy_primitives::{Address, Bytes};
-use reth_revm::MainContext;
+use alloy_primitives::{Address, Bytes, TxKind};
+use reth_revm::{
+    InspectSystemCallEvm, MainContext,
+    context::result::{ExecutionResult, InvalidTransaction},
+};
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
 use tempo_revm::{TempoTxEnv, evm::TempoContext};
@@ -148,22 +151,42 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // Disable base fee check for system transactions
-        let prev_disable_base_fee = tx
-            .is_system_tx
-            .then(|| core::mem::replace(&mut self.ctx_mut().cfg.disable_base_fee, true));
+        if tx.is_system_tx {
+            let TxKind::Call(to) = tx.inner.kind else {
+                return Err(EVMError::Transaction(
+                    InvalidTransaction::BlobCreateTransaction,
+                ));
+            };
 
-        let result = if self.inspect {
+            let mut result = if self.inspect {
+                self.inner
+                    .inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+            } else {
+                self.inner
+                    .system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+            };
+
+            // system transactions should not consume any gas
+            let ExecutionResult::Success {
+                gas_used,
+                gas_refunded,
+                ..
+            } = &mut result.result
+            else {
+                return Err(EVMError::Transaction(
+                    InvalidTransaction::BlobCreateTransaction,
+                ));
+            };
+
+            *gas_used = 0;
+            *gas_refunded = 0;
+
+            Ok(result)
+        } else if self.inspect {
             self.inner.inspect_tx(tx)
         } else {
             self.inner.transact(tx)
-        };
-
-        if let Some(prev_disable_base_fee) = prev_disable_base_fee {
-            self.ctx_mut().cfg.disable_base_fee = prev_disable_base_fee;
         }
-
-        result
     }
 
     fn transact_system_call(

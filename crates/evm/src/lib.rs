@@ -13,14 +13,14 @@ use reth_evm::{
     self, ConfigureEngineEvm, ConfigureEvm, Database, EvmEnv, EvmEnvFor, ExecutableTxIterator,
     ExecutionCtxFor, NextBlockEnvAttributes,
     block::{BlockExecutorFactory, BlockExecutorFor},
-    eth::{EthBlockExecutionCtx, EthBlockExecutor},
+    eth::EthBlockExecutionCtx,
     revm::{Inspector, database::State},
 };
 use reth_primitives_traits::{Header, SealedBlock, SealedHeader, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
-use crate::{block::TempoReceiptBuilder, evm::TempoEvm};
+use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::{EthBlockAssembler, EthEvmConfig};
 use tempo_chainspec::TempoChainSpec;
 use tempo_revm::evm::TempoContext;
@@ -81,7 +81,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: Database + 'a,
         I: Inspector<TempoContext<&'a mut State<DB>>> + 'a,
     {
-        EthBlockExecutor::new(evm, ctx, self.chain_spec(), TempoReceiptBuilder::default())
+        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
     }
 }
 

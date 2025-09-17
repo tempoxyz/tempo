@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::SystemTime};
 
-use alloy_primitives::B256;
+use alloy_primitives::{B64, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
@@ -15,7 +15,10 @@ use futures_util::{
     future::{BoxFuture, Either, try_join},
 };
 use rand::{CryptoRng, Rng};
-use reth::payload::PayloadBuilderHandle;
+use reth::{
+    payload::{EthPayloadBuilderAttributes, PayloadBuilderHandle},
+    rpc::types::Withdrawals,
+};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
@@ -226,11 +229,6 @@ where
     fn propose(&self, propose: Propose) -> RunPropose<tempo_primitives::Block> {
         RunPropose {
             request: propose,
-            engine: self
-                .execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
             fee_recipient: self.fee_recipient,
             genesis_block: self.genesis_block.clone(),
             latest_proposed_block: self.latest_proposed_block.clone(),
@@ -423,7 +421,6 @@ where
     TBlock: reth_primitives_traits::Block + 'static,
 {
     request: Propose,
-    engine: ConsensusEngineHandle<TempoPayloadTypes>,
     fee_recipient: alloy_primitives::Address,
     genesis_block: Arc<Block<TBlock>>,
     latest_proposed_block: Arc<RwLock<Option<Block<TBlock>>>>,
@@ -445,7 +442,6 @@ impl RunPropose<tempo_primitives::Block> {
     async fn given_timestamp(self, timestamp: SystemTime) -> eyre::Result<()> {
         let Self {
             request,
-            engine,
             fee_recipient,
             genesis_block,
             latest_proposed_block,
@@ -453,8 +449,7 @@ impl RunPropose<tempo_primitives::Block> {
             mut syncer_mailbox,
         } = self;
         let Propose {
-            // TODO: is there any extra use for this outside of emitting events?
-            view: _view,
+            view,
             parent,
             mut response,
         } = request;
@@ -484,45 +479,28 @@ impl RunPropose<tempo_primitives::Block> {
             if timestamp <= parent.timestamp() {
                 timestamp = parent.timestamp().saturating_add(1);
             }
-            let payload_attrs = alloy_rpc_types_engine::PayloadAttributes {
-                timestamp,
-                // XXX(tempo-malachite): for PoS compatibility
-                prev_randao: B256::ZERO,
-                suggested_fee_recipient: fee_recipient,
-                // XXX(tempo-malachite): empty withdrawals post-shanghai
-                withdrawals: Some(vec![]),
-                // TODO: tempo-malachite does this (why?); but maybe we can
-                // use the consensus block' digest for this? alternatively somehow
-                // tie this to the threshold simplex view / round / height?;
-                parent_beacon_block_root: Some(B256::ZERO),
-            };
-            let parent_block_hash = parent.block_hash();
 
-            // XXX: sets head = safe = finalized = parent because our finalization
-            // steps does the same.
-            //
-            // TODO: revisit this if we ever relax HEAD pointing a
-            // not-yet-finalized head.
-            let forkchoice_state = ForkchoiceState {
-                head_block_hash: parent_block_hash,
-                safe_block_hash: parent_block_hash,
-                finalized_block_hash: parent_block_hash,
-            };
-
-            let forkchoice_updated = engine
-                .fork_choice_updated(
-                    forkchoice_state,
-                    Some(payload_attrs),
-                    reth_node_builder::EngineApiMessageVersion::V3,
-                )
+            let payload_id = payload_builder
+                .send_new_payload(EthPayloadBuilderAttributes {
+                    // XXX: payload builder attributes are caller defined, so the
+                    // consensus `view` is a good place for it.
+                    id: B64::from(view).into(),
+                    parent: parent.block_hash(),
+                    timestamp,
+                    suggested_fee_recipient: fee_recipient,
+                    // XXX(tempo-malachite): for PoS compatibility
+                    prev_randao: B256::ZERO,
+                    // XXX(tempo-malachite): empty withdrawals post-shanghai
+                    withdrawals: Withdrawals::default(),
+                    // TODO: tempo-malachite does this (why?); but maybe we can
+                    // use the consensus block' digest for this? alternatively somehow
+                    // tie this to the threshold simplex view / round / height?;
+                    parent_beacon_block_root: Some(B256::ZERO),
+                })
                 .await
-                .wrap_err("failed sending fork_choice_updated to execution node")?;
-
-            let payload_id = forkchoice_updated.payload_id.ok_or_eyre(
-                "execution node did not return a payload ID - \
-                            `fork_choice_update.payload_id` was empty; \
-                            cannot continue without it",
-            )?;
+                .map_err(|_| eyre!("channel was closed before a response was returned"))
+                .and_then(|ret| ret.wrap_err("execution layer rejected request"))
+                .wrap_err("failed requesting new payload from the execution layer")?;
 
             // XXX: resolves to a payload with at least one transactions included.
             //
