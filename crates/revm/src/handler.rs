@@ -199,13 +199,12 @@ where
         let mut fee_manager =
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
 
-        dbg!(actual_used);
-        dbg!(refund_amount);
-        // Call collectFeePostTx (handles both refund and fee queuing)
-        fee_manager
-            .collect_fee_post_tx(caller, actual_used, refund_amount, self.fee_token)
-            .map_err(|_| EVMError::Custom("Failed to collect post-tx fee".to_string()))?;
-
+        if !actual_used.is_zero() || !refund_amount.is_zero() {
+            // Call collectFeePostTx (handles both refund and fee queuing)
+            fee_manager
+                .collect_fee_post_tx(caller, actual_used, refund_amount, self.fee_token)
+                .map_err(|_| EVMError::Custom("Failed to collect post-tx fee".to_string()))?;
+        }
         Ok(())
     }
 

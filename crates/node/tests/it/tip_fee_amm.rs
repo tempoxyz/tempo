@@ -7,6 +7,7 @@ use alloy::{
 };
 use alloy_primitives::{Address, address, uint};
 use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
@@ -469,21 +470,21 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     let transfer_receipt = transfer_token
         .transfer(Address::random(), transfer_amount)
+        .gas_price(TEMPO_BASE_FEE as u128)
         .send()
         .await?
         .get_receipt()
         .await?;
     assert!(transfer_receipt.status());
 
+    dbg!(transfer_receipt.gas_used);
+    dbg!(transfer_receipt.effective_gas_price);
+
     // Assert that gas token in was swapped to the validator token
     let user_balance = user_token.balanceOf(user_address).call().await?;
     assert!(user_balance < initial_user_balance);
 
     let validator_balance = validator_token.balanceOf(validator_address).call().await?;
-
-    dbg!(initial_validator_balance);
-    dbg!(validator_balance);
-
     assert!(validator_balance > initial_validator_balance);
 
     Ok(())

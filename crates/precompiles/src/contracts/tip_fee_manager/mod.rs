@@ -262,7 +262,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         user_token: Address,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         // Refund unused tokens to user
-        if refund_amount > U256::ZERO {
+        if !refund_amount.is_zero() {
             let token_id = address_to_token_id_unchecked(&user_token);
             let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
