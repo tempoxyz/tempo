@@ -2,8 +2,14 @@ use super::fee_token::TxFeeToken;
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError,
 };
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use reth_primitives_traits::InMemorySize;
+
+/// Fake signature for Tempo system transactions.
+pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
+
+/// Fake sender for Tempo system transactions.
+pub const TEMPO_SYSTEM_TX_SENDER: Address = Address::ZERO;
 
 /// Tempo transaction envelope containing all supported transaction types
 ///
@@ -69,6 +75,11 @@ impl TempoTxEnvelope {
             _ => None,
         }
     }
+
+    /// Returns true if this is a Tempo system transaction
+    pub fn is_system_tx(&self) -> bool {
+        matches!(self, Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE)
+    }
 }
 
 impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
@@ -76,6 +87,7 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
         match self {
+            Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE => Ok(Address::ZERO),
             Self::Legacy(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer(tx),
             Self::Eip2930(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
@@ -96,6 +108,7 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
         match self {
+            Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE => Ok(Address::ZERO),
             Self::Legacy(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
             }

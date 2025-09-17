@@ -47,6 +47,13 @@ where
             }
         };
 
+        if transaction.inner().is_system_tx() {
+            return TransactionValidationOutcome::Error(
+                *transaction.hash(),
+                InvalidTransactionError::TxTypeNotSupported.into(),
+            );
+        }
+
         let balance = match state_provider.get_fee_token_balance(transaction.sender()) {
             Ok(balance) => balance,
             Err(err) => {
