@@ -2,13 +2,16 @@ pub mod amm;
 pub mod fee;
 
 use crate::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN,
     contracts::{
         TIP20Token, address_to_token_id_unchecked,
         storage::{StorageOps, StorageProvider},
         tip_fee_manager::{
             amm::{PoolKey, TIPFeeAMM},
-            slots::{collected_fees_slot, user_token_slot, validator_token_slot},
+            slots::{
+                collected_fees_slot, pending_fee_tokens_length_slot, pending_fee_tokens_slot,
+                user_token_slot, validator_token_slot,
+            },
         },
         types::{FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
     },
@@ -41,6 +44,10 @@ pub mod slots {
     pub const USER_TOKENS: U256 = uint!(5_U256);
     pub const COLLECTED_FEES: U256 = uint!(6_U256);
 
+    // Pending fee tokens dynamic array
+    pub const PENDING_FEE_TOKENS_LENGTH: U256 = uint!(7_U256);
+    pub const PENDING_FEE_TOKENS_BASE: U256 = uint!(8_U256);
+
     pub fn validator_token_slot(validator: &Address) -> U256 {
         mapping_slot(validator, VALIDATOR_TOKENS)
     }
@@ -51,6 +58,16 @@ pub mod slots {
 
     pub fn collected_fees_slot(token: &Address) -> U256 {
         mapping_slot(token, COLLECTED_FEES)
+    }
+
+    /// Get slot for the length of pending fee tokens array
+    pub fn pending_fee_tokens_length_slot() -> U256 {
+        PENDING_FEE_TOKENS_LENGTH
+    }
+
+    /// Get slot for specific index in pending fee tokens array
+    pub fn pending_fee_tokens_slot(index: U256) -> U256 {
+        PENDING_FEE_TOKENS_BASE + index
     }
 }
 
@@ -69,8 +86,6 @@ pub mod slots {
 pub struct TipFeeManager<'a, S: StorageProvider> {
     contract_address: Address,
     beneficiary: Address,
-    // TODO: docs, vec to track fees collected in the current block
-    pending_fees: Vec<Address>,
     storage: &'a mut S,
 }
 
@@ -84,7 +99,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Self {
             contract_address,
             beneficiary,
-            pending_fees: vec![],
             storage,
         }
     }
@@ -291,7 +305,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 let pool_id = fee_amm.get_pool_id(user_token, validator_token);
                 let mut pool = fee_amm.get_pool(&pool_id);
                 pool.pending_fee_swap_in += actual_used.to::<u128>();
-                self.pending_fees.push(user_token);
+
+                // Add user_token to pending fee tokens array for processing in execute_block
+                self.push_pending_fee_token(user_token);
             }
 
             self.increment_collected_fees(&user_token, actual_used);
@@ -319,8 +335,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             return Ok(());
         }
 
+        let pending_fee_tokens = self.drain_pending_fee_tokens();
         let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        for user_token in self.pending_fees.iter() {
+
+        for user_token in pending_fee_tokens.iter() {
             let amount_out = fee_amm
                 .execute_pending_fee_swap(*user_token, validator_token)
                 .expect("TODO: handle error");
@@ -343,8 +361,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })?;
         }
 
-        self.pending_fees.clear();
-
         Ok(())
     }
 
@@ -357,6 +373,40 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let slot = collected_fees_slot(token);
         let current_val = self.sload(slot);
         self.sstore(slot, current_val + value);
+    }
+
+    /// Push a token to the pending fee tokens array
+    fn push_pending_fee_token(&mut self, token: Address) {
+        // Get length of the array and store the pending token
+        let length_slot = pending_fee_tokens_length_slot();
+        let length = self.sload(length_slot);
+        let slot = pending_fee_tokens_slot(length);
+        self.sstore(slot, token.into_u256());
+
+        // Update the length of the array
+        self.sstore(length_slot, length + U256::ONE);
+    }
+
+    /// Drain all pending fee tokens by popping from the back until empty
+    /// Returns a Vec<Address> with all the tokens that were in storage
+    fn drain_pending_fee_tokens(&mut self) -> Vec<Address> {
+        let mut tokens = Vec::new();
+        let length_slot = pending_fee_tokens_length_slot();
+        let mut length = self.sload(length_slot);
+
+        while !length.is_zero() {
+            let last_index = length - U256::ONE;
+            let slot = pending_fee_tokens_slot(last_index);
+            let token = self.sload(slot).into_address();
+            tokens.push(token);
+
+            length = last_index;
+        }
+
+        // Update storage with final length (0)
+        self.sstore(length_slot, U256::ZERO);
+
+        tokens
     }
 
     pub fn user_tokens(&mut self, call: IFeeManager::userTokensCall) -> Address {

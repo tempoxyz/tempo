@@ -1,6 +1,8 @@
 use crate::utils::{await_receipts, setup_test_node, setup_test_token};
 use alloy::{
-    primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder,
+    primitives::U256,
+    providers::ProviderBuilder,
+    signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
 };
 use alloy_primitives::{Address, address, uint};
