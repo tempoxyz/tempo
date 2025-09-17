@@ -269,37 +269,48 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })?;
         }
 
-        // Track fee info for later swap execution
-        let fees_slot = collected_fees_slot(&user_token);
-        let fees_value = self.sload(fees_slot);
-        let current_amount = (fees_value & U256::from(u128::MAX)).to::<u128>();
-        let has_been_set = fees_value >= (U256::from(1u128) << 128);
+        // Track collected fees (only the actual used amount)
+        if !actual_used.is_zero() {
+            self.track_collected_fees(&user_token, actual_used)?;
+        }
 
-        // Add to tracking array if first time collecting fees for this token
-        if current_amount == 0 && !has_been_set {
-            let in_array_slot = token_in_fees_array_slot(&user_token);
+        Ok(())
+    }
+
+    /// Helper function to track collected fees and add token to tracking array if needed
+    fn track_collected_fees(
+        &mut self,
+        token: &Address,
+        amount: U256,
+    ) -> Result<(), IFeeManager::IFeeManagerErrors> {
+        // Get current collected fees for this token
+        let fees_slot = collected_fees_slot(token);
+        let current_amount = self.sload(fees_slot);
+
+        // If this is the first time collecting fees for this token, add it to the tracking array
+        if current_amount.is_zero() {
+            let in_array_slot = token_in_fees_array_slot(token);
             let in_array = self.sload(in_array_slot) != U256::ZERO;
 
             if !in_array {
-                // Mark token as being in the array
-                self.sstore(in_array_slot, U256::ONE);
-
                 // Get current array length
                 let length_value = self.sload(slots::TOKENS_WITH_FEES_LENGTH);
 
                 // Store token address in the array at current index
                 let token_slot = slots::TOKENS_WITH_FEES_ARRAY + length_value;
-                self.sstore(token_slot, user_token.into_u256());
+                self.sstore(token_slot, token.into_u256());
+
+                // Mark token as being in the array
+                self.sstore(in_array_slot, U256::ONE);
 
                 // Increment array length
                 self.sstore(slots::TOKENS_WITH_FEES_LENGTH, length_value + U256::from(1));
             }
         }
 
-        // Update fee info with actual used amount
-        let new_amount = current_amount.saturating_add(actual_used.to::<u128>());
-        let new_fees_value = (U256::from(1u128) << 128) | U256::from(new_amount);
-        self.sstore(fees_slot, new_fees_value);
+        // Update collected fees amount
+        let new_amount = current_amount.saturating_add(amount);
+        self.sstore(fees_slot, new_amount);
 
         Ok(())
     }
