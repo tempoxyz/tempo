@@ -3,7 +3,6 @@ use alloy::{
     providers::ProviderBuilder,
     signers::local::{MnemonicBuilder, coins_bip39::English},
 };
-use alloy_primitives::Address;
 use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,

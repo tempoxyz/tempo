@@ -425,7 +425,6 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     );
     await_receipts(&mut pending).await?;
 
-    dbg!("minted");
     // Verify liquidity was added
     let pool = fee_amm.pools(pool_id).call().await?;
     assert_eq!(pool.reserveUserToken, liquidity.to::<u128>());
@@ -442,9 +441,6 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?;
     assert_eq!(user_lp_balance, expected_initial_liquidity);
 
-    // Get initial validator token balance
-    let initial_validator_balance = validator_token.balanceOf(validator_address).call().await?;
-
     // Set different tokens for user and validator, validator is already set to predeployed fee
     // token
     pending.push(
@@ -456,12 +452,16 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     // Verify tokens are set correctly
-    let user_token = fee_manager.userTokens(user_address).call().await?;
-    let val_token = fee_manager
+    let user_fee_token = fee_manager.userTokens(user_address).call().await?;
+    let val_fee_token = fee_manager
         .validatorTokens(validator_address)
         .call()
         .await?;
-    assert_ne!(user_token, val_token);
+    assert_ne!(user_fee_token, val_fee_token);
+
+    // Get initial validator token balance
+    let initial_validator_balance = validator_token.balanceOf(validator_address).call().await?;
+    let initial_user_balance = user_token.balanceOf(user_address).call().await?;
 
     // Transfer using predeployed TIP20
     let transfer_token = ITIP20::new(token_id_to_address(0), provider.clone());
@@ -475,9 +475,16 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?;
     assert!(transfer_receipt.status());
 
-    // // Assert that gas token in was swapped to the validator token
-    // let validator_balance = validator_token.balanceOf(validator_address).call().await?;
-    // assert!(validator_balance > initial_validator_balance);
+    // Assert that gas token in was swapped to the validator token
+    let user_balance = user_token.balanceOf(user_address).call().await?;
+    assert!(user_balance < initial_user_balance);
+
+    let validator_balance = validator_token.balanceOf(validator_address).call().await?;
+
+    dbg!(initial_validator_balance);
+    dbg!(validator_balance);
+
+    assert!(validator_balance > initial_validator_balance);
 
     Ok(())
 }

@@ -165,14 +165,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
     }
 
-    /// Execute a fee swap
-    pub fn fee_swap(
+    /// Execute a single pending fee swap
+    pub fn execute_pending_fee_swap(
         &mut self,
-        msg_sender: Address,
         user_token: Address,
         validator_token: Address,
-        amount_in: U256,
-        to: Address,
     ) -> Result<U256, TIPFeeAMMError> {
         let pool_id = self.get_pool_id(user_token, validator_token);
         if !self.pool_exists(&pool_id) {
@@ -180,46 +177,23 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 ITIPFeeAMM::PoolDoesNotExist {},
             ));
         }
+
         let mut pool = self.get_pool(&pool_id);
+        let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
 
-        let amount_out = (amount_in * M) / SCALE;
+        pool.reserve_user_token = pool
+            .reserve_user_token
+            .checked_add(pool.pending_fee_swap_in)
+            .expect("TODO: handle overflow");
 
-        let effective_validator_reserve = self.get_effective_validator_reserve(&pool);
-        if amount_out > effective_validator_reserve {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
-        }
+        let amount_out = pool.reserve_validator_token - pending_out.to::<u128>();
+        pool.reserve_validator_token = amount_out;
 
-        pool.pending_fee_swap_in += amount_in.to::<u128>();
+        // Clear pending swap
+        pool.pending_fee_swap_in = 0;
         self.set_pool(&pool_id, &pool);
 
-        // Transfer tokens
-        let user_token_id = address_to_token_id_unchecked(&user_token);
-        let _ = TIP20Token::new(user_token_id, self.storage)
-            .transfer_from(
-                &self.contract_address,
-                ITIP20::transferFromCall {
-                    // TODO: this is to spec but should this be self.contract_address?
-                    from: msg_sender,
-                    to: self.contract_address,
-                    amount: amount_in,
-                },
-            )
-            .expect("TODO: handle error");
-
-        let validator_token_id = address_to_token_id_unchecked(&validator_token);
-        let _ = TIP20Token::new(validator_token_id, self.storage)
-            .transfer(
-                &self.contract_address,
-                ITIP20::transferCall {
-                    to,
-                    amount: amount_out,
-                },
-            )
-            .expect("TODO: handle error");
-
-        Ok(amount_out)
+        Ok(U256::from(amount_out))
     }
 
     /// Execute a rebalancing swap
