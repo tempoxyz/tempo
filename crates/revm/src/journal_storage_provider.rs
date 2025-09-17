@@ -48,6 +48,7 @@ impl<'a, J: JournalTr> StorageProvider for JournalStorageProvider<'a, J> {
 
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
         self.journal.load_account(address)?;
+        self.journal.touch_account(address);
         self.journal.sstore(address, key, value)?;
         Ok(())
     }
@@ -60,6 +61,7 @@ impl<'a, J: JournalTr> StorageProvider for JournalStorageProvider<'a, J> {
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
         self.journal.load_account(address)?;
+        self.journal.touch_account(address);
         let value = self.journal.sload(address, key)?;
         Ok(value.data)
     }
