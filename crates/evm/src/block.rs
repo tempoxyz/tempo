@@ -86,12 +86,7 @@ where
             ));
         }
 
-        if tx.to() != Some(TIP_FEE_MANAGER_ADDRESS)
-            || tx.input()
-                != &(executeBlockCall {
-                    validator: self.evm().block().beneficiary,
-                }
-                .abi_encode())
+        if tx.to() != Some(TIP_FEE_MANAGER_ADDRESS) || tx.input() != &executeBlockCall.abi_encode()
         {
             // todo: change once <https://github.com/alloy-rs/evm/pull/176> is merged
             return Err(BlockValidationError::DepositRequestDecode(
