@@ -70,8 +70,8 @@ mod tests {
         let alice_balance_slot = mapping_slot(alice, U256::from(10));
         let bob_balance_slot = mapping_slot(bob, U256::from(10));
 
-        println!("Alice balance slot: 0x{:064x}", alice_balance_slot);
-        println!("Bob balance slot: 0x{:064x}", bob_balance_slot);
+        println!("Alice balance slot: 0x{alice_balance_slot:064x}");
+        println!("Bob balance slot: 0x{bob_balance_slot:064x}");
 
         // Verify they're different
         assert_ne!(alice_balance_slot, bob_balance_slot);
@@ -85,10 +85,7 @@ mod tests {
 
         let allowance_slot = double_mapping_slot(alice, tip_fee_mgr, U256::from(11));
 
-        println!(
-            "Alice->TipFeeManager allowance slot: 0x{:064x}",
-            allowance_slot
-        );
+        println!("Alice->TipFeeManager allowance slot: 0x{allowance_slot:064x}");
 
         // Just verify it's calculated consistently
         let allowance_slot2 = double_mapping_slot(alice, tip_fee_mgr, U256::from(11));

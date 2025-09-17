@@ -1,12 +1,15 @@
 use std::sync::LazyLock;
 
-use crate::contracts::{
-    ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry, TIP4217Registry,
-    address_is_token_address,
-    roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
-    storage::slots::{double_mapping_slot, mapping_slot},
-    token_id_to_address,
-    types::{TIP20Error, TIP20Event},
+use crate::{
+    TIP_FEE_MANAGER_ADDRESS,
+    contracts::{
+        ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry,
+        TIP4217Registry, address_is_token_address,
+        roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
+        storage::slots::{double_mapping_slot, mapping_slot},
+        token_id_to_address,
+        types::{TIP20Error, TIP20Event},
+    },
 };
 use alloy::primitives::{Address, B256, IntoLogData, Signature as EthSignature, U256, keccak256};
 use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
@@ -479,16 +482,19 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.check_transfer_authorized(&from, &to)?;
 
         // Check and update allowance
-        let allowed = self.get_allowance(&from, msg_sender);
-        if amount > allowed {
-            return Err(TIP20Error::insufficient_allowance());
-        }
+        // Skip allowance check if the caller is the fee manager
+        if *msg_sender != TIP_FEE_MANAGER_ADDRESS {
+            let allowed = self.get_allowance(&from, msg_sender);
+            if amount > allowed {
+                return Err(TIP20Error::insufficient_allowance());
+            }
 
-        if allowed != U256::MAX {
-            let new_allowance = allowed
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_allowance())?;
-            self.set_allowance(&from, msg_sender, new_allowance);
+            if allowed != U256::MAX {
+                let new_allowance = allowed
+                    .checked_sub(amount)
+                    .ok_or(TIP20Error::insufficient_allowance())?;
+                self.set_allowance(&from, msg_sender, new_allowance);
+            }
         }
 
         self._transfer(&from, &to, amount)?;

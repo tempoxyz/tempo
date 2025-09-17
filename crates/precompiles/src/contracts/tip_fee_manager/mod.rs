@@ -169,11 +169,12 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn collect_fee_pre_tx(
         &mut self,
-        _sender: &Address,
-        call: IFeeManager::collectFeePreTxCall,
+        user: Address,
+        max_amount: U256,
+        validator: Address,
     ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
         // Get the validator's token preference
-        let validator_slot = validator_token_slot(&call.validator);
+        let validator_slot = validator_token_slot(&validator);
         let validator_token = self.sload(validator_slot).into_address();
 
         if validator_token.is_zero() {
@@ -183,7 +184,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         // Get the user's fee token preference (falls back to validator token if not set)
-        let user_slot = user_token_slot(&call.user);
+        let user_slot = user_token_slot(&user);
         let user_token_raw = self.sload(user_slot).into_address();
         let user_token = if user_token_raw.is_zero() {
             validator_token
@@ -223,9 +224,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             .transfer_from(
                 &self.contract_address,
                 ITIP20::transferFromCall {
-                    from: call.user,
+                    from: user,
                     to: self.contract_address,
-                    amount: call.maxAmount,
+                    amount: max_amount,
                 },
             )
             .map_err(|_| {
@@ -241,21 +242,24 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn collect_fee_post_tx(
         &mut self,
         _sender: &Address,
-        call: IFeeManager::collectFeePostTxCall,
+        user: Address,
+        max_amount: U256,
+        actual_used: U256,
+        user_token: Address,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         // Calculate refund amount (max - actual)
-        let refund_amount = call.maxAmount.saturating_sub(call.actualUsed);
+        let refund_amount = max_amount.saturating_sub(actual_used);
 
         // Refund unused tokens to user
         if refund_amount > U256::ZERO {
-            let token_id = address_to_token_id_unchecked(&call.userToken);
+            let token_id = address_to_token_id_unchecked(&user_token);
             let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
             tip20_token
                 .transfer(
                     &self.contract_address,
                     ITIP20::transferCall {
-                        to: call.user,
+                        to: user,
                         amount: refund_amount,
                     },
                 )
@@ -267,14 +271,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         // Track fee info for later swap execution
-        let fees_slot = collected_fees_slot(&call.userToken);
+        let fees_slot = collected_fees_slot(&user_token);
         let fees_value = self.sload(fees_slot);
         let current_amount = (fees_value & U256::from(u128::MAX)).to::<u128>();
         let has_been_set = fees_value >= (U256::from(1u128) << 128);
 
         // Add to tracking array if first time collecting fees for this token
         if current_amount == 0 && !has_been_set {
-            let in_array_slot = token_in_fees_array_slot(&call.userToken);
+            let in_array_slot = token_in_fees_array_slot(&user_token);
             let in_array = self.sload(in_array_slot) != U256::ZERO;
 
             if !in_array {
@@ -286,7 +290,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
                 // Store token address in the array at current index
                 let token_slot = slots::TOKENS_WITH_FEES_ARRAY + length_value;
-                self.sstore(token_slot, call.userToken.into_u256());
+                self.sstore(token_slot, user_token.into_u256());
 
                 // Increment array length
                 self.sstore(slots::TOKENS_WITH_FEES_LENGTH, length_value + U256::from(1));
@@ -294,7 +298,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         // Update fee info with actual used amount
-        let new_amount = current_amount.saturating_add(call.actualUsed.to::<u128>());
+        let new_amount = current_amount.saturating_add(actual_used.to::<u128>());
         let new_fees_value = (U256::from(1u128) << 128) | U256::from(new_amount);
         self.sstore(fees_slot, new_fees_value);
 
