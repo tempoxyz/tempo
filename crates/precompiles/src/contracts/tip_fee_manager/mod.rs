@@ -241,7 +241,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn collect_fee_post_tx(
         &mut self,
-        _sender: &Address,
         user: Address,
         max_amount: U256,
         actual_used: U256,

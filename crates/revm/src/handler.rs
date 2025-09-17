@@ -199,7 +199,6 @@ where
         // Call collectFeePostTx (handles both refund and fee queuing)
         fee_manager
             .collect_fee_post_tx(
-                &Address::ZERO,
                 caller,
                 max_amount,
                 actual_used,
