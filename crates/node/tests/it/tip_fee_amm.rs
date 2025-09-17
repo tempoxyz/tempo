@@ -392,9 +392,6 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let validator_token = ITIP20Instance::new(token_id_to_address(0), provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
-    dbg!(validator_address);
-    dbg!(validator_token.balanceOf(validator_address).call().await?);
-
     // Mint initial balances
     // Note that the user already has a preallocated balance of the predeployed fee token
     let mint_amount = U256::from(u128::MAX);
