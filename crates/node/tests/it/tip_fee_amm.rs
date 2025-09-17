@@ -1,7 +1,5 @@
 use alloy::{
-    primitives::U256,
-    providers::ProviderBuilder,
-    signers::local::{MnemonicBuilder, coins_bip39::English},
+    primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
 use alloy_primitives::Address;
@@ -27,9 +25,7 @@ async fn test_create_pool() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Setup test tokens and fee AMM
@@ -86,9 +82,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -215,9 +209,7 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 

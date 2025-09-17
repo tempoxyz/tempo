@@ -6,7 +6,7 @@ use alloy::{
         Filter, TransactionRequest,
         trace::parity::{ChangedType, Delta},
     },
-    signers::local::{MnemonicBuilder, coins_bip39::English},
+    signers::local::MnemonicBuilder,
     sol_types::{SolCall, SolEvent},
 };
 use alloy_rpc_types_eth::TransactionInput;
@@ -30,9 +30,7 @@ async fn test_eth_call() -> eyre::Result<()> {
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -75,9 +73,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -168,9 +164,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -233,9 +227,7 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 

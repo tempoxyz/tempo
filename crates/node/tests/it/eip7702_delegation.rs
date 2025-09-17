@@ -1,10 +1,7 @@
 use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
     providers::{Provider, ProviderBuilder, WalletProvider},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, coins_bip39::English},
-    },
+    signers::{SignerSync, local::MnemonicBuilder},
     sol,
     sol_types::SolValue,
 };
@@ -33,9 +30,7 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
-    let alice = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new()
         .wallet(alice)
         .connect_http(http_url.clone());
@@ -44,8 +39,7 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), deployer).await?;
 
     // Init a fresh wallet with nonce 0
-    let bob = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
+    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(1)?
         .build()?;
     let bob_addr = bob.address();
@@ -116,16 +110,13 @@ async fn test_ensure_7702_delegation_on_revert() -> eyre::Result<()> {
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
-    let alice = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new()
         .wallet(alice)
         .connect_http(http_url.clone());
 
     // Init a new wallet with nonce 0
-    let bob = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
+    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(1)?
         .build()?;
     let bob_addr = bob.address();
@@ -178,9 +169,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
-    let alice = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new()
         .wallet(alice)
         .connect_http(http_url.clone());
@@ -188,8 +177,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let deployer = provider.default_signer_address();
     let token = setup_test_token(provider.clone(), deployer).await?;
 
-    let bob = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
+    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(1)?
         .build()?;
     let bob_addr = bob.address();

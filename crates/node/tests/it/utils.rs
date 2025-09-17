@@ -3,6 +3,10 @@
 //! This module provides helper functions for setting up and managing test environments,
 //! including test token creation and node setup for integration testing.
 
+/// Standard test mnemonic phrase used across integration tests
+pub(crate) const TEST_MNEMONIC: &str =
+    "test test test test test test test test test test test junk";
+
 use alloy::{
     primitives::Address, providers::Provider, sol_types::SolEvent, transports::http::reqwest::Url,
 };
