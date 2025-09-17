@@ -1,16 +1,20 @@
 pub mod amm;
 pub mod fee;
 
-use crate::contracts::{
-    TIP20Token, address_to_token_id_unchecked,
-    storage::{StorageOps, StorageProvider},
-    tip_fee_manager::{
-        amm::{PoolKey, TIPFeeAMM},
-        slots::{
-            collected_fees_slot, token_in_fees_array_slot, user_token_slot, validator_token_slot,
+use crate::{
+    DEFAULT_FEE_TOKEN,
+    contracts::{
+        TIP20Token, address_to_token_id_unchecked,
+        storage::{StorageOps, StorageProvider},
+        tip_fee_manager::{
+            amm::{PoolKey, TIPFeeAMM},
+            slots::{
+                collected_fees_slot, token_in_fees_array_slot, user_token_slot,
+                validator_token_slot,
+            },
         },
+        types::{FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
     },
-    types::{FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
 };
 
 // Re-export PoolKey for backward compatibility with tests
@@ -189,7 +193,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let user_slot = user_token_slot(&user);
         let user_token_raw = self.sload(user_slot).into_address();
         let user_token = if user_token_raw.is_zero() {
-            validator_token
+            if validator_token.is_zero() {
+                DEFAULT_FEE_TOKEN
+            } else {
+                validator_token
+            }
         } else {
             user_token_raw
         };

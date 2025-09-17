@@ -403,6 +403,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let mut pool = self.get_pool(&pool_id);
         let total_supply = self.get_total_supply(&pool_id);
 
+        // TODO: ensure min balance
         let liquidity = if total_supply.is_zero() {
             let mean = (amount_user_token + amount_validator_token) / uint!(2_U256);
             if mean <= MIN_LIQUIDITY {
