@@ -217,6 +217,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         // Transfer maximum fee from user to fee manager
+        // TODO: Add validation when setting user/validator tokens to ensure they are TIP20s
+        // rather than checking here. This validation should be added in setUserToken/setValidatorToken.
         let token_id = address_to_token_id_unchecked(&user_token);
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
 

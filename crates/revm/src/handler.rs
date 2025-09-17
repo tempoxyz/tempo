@@ -198,12 +198,7 @@ where
 
         // Call collectFeePostTx (handles both refund and fee queuing)
         fee_manager
-            .collect_fee_post_tx(
-                caller,
-                max_amount,
-                actual_used,
-                self.fee_token,
-            )
+            .collect_fee_post_tx(caller, max_amount, actual_used, self.fee_token)
             .map_err(|_| EVMError::Custom("Failed to collect post-tx fee".to_string()))?;
 
         Ok(())
