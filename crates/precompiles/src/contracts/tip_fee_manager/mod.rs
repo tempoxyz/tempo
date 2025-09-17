@@ -321,9 +321,26 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
         for user_token in self.pending_fees.iter() {
-            fee_amm
+            let amount_out = fee_amm
                 .execute_pending_fee_swap(*user_token, validator_token)
                 .expect("TODO: handle error");
+
+            // Transfer the amount out to the validator
+            let token_id = address_to_token_id_unchecked(&validator_token);
+            let mut tip20_token = TIP20Token::new(token_id, fee_amm.storage);
+            tip20_token
+                .transfer(
+                    &self.contract_address,
+                    ITIP20::transferCall {
+                        to: self.beneficiary,
+                        amount: amount_out,
+                    },
+                )
+                .map_err(|_| {
+                    IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                        IFeeManager::InsufficientFeeTokenBalance {},
+                    )
+                })?;
         }
 
         self.pending_fees.clear();
