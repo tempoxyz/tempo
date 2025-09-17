@@ -156,7 +156,7 @@ where
             // Create storage provider wrapper around journal
             let mut storage_provider = JournalStorageProvider::new(journal, chain_id);
             let mut fee_manager =
-                TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage_provider);
+                TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
 
             // Call the precompile function to collect the fee
             fee_manager
@@ -193,9 +193,10 @@ where
         );
 
         // Create storage provider and fee manager
+        let beneficiary = evm.ctx().beneficiary();
         let journal = evm.ctx().journal_mut();
         let mut storage_provider = JournalStorageProvider::new(journal, chain_id);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage_provider);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
 
         // Call collectFeePostTx (handles both refund and fee queuing)
         fee_manager
