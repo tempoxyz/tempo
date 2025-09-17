@@ -107,7 +107,8 @@ impl GenesisArgs {
                     .expect("Could not mint fee token");
             }
 
-            let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, token.storage);
+            let mut fee_manager =
+                TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, token.storage);
             fee_manager.initialize();
             for address in addresses.iter().tqdm() {
                 fee_manager

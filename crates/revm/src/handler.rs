@@ -196,7 +196,8 @@ where
         let beneficiary = evm.ctx().beneficiary();
         let journal = evm.ctx().journal_mut();
         let mut storage_provider = JournalStorageProvider::new(journal, chain_id);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
 
         // Call collectFeePostTx (handles both refund and fee queuing)
         fee_manager
