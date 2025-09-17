@@ -15,6 +15,14 @@ impl<'a, J: JournalTr> JournalStorageProvider<'a, J> {
     pub fn new(journal: &'a mut J, chain_id: u64) -> Self {
         Self { journal, chain_id }
     }
+    pub fn ensure_loaded_account(
+        &mut self,
+        account: Address,
+    ) -> Result<(), <J::Database as reth_evm::revm::database::Database>::Error> {
+        self.journal.load_account(account)?;
+        self.journal.touch_account(account);
+        Ok(())
+    }
 }
 
 impl<'a, J: JournalTr> StorageProvider for JournalStorageProvider<'a, J> {
