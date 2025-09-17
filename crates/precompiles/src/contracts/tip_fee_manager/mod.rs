@@ -275,6 +275,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         refund_amount: U256,
         user_token: Address,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
+        // TODO: should we skip if user.is_zero()?
+
         // Refund unused tokens to user
         if !refund_amount.is_zero() {
             let token_id = address_to_token_id_unchecked(&user_token);
@@ -305,6 +307,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 let pool_id = fee_amm.get_pool_id(user_token, validator_token);
                 let mut pool = fee_amm.get_pool(&pool_id);
                 pool.pending_fee_swap_in += actual_used.to::<u128>();
+                fee_amm.set_pool(&pool_id, &pool);
 
                 // Add user_token to pending fee tokens array for processing in execute_block
                 self.push_pending_fee_token(user_token);
@@ -338,28 +341,31 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let pending_fee_tokens = self.drain_pending_fee_tokens();
         let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
 
+        let mut total_amount_out = U256::ZERO;
         for user_token in pending_fee_tokens.iter() {
             let amount_out = fee_amm
-                .execute_pending_fee_swap(*user_token, validator_token)
+                .execute_pending_fee_swaps(*user_token, validator_token)
                 .expect("TODO: handle error");
 
-            // Transfer the amount out to the validator
-            let token_id = address_to_token_id_unchecked(&validator_token);
-            let mut tip20_token = TIP20Token::new(token_id, fee_amm.storage);
-            tip20_token
-                .transfer(
-                    &self.contract_address,
-                    ITIP20::transferCall {
-                        to: self.beneficiary,
-                        amount: amount_out,
-                    },
-                )
-                .map_err(|_| {
-                    IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                        IFeeManager::InsufficientFeeTokenBalance {},
-                    )
-                })?;
+            total_amount_out += amount_out;
         }
+
+        // Transfer the total amount out to the beneficiary
+        let token_id = address_to_token_id_unchecked(&validator_token);
+        let mut tip20_token = TIP20Token::new(token_id, self.storage);
+        tip20_token
+            .transfer(
+                &self.contract_address,
+                ITIP20::transferCall {
+                    to: self.beneficiary,
+                    amount: total_amount_out,
+                },
+            )
+            .map_err(|_| {
+                IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                    IFeeManager::InsufficientFeeTokenBalance {},
+                )
+            })?;
 
         Ok(())
     }

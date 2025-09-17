@@ -165,8 +165,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
     }
 
-    /// Execute a single pending fee swap
-    pub fn execute_pending_fee_swap(
+    /// Execute a pending fee swaps
+    pub fn execute_pending_fee_swaps(
         &mut self,
         user_token: Address,
         validator_token: Address,
@@ -585,38 +585,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok((amount_user_token, amount_validator_token))
     }
 
-    /// Execute pending fee swaps - processes all pending fee swaps for a pool
-    pub fn execute_pending_fee_swaps(
-        &mut self,
-        user_token: Address,
-        validator_token: Address,
-    ) -> Result<U256, TIPFeeAMMError> {
-        let pool_id = self.get_pool_id(user_token, validator_token);
-        if !self.pool_exists(&pool_id) {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
-                ITIPFeeAMM::PoolDoesNotExist {},
-            ));
-        }
-
-        let mut pool = self.get_pool(&pool_id);
-        let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
-
-        // Apply pending fee swap to reserves
-        // Add userToken input, subtract validatorToken output
-        pool.reserve_user_token = (U256::from(pool.reserve_user_token)
-            + U256::from(pool.pending_fee_swap_in))
-        .to::<u128>();
-        pool.reserve_validator_token =
-            (U256::from(pool.reserve_validator_token) - pending_out).to::<u128>();
-
-        // Clear pending swaps
-        pool.pending_fee_swap_in = 0;
-
-        self.set_pool(&pool_id, &pool);
-
-        Ok(U256::from(pool.pending_fee_swap_in))
-    }
-
     /// Get total pending swaps for a specific pool
     pub fn get_total_pending_swaps(
         &mut self,
@@ -656,7 +624,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Set pool data in storage
-    fn set_pool(&mut self, pool_id: &B256, pool: &Pool) {
+    pub fn set_pool(&mut self, pool_id: &B256, pool: &Pool) {
         let slot = slots::pool_slot(pool_id);
         let packed =
             U256::from(pool.reserve_user_token) | (U256::from(pool.reserve_validator_token) << 128);

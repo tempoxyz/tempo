@@ -1,10 +1,11 @@
 use crate::utils::{await_receipts, setup_test_node, setup_test_token};
 use alloy::{
     primitives::U256,
-    providers::ProviderBuilder,
+    providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, coins_bip39::English},
     sol_types::SolEvent,
 };
+use alloy_eips::BlockId;
 use alloy_primitives::{Address, address, uint};
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
@@ -372,17 +373,25 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .index(1)?
         .build()?;
     let user_address = user_wallet.address();
-    let validator_address = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+
     let provider = ProviderBuilder::new()
         .wallet(user_wallet)
         .connect_http(http_url.clone());
+
+    let block = provider
+        .get_block(BlockId::latest())
+        .await?
+        .expect("Could not get block");
+    let validator_address = block.header.beneficiary;
 
     // Create different tokens for user and validator
     let user_token = setup_test_token(provider.clone(), user_address).await?;
     // Use default fee token for validator
     let validator_token = ITIP20Instance::new(token_id_to_address(0), provider.clone());
-
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    dbg!(validator_address);
+    dbg!(validator_token.balanceOf(validator_address).call().await?);
 
     // Mint initial balances
     // Note that the user already has a preallocated balance of the predeployed fee token
@@ -470,9 +479,6 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .get_receipt()
         .await?;
     assert!(transfer_receipt.status());
-
-    dbg!(transfer_receipt.gas_used);
-    dbg!(transfer_receipt.effective_gas_price);
 
     // Assert that gas token in was swapped to the validator token
     let user_balance = user_token.balanceOf(user_address).call().await?;
