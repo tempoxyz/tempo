@@ -1,4 +1,6 @@
-use crate::node::TempoNode;
+mod request;
+
+use crate::{node::TempoNode, rpc::request::TempoTransactionRequest};
 use alloy::{consensus::TxReceipt, network::Ethereum, primitives::U256};
 use alloy_primitives::{Address, uint};
 use alloy_rpc_types_eth::ReceiptWithBloom;
@@ -48,7 +50,7 @@ impl RpcTypes for TempoRpcTypes {
         ReceiptWithBloom<TempoReceipt<alloy_rpc_types_eth::Log>>,
     >;
     type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
-    type TransactionRequest = alloy_rpc_types_eth::TransactionRequest;
+    type TransactionRequest = TempoTransactionRequest;
 }
 
 /// Tempo `Eth` API implementation.
