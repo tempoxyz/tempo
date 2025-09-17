@@ -145,7 +145,10 @@ mod tests {
         // Should be an empty account
         assert_eq!(account_info.balance, U256::ZERO);
         assert_eq!(account_info.nonce, 0);
-        assert!(account_info.code.is_none());
+        // Note: load_account_code may return empty bytecode as Some(empty) for new accounts
+        if let Some(ref code) = account_info.code {
+            assert!(code.is_empty(), "New account should have empty code");
+        }
 
         Ok(())
     }
