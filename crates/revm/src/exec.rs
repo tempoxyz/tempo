@@ -126,6 +126,6 @@ where
             .ctx
             .set_tx(TxEnv::new_system_tx_with_caller(caller, system_contract_address, data).into());
         let mut h = TempoEvmHandler::new();
-        h.inspect_run(self)
+        h.inspect_run_system_call(self)
     }
 }

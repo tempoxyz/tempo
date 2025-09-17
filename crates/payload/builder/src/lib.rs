@@ -3,14 +3,15 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy_consensus::Transaction;
+use alloy_consensus::{Signed, Transaction, TxLegacy};
 use alloy_primitives::U256;
 use alloy_rlp::Encodable;
+use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
 };
-use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
+use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_errors::ConsensusError;
 use reth_evm::{
@@ -19,7 +20,7 @@ use reth_evm::{
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_payload_builder::{EthBuiltPayload, EthPayloadBuilderAttributes, PayloadBuilderError};
-use reth_primitives_traits::transaction::error::InvalidTransactionError;
+use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
@@ -29,7 +30,11 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoEvmConfig;
-use tempo_primitives::TempoPrimitives;
+use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::IFeeManager::executeBlockCall};
+use tempo_primitives::{
+    TempoPrimitives, TempoTxEnvelope,
+    transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+};
 use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTransaction};
 use tracing::{debug, trace, warn};
 
@@ -51,6 +56,27 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             provider,
             evm_config,
         }
+    }
+}
+
+impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
+    /// Builds system transaction to TipFeeManager to seal the block.
+    fn build_seal_block_tx(&self) -> Recovered<TempoTxEnvelope> {
+        Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    chain_id: Some(self.provider.chain_spec().chain().id()),
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 0,
+                    to: TIP_FEE_MANAGER_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input: executeBlockCall.abi_encode().into(),
+                },
+                TEMPO_SYSTEM_TX_SIGNATURE,
+            )),
+            TEMPO_SYSTEM_TX_SENDER,
+        )
     }
 }
 
@@ -253,6 +279,11 @@ where
                 cached_reads,
             });
         }
+
+        // Include the seal block transaction in the block
+        builder
+            .execute_transaction(self.build_seal_block_tx())
+            .map_err(PayloadBuilderError::evm)?;
 
         let BlockBuilderOutcome {
             execution_result,

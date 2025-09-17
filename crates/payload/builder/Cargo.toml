@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-evm.workspace = true
+tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 tempo-transaction-pool.workspace = true
 
@@ -27,6 +28,7 @@ reth-transaction-pool.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
 alloy-rlp = "0.3"
 
 tracing.workspace = true

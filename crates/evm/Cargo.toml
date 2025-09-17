@@ -22,4 +22,6 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 
 alloy-evm.workspace = true
+alloy-consensus.workspace = true
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
