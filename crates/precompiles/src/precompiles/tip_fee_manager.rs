@@ -18,9 +18,6 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             PrecompileError::Other("Invalid function selector length".to_string())
         })?;
 
-
-
-
         match selector {
             // View functions
             IFeeManager::userTokensCall::SELECTOR => view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call)),
@@ -36,13 +33,7 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             ITIPFeeAMM::poolExistsCall::SELECTOR => view::<ITIPFeeAMM::poolExistsCall>(calldata, |call| self.pool_exists(call)),
             ITIPFeeAMM::totalSupplyCall::SELECTOR => view::<ITIPFeeAMM::totalSupplyCall>(calldata, |call| self.total_supply(call)),
             ITIPFeeAMM::liquidityBalancesCall::SELECTOR => view::<ITIPFeeAMM::liquidityBalancesCall>(calldata, |call| self.liquidity_balances(call)),
-
-        
-
-
-
-
-
+            
             // State changing functions
             IFeeManager::setValidatorTokenCall::SELECTOR => mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_validator_token(s, call)),
             IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),

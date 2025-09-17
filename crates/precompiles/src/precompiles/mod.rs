@@ -120,7 +120,7 @@ impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
             TIP_FEE_MANAGER_ADDRESS,
-            input.internals.block_env().beneficiary().clone(),
+            input.internals.block_env().beneficiary(),
             &mut EvmStorageProvider::new(input.internals, chain_id)
         ))
     }
