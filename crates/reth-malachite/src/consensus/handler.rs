@@ -385,7 +385,7 @@ async fn get_or_propose_block<N>(
     round: Round,
 ) -> eyre::Result<(
     LocallyProposedValue<MalachiteContext>,
-    Option<reth_ethereum_primitives::Block>,
+    Option<tempo_primitives::Block>,
 )>
 where
     N: NodeTypes<Payload = TempoPayloadTypes>,

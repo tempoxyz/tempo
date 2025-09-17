@@ -373,7 +373,7 @@ where
         round: Round,
     ) -> Result<(
         LocallyProposedValue<MalachiteContext>,
-        reth_ethereum_primitives::Block,
+        tempo_primitives::Block,
     )> {
         // 1. Get parent block timestamp for monotonic increasing timestamps
         let (parent_hash, parent_timestamp) = if height.as_u64() == 1 {
@@ -562,7 +562,7 @@ where
     pub fn stream_proposal(
         &self,
         value: LocallyProposedValue<MalachiteContext>,
-        block: reth_ethereum_primitives::Block,
+        block: tempo_primitives::Block,
         _pol_round: Round,
     ) -> impl Iterator<Item = StreamMessage<ProposalPart>> {
         info!("Streaming proposal for height {}", value.height);
@@ -841,7 +841,7 @@ where
     pub async fn store_synced_proposal(
         &self,
         proposal: ProposedValue<MalachiteContext>,
-        block: reth_ethereum_primitives::Block,
+        block: tempo_primitives::Block,
     ) -> Result<()> {
         tracing::debug!(
             height = %proposal.height,
@@ -900,7 +900,7 @@ where
     pub async fn store_built_proposal(
         &self,
         proposal: ProposedValue<MalachiteContext>,
-        block: reth_ethereum_primitives::Block,
+        block: tempo_primitives::Block,
     ) -> Result<()> {
         tracing::debug!(
             height = %proposal.height,
@@ -925,7 +925,7 @@ where
     }
 
     /// Get a block by its hash from storage
-    pub async fn get_block(&self, hash: &B256) -> Result<Option<reth_ethereum_primitives::Block>> {
+    pub async fn get_block(&self, hash: &B256) -> Result<Option<tempo_primitives::Block>> {
         self.store.get_block(hash).await
     }
 
@@ -945,10 +945,7 @@ where
 
     /// Validate a synced block through the engine API
     /// Returns true if the block is valid, false otherwise
-    pub async fn validate_synced_block(
-        &self,
-        block: &reth_ethereum_primitives::Block,
-    ) -> Result<bool> {
+    pub async fn validate_synced_block(&self, block: &tempo_primitives::Block) -> Result<bool> {
         // Convert the block to execution payload
         let sealed_block = SealedBlock::seal_slow(block.clone());
         let payload = TempoExecutionData(sealed_block);
@@ -1304,7 +1301,7 @@ pub fn reload_log_level(_height: Height, _round: Round) {
 }
 
 /// Encode a block to its byte representation
-pub fn encode_block(block: &reth_ethereum_primitives::Block) -> Bytes {
+pub fn encode_block(block: &tempo_primitives::Block) -> Bytes {
     use reth_primitives_traits::serde_bincode_compat::SerdeBincodeCompat;
 
     // Convert block to its bincode-compatible representation
@@ -1329,10 +1326,7 @@ pub fn encode_value(value: &Value) -> Bytes {
 /// Returns both the proposed value and the reconstructed block.
 fn assemble_value_from_parts(
     parts: ProposalParts,
-) -> Result<(
-    ProposedValue<MalachiteContext>,
-    reth_ethereum_primitives::Block,
-)> {
+) -> Result<(ProposedValue<MalachiteContext>, tempo_primitives::Block)> {
     // Extract the block hash from ProposalInit
     let block_hash = parts.block_hash;
 
@@ -1386,17 +1380,16 @@ fn assemble_value_from_parts(
 }
 
 /// Decode a block from its byte representation
-pub fn decode_block(bytes: Bytes) -> Option<reth_ethereum_primitives::Block> {
+pub fn decode_block(bytes: Bytes) -> Option<tempo_primitives::Block> {
     use reth_primitives_traits::serde_bincode_compat::SerdeBincodeCompat;
 
     // Deserialize the block representation
-    match bincode::deserialize::<
-        <reth_ethereum_primitives::Block as SerdeBincodeCompat>::BincodeRepr<'_>,
-    >(&bytes)
-    {
+    match bincode::deserialize::<<tempo_primitives::Block as SerdeBincodeCompat>::BincodeRepr<'_>>(
+        &bytes,
+    ) {
         Ok(block_repr) => {
             // Convert from bincode-compatible representation back to Block
-            Some(reth_ethereum_primitives::Block::from_repr(block_repr))
+            Some(tempo_primitives::Block::from_repr(block_repr))
         }
         Err(e) => {
             tracing::error!(error = error_field(&e), "Failed to decode block");
@@ -1420,7 +1413,7 @@ pub fn decode_value(bytes: Bytes) -> Option<Value> {
 }
 
 /// Encode a value and block together for sync purposes
-pub fn encode_value_with_block(value: &Value, block: &reth_ethereum_primitives::Block) -> Bytes {
+pub fn encode_value_with_block(value: &Value, block: &tempo_primitives::Block) -> Bytes {
     let mut data = Vec::new();
 
     // First 32 bytes: the hash (value)
@@ -1434,7 +1427,7 @@ pub fn encode_value_with_block(value: &Value, block: &reth_ethereum_primitives::
 }
 
 /// Decode a value and block from sync data
-pub fn decode_value_with_block(bytes: Bytes) -> Option<(Value, reth_ethereum_primitives::Block)> {
+pub fn decode_value_with_block(bytes: Bytes) -> Option<(Value, tempo_primitives::Block)> {
     if bytes.len() < 32 {
         tracing::error!(
             "Sync data too short: expected at least 32 bytes, got {}",
@@ -1683,7 +1676,7 @@ mod tests {
 
     #[test]
     fn test_encode_decode_value_preserves_hash() {
-        use reth_ethereum_primitives::Block;
+        use tempo_primitives::Block;
 
         // Create a block
         let block: Block = Block::default();

@@ -42,7 +42,7 @@ pub struct Builder<TContext> {
 
     /// The syncer for subscribing to blocks distributed via the consensus
     /// p2p network.
-    pub syncer_mailbox: marshal::Mailbox<BlsScheme, Block<reth_ethereum_primitives::Block>>,
+    pub syncer_mailbox: marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
 
     /// A handle to the execution node to verify and create new payloads.
     pub execution_node: TempoFullNode,
@@ -88,13 +88,13 @@ pub struct ExecutionDriver<TContext> {
 
     fee_recipient: alloy_primitives::Address,
 
-    from_consensus: mpsc::Receiver<Message<reth_ethereum_primitives::Block>>,
-    my_mailbox: Mailbox<reth_ethereum_primitives::Block>,
+    from_consensus: mpsc::Receiver<Message<tempo_primitives::Block>>,
+    my_mailbox: Mailbox<tempo_primitives::Block>,
 
-    syncer_mailbox: marshal::Mailbox<BlsScheme, Block<reth_ethereum_primitives::Block>>,
+    syncer_mailbox: marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
 
-    genesis_block: Arc<Block<reth_ethereum_primitives::Block>>,
-    latest_proposed_block: Arc<RwLock<Option<Block<reth_ethereum_primitives::Block>>>>,
+    genesis_block: Arc<Block<tempo_primitives::Block>>,
+    latest_proposed_block: Arc<RwLock<Option<Block<tempo_primitives::Block>>>>,
 
     execution_node: TempoFullNode,
 
@@ -109,7 +109,7 @@ impl<TContext> ExecutionDriver<TContext>
 where
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    pub(super) fn mailbox(&self) -> &Mailbox<reth_ethereum_primitives::Block> {
+    pub(super) fn mailbox(&self) -> &Mailbox<tempo_primitives::Block> {
         &self.my_mailbox
     }
 
@@ -141,7 +141,7 @@ where
         self.context.spawn_ref()(self.run())
     }
 
-    fn handle_message(&mut self, msg: Message<reth_ethereum_primitives::Block>) {
+    fn handle_message(&mut self, msg: Message<tempo_primitives::Block>) {
         match msg {
             Message::Broadcast(broadcast) => self.handle_broadcast(broadcast),
             Message::Finalized(finalized) => self.handle_finalized(*finalized),
@@ -164,8 +164,8 @@ where
             err(level = Level::ERROR))]
         async fn handle_broadcast(
             broadcast: Broadcast,
-            latest_proposed: Arc<RwLock<Option<Block<reth_ethereum_primitives::Block>>>>,
-            mut syncer: marshal::Mailbox<BlsScheme, Block<reth_ethereum_primitives::Block>>,
+            latest_proposed: Arc<RwLock<Option<Block<tempo_primitives::Block>>>>,
+            mut syncer: marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
         ) -> eyre::Result<()> {
             let Some(latest_proposed) = latest_proposed.read().await.clone() else {
                 return Err(eyre!("there was no latest block to broadcast"));
@@ -183,7 +183,7 @@ where
     }
 
     /// Pushes a `finalized` request to the back of the finalization queue.
-    fn handle_finalized(&mut self, finalized: Finalized<reth_ethereum_primitives::Block>) {
+    fn handle_finalized(&mut self, finalized: Finalized<tempo_primitives::Block>) {
         self.finalization_queue
             .push(self.finalize(finalized).boxed());
     }
@@ -223,7 +223,7 @@ where
     // XXX: I wish this could have been implemented a bit more elegantly and
     // without the extra RunPropose indirection, but the requirement of feeding
     // in the context/system time when spawning makes this necessary.
-    fn propose(&self, propose: Propose) -> RunPropose<reth_ethereum_primitives::Block> {
+    fn propose(&self, propose: Propose) -> RunPropose<tempo_primitives::Block> {
         RunPropose {
             request: propose,
             engine: self
@@ -356,7 +356,7 @@ where
     )]
     fn finalize(
         &self,
-        finalized: Finalized<reth_ethereum_primitives::Block>,
+        finalized: Finalized<tempo_primitives::Block>,
     ) -> impl Future<Output = eyre::Result<()>> + 'static {
         let engine = self
             .execution_node
@@ -431,7 +431,7 @@ where
     syncer_mailbox: marshal::Mailbox<BlsScheme, Block<TBlock>>,
 }
 
-impl RunPropose<reth_ethereum_primitives::Block> {
+impl RunPropose<tempo_primitives::Block> {
     #[instrument(
         name = "propose",
         skip_all,
@@ -601,8 +601,8 @@ impl RunPropose<reth_ethereum_primitives::Block> {
 )]
 async fn verify_block(
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
-    block: &Block<reth_ethereum_primitives::Block>,
-    parent: &Block<reth_ethereum_primitives::Block>,
+    block: &Block<tempo_primitives::Block>,
+    parent: &Block<tempo_primitives::Block>,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
     if block.parent_digest() != parent.digest() {

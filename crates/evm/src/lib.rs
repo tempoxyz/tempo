@@ -3,22 +3,27 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+mod block;
 pub mod evm;
-use std::{convert::Infallible, sync::Arc};
+use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
-use alloy_evm::eth::EthBlockExecutorFactory;
 use alloy_primitives::Bytes;
 pub use evm::TempoEvmFactory;
-use reth_ethereum_primitives::{Block, EthPrimitives};
 use reth_evm::{
-    self, ConfigureEngineEvm, ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator,
-    ExecutionCtxFor, NextBlockEnvAttributes, eth::EthBlockExecutionCtx,
+    self, ConfigureEngineEvm, ConfigureEvm, Database, EvmEnv, EvmEnvFor, ExecutableTxIterator,
+    ExecutionCtxFor, NextBlockEnvAttributes,
+    block::{BlockExecutorFactory, BlockExecutorFor},
+    eth::{EthBlockExecutionCtx, EthBlockExecutor},
+    revm::{Inspector, database::State},
 };
 use reth_primitives_traits::{Header, SealedBlock, SealedHeader, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
+use tempo_primitives::{Block, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
-use reth_evm_ethereum::{EthBlockAssembler, EthEvmConfig, RethReceiptBuilder};
+use crate::{block::TempoReceiptBuilder, evm::TempoEvm};
+use reth_evm_ethereum::{EthBlockAssembler, EthEvmConfig};
 use tempo_chainspec::TempoChainSpec;
+use tempo_revm::evm::TempoContext;
 
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
@@ -57,16 +62,38 @@ impl TempoEvmConfig {
     }
 }
 
+impl BlockExecutorFactory for TempoEvmConfig {
+    type EvmFactory = TempoEvmFactory;
+    type ExecutionCtx<'a> = EthBlockExecutionCtx<'a>;
+    type Transaction = TempoTxEnvelope;
+    type Receipt = TempoReceipt;
+
+    fn evm_factory(&self) -> &Self::EvmFactory {
+        self.inner.evm_factory()
+    }
+
+    fn create_executor<'a, DB, I>(
+        &'a self,
+        evm: TempoEvm<&'a mut State<DB>, I>,
+        ctx: Self::ExecutionCtx<'a>,
+    ) -> impl BlockExecutorFor<'a, Self, DB, I>
+    where
+        DB: Database + 'a,
+        I: Inspector<TempoContext<&'a mut State<DB>>> + 'a,
+    {
+        EthBlockExecutor::new(evm, ctx, self.chain_spec(), TempoReceiptBuilder::default())
+    }
+}
+
 impl ConfigureEvm for TempoEvmConfig {
-    type Primitives = EthPrimitives;
+    type Primitives = TempoPrimitives;
     type Error = Infallible;
     type NextBlockEnvCtx = NextBlockEnvAttributes;
-    type BlockExecutorFactory =
-        EthBlockExecutorFactory<RethReceiptBuilder, Arc<TempoChainSpec>, TempoEvmFactory>;
+    type BlockExecutorFactory = Self;
     type BlockAssembler = EthBlockAssembler<TempoChainSpec>;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
-        self.inner.block_executor_factory()
+        self
     }
 
     fn block_assembler(&self) -> &Self::BlockAssembler {
@@ -86,7 +113,12 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn context_for_block<'a>(&self, block: &'a SealedBlock<Block>) -> EthBlockExecutionCtx<'a> {
-        self.inner.context_for_block(block)
+        EthBlockExecutionCtx {
+            parent_hash: block.header().parent_hash,
+            parent_beacon_block_root: block.header().parent_beacon_block_root,
+            ommers: &block.body().ommers,
+            withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+        }
     }
 
     fn context_for_next_block(
@@ -94,7 +126,12 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
     ) -> EthBlockExecutionCtx<'_> {
-        self.inner.context_for_next_block(parent, attributes)
+        EthBlockExecutionCtx {
+            parent_hash: parent.hash(),
+            parent_beacon_block_root: attributes.parent_beacon_block_root,
+            ommers: &[],
+            withdrawals: attributes.withdrawals.map(Cow::Owned),
+        }
     }
 }
 

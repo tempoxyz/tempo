@@ -1,6 +1,7 @@
 use crate::node::TempoNode;
-use alloy::{network::Ethereum, primitives::U256};
+use alloy::{consensus::TxReceipt, network::Ethereum, primitives::U256};
 use alloy_primitives::{Address, uint};
+use alloy_rpc_types_eth::ReceiptWithBloom;
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -11,9 +12,10 @@ use reth_node_builder::{
     NodeAdapter,
     rpc::{EthApiBuilder, EthApiCtx},
 };
-use reth_rpc::eth::{EthApi, core::EthRpcConverterFor};
+use reth_provider::ChainSpecProvider;
+use reth_rpc::{DynRpcConverter, RpcTypes, eth::EthApi};
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcNodeCore, RpcNodeCoreExt,
+    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
         AddDevSigners, Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions,
         LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
@@ -25,13 +27,29 @@ use reth_rpc_eth_api::{
 };
 use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
-    builder::config::PendingBlockKind,
+    builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
+use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::contracts::{provider::TIPFeeDatabaseExt, tip_fee_manager::fee::FeeToken};
+use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
 
 pub const U256_U64_MAX: U256 = uint!(18446744073709551615_U256);
+
+/// Tempo RPC types.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct TempoRpcTypes;
+
+impl RpcTypes for TempoRpcTypes {
+    type Header = alloy_rpc_types_eth::Header;
+    type Receipt = alloy_rpc_types_eth::TransactionReceipt<
+        ReceiptWithBloom<TempoReceipt<alloy_rpc_types_eth::Log>>,
+    >;
+    type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
+    type TransactionRequest = alloy_rpc_types_eth::TransactionRequest;
+}
 
 /// Tempo `Eth` API implementation.
 ///
@@ -46,12 +64,14 @@ pub const U256_U64_MAX: U256 = uint!(18446744073709551615_U256);
 #[derive(Clone)]
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
-    inner: EthApi<NodeAdapter<N>, EthRpcConverterFor<NodeAdapter<N>>>,
+    inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoRpcTypes>>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     /// Creates a new `TempoEthApi`.
-    pub fn new(eth_api: EthApi<NodeAdapter<N>, EthRpcConverterFor<NodeAdapter<N>>>) -> Self {
+    pub fn new(
+        eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoRpcTypes>>,
+    ) -> Self {
         Self { inner: eth_api }
     }
 
@@ -72,8 +92,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiTypes for TempoEthApi<N> {
     type Error = EthApiError;
-    type NetworkTypes = Ethereum;
-    type RpcConvert = EthRpcConverterFor<NodeAdapter<N>>;
+    type NetworkTypes = TempoRpcTypes;
+    type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoRpcTypes>;
 
     fn tx_resp_builder(&self) -> &Self::RpcConvert {
         self.inner.tx_resp_builder()
@@ -243,11 +263,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
         EthTransactions::signers(&self.inner)
     }
 
-    async fn send_raw_transaction(
+    fn send_raw_transaction(
         &self,
         tx: alloy::primitives::Bytes,
-    ) -> Result<alloy::primitives::B256, Self::Error> {
-        self.inner.send_raw_transaction(tx).await
+    ) -> impl Future<Output = Result<alloy::primitives::B256, Self::Error>> + Send {
+        self.inner.send_raw_transaction(tx)
     }
 }
 
@@ -261,10 +281,21 @@ where
     type EthApi = TempoEthApi<N>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, NodeAdapter<N>>) -> eyre::Result<Self::EthApi> {
-        let eth_api_builder = ctx
+        let chain_spec = ctx.components.provider.chain_spec();
+        let eth_api = ctx
             .eth_api_builder()
-            .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO));
-        let eth_api = eth_api_builder.map_converter(|r| r.with_network()).build();
+            .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
+            .map_converter(|_| {
+                RpcConverter::<TempoRpcTypes, TempoEvmConfig, _>::new(
+                    EthReceiptConverter::new(chain_spec).with_builder(
+                        |receipt: TempoReceipt, next_log_index, meta| {
+                            receipt.into_rpc(next_log_index, meta).into_with_bloom()
+                        },
+                    ),
+                )
+                .erased()
+            })
+            .build();
 
         Ok(TempoEthApi::new(eth_api))
     }

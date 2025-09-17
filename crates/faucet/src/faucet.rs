@@ -1,9 +1,11 @@
 use alloy::{
-    consensus::{TxEnvelope, crypto::RecoveryError, transaction::SignerRecoverable},
+    consensus::{
+        TxEnvelope, crypto::RecoveryError, error::ValueError, transaction::SignerRecoverable,
+    },
     network::Ethereum,
     primitives::{Address, B256, U256},
     providers::{
-        Provider, SendableTxErr,
+        Provider,
         fillers::{FillProvider, TxFiller},
     },
     rpc::types::{TransactionInput, TransactionRequest},
@@ -18,6 +20,7 @@ use jsonrpsee::{
 };
 use reth_rpc_server_types::result::rpc_err;
 use reth_transaction_pool::{TransactionOrigin, TransactionPool, error::PoolError};
+use std::error::Error;
 use tempo_precompiles::contracts::ITIP20;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
@@ -65,7 +68,7 @@ pub enum FaucetError {
     #[error(transparent)]
     FillError(#[from] RpcError<TransportErrorKind>),
     #[error(transparent)]
-    ConversionError(#[from] Box<SendableTxErr<TransactionRequest>>),
+    ConversionError(#[from] Box<dyn Error + Send + Sync + 'static>),
     #[error(transparent)]
     SignatureRecoveryError(#[from] RecoveryError),
     #[error(transparent)]
@@ -118,10 +121,12 @@ where
 
         let tx = tx
             .try_into_recovered()
-            .map_err(FaucetError::SignatureRecoveryError)?;
+            .map_err(FaucetError::SignatureRecoveryError)?
+            .try_convert::<_, ValueError<TxEnvelope>>()
+            .map_err(|e| FaucetError::ConversionError(Box::new(e)))?;
 
         self.pool
-            .add_consensus_transaction(tx.convert(), TransactionOrigin::Local)
+            .add_consensus_transaction(tx, TransactionOrigin::Local)
             .await
             .map_err(FaucetError::TxPoolError)?;
 

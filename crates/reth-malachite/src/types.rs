@@ -16,9 +16,9 @@ use alloy_primitives::B256;
 use bytes::Bytes;
 use malachitebft_core_types::Round;
 use malachitebft_signing_ed25519::Signature;
-use reth_ethereum_primitives::Block;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use tempo_primitives::Block;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

@@ -29,6 +29,7 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoEvmConfig;
+use tempo_primitives::TempoPrimitives;
 use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTransaction};
 use tracing::{debug, trace, warn};
 
@@ -59,12 +60,12 @@ where
         StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
     type Attributes = EthPayloadBuilderAttributes;
-    type BuiltPayload = EthBuiltPayload;
+    type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
 
     fn try_build(
         &self,
-        args: BuildArguments<EthPayloadBuilderAttributes, EthBuiltPayload>,
-    ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError> {
+        args: BuildArguments<EthPayloadBuilderAttributes, Self::BuiltPayload>,
+    ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
         self.build_payload(args, |attributes| {
             self.pool.best_transactions_with_attributes(attributes)
         })
@@ -80,7 +81,7 @@ where
     fn build_empty_payload(
         &self,
         config: PayloadConfig<Self::Attributes>,
-    ) -> Result<EthBuiltPayload, PayloadBuilderError> {
+    ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
         self.build_payload(
             BuildArguments::new(
                 Default::default(),
@@ -101,9 +102,9 @@ where
 {
     fn build_payload<Txs>(
         &self,
-        args: BuildArguments<EthPayloadBuilderAttributes, EthBuiltPayload>,
+        args: BuildArguments<EthPayloadBuilderAttributes, EthBuiltPayload<TempoPrimitives>>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
-    ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
+    ) -> Result<BuildOutcome<EthBuiltPayload<TempoPrimitives>>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     {

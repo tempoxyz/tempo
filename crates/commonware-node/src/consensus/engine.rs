@@ -116,7 +116,7 @@ where
 
         let (syncer, syncer_mailbox): (
             _,
-            marshal::Mailbox<BlsScheme, Block<reth_ethereum_primitives::Block>>,
+            marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
         ) = marshal::Actor::init(
             self.context.with_label("sync"),
             marshal::Config {
@@ -220,13 +220,12 @@ where
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block<reth_ethereum_primitives::Block>>,
-    broadcast_mailbox: buffered::Mailbox<PublicKey, Block<reth_ethereum_primitives::Block>>,
+    broadcast: buffered::Engine<TContext, PublicKey, Block<tempo_primitives::Block>>,
+    broadcast_mailbox: buffered::Mailbox<PublicKey, Block<tempo_primitives::Block>>,
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
     execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
-    execution_driver_mailbox:
-        crate::consensus::execution_driver::Mailbox<reth_ethereum_primitives::Block>,
+    execution_driver_mailbox: crate::consensus::execution_driver::Mailbox<tempo_primitives::Block>,
 
     /// Responsible for syncing(?) messages from/to other nodes.
     // FIXME: This is a complex beast, interacting with very many parts of the system. At
@@ -236,13 +235,8 @@ where
     // its peers...
     //
     // Alto calls this `marshal`, we opt to call it `syncer` which seems marginally more expressive.
-    syncer: marshal::Actor<
-        Block<reth_ethereum_primitives::Block>,
-        TContext,
-        BlsScheme,
-        PublicKey,
-        Supervisor,
-    >,
+    syncer:
+        marshal::Actor<Block<tempo_primitives::Block>, TContext, BlsScheme, PublicKey, Supervisor>,
 
     consensus: crate::consensus::Consensus<TContext, TBlocker>,
 }
