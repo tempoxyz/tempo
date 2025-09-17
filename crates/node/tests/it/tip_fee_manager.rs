@@ -5,7 +5,10 @@ use alloy::{
 };
 use alloy_primitives::Address;
 use std::env;
-use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::types::IFeeManager};
+use tempo_precompiles::{
+    TIP_FEE_MANAGER_ADDRESS,
+    contracts::{token_id_to_address, types::IFeeManager},
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_set_user_token() -> eyre::Result<()> {
@@ -28,7 +31,8 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
     let initial_token = fee_manager.userTokens(user_address).call().await?;
-    assert_eq!(initial_token, Address::ZERO);
+    // Initial token should be predeployed token
+    assert_eq!(initial_token, token_id_to_address(0));
 
     let set_receipt = fee_manager
         .setUserToken(*user_token.address())
@@ -68,7 +72,8 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .validatorTokens(validator_address)
         .call()
         .await?;
-    assert_eq!(initial_token, Address::ZERO);
+    // Initial token should be predeployed token
+    assert_eq!(initial_token, token_id_to_address(0));
 
     let set_receipt = fee_manager
         .setValidatorToken(*validator_token.address())
