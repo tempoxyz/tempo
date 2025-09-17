@@ -337,17 +337,6 @@ mod tests {
             &user,
         )?;
 
-        // TODO: use a different call that checks pool exists
-        // // Try to collect fee without pool existing - should fail
-        // let collect_call = IFeeManager::collectFeeCall {
-        //     user,
-        //     coinbase: validator,
-        //     amount: U256::from(100),
-        // };
-        // let result = fee_manager.call(&Bytes::from(collect_call.abi_encode()), &Address::ZERO);
-        //
-        // // Should fail with PoolDoesNotExist error
-        // expect_precompile_error(&result, fee_manager_err!(PoolDoesNotExist));
 
         Ok(())
     }
