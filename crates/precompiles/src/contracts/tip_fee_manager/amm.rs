@@ -168,6 +168,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     /// Execute a fee swap
     pub fn fee_swap(
         &mut self,
+        msg_sender: Address,
         user_token: Address,
         validator_token: Address,
         amount_in: U256,
