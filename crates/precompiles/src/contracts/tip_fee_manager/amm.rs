@@ -179,21 +179,21 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
 
         let mut pool = self.get_pool(&pool_id);
-        let amount_in = pool.pending_fee_swap_in;
         let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
 
-        pool.reserve_user_token = (U256::from(pool.reserve_user_token)
-            + U256::from(pool.pending_fee_swap_in))
-        .to::<u128>();
+        pool.reserve_user_token = pool
+            .reserve_user_token
+            .checked_add(pool.pending_fee_swap_in)
+            .expect("TODO: handle overflow");
 
-        pool.reserve_validator_token =
-            (U256::from(pool.reserve_validator_token) - pending_out).to::<u128>();
+        let amount_out = pool.reserve_validator_token - pending_out.to::<u128>();
+        pool.reserve_validator_token = amount_out;
 
         // Clear pending swap
         pool.pending_fee_swap_in = 0;
         self.set_pool(&pool_id, &pool);
 
-        Ok(U256::from(amount_in))
+        Ok(U256::from(amount_out))
     }
 
     /// Execute a rebalancing swap
