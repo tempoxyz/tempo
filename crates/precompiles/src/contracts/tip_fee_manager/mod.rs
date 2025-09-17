@@ -78,6 +78,7 @@ pub mod slots {
 /// - When FeeManager creates a TIPFeeAMM instance, it passes the same address and storage
 pub struct TipFeeManager<'a, S: StorageProvider> {
     contract_address: Address,
+    beneficiary: Address,
     storage: &'a mut S,
 }
 
@@ -87,9 +88,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub const BASIS_POINTS: u64 = 10000;
     pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256); // 1e9
 
-    pub fn new(contract_address: Address, storage: &'a mut S) -> Self {
+    pub fn new(contract_address: Address, beneficiary: Address, storage: &'a mut S) -> Self {
         Self {
             contract_address,
+            beneficiary,
             storage,
         }
     }
@@ -317,7 +319,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn execute_block(
         &mut self,
         sender: &Address,
-        call: IFeeManager::executeBlockCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         // Only protocol can call this (block-end execution)
         if *sender != Address::ZERO {
@@ -326,10 +327,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             ));
         }
 
-        let validator = call.validator;
-
         // Get validator's preferred token
-        let validator_slot = validator_token_slot(&validator);
+        let validator_slot = validator_token_slot(&self.beneficiary);
         let validator_token = self.sload(validator_slot).into_address();
 
         if validator_token.is_zero() {
@@ -370,7 +369,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                     .transfer(
                         &self.contract_address,
                         ITIP20::transferCall {
-                            to: validator,
+                            to: self.beneficiary,
                             amount: fee_amount,
                         },
                     )
@@ -390,7 +389,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                     .transfer(
                         &self.contract_address,
                         ITIP20::transferCall {
-                            to: validator,
+                            to: self.beneficiary,
                             amount: fee_amount,
                         },
                     )
@@ -634,7 +633,8 @@ mod tests {
     #[test]
     fn test_create_pool() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
 
         let token_a = Address::random();
         let token_b = Address::random();
@@ -655,7 +655,8 @@ mod tests {
     #[test]
     fn test_set_user_token() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
 
         let user = Address::random();
         let token = Address::random();
@@ -671,7 +672,8 @@ mod tests {
     #[test]
     fn test_set_validator_token() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
 
         let validator = Address::random();
         let token = Address::random();
@@ -696,7 +698,8 @@ mod tests {
         // Setup token with balance and approval
         setup_token_with_balance(&mut storage, token, user, U256::from(100000));
 
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
 
         // Set validator token
         fee_manager
@@ -747,7 +750,8 @@ mod tests {
                 .unwrap();
         }
 
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
 
         // Call collect_fee_post_tx directly
         let result = fee_manager.collect_fee_post_tx(user, actual_used, refund_amount, token);
