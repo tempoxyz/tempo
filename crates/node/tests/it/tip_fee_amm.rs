@@ -463,16 +463,14 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     assert_ne!(user_fee_token, val_fee_token);
 
     // Get initial validator token balance
-    let initial_validator_balance = validator_token.balanceOf(validator_address).call().await?;
+    let _initial_validator_balance = validator_token.balanceOf(validator_address).call().await?;
     let initial_user_balance = user_token.balanceOf(user_address).call().await?;
 
     // Transfer using predeployed TIP20
     let transfer_token = ITIP20::new(token_id_to_address(0), provider.clone());
-    let transfer_amount = U256::from(rand::random::<u16>());
 
     let transfer_receipt = transfer_token
-        .transfer(Address::random(), transfer_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
+        .transfer(Address::random(), U256::ZERO)
         .send()
         .await?
         .get_receipt()
@@ -483,7 +481,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let user_balance = user_token.balanceOf(user_address).call().await?;
     assert!(user_balance < initial_user_balance);
 
-    let validator_balance = validator_token.balanceOf(validator_address).call().await?;
+    let _validator_balance = validator_token.balanceOf(validator_address).call().await?;
     // TODO: uncomment when we can set suggested fee recipient in debug config to non zero value
     // assert!(validator_balance > initial_validator_balance);
 
