@@ -356,23 +356,25 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             total_amount_out += amount_out;
         }
 
-        // Transfer the total amount out to the beneficiary
-        let token_id = address_to_token_id_unchecked(&validator_token);
-        let mut token = TIP20Token::new(token_id, self.storage);
+        if !total_amount_out.is_zero() {
+            // Transfer the total amount out to the beneficiary
+            let token_id = address_to_token_id_unchecked(&validator_token);
+            let mut token = TIP20Token::new(token_id, self.storage);
 
-        token
-            .transfer(
-                &self.contract_address,
-                ITIP20::transferCall {
-                    to: self.beneficiary,
-                    amount: total_amount_out,
-                },
-            )
-            .map_err(|_| {
-                IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                    IFeeManager::InsufficientFeeTokenBalance {},
+            token
+                .transfer(
+                    &self.contract_address,
+                    ITIP20::transferCall {
+                        to: self.beneficiary,
+                        amount: total_amount_out,
+                    },
                 )
-            })?;
+                .map_err(|_| {
+                    IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                        IFeeManager::InsufficientFeeTokenBalance {},
+                    )
+                })?;
+        }
 
         Ok(())
     }
