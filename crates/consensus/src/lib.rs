@@ -77,6 +77,16 @@ impl Consensus<Block> for TempoConsensus {
     }
 
     fn validate_block_pre_execution(&self, block: &SealedBlock<Block>) -> Result<(), Self::Error> {
+        if !block
+            .body()
+            .transactions
+            .last()
+            .is_some_and(|tx| tx.is_system_tx())
+        {
+            return Err(ConsensusError::Other(
+                "Last transaction must be a system transaction".to_string(),
+            ));
+        }
         self.inner.validate_block_pre_execution(block)
     }
 }
