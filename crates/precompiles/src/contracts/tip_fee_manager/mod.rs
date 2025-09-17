@@ -8,10 +8,7 @@ use crate::{
         storage::{StorageOps, StorageProvider},
         tip_fee_manager::{
             amm::{PoolKey, TIPFeeAMM},
-            slots::{
-                collected_fees_slot, token_in_fees_array_slot, user_token_slot,
-                validator_token_slot,
-            },
+            slots::{collected_fees_slot, user_token_slot, validator_token_slot},
         },
         types::{FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
     },
@@ -43,9 +40,6 @@ pub mod slots {
     pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
     pub const USER_TOKENS: U256 = uint!(5_U256);
     pub const COLLECTED_FEES: U256 = uint!(6_U256);
-    pub const TOKENS_WITH_FEES_LENGTH: U256 = uint!(11_U256);
-    pub const TOKENS_WITH_FEES_ARRAY: U256 = uint!(12_U256);
-    pub const TOKEN_IN_FEES_ARRAY: U256 = uint!(15_U256);
 
     pub fn validator_token_slot(validator: &Address) -> U256 {
         mapping_slot(validator, VALIDATOR_TOKENS)
@@ -57,14 +51,6 @@ pub mod slots {
 
     pub fn collected_fees_slot(token: &Address) -> U256 {
         mapping_slot(token, COLLECTED_FEES)
-    }
-
-    pub fn token_in_fees_array_slot(token: &Address) -> U256 {
-        mapping_slot(token, TOKEN_IN_FEES_ARRAY)
-    }
-
-    pub fn tokens_with_fees_array_slot(_index: U256) -> U256 {
-        todo!()
     }
 }
 
@@ -325,10 +311,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             ));
         }
 
-        // Get validator's preferred token
-        let validator_slot = validator_token_slot(&self.beneficiary);
-        let validator_token = self.sload(validator_slot).into_address();
-
+        let validator_token = self.get_validator_token();
         // TODO: do we want to default to a token here or throw an error? We should probably
         // enforce that a validator has a fee token
         if validator_token.is_zero() {
@@ -336,25 +319,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             return Ok(());
         }
 
-        // Get the number of tokens with pending fees
-        let tokens_with_fees_length = self.sload(slots::TOKENS_WITH_FEES_LENGTH).to::<usize>();
-
-        // Process each token with pending fees
-        for i in 0..tokens_with_fees_length {
-            let token_slot = slots::TOKENS_WITH_FEES_ARRAY + U256::from(i);
-            let token_address = self.sload(token_slot).into_address();
-
-            // TODO: handle this case, token addr should never be zero here
-            if token_address == Address::ZERO {
-                continue;
-            }
-
-            let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
-            for user_token in self.pending_fees.iter() {
-                fee_amm
-                    .execute_pending_fee_swap(*user_token, validator_token)
-                    .expect("TODO: handle error");
-            }
+        let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        for user_token in self.pending_fees.iter() {
+            fee_amm
+                .execute_pending_fee_swap(*user_token, validator_token)
+                .expect("TODO: handle error");
         }
 
         self.pending_fees.clear();
