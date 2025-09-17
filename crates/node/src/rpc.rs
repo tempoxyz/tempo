@@ -1,6 +1,8 @@
 mod request;
 
-use crate::{node::TempoNode, rpc::request::TempoTransactionRequest};
+pub use request::TempoTransactionRequest;
+
+use crate::node::TempoNode;
 use alloy::{consensus::TxReceipt, primitives::U256};
 use alloy_primitives::{Address, uint};
 use alloy_rpc_types_eth::ReceiptWithBloom;

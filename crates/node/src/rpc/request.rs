@@ -1,8 +1,11 @@
 use alloy::consensus::{EthereumTxEnvelope, Transaction, TxEip4844, TxEip7702, error::ValueError};
+use alloy_network::TxSigner;
 use alloy_primitives::{Address, Signature};
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_evm::revm::context::{BlockEnv, CfgEnv};
-use reth_rpc_convert::{EthTxEnvError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv};
+use reth_rpc_convert::{
+    EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv,
+};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{TempoTxEnvelope, TxFeeToken};
 use tempo_revm::TempoTxEnv;
@@ -23,7 +26,7 @@ impl TempoTransactionRequest {
                 .build_7702()
                 .map_err(|inner: ValueError<TransactionRequest>| {
                     ValueError::new(
-                        TempoTransactionRequest {
+                        Self {
                             inner: inner.into_value(),
                             fee_token: self.fee_token,
                         },
@@ -60,25 +63,17 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
 
             Ok(tx.into_signed(signature).into())
         } else {
-            let tx_req = self.inner.clone();
-            let inner = TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(self.inner)
-                .map_err(|e| {
-                    e.map(|inner| TempoTransactionRequest {
-                        inner,
-                        fee_token: self.fee_token,
-                    })
-                })?;
-
-            Ok(
-                TryFrom::<EthereumTxEnvelope<TxEip4844>>::try_from(inner).map_err(
-                    |e: ValueError<EthereumTxEnvelope<TxEip4844>>| {
-                        e.map(|_inner| TempoTransactionRequest {
-                            inner: tx_req,
+            let inner =
+                TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(self.inner.clone())
+                    .map_err(|e| {
+                        e.map(|inner| Self {
+                            inner,
                             fee_token: self.fee_token,
                         })
-                    },
-                )?,
-            )
+                    })?;
+
+            Ok(TryFrom::<EthereumTxEnvelope<TxEip4844>>::try_from(inner)
+                .map_err(|e: ValueError<EthereumTxEnvelope<TxEip4844>>| e.map(|_inner| self))?)
         }
     }
 }
@@ -102,14 +97,9 @@ impl TryIntoTxEnv<TempoTxEnv> for TempoTransactionRequest {
 impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
     async fn try_build_and_sign(
         self,
-        signer: impl alloy_network::TxSigner<alloy_primitives::Signature> + Send,
-    ) -> Result<TempoTxEnvelope, reth_rpc_convert::SignTxRequestError> {
-        SignableTxRequest::<TempoTxEnvelope>::try_build_and_sign(self.inner, signer)
-            .await
-            .and_then(|tx| {
-                tx.try_into()
-                    .map_err(|_| reth_rpc_convert::SignTxRequestError::InvalidTransactionRequest)
-            })
+        signer: impl TxSigner<Signature> + Send,
+    ) -> Result<TempoTxEnvelope, SignTxRequestError> {
+        SignableTxRequest::<TempoTxEnvelope>::try_build_and_sign(self.inner, signer).await
     }
 }
 
