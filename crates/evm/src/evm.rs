@@ -4,16 +4,16 @@ use alloy_evm::{
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::{
-            BlockEnv, Host,
+            BlockEnv,
             result::{EVMError, HaltReason, ResultAndState},
         },
-        handler::{EthPrecompiles, EvmTr},
+        handler::EthPrecompiles,
         inspector::NoOpInspector,
         primitives::hardfork::SpecId,
     },
 };
 use alloy_primitives::{Address, Bytes};
-use reth_evm::revm::MainContext;
+use reth_revm::MainContext;
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
 use tempo_revm::{TempoTxEnv, evm::TempoContext};
@@ -36,24 +36,7 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        let ctx = Context::mainnet()
-            .with_db(db)
-            .with_block(input.block_env)
-            .with_cfg(input.cfg_env)
-            .with_tx(Default::default());
-
-        let mut evm_inner = tempo_revm::TempoEvm::new(ctx, NoOpInspector {});
-        let chain_id = evm_inner.ctx().chain_id().to::<u64>();
-        let mut precompiles_map =
-            PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
-        // Get chain_id from context to extend with Tempo precompiles
-        extend_tempo_precompiles(&mut precompiles_map, chain_id);
-
-        let evm_inner = evm_inner.with_precompiles(precompiles_map);
-        TempoEvm {
-            inner: evm_inner,
-            inspect: false,
-        }
+        TempoEvm::new(db, input)
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -62,21 +45,7 @@ impl EvmFactory for TempoEvmFactory {
         input: EvmEnv<Self::Spec>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        let ctx = Context::mainnet()
-            .with_db(db)
-            .with_block(input.block_env)
-            .with_cfg(input.cfg_env)
-            .with_tx(Default::default());
-
-        let mut evm_inner = tempo_revm::TempoEvm::new(ctx, inspector);
-        let chain_id = evm_inner.ctx().chain_id().to::<u64>();
-        let mut precompiles_map =
-            PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
-        // Get chain_id from context to extend with Tempo precompiles
-        extend_tempo_precompiles(&mut precompiles_map, chain_id);
-        let evm_inner = evm_inner.with_precompiles(precompiles_map);
-
-        TempoEvm::new(evm_inner, true)
+        TempoEvm::new(db, input).with_inspector(inspector)
     }
 }
 
@@ -91,6 +60,25 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inspect: bool,
 }
 
+impl<DB: Database> TempoEvm<DB> {
+    /// Create a new [`TempoEvm`] instance.
+    pub fn new(db: DB, input: EvmEnv) -> Self {
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(input.block_env)
+            .with_cfg(input.cfg_env)
+            .with_tx(Default::default());
+
+        let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
+        extend_tempo_precompiles(&mut precompiles, ctx.cfg.chain_id);
+
+        Self {
+            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}).with_precompiles(precompiles),
+            inspect: false,
+        }
+    }
+}
+
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &TempoContext<DB> {
@@ -101,17 +89,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn ctx_mut(&mut self) -> &mut TempoContext<DB> {
         &mut self.inner.0.ctx
     }
-}
 
-impl<DB, I> TempoEvm<DB, I>
-where
-    DB: Database,
-    I: Inspector<TempoContext<DB>>,
-{
-    pub const fn new(evm: tempo_revm::TempoEvm<DB, I>, inspect: bool) -> Self {
-        Self {
-            inner: evm,
-            inspect,
+    /// Sets the inspector for the EVM.
+    pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
+        TempoEvm {
+            inner: self.inner.with_inspector(inspector),
+            inspect: true,
         }
     }
 }
@@ -165,11 +148,22 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        if self.inspect {
+        // Disable base fee check for system transactions
+        let prev_disable_base_fee = tx
+            .is_system_tx
+            .then(|| core::mem::replace(&mut self.ctx_mut().cfg.disable_base_fee, true));
+
+        let result = if self.inspect {
             self.inner.inspect_tx(tx)
         } else {
             self.inner.transact(tx)
+        };
+
+        if let Some(prev_disable_base_fee) = prev_disable_base_fee {
+            self.ctx_mut().cfg.disable_base_fee = prev_disable_base_fee;
         }
+
+        result
     }
 
     fn transact_system_call(
@@ -210,5 +204,40 @@ where
             &mut self.inner.0.inspector,
             &mut self.inner.0.precompiles,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use reth_evm::revm::{context::TxEnv, database::EmptyDB};
+
+    use super::*;
+
+    #[test]
+    fn can_execute_system_tx() {
+        let mut evm = TempoEvm::new(
+            EmptyDB::default(),
+            EvmEnv {
+                block_env: BlockEnv {
+                    basefee: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let result = evm
+            .transact(TempoTxEnv {
+                inner: TxEnv {
+                    caller: Address::ZERO,
+                    gas_price: 0,
+                    gas_limit: 21000,
+                    ..Default::default()
+                },
+                is_system_tx: true,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert!(result.result.is_success());
     }
 }

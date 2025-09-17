@@ -23,6 +23,9 @@ pub struct TempoTxEnv {
 
     /// Optional fee token preference specified for the transaction.
     pub fee_token: Option<Address>,
+
+    /// Whether the transaction is a system transaction.
+    pub is_system_tx: bool,
 }
 
 impl From<TxEnv> for TempoTxEnv {
@@ -30,6 +33,7 @@ impl From<TxEnv> for TempoTxEnv {
         Self {
             inner,
             fee_token: None,
+            is_system_tx: false,
         }
     }
 }
@@ -133,6 +137,7 @@ impl FromRecoveredTx<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
         Self {
             inner,
             fee_token: None,
+            is_system_tx: false,
         }
     }
 }
@@ -183,6 +188,7 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
                 ..Default::default()
             },
             fee_token: *fee_token,
+            is_system_tx: false,
         }
     }
 }
@@ -190,22 +196,14 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
         match tx {
-            TempoTxEnvelope::Legacy(tx) => Self {
-                inner: TxEnv::from_recovered_tx(tx.tx(), sender),
+            tx @ TempoTxEnvelope::Legacy(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 fee_token: None,
+                is_system_tx: tx.is_system_tx(),
             },
-            TempoTxEnvelope::Eip2930(tx) => Self {
-                inner: TxEnv::from_recovered_tx(tx.tx(), sender),
-                fee_token: None,
-            },
-            TempoTxEnvelope::Eip1559(tx) => Self {
-                inner: TxEnv::from_recovered_tx(tx.tx(), sender),
-                fee_token: None,
-            },
-            TempoTxEnvelope::Eip7702(tx) => Self {
-                inner: TxEnv::from_recovered_tx(tx.tx(), sender),
-                fee_token: None,
-            },
+            TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
+            TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
+            TempoTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::FeeToken(tx) => Self::from_recovered_tx(tx.tx(), sender),
         }
     }
@@ -247,6 +245,7 @@ impl reth_rpc_convert::transaction::TryIntoTxEnv<TempoTxEnv>
         Ok(TempoTxEnv {
             inner: self.try_into_tx_env(cfg_env, block_env)?,
             fee_token: None,
+            is_system_tx: false,
         })
     }
 }

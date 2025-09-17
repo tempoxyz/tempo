@@ -2,7 +2,7 @@ use super::fee_token::TxFeeToken;
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError,
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy_primitives::{Address, B256, Signature, U256};
 use reth_primitives_traits::InMemorySize;
 
 /// Fake signature for Tempo system transactions.
