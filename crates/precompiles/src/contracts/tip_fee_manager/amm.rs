@@ -296,7 +296,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
 
         // Check that the new reserves can support pending fee swaps
-        if !self._can_support_pending_swap(pool, x_1, y_1) {
+        if !self.can_support_pending_swap(pool, y_1) {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::CannotSupportPendingSwaps(
                 ITIPFeeAMM::CannotSupportPendingSwaps {},
             ));
@@ -609,12 +609,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Check if swap can be supported by current reserves
-    fn _can_support_pending_swap(
-        &self,
-        pool: &Pool,
-        new_user_reserve: U256,
-        new_validator_reserve: U256,
-    ) -> bool {
+    fn can_support_pending_swap(&self, pool: &Pool, new_validator_reserve: U256) -> bool {
         // Check if new reserves can support all pending fee swaps
         let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
 

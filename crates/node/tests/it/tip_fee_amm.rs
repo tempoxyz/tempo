@@ -6,9 +6,8 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_eips::BlockId;
-use alloy_primitives::{Address, address, uint};
+use alloy_primitives::{Address, uint};
 use std::env;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
@@ -383,7 +382,6 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?
         .expect("Could not get block");
     let validator_address = block.header.beneficiary;
-    dbg!(block.header.beneficiary);
     assert!(!validator_address.is_zero());
 
     // Create different tokens for user and validator
@@ -466,6 +464,13 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let _initial_validator_balance = validator_token.balanceOf(validator_address).call().await?;
     let initial_user_balance = user_token.balanceOf(user_address).call().await?;
 
+    // Cache pool balances before
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let pool_before = fee_amm
+        .getPool(user_fee_token, val_fee_token)
+        .call()
+        .await?;
+
     // Transfer using predeployed TIP20
     let transfer_token = ITIP20::new(token_id_to_address(0), provider.clone());
 
@@ -483,7 +488,18 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     let _validator_balance = validator_token.balanceOf(validator_address).call().await?;
     // TODO: uncomment when we can set suggested fee recipient in debug config to non zero value
+    // NOTE: currently, we set the suggested_fee_recipient as address(0) when running the node
+    // in debug mode. Related, TIP20 transfers do not update the `to` address balance if it is
+    // address(0). Due to this, the validator balance does not currently increment in this test
     // assert!(validator_balance > initial_validator_balance);
+
+    let pool_after = fee_amm
+        .getPool(user_fee_token, val_fee_token)
+        .call()
+        .await?;
+    assert!(pool_before.reserveUserToken < pool_after.reserveUserToken);
+    assert!(pool_before.reserveValidatorToken > pool_after.reserveValidatorToken);
+    assert!(pool_before.pendingFeeSwapIn == 0);
 
     Ok(())
 }

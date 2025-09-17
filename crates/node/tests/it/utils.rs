@@ -14,7 +14,6 @@ use alloy::{
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
-use reth_chainspec::EthChainSpec;
 use reth_ethereum::tasks::TaskManager;
 use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};

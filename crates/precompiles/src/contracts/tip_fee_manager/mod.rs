@@ -359,7 +359,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         // Transfer the total amount out to the beneficiary
         let token_id = address_to_token_id_unchecked(&validator_token);
         let mut token = TIP20Token::new(token_id, self.storage);
-        dbg!(self.beneficiary);
 
         token
             .transfer(
