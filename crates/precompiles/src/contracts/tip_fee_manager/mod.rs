@@ -592,7 +592,44 @@ impl<'a, S: StorageProvider> StorageOps for TipFeeManager<'a, S> {
 mod tests {
 
     use super::*;
-    use crate::{TIP_FEE_MANAGER_ADDRESS, contracts::HashMapStorageProvider};
+    use crate::{
+        TIP_FEE_MANAGER_ADDRESS,
+        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE},
+    };
+
+    fn setup_token_with_balance(
+        storage: &mut HashMapStorageProvider,
+        token: Address,
+        user: Address,
+        amount: U256,
+    ) {
+        let token_id = address_to_token_id_unchecked(&token);
+        let mut tip20_token = TIP20Token::new(token_id, storage);
+
+        // Initialize token
+        tip20_token
+            .initialize("TestToken", "TEST", "USD", &user)
+            .unwrap();
+
+        // Grant issuer role to user and mint tokens
+        let mut roles = tip20_token.get_roles_contract();
+        roles.grant_role_internal(&user, *ISSUER_ROLE);
+
+        tip20_token
+            .mint(&user, ITIP20::mintCall { to: user, amount })
+            .unwrap();
+
+        // Approve fee manager
+        tip20_token
+            .approve(
+                &user,
+                ITIP20::approveCall {
+                    spender: TIP_FEE_MANAGER_ADDRESS,
+                    amount: U256::MAX,
+                },
+            )
+            .unwrap();
+    }
 
     #[test]
     fn test_create_pool() {
@@ -646,5 +683,86 @@ mod tests {
         let query_call = IFeeManager::validatorTokensCall { validator };
         let returned_token = fee_manager.validator_tokens(query_call);
         assert_eq!(returned_token, token);
+    }
+
+    #[test]
+    fn test_collect_fee_pre_tx() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let validator = Address::random();
+        let token = Address::random();
+        let max_amount = U256::from(10000);
+
+        // Setup token with balance and approval
+        setup_token_with_balance(&mut storage, token, user, U256::from(100000));
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+
+        // Set validator token
+        fee_manager
+            .set_validator_token(&validator, IFeeManager::setValidatorTokenCall { token })
+            .unwrap();
+
+        // Set user token (same as validator for simplicity)
+        fee_manager
+            .set_user_token(&user, IFeeManager::setUserTokenCall { token })
+            .unwrap();
+
+        // Call collect_fee_pre_tx directly
+        let result = fee_manager.collect_fee_pre_tx(user, max_amount, validator);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), token);
+    }
+
+    #[test]
+    fn test_collect_fee_post_tx() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let token = Address::random();
+        let actual_used = U256::from(6000);
+        let refund_amount = U256::from(4000);
+
+        // Setup token with balance for fee manager
+        let token_id = address_to_token_id_unchecked(&token);
+        let admin = Address::random();
+
+        // Initialize token and give fee manager tokens (simulating that collect_fee_pre_tx already happened)
+        {
+            let mut tip20_token = TIP20Token::new(token_id, &mut storage);
+            tip20_token
+                .initialize("TestToken", "TEST", "USD", &admin)
+                .unwrap();
+
+            let mut roles = tip20_token.get_roles_contract();
+            roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+            tip20_token
+                .mint(
+                    &admin,
+                    ITIP20::mintCall {
+                        to: TIP_FEE_MANAGER_ADDRESS,
+                        amount: U256::from(10000),
+                    },
+                )
+                .unwrap();
+        }
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+
+        // Call collect_fee_post_tx directly
+        let result = fee_manager.collect_fee_post_tx(user, actual_used, refund_amount, token);
+        assert!(result.is_ok());
+
+        // Verify user got the refund
+        {
+            let mut tip20_token = TIP20Token::new(token_id, &mut storage);
+            let balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: user });
+            assert_eq!(balance, refund_amount);
+        }
+
+        // Verify fees were tracked
+        let fees_slot = collected_fees_slot(&token);
+        let tracked_amount = storage.sload(TIP_FEE_MANAGER_ADDRESS, fees_slot).unwrap();
+        assert_eq!(tracked_amount, actual_used);
     }
 }
