@@ -99,6 +99,13 @@ where
         transactions
             .into_iter()
             .map(|(origin, tx)| {
+                if tx.inner().is_system_tx() {
+                    return TransactionValidationOutcome::Error(
+                        *tx.hash(),
+                        InvalidTransactionError::TxTypeNotSupported.into(),
+                    );
+                }
+
                 let balance = match state_provider.get_fee_token_balance(tx.sender()) {
                     Ok(balance) => balance,
                     Err(err) => {
@@ -147,6 +154,13 @@ where
         transactions
             .into_iter()
             .map(|tx| {
+                if tx.inner().is_system_tx() {
+                    return TransactionValidationOutcome::Error(
+                        *tx.hash(),
+                        InvalidTransactionError::TxTypeNotSupported.into(),
+                    );
+                }
+
                 let balance = match state_provider.get_fee_token_balance(tx.sender()) {
                     Ok(balance) => balance,
                     Err(err) => {
