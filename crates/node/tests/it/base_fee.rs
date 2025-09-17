@@ -1,7 +1,7 @@
 use alloy::{
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, coins_bip39::English},
+    signers::local::MnemonicBuilder,
 };
 use alloy_eips::BlockNumberOrTag;
 use futures::{StreamExt, future::join_all, stream};
@@ -22,9 +22,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Get initial block to check base fee

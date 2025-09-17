@@ -1,7 +1,7 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::ProviderBuilder,
-    signers::local::{MnemonicBuilder, coins_bip39::English},
+    signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
 use futures::future::try_join_all;
@@ -28,9 +28,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -41,8 +39,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     // NOTE: The tests-genesis.json pre allocates feeToken balances for gas fees
     let account_data: Vec<_> = (1..100)
         .map(|i| {
-            let signer = MnemonicBuilder::<English>::default()
-                .phrase("test test test test test test test test test test test junk")
+            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i as u32)
                 .unwrap()
                 .build()
@@ -141,9 +138,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -215,9 +210,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let owner = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let owner = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = owner.address();
     let provider = ProviderBuilder::new()
         .wallet(owner)
@@ -227,8 +220,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
     let account_data: Vec<_> = (1..20)
         .map(|i| {
-            let signer = MnemonicBuilder::<English>::default()
-                .phrase("test test test test test test test test test test test junk")
+            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i as u32)
                 .unwrap()
                 .build()
@@ -331,9 +323,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -392,9 +382,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let admin = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -433,8 +421,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 
     let accounts: Vec<_> = (1..100)
         .map(|i| {
-            MnemonicBuilder::<English>::default()
-                .phrase("test test test test test test test test test test test junk")
+            MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i)
                 .unwrap()
                 .build()
@@ -525,9 +512,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let admin = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -566,8 +551,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
 
     let accounts: Vec<_> = (1..100)
         .map(|i| {
-            MnemonicBuilder::<English>::default()
-                .phrase("test test test test test test test test test test test junk")
+            MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i)
                 .unwrap()
                 .build()

@@ -2,7 +2,7 @@ use alloy::{
     network::ReceiptResponse,
     primitives::U256,
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, coins_bip39::English},
+    signers::local::MnemonicBuilder,
 };
 use alloy_rpc_types_eth::TransactionRequest;
 use std::env;
@@ -23,9 +23,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
