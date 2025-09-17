@@ -244,13 +244,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn collect_fee_post_tx(
         &mut self,
         user: Address,
-        max_amount: U256,
         actual_used: U256,
+        refund_amount: U256,
         user_token: Address,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // Calculate refund amount (max - actual)
-        let refund_amount = max_amount.saturating_sub(actual_used);
-
         // Refund unused tokens to user
         if refund_amount > U256::ZERO {
             let token_id = address_to_token_id_unchecked(&user_token);

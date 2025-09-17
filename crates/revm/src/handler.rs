@@ -185,11 +185,12 @@ where
         let gas = exec_result.gas();
         let chain_id = context.cfg().chain_id;
 
-        // Calculate max amount and actual used
+        // Calculate actual used and refund amounts
         let gas_limit = tx.gas_limit();
-        let max_amount = U256::from(gas_limit).saturating_mul(U256::from(effective_gas_price));
         let gas_used = gas.used();
         let actual_used = U256::from(gas_used).saturating_mul(U256::from(effective_gas_price));
+        let refund_amount =
+            U256::from(gas_limit - gas_used).saturating_mul(U256::from(effective_gas_price));
 
         // Create storage provider and fee manager
         let journal = evm.ctx().journal_mut();
@@ -198,7 +199,7 @@ where
 
         // Call collectFeePostTx (handles both refund and fee queuing)
         fee_manager
-            .collect_fee_post_tx(caller, max_amount, actual_used, self.fee_token)
+            .collect_fee_post_tx(caller, actual_used, refund_amount, self.fee_token)
             .map_err(|_| EVMError::Custom("Failed to collect post-tx fee".to_string()))?;
 
         Ok(())
