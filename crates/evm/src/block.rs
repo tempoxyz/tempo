@@ -82,8 +82,9 @@ impl<'a, DB: Database, I> TempoBlockExecutor<'a, DB, I> {
             ));
         }
 
-        let expected = executeBlockCall.abi_encode();
-        if tx.to() != Some(TIP_FEE_MANAGER_ADDRESS) || tx.input() != &expected {
+        if tx.to() != Some(TIP_FEE_MANAGER_ADDRESS)
+            || tx.input() != &(executeBlockCall {}.abi_encode())
+        {
             // todo: change once <https://github.com/alloy-rs/evm/pull/176> is merged
             return Err(BlockValidationError::DepositRequestDecode(
                 "system transaction is not a fee manager execute block transaction".to_string(),
