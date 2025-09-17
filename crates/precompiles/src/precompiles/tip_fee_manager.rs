@@ -337,7 +337,6 @@ mod tests {
             &user,
         )?;
 
-
         Ok(())
     }
 

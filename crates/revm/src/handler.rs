@@ -186,11 +186,11 @@ where
         let chain_id = context.cfg().chain_id;
 
         // Calculate actual used and refund amounts
-        let gas_limit = tx.gas_limit();
         let gas_used = gas.used();
         let actual_used = U256::from(gas_used).saturating_mul(U256::from(effective_gas_price));
-        let refund_amount =
-            U256::from(gas_limit - gas_used).saturating_mul(U256::from(effective_gas_price));
+        let refund_amount = U256::from(
+            effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128),
+        );
 
         // Create storage provider and fee manager
         let journal = evm.ctx().journal_mut();
