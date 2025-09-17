@@ -199,6 +199,8 @@ where
         let mut fee_manager =
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
 
+        dbg!(actual_used);
+        dbg!(refund_amount);
         // Call collectFeePostTx (handles both refund and fee queuing)
         fee_manager
             .collect_fee_post_tx(caller, actual_used, refund_amount, self.fee_token)
