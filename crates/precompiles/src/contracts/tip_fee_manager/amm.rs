@@ -168,18 +168,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     /// Execute a fee swap
     pub fn fee_swap(
         &mut self,
-        msg_sender: Address,
         user_token: Address,
         validator_token: Address,
         amount_in: U256,
         to: Address,
     ) -> Result<U256, TIPFeeAMMError> {
-        if !msg_sender.is_zero() {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::OnlyProtocol(
-                ITIPFeeAMM::OnlyProtocol {},
-            ));
-        }
-
         let pool_id = self.get_pool_id(user_token, validator_token);
         if !self.pool_exists(&pool_id) {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
