@@ -1,6 +1,6 @@
-use crate::utils::{NodeSource, setup_test_node};
+use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
-    providers::{Provider, ProviderBuilder},
+    providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{
         SignerSync,
         local::{MnemonicBuilder, coins_bip39::English},
@@ -197,9 +197,9 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(alice)
         .connect_http(http_url.clone());
-    // Use the pre-deployed token from genesis (token 0)
-    let token_addr = token_id_to_address(0);
-    let token = ITIP20::new(token_addr, provider.clone());
+
+    let deployer = provider.default_signer_address();
+    let token = setup_test_token(provider.clone(), deployer).await?;
 
     let bob = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
@@ -207,10 +207,9 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
         .build()?;
     let bob_addr = bob.address();
 
-    // Transfer some tokens from alice to bob (enough for gas and transfers)
-    let amount = U256::from(1_000_000u64);
+    let amount = U256::random();
     token
-        .transfer(bob_addr, amount)
+        .mint(bob_addr, amount)
         .send()
         .await?
         .get_receipt()
