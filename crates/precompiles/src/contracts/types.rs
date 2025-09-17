@@ -214,6 +214,11 @@ sol! {
         error InsufficientLiquidityBalance();
         error MustDepositLowerBalanceToken();
         error InvalidAmount();
+        error InvalidRebalanceState();
+        error InvalidRebalanceDirection();
+        error InvalidNewReserves();
+        error CannotSupportPendingSwaps();
+        error DivisionByZero();
     }
 
 

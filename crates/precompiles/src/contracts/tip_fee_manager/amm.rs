@@ -246,7 +246,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         let mut pool = self.get_pool(&pool_id);
 
-        let amount_out = self.execute_rebalance_swap(&mut pool, amount_in);
+        let amount_out = self.execute_rebalance_swap(&mut pool, amount_in)?;
 
         // Transfer tokens
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
@@ -293,7 +293,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Execute rebalance swap implementation
-    fn execute_rebalance_swap(&mut self, pool: &mut Pool, amount_in: U256) -> U256 {
+    fn execute_rebalance_swap(&mut self, pool: &mut Pool, amount_in: U256) -> Result<U256, TIPFeeAMMError> {
         // Use current reserves for pricing
         let x = U256::from(pool.reserve_user_token);
         let y = U256::from(pool.reserve_validator_token);
@@ -301,32 +301,40 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         // For rebalancing, we are adding validatorToken (y), removing userToken (x)
         // This is valid only when y < x
         if y >= x {
-            todo!("TODO: handle error")
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidRebalanceState(
+                ITIPFeeAMM::InvalidRebalanceState {},
+            ));
         }
 
         // Calculate dynamic liquidity L based on current reserves
         let l = self.calculate_liquidity(x, y);
         let y_1 = y + amount_in;
-        let x_1 = self.calculate_new_reserve(y_1, l);
+        let x_1 = self.calculate_new_reserve(y_1, l)?;
 
         if x_1 >= x {
-            todo!("TODO: handle error")
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidRebalanceDirection(
+                ITIPFeeAMM::InvalidRebalanceDirection {},
+            ));
         }
 
         if y_1 > x_1 {
-            todo!("TODO: handle error")
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidNewReserves(
+                ITIPFeeAMM::InvalidNewReserves {},
+            ));
         }
 
         // Check that the new reserves can support pending fee swaps
         if !self._can_support_pending_swap(x_1, y_1) {
-            todo!("TODO: handle error")
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::CannotSupportPendingSwaps(
+                ITIPFeeAMM::CannotSupportPendingSwaps {},
+            ));
         }
 
         // Update pool reserves
         pool.reserve_user_token = x_1.to::<u128>();
         pool.reserve_validator_token = y_1.to::<u128>();
 
-        x - x_1
+        Ok(x - x_1)
     }
 
     /// Calculate liquidity based on reserves
@@ -348,7 +356,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Calculate new reserve after swap
-    pub fn calculate_new_reserve(&self, known_validator_reserve: U256, l: U256) -> U256 {
+    pub fn calculate_new_reserve(&self, known_validator_reserve: U256, l: U256) -> Result<U256, TIPFeeAMMError> {
         // From the invariant: (x + L)(y + L*sqrt(m)) = L^2
         // For rebalancing swaps (validatorToken → userToken), we know new y, solve for new x:
         // x = L^2 / (y + L*sqrt(m)) - L
@@ -358,15 +366,19 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let denominator = known_validator_reserve + l_sqrt_m;
 
         if denominator.is_zero() {
-            todo!("TODO: handle error")
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::DivisionByZero(
+                ITIPFeeAMM::DivisionByZero {},
+            ));
         }
 
         let result = l2 / denominator;
         if result <= l {
-            todo!("TODO: handle error")
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidNewReserves(
+                ITIPFeeAMM::InvalidNewReserves {},
+            ));
         }
 
-        result - l
+        Ok(result - l)
     }
 
     /// Mint liquidity tokens
