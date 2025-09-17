@@ -13,7 +13,10 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, Bytes, TxKind};
-use reth_revm::{InspectSystemCallEvm, MainContext, context::result::InvalidTransaction};
+use reth_revm::{
+    InspectSystemCallEvm, MainContext,
+    context::result::{ExecutionResult, InvalidTransaction},
+};
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
 use tempo_revm::{TempoTxEnv, evm::TempoContext};
@@ -154,13 +157,31 @@ where
                     InvalidTransaction::BlobCreateTransaction,
                 ));
             };
-            if self.inspect {
+
+            let mut result = if self.inspect {
                 self.inner
-                    .inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)
+                    .inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
             } else {
                 self.inner
-                    .system_call_with_caller(tx.inner.caller, to, tx.inner.data)
-            }
+                    .system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+            };
+
+            // system transactions should not consume any gas
+            let ExecutionResult::Success {
+                gas_used,
+                gas_refunded,
+                ..
+            } = &mut result.result
+            else {
+                return Err(EVMError::Transaction(
+                    InvalidTransaction::BlobCreateTransaction,
+                ));
+            };
+
+            *gas_used = 0;
+            *gas_refunded = 0;
+
+            Ok(result)
         } else if self.inspect {
             self.inner.inspect_tx(tx)
         } else {
