@@ -1,7 +1,7 @@
 mod request;
 
 use crate::{node::TempoNode, rpc::request::TempoTransactionRequest};
-use alloy::{consensus::TxReceipt, network::Ethereum, primitives::U256};
+use alloy::{consensus::TxReceipt, primitives::U256};
 use alloy_primitives::{Address, uint};
 use alloy_rpc_types_eth::ReceiptWithBloom;
 use reth_ethereum::tasks::{
@@ -139,7 +139,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> RpcNodeCoreExt for TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiSpec for TempoEthApi<N> {
     type Transaction = TxTy<N::Types>;
-    type Rpc = Ethereum;
+    type Rpc = TempoRpcTypes;
 
     #[inline]
     fn starting_block(&self) -> U256 {
