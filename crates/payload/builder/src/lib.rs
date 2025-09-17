@@ -280,6 +280,8 @@ where
             });
         }
 
+        dbg!(builder.evm().block().beneficiary);
+
         // Include the seal block transaction in the block
         builder
             .execute_transaction(self.build_seal_block_tx())

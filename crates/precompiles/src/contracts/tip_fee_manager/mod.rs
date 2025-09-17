@@ -368,6 +368,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let fee_manager_bal_before = token.balance_of(ITIP20::balanceOfCall {
             account: self.contract_address,
         });
+        dbg!(self.beneficiary);
 
         token
             .transfer(
