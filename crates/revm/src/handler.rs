@@ -143,13 +143,13 @@ where
         // Transfer will be done inside `*_inner` functions.
         if is_balance_check_disabled {
             // ignore balance check.
-        } else if account_balance < max_balance_spending {
+        } else if max_balance_spending > U256::ZERO && account_balance < max_balance_spending {
             return Err(InvalidTransaction::LackOfFundForMaxFee {
                 fee: Box::new(max_balance_spending),
                 balance: Box::new(account_balance),
             }
             .into());
-        } else {
+        } else if max_balance_spending > U256::ZERO {
             // Call collectFeePreTx on TipFeeManager precompile
             let gas_balance_spending = effective_balance_spending - value;
 
