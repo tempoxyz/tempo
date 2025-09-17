@@ -160,12 +160,7 @@ where
 
             // Call the precompile function to collect the fee
             fee_manager
-                .collect_fee_pre_tx(
-                    &Address::ZERO,
-                    tx.caller(),
-                    gas_balance_spending,
-                    beneficiary,
-                )
+                .collect_fee_pre_tx(tx.caller(), gas_balance_spending, beneficiary)
                 .map_err(|_| InvalidTransaction::LackOfFundForMaxFee {
                     fee: Box::new(max_balance_spending),
                     balance: Box::new(account_balance),
