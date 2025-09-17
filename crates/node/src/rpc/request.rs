@@ -1,4 +1,4 @@
-use alloy::consensus::{Transaction, TxEip7702, error::ValueError};
+use alloy::consensus::{EthereumTxEnvelope, Transaction, TxEip4844, TxEip7702, error::ValueError};
 use alloy_primitives::{Address, Signature};
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_evm::revm::context::{BlockEnv, CfgEnv};
@@ -52,12 +52,34 @@ impl TempoTransactionRequest {
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
-        let tx = self.build_fee_token()?;
+        if self.fee_token.is_some() {
+            let tx = self.build_fee_token()?;
 
-        // Create an empty signature for the transaction.
-        let signature = Signature::new(Default::default(), Default::default(), false);
+            // Create an empty signature for the transaction.
+            let signature = Signature::new(Default::default(), Default::default(), false);
 
-        Ok(tx.into_signed(signature).into())
+            Ok(tx.into_signed(signature).into())
+        } else {
+            let tx_req = self.inner.clone();
+            let inner = TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(self.inner)
+                .map_err(|e| {
+                    e.map(|inner| TempoTransactionRequest {
+                        inner,
+                        fee_token: self.fee_token,
+                    })
+                })?;
+
+            Ok(
+                TryFrom::<EthereumTxEnvelope<TxEip4844>>::try_from(inner).map_err(
+                    |e: ValueError<EthereumTxEnvelope<TxEip4844>>| {
+                        e.map(|_inner| TempoTransactionRequest {
+                            inner: tx_req,
+                            fee_token: self.fee_token,
+                        })
+                    },
+                )?,
+            )
+        }
     }
 }
 
