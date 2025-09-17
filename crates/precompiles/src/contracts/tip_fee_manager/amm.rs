@@ -293,7 +293,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Execute rebalance swap implementation
-    fn execute_rebalance_swap(&mut self, pool: &mut Pool, amount_in: U256) -> Result<U256, TIPFeeAMMError> {
+    fn execute_rebalance_swap(
+        &mut self,
+        pool: &mut Pool,
+        amount_in: U256,
+    ) -> Result<U256, TIPFeeAMMError> {
         // Use current reserves for pricing
         let x = U256::from(pool.reserve_user_token);
         let y = U256::from(pool.reserve_validator_token);
@@ -324,7 +328,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
 
         // Check that the new reserves can support pending fee swaps
-        if !self._can_support_pending_swap(x_1, y_1) {
+        if !self._can_support_pending_swap(pool, x_1, y_1) {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::CannotSupportPendingSwaps(
                 ITIPFeeAMM::CannotSupportPendingSwaps {},
             ));
@@ -356,7 +360,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Calculate new reserve after swap
-    pub fn calculate_new_reserve(&self, known_validator_reserve: U256, l: U256) -> Result<U256, TIPFeeAMMError> {
+    pub fn calculate_new_reserve(
+        &self,
+        known_validator_reserve: U256,
+        l: U256,
+    ) -> Result<U256, TIPFeeAMMError> {
         // From the invariant: (x + L)(y + L*sqrt(m)) = L^2
         // For rebalancing swaps (validatorToken → userToken), we know new y, solve for new x:
         // x = L^2 / (y + L*sqrt(m)) - L
@@ -608,17 +616,47 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok((amount_user_token, amount_validator_token))
     }
 
-    /// Execute pending fee swap
-    pub fn execute_pending_fee_swap(
+    /// Execute pending fee swaps - processes all pending fee swaps for a pool
+    pub fn execute_pending_fee_swaps(
         &mut self,
-        _user_token: Address,
-        _validator_token: Address,
-    ) -> Result<U256, &'static str> {
-        todo!()
+        user_token: Address,
+        validator_token: Address,
+    ) -> Result<U256, TIPFeeAMMError> {
+        let pool_id = self.get_pool_id(user_token, validator_token);
+        if !self.pool_exists(&pool_id) {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
+                ITIPFeeAMM::PoolDoesNotExist {},
+            ));
+        }
+
+        let mut pool = self.get_pool(&pool_id);
+        let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
+
+        // Apply pending fee swap to reserves
+        // Add userToken input, subtract validatorToken output
+        pool.reserve_user_token = (U256::from(pool.reserve_user_token)
+            + U256::from(pool.pending_fee_swap_in))
+        .to::<u128>();
+        pool.reserve_validator_token =
+            (U256::from(pool.reserve_validator_token) - pending_out).to::<u128>();
+
+        // Clear pending swaps
+        pool.pending_fee_swap_in = 0;
+
+        self.set_pool(&pool_id, &pool);
+
+        Ok(U256::from(pool.pending_fee_swap_in))
     }
 
-    fn _get_total_pending_swaps() {
-        todo!()
+    /// Get total pending swaps for a specific pool
+    pub fn get_total_pending_swaps(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+    ) -> U256 {
+        let pool_id = self.get_pool_id(user_token, validator_token);
+        let pool = self.get_pool(&pool_id);
+        U256::from(pool.pending_fee_swap_in)
     }
 
     /// Get effective user token reserve
@@ -636,10 +674,16 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     /// Check if swap can be supported by current reserves
     fn _can_support_pending_swap(
         &self,
-        _new_user_reserve: U256,
-        _new_validator_reserve: U256,
+        pool: &Pool,
+        new_user_reserve: U256,
+        new_validator_reserve: U256,
     ) -> bool {
-        todo!()
+        // Check if new reserves can support all pending fee swaps
+        let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
+
+        // userToken will increase by pendingFeeSwapIn
+        // validatorToken will decrease by pendingOut
+        new_validator_reserve >= pending_out
     }
 
     /// Set pool data in storage
