@@ -143,7 +143,7 @@ mod tests {
         let account_info = provider.get_account_info(address)?;
 
         // Should be an empty account
-        assert_eq!(account_info.balance, U256::ZERO);
+        assert!(account_info.balance.is_zero());
         assert_eq!(account_info.nonce, 0);
         // Note: load_account_code may return empty bytecode as Some(empty) for new accounts
         if let Some(ref code) = account_info.code {
