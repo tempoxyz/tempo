@@ -6,7 +6,6 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_primitives::{Address, address, uint};
-use reth_ethereum::provider::db;
 use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -426,7 +425,6 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     );
     await_receipts(&mut pending).await?;
 
-    dbg!("minted");
     // Verify liquidity was added
     let pool = fee_amm.pools(pool_id).call().await?;
     assert_eq!(pool.reserveUserToken, liquidity.to::<u128>());
@@ -480,13 +478,13 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     // Assert that gas token in was swapped to the validator token
     let user_balance = user_token.balanceOf(user_address).call().await?;
     assert!(user_balance < initial_user_balance);
-    dbg!(initial_user_balance);
-    dbg!(user_balance);
 
     let validator_balance = validator_token.balanceOf(validator_address).call().await?;
+
     dbg!(initial_validator_balance);
     dbg!(validator_balance);
-    // assert!(validator_balance > initial_validator_balance);
+
+    assert!(validator_balance > initial_validator_balance);
 
     Ok(())
 }

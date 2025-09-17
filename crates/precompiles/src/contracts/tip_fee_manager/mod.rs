@@ -281,6 +281,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })?;
         }
 
+        dbg!(refund_amount);
+        dbg!(actual_used);
+
         // Track collected fees
         if !actual_used.is_zero() {
             // If the validator token is different than the user token, add the amount used to
