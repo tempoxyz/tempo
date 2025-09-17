@@ -12644,6 +12644,7 @@ dependencies = [
  "reth-evm",
  "reth-evm-ethereum",
  "reth-primitives-traits",
+ "reth-revm",
  "tempo-chainspec",
  "tempo-payload-types",
  "tempo-precompiles",

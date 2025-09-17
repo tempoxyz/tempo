@@ -1,4 +1,3 @@
-use crate::utils::setup_test_token;
 use alloy::{
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
@@ -8,6 +7,7 @@ use alloy_eips::BlockNumberOrTag;
 use futures::{StreamExt, future::join_all, stream};
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_precompiles::contracts::{token_id_to_address, types::ITIP20};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_base_fee() -> eyre::Result<()> {
@@ -25,7 +25,6 @@ async fn test_base_fee() -> eyre::Result<()> {
     let wallet = MnemonicBuilder::<English>::default()
         .phrase("test test test test test test test test test test test junk")
         .build()?;
-    let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Get initial block to check base fee
@@ -40,16 +39,9 @@ async fn test_base_fee() -> eyre::Result<()> {
         .expect("Could not get basefee");
     assert_eq!(base_fee, TEMPO_BASE_FEE as u128 as u64);
 
-    // Deploy test token and mint initial supply
-    let token = setup_test_token(provider.clone(), caller).await?;
-    token
-        .mint(caller, U256::from(u64::MAX))
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    // Use the pre-deployed token from genesis (token 0)
+    let token_addr = token_id_to_address(0);
+    let token = ITIP20::new(token_addr, provider.clone());
 
     // Gas limit is set to 200k in test-genesis.json, send 500 txs to exceed limit over multiple
     // blocks

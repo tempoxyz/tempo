@@ -38,6 +38,8 @@ pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::Address;
+    use std::str::FromStr;
 
     #[test]
     fn test_mapping_slot_deterministic() {
@@ -57,5 +59,48 @@ mod tests {
         let slot2 = mapping_slot(key2, U256::ZERO);
 
         assert_ne!(slot1, slot2);
+    }
+
+    #[test]
+    fn test_tip20_balance_slots() {
+        // Test balance slot calculation for TIP20 tokens (slot 10)
+        let alice = Address::from_str("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266").unwrap();
+        let bob = Address::from_str("0x70997970C51812dc3A010C7d01b50e0d17dc79C8").unwrap();
+
+        let alice_balance_slot = mapping_slot(alice, U256::from(10));
+        let bob_balance_slot = mapping_slot(bob, U256::from(10));
+
+        println!("Alice balance slot: 0x{alice_balance_slot:064x}");
+        println!("Bob balance slot: 0x{bob_balance_slot:064x}");
+
+        // Verify they're different
+        assert_ne!(alice_balance_slot, bob_balance_slot);
+    }
+
+    #[test]
+    fn test_tip20_allowance_slots() {
+        // Test allowance slot calculation for TIP20 tokens (slot 11)
+        let alice = Address::from_str("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266").unwrap();
+        let tip_fee_mgr = Address::from_str("0xfeec000000000000000000000000000000000000").unwrap();
+
+        let allowance_slot = double_mapping_slot(alice, tip_fee_mgr, U256::from(11));
+
+        println!("Alice->TipFeeManager allowance slot: 0x{allowance_slot:064x}");
+
+        // Just verify it's calculated consistently
+        let allowance_slot2 = double_mapping_slot(alice, tip_fee_mgr, U256::from(11));
+        assert_eq!(allowance_slot, allowance_slot2);
+    }
+
+    #[test]
+    fn test_double_mapping_different_keys() {
+        let alice = Address::from_str("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266").unwrap();
+        let bob = Address::from_str("0x70997970C51812dc3A010C7d01b50e0d17dc79C8").unwrap();
+        let spender = Address::from_str("0xfeec000000000000000000000000000000000000").unwrap();
+
+        let alice_allowance = double_mapping_slot(alice, spender, U256::from(11));
+        let bob_allowance = double_mapping_slot(bob, spender, U256::from(11));
+
+        assert_ne!(alice_allowance, bob_allowance);
     }
 }

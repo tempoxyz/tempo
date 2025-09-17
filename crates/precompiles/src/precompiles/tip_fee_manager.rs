@@ -37,21 +37,15 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             IFeeManager::setValidatorTokenCall::SELECTOR => mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_validator_token(s, call)),
             IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),
             ITIPFeeAMM::createPoolCall::SELECTOR => mutate_void::<ITIPFeeAMM::createPoolCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |_s, call| self.create_pool(call)),
-            IFeeManager::collectFeePreTxCall::SELECTOR => {
-                mutate_void::<IFeeManager::collectFeePreTxCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee_pre_tx(s, call))
-            }
-            IFeeManager::collectFeePostTxCall::SELECTOR => {
-                mutate_void::<IFeeManager::collectFeePostTxCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.collect_fee_post_tx(s, call))
-            }
             IFeeManager::executeBlockCall::SELECTOR => {
-                mutate_void::<IFeeManager::executeBlockCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, _call| self.execute_block(s))
+                mutate_void::<IFeeManager::executeBlockCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.execute_block(s, call))
             }
             ITIPFeeAMM::mintCall::SELECTOR => mutate::<ITIPFeeAMM::mintCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.mint(*s, call)),
             ITIPFeeAMM::burnCall::SELECTOR => mutate::<ITIPFeeAMM::burnCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.burn(*s, call)),
             ITIPFeeAMM::feeSwapCall::SELECTOR => mutate::<ITIPFeeAMM::feeSwapCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.fee_swap(*s, call)),
             ITIPFeeAMM::rebalanceSwapCall::SELECTOR => mutate::<ITIPFeeAMM::rebalanceSwapCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.rebalance_swap(*s, call)),
             ITIPFeeAMM::calculateLiquidityCall::SELECTOR => view::<ITIPFeeAMM::calculateLiquidityCall>(calldata, |call| self.calculate_liquidity(call)),
-            
+
             _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
         }
     }
@@ -63,19 +57,55 @@ mod tests {
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
         contracts::{
-            HashMapStorageProvider,
+            HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
             tip_fee_manager::amm::PoolKey,
-            types::{IFeeManager, ITIPFeeAMM},
+            types::{IFeeManager, ITIP20, ITIPFeeAMM},
         },
         fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
         tip_fee_amm_err,
     };
     use alloy::{
-        primitives::{Address, B256, Bytes},
+        primitives::{Address, B256, Bytes, U256},
         sol_types::SolValue,
     };
     use eyre::Result;
+
+    fn setup_token_with_balance(
+        storage: &mut HashMapStorageProvider,
+        token: Address,
+        user: Address,
+        amount: U256,
+    ) {
+        use crate::contracts::tip20::ISSUER_ROLE;
+
+        let token_id = address_to_token_id_unchecked(&token);
+        let mut tip20_token = TIP20Token::new(token_id, storage);
+
+        // Initialize token
+        tip20_token
+            .initialize("TestToken", "TEST", "USD", &user)
+            .unwrap();
+
+        // Grant issuer role to user and mint tokens
+        let mut roles = tip20_token.get_roles_contract();
+        roles.grant_role_internal(&user, *ISSUER_ROLE);
+
+        tip20_token
+            .mint(&user, ITIP20::mintCall { to: user, amount })
+            .unwrap();
+
+        // Approve fee manager to spend user's tokens
+        tip20_token
+            .approve(
+                &user,
+                ITIP20::approveCall {
+                    spender: TIP_FEE_MANAGER_ADDRESS,
+                    amount,
+                },
+            )
+            .unwrap();
+    }
 
     #[test]
     fn test_set_validator_token() -> Result<()> {
@@ -289,6 +319,32 @@ mod tests {
     }
 
     #[test]
+    fn test_fee_manager_with_nonexistent_pool() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let validator = Address::random();
+        let token_a = Address::random();
+        let token_b = Address::random();
+
+        // Setup tokens with balance
+        setup_token_with_balance(&mut storage, token_a, user, U256::MAX);
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+
+        // Set different tokens for user and validator (requires pool)
+        fee_manager.call(
+            &Bytes::from(IFeeManager::setValidatorTokenCall { token: token_b }.abi_encode()),
+            &validator,
+        )?;
+        fee_manager.call(
+            &Bytes::from(IFeeManager::setUserTokenCall { token: token_a }.abi_encode()),
+            &user,
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
     fn test_pool_id_calculation() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
@@ -376,5 +432,31 @@ mod tests {
         };
         let result = fee_manager.call(&Bytes::from(set_user_call.abi_encode()), &user);
         expect_precompile_error(&result, fee_manager_err!(InvalidToken));
+    }
+
+    #[test]
+    fn test_execute_block() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let validator = Address::random();
+        let token = Address::random();
+
+        // Setup token
+        let user = Address::random();
+        setup_token_with_balance(&mut storage, token, user, U256::MAX);
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage);
+
+        // Set validator token
+        fee_manager.call(
+            &Bytes::from(IFeeManager::setValidatorTokenCall { token }.abi_encode()),
+            &validator,
+        )?;
+
+        // Call executeBlock (only system contract can call)
+        let call = IFeeManager::executeBlockCall { validator };
+        let result = fee_manager.call(&Bytes::from(call.abi_encode()), &Address::ZERO)?;
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        Ok(())
     }
 }

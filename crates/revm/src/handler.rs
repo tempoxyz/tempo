@@ -12,17 +12,20 @@ use reth_evm::revm::{
     handler::{EvmTr, FrameTr, Handler, pre_execution::validate_account_nonce_and_code},
     inspector::{Inspector, InspectorHandler},
     interpreter::{instructions::utility::IntoAddress, interpreter::EthInterpreter},
-    primitives::hardfork::SpecId,
     state::Bytecode,
 };
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20},
+    contracts::{
+        storage::slots::mapping_slot,
+        tip_fee_manager::{self, TipFeeManager},
+        tip20,
+    },
 };
 use tracing::trace;
 
-use crate::{TempoEvm, evm::TempoContext};
+use crate::{TempoEvm, evm::TempoContext, journal_storage_provider::JournalStorageProvider};
 
 /// Hashed account code of default 7702 delegate deployment
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
@@ -89,6 +92,10 @@ where
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
         // modified inlined ethereum state validation logic
+        // Extract values before mutable borrow
+        let beneficiary = evm.ctx().beneficiary();
+        let chain_id = evm.ctx().chain_id().to::<u64>();
+
         let context = evm.ctx();
         let basefee = context.block().basefee() as u128;
         let blob_price = context.block().blob_gasprice().unwrap_or_default();
@@ -142,21 +149,24 @@ where
                 balance: Box::new(account_balance),
             }
             .into());
-        } else {
-            // deduct balance from the fee account's balance by transferring it over to the fee manager
+        } else if !max_balance_spending.is_zero() {
+            // Call collectFeePreTx on TipFeeManager precompile
             let gas_balance_spending = effective_balance_spending - value;
 
-            // Transfer from caller to fee manager
-            transfer_token(
-                journal,
-                self.fee_token,
-                tx.caller(),
-                TIP_FEE_MANAGER_ADDRESS,
-                gas_balance_spending,
-            )?;
+            // Create storage provider wrapper around journal
+            let mut storage_provider = JournalStorageProvider::new(journal, chain_id);
+            let mut fee_manager =
+                TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage_provider);
+
+            // Call the precompile function to collect the fee
+            fee_manager
+                .collect_fee_pre_tx(tx.caller(), gas_balance_spending, beneficiary)
+                .map_err(|_| InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(max_balance_spending),
+                    balance: Box::new(account_balance),
+                })?;
         }
 
-        //
         // journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
         Ok(())
     }
@@ -166,23 +176,31 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
+        // Call collectFeePostTx on TipFeeManager precompile
         let context = evm.ctx();
+        let tx = context.tx();
+        let caller = tx.caller();
         let basefee = context.block().basefee() as u128;
-        let caller = context.tx().caller();
-        let effective_gas_price = context.tx().effective_gas_price(basefee);
+        let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
+        let chain_id = context.cfg().chain_id;
 
-        let reimbursement =
-            effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128);
+        // Calculate actual used and refund amounts
+        let gas_used = gas.used();
+        let actual_used = U256::from(gas_used).saturating_mul(U256::from(effective_gas_price));
+        let refund_amount = U256::from(
+            effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128),
+        );
 
+        // Create storage provider and fee manager
         let journal = evm.ctx().journal_mut();
-        transfer_token(
-            journal,
-            self.fee_token,
-            TIP_FEE_MANAGER_ADDRESS,
-            caller,
-            U256::from(reimbursement),
-        )?;
+        let mut storage_provider = JournalStorageProvider::new(journal, chain_id);
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage_provider);
+
+        // Call collectFeePostTx (handles both refund and fee queuing)
+        fee_manager
+            .collect_fee_post_tx(caller, actual_used, refund_amount, self.fee_token)
+            .map_err(|_| EVMError::Custom("Failed to collect post-tx fee".to_string()))?;
 
         Ok(())
     }
@@ -190,32 +208,11 @@ where
     #[inline]
     fn reward_beneficiary(
         &self,
-        evm: &mut Self::Evm,
-        exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        _evm: &mut Self::Evm,
+        _exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
-        let context = evm.ctx();
-        let tx = context.tx();
-        let beneficiary = context.block().beneficiary();
-        let basefee = context.block().basefee() as u128;
-        let effective_gas_price = tx.effective_gas_price(basefee);
-        let gas = exec_result.gas();
-
-        let coinbase_gas_price = if context.cfg().spec().is_enabled_in(SpecId::LONDON) {
-            effective_gas_price.saturating_sub(basefee)
-        } else {
-            effective_gas_price
-        };
-
-        let reward = coinbase_gas_price.saturating_mul(gas.used() as u128);
-        let journal = evm.ctx().journal_mut();
-        transfer_token(
-            journal,
-            self.fee_token,
-            TIP_FEE_MANAGER_ADDRESS,
-            beneficiary,
-            U256::from(reward),
-        )?;
-
+        // All fee handling (refunds and queuing) is done in reimburse_caller via collectFeePostTx
+        // The actual swap and transfer to validator happens in executeBlock at the end of block processing
         Ok(())
     }
 }
@@ -335,6 +332,7 @@ mod tests {
         Journal,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
+        primitives::hardfork::SpecId,
         state::Account,
     };
 

@@ -42,7 +42,8 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .from(caller)
         .to(caller)
-        .gas_price(TEMPO_BASE_FEE as u128);
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas_limit(300000);
 
     let pending_tx = provider.send_transaction(tx).await?;
     let receipt = pending_tx.get_receipt().await?;

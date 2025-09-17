@@ -37,6 +37,11 @@ impl TempoPooledTransaction {
     pub fn fee_token_cost(&self) -> U256 {
         self.inner.cost - self.inner.value()
     }
+
+    /// Returns a reference to inner [`TempoTxEnvelope`].
+    pub fn inner(&self) -> &TempoTxEnvelope {
+        &self.inner.transaction
+    }
 }
 
 impl InMemorySize for TempoPooledTransaction {

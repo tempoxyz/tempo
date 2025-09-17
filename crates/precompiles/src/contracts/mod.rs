@@ -13,7 +13,6 @@ use crate::TIP20_TOKEN_PREFIX;
 use alloy::primitives::Address;
 pub use storage::{StorageProvider, evm::EvmStorageProvider, hashmap::HashMapStorageProvider};
 pub use tip_account_registrar::TipAccountRegistrar;
-pub use tip_fee_manager::TipFeeManager;
 pub use tip20::TIP20Token;
 pub use tip20_factory::TIP20Factory;
 pub use tip403_registry::TIP403Registry;

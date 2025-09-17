@@ -39,10 +39,9 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(alice)
         .connect_http(http_url.clone());
-    let _deployer = provider.default_signer_address();
 
-    // Deploy a test token
-    let token = setup_test_token(provider.clone(), _deployer).await?;
+    let deployer = provider.default_signer_address();
+    let token = setup_test_token(provider.clone(), deployer).await?;
 
     // Init a fresh wallet with nonce 0
     let bob = MnemonicBuilder::<English>::default()
@@ -185,6 +184,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(alice)
         .connect_http(http_url.clone());
+
     let deployer = provider.default_signer_address();
     let token = setup_test_token(provider.clone(), deployer).await?;
 

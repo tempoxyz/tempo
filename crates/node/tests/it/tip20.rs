@@ -653,7 +653,6 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
                 token
                     .transfer(*recipient, U256::ONE)
                     .gas_price(TEMPO_BASE_FEE as u128)
-                    .gas(30000)
                     .send()
                     .await
                     .expect("Could not send tx")

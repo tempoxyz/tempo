@@ -23,7 +23,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
-        TipFeeManager, tip20::ISSUER_ROLE,
+        tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE,
     },
 };
 
