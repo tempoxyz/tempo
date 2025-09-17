@@ -265,6 +265,63 @@ sol! {
     }
 }
 
+impl TIPFeeAMMError {
+    /// Creates an error for identical token addresses.
+    pub const fn identical_addresses() -> Self {
+        Self::IdenticalAddresses(ITIPFeeAMM::IdenticalAddresses {})
+    }
+
+    /// Creates an error for zero address.
+    pub const fn zero_address() -> Self {
+        Self::ZeroAddress(ITIPFeeAMM::ZeroAddress {})
+    }
+
+    /// Creates an error when pool already exists.
+    pub const fn pool_exists() -> Self {
+        Self::PoolExists(ITIPFeeAMM::PoolExists {})
+    }
+
+    /// Creates an error when pool does not exist.
+    pub const fn pool_does_not_exist() -> Self {
+        Self::PoolDoesNotExist(ITIPFeeAMM::PoolDoesNotExist {})
+    }
+
+    /// Creates an error for invalid token.
+    pub const fn invalid_token() -> Self {
+        Self::InvalidToken(ITIPFeeAMM::InvalidToken {})
+    }
+
+    /// Creates an error for insufficient liquidity.
+    pub const fn insufficient_liquidity() -> Self {
+        Self::InsufficientLiquidity(ITIPFeeAMM::InsufficientLiquidity {})
+    }
+
+    /// Creates an error for insufficient pool balance.
+    pub const fn insufficient_pool_balance() -> Self {
+        Self::InsufficientPoolBalance(ITIPFeeAMM::InsufficientPoolBalance {})
+    }
+
+    /// Creates an error for insufficient reserves.
+    pub const fn insufficient_reserves() -> Self {
+        Self::InsufficientReserves(ITIPFeeAMM::InsufficientReserves {})
+    }
+
+    /// Creates an error for insufficient liquidity balance.
+    pub const fn insufficient_liquidity_balance() -> Self {
+        Self::InsufficientLiquidityBalance(ITIPFeeAMM::InsufficientLiquidityBalance {})
+    }
+
+    /// Creates an error when must deposit lower balance token.
+    pub const fn must_deposit_lower_balance_token() -> Self {
+        Self::MustDepositLowerBalanceToken(ITIPFeeAMM::MustDepositLowerBalanceToken {})
+    }
+
+    /// Creates an error for invalid amount.
+    pub const fn invalid_amount() -> Self {
+        Self::InvalidAmount(ITIPFeeAMM::InvalidAmount {})
+    }
+}
+
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
     pub const fn insufficient_balance() -> Self {
@@ -350,14 +407,6 @@ macro_rules! fee_manager_err {
     };
 }
 
-#[macro_export]
-macro_rules! tip_fee_amm_err {
-    ($err:ident) => {
-        $crate::contracts::types::ITIPFeeAMM::ITIPFeeAMMErrors::$err(
-            $crate::contracts::types::ITIPFeeAMM::$err {},
-        )
-    };
-}
 
 // Use the auto-generated error and event enums
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};

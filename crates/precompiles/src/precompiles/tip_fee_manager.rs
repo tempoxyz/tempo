@@ -56,11 +56,10 @@ mod tests {
         contracts::{
             HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
             tip_fee_manager::amm::PoolKey,
-            types::{IFeeManager, ITIP20, ITIPFeeAMM},
+            types::{IFeeManager, ITIP20, ITIPFeeAMM, TIPFeeAMMError},
         },
         fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
-        tip_fee_amm_err,
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -138,7 +137,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &validator);
-        expect_precompile_error(&result, tip_fee_amm_err!(InvalidToken));
+        expect_precompile_error(&result, TIPFeeAMMError::invalid_token());
 
         Ok(())
     }
@@ -177,7 +176,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &user);
-        expect_precompile_error(&result, tip_fee_amm_err!(InvalidToken));
+        expect_precompile_error(&result, TIPFeeAMMError::invalid_token());
     }
 
     #[test]
@@ -224,7 +223,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
-        expect_precompile_error(&result, tip_fee_amm_err!(IdenticalAddresses));
+        expect_precompile_error(&result, TIPFeeAMMError::identical_addresses());
     }
 
     #[test]
@@ -240,7 +239,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
-        expect_precompile_error(&result, tip_fee_amm_err!(InvalidToken));
+        expect_precompile_error(&result, TIPFeeAMMError::invalid_token());
     }
 
     #[test]
@@ -265,7 +264,7 @@ mod tests {
 
         // Try to create same pool again
         let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
-        expect_precompile_error(&result, tip_fee_amm_err!(PoolExists));
+        expect_precompile_error(&result, TIPFeeAMMError::pool_exists());
     }
 
     #[test]
