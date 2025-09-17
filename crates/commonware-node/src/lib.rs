@@ -173,7 +173,6 @@ async fn resolve_all_peers(
     peers: impl IntoIterator<Item = (&PublicKey, &String)>,
 ) -> eyre::Result<IndexMap<PublicKey, (String, SocketAddr)>> {
     use futures_util::stream::{FuturesOrdered, TryStreamExt as _};
-    use itertools::Itertools as _;
     let resolve_all = peers
         .into_iter()
         .map(|(peer, name)| async move {
@@ -186,7 +185,9 @@ async fn resolve_all_peers(
                 })?
                 .collect::<Vec<_>>();
             info!(
-                %peer, name, potential_addresses = %addrs.iter().format(", "),
+                %peer,
+                name,
+                potential_addresses = ?addrs,
                 "resolved DNS name to IPs; taking the first one"
             );
             let addr = addrs.first().ok_or_else(|| {

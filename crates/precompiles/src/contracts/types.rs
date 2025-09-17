@@ -162,18 +162,12 @@ sol! {
     #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
     interface ITIPFeeAMM {
+
         // Structs
         struct Pool {
-            uint128 reserve0;
-            uint128 reserve1;
-        }
-
-        struct QueuedOperation {
-            uint8 opType; // 0 = Deposit, 1 = Withdraw
-            address user;
-            bytes32 poolKey;
-            uint256 amount;
-            address token;
+            uint128 reserveUserToken;
+            uint128 reserveValidatorToken;
+            uint128 pendingFeeSwapIn;
         }
 
         struct PoolKey {
@@ -182,45 +176,24 @@ sol! {
         }
 
         // Pool Management
-        function createPool(address tokenA, address tokenB) external;
-        function getPoolId(PoolKey memory key) external pure returns (bytes32);
-        function getPool(PoolKey memory key) external view returns (Pool memory);
+        function createPool(address userToken, address validatorToken) external;
+        function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
+        function getPool(address userToken, address validatorToken) external view returns (Pool memory);
         function pools(bytes32 poolId) external view returns (Pool memory);
         function poolExists(bytes32 poolId) external view returns (bool);
 
-        // Swapping
-        function swap(PoolKey memory key, address tokenIn, uint256 amountIn, address to) external;
-
         // Liquidity Operations
-        function queueDeposit(PoolKey memory key, uint256 amount, address depositToken) external;
-        function queueWithdraw(PoolKey memory key, uint256 liquidity) external;
-        function executeBlock() external;
-
-        // Pool Queries
-        function isPoolBalanced(PoolKey memory key) external view returns (bool);
-        function getLowerBalanceToken(PoolKey memory key) external view returns (address);
-        function getHigherBalanceToken(PoolKey memory key) external view returns (address);
-        function getTotalValue(PoolKey memory key) external view returns (uint256);
-        function pendingReserve0(bytes32 poolId) external view returns (uint256);
-        function pendingReserve1(bytes32 poolId) external view returns (uint256);
+        function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
+        function burn(address userToken, address validatorToken, uint256 liquidity, address to) returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
         // Liquidity Balances
         function totalSupply(bytes32 poolId) external view returns (uint256);
         function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
 
-        // Queue Information
-        function getOperationQueueLength() external view returns (uint256);
-        function getDepositQueueLength() external view returns (uint256);
-        function getWithdrawQueueLength() external view returns (uint256);
-
         // Events
-        event PoolCreated(address indexed token0, address indexed token1);
-        event DepositQueued(address indexed user, address indexed token0, address indexed token1, uint256 amount, address token);
-        event WithdrawQueued(address indexed user, address indexed token0, address indexed token1, uint256 liquidity);
-        event BlockExecuted(uint256 deposits, uint256 withdraws, uint256 feeSwaps);
-        event Deposit(address indexed user, address indexed token0, address indexed token1, address depositToken, uint256 amount, uint256 liquidity);
-        event Withdrawal(address indexed user, address indexed token0, address indexed token1, uint256 amount0, uint256 amount1, uint256 liquidity);
-        event Swap(address indexed token0, address indexed token1, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
+        event PoolCreated(address indexed userToken, address indexed validatorToken);
+        event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
+        event Burn(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity, address to);
 
         // Errors
         error IdenticalAddresses();
@@ -235,6 +208,7 @@ sol! {
         error MustDepositLowerBalanceToken();
         error InvalidAmount();
     }
+
 
     /// FeeManager interface for managing gas fee collection and distribution.
     ///
@@ -271,8 +245,11 @@ sol! {
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function executeBlock(address validator) external;
 
-        // View functions
+        // Fee tracking view functions
+        function collectedFees(address token) external view returns (uint256);
         function getTokensWithFeesLength() external view returns (uint256);
+        function getTokenWithFees(uint256 index) external view returns (address);
+        function tokenInFeesArray(address token) external view returns (bool);
 
         // Events
         event UserTokenSet(address indexed user, address indexed token);

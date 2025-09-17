@@ -26,6 +26,7 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 eyre.workspace = true
+rand.workspace = true
 
 [[bench]]
 name = "tempo_precompiles"

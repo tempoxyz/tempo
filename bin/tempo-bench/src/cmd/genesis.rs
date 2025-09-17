@@ -23,7 +23,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
-        TipFeeManager, tip20::ISSUER_ROLE,
+        tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE,
     },
 };
 
@@ -108,6 +108,7 @@ impl GenesisArgs {
             }
 
             let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, token.storage);
+            fee_manager.initialize();
             for address in addresses.iter().tqdm() {
                 fee_manager
                     .set_user_token(address, IFeeManager::setUserTokenCall { token: fee_token })
