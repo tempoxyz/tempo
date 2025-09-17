@@ -71,7 +71,7 @@ fn main() {
                     Ok(())
                 })
                 .apply(|mut ctx| {
-                    let db = ctx.db_mut();
+                    let db = Arc::get_mut(ctx.db_mut()).expect("database should not be cloned yet");
                     db.create_tables_for::<reth_malachite::store::tables::Tables>()
                         .expect("Failed to create consensus tables");
                     ctx
