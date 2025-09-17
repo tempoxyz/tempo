@@ -149,7 +149,7 @@ where
                 balance: Box::new(account_balance),
             }
             .into());
-        } else if max_balance_spending > U256::ZERO {
+        } else if !max_balance_spending.is_zero() {
             // Call collectFeePreTx on TipFeeManager precompile
             let gas_balance_spending = effective_balance_spending - value;
 
