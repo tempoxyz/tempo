@@ -60,7 +60,11 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     seen_system_tx: bool,
 }
 
-impl<'a, DB: Database, I> TempoBlockExecutor<'a, DB, I> {
+impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
+where
+    DB: Database,
+    I: Inspector<TempoContext<&'a mut State<DB>>>,
+{
     pub(crate) fn new(
         evm: TempoEvm<&'a mut State<DB>, I>,
         ctx: EthBlockExecutionCtx<'a>,
@@ -83,7 +87,11 @@ impl<'a, DB: Database, I> TempoBlockExecutor<'a, DB, I> {
         }
 
         if tx.to() != Some(TIP_FEE_MANAGER_ADDRESS)
-            || tx.input() != &(executeBlockCall {}.abi_encode())
+            || tx.input()
+                != &(executeBlockCall {
+                    validator: self.evm().block().beneficiary,
+                }
+                .abi_encode())
         {
             // todo: change once <https://github.com/alloy-rs/evm/pull/176> is merged
             return Err(BlockValidationError::DepositRequestDecode(
@@ -133,7 +141,7 @@ where
         let gas_used = self.inner.commit_transaction(output, &tx)?;
 
         if tx.tx().is_system_tx() {
-            self.seen_system_tx = false;
+            self.seen_system_tx = true;
         }
 
         Ok(gas_used)

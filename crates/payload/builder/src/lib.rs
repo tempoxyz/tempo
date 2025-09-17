@@ -21,7 +21,11 @@ use reth_evm::{
 };
 use reth_payload_builder::{EthBuiltPayload, EthPayloadBuilderAttributes, PayloadBuilderError};
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
-use reth_revm::{State, context::Block, database::StateProviderDatabase};
+use reth_revm::{
+    State,
+    context::{Block, BlockEnv},
+    database::StateProviderDatabase,
+};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
@@ -61,7 +65,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 
 impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     /// Builds system transaction to TipFeeManager to seal the block.
-    fn build_seal_block_tx(&self) -> Recovered<TempoTxEnvelope> {
+    fn build_seal_block_tx(&self, block_env: &BlockEnv) -> Recovered<TempoTxEnvelope> {
         Recovered::new_unchecked(
             TempoTxEnvelope::Legacy(Signed::new_unhashed(
                 TxLegacy {
@@ -71,7 +75,11 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
                     gas_limit: 0,
                     to: TIP_FEE_MANAGER_ADDRESS.into(),
                     value: U256::ZERO,
-                    input: executeBlockCall.abi_encode().into(),
+                    input: executeBlockCall {
+                        validator: block_env.beneficiary,
+                    }
+                    .abi_encode()
+                    .into(),
                 },
                 TEMPO_SYSTEM_TX_SIGNATURE,
             )),
@@ -282,7 +290,7 @@ where
 
         // Include the seal block transaction in the block
         builder
-            .execute_transaction(self.build_seal_block_tx())
+            .execute_transaction(self.build_seal_block_tx(builder.evm().block()))
             .map_err(PayloadBuilderError::evm)?;
 
         let BlockBuilderOutcome {
