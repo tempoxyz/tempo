@@ -158,8 +158,6 @@ where
             let mut fee_manager =
                 TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &mut storage_provider);
 
-            dbg!(gas_balance_spending);
-
             // Call the precompile function to collect the fee
             fee_manager
                 .collect_fee_pre_tx(tx.caller(), gas_balance_spending, beneficiary)
