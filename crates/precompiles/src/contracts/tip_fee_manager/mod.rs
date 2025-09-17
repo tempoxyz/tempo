@@ -118,7 +118,13 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn get_validator_token(&mut self) -> Address {
         let validator_slot = validator_token_slot(&self.beneficiary);
-        self.sload(validator_slot).into_address()
+        let token = self.sload(validator_slot).into_address();
+
+        if token.is_zero() {
+            DEFAULT_FEE_TOKEN
+        } else {
+            token
+        }
     }
 
     pub fn set_validator_token(
@@ -331,6 +337,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         }
 
         let validator_token = self.get_validator_token();
+        dbg!(validator_token);
         // TODO: do we want to default to a token here or throw an error? We should probably
         // enforce that a validator has a fee token
         if validator_token.is_zero() {
@@ -352,8 +359,17 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         // Transfer the total amount out to the beneficiary
         let token_id = address_to_token_id_unchecked(&validator_token);
-        let mut tip20_token = TIP20Token::new(token_id, self.storage);
-        tip20_token
+        let mut token = TIP20Token::new(token_id, self.storage);
+
+        let bal_before = token.balance_of(ITIP20::balanceOfCall {
+            account: self.beneficiary,
+        });
+
+        let fee_manager_bal_before = token.balance_of(ITIP20::balanceOfCall {
+            account: self.contract_address,
+        });
+
+        token
             .transfer(
                 &self.contract_address,
                 ITIP20::transferCall {
@@ -367,6 +383,17 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 )
             })?;
 
+        let bal_after = token.balance_of(ITIP20::balanceOfCall {
+            account: self.beneficiary,
+        });
+        let fee_manager_bal_after = token.balance_of(ITIP20::balanceOfCall {
+            account: self.contract_address,
+        });
+        dbg!(bal_before);
+        dbg!(bal_after);
+
+        dbg!(fee_manager_bal_before);
+        dbg!(fee_manager_bal_after);
         Ok(())
     }
 
