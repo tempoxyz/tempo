@@ -168,11 +168,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     /// Execute a fee swap
     pub fn fee_swap(
         &mut self,
-        msg_sender: Address,
+        from: Address,
         user_token: Address,
+        to: Address,
         validator_token: Address,
         amount_in: U256,
-        to: Address,
     ) -> Result<U256, TIPFeeAMMError> {
         let pool_id = self.get_pool_id(user_token, validator_token);
         if !self.pool_exists(&pool_id) {
@@ -200,8 +200,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .transfer_from(
                 &self.contract_address,
                 ITIP20::transferFromCall {
-                    // TODO: this is to spec but should this be self.contract_address?
-                    from: msg_sender,
+                    from,
                     to: self.contract_address,
                     amount: amount_in,
                 },

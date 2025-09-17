@@ -43,7 +43,6 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             }
             ITIPFeeAMM::mintCall::SELECTOR => mutate::<ITIPFeeAMM::mintCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.mint(*s, call)),
             ITIPFeeAMM::burnCall::SELECTOR => mutate::<ITIPFeeAMM::burnCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.burn(*s, call)),
-            ITIPFeeAMM::feeSwapCall::SELECTOR => mutate::<ITIPFeeAMM::feeSwapCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.fee_swap(*s, call)),
             ITIPFeeAMM::rebalanceSwapCall::SELECTOR => mutate::<ITIPFeeAMM::rebalanceSwapCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.rebalance_swap(*s, call)),
             ITIPFeeAMM::calculateLiquidityCall::SELECTOR => view::<ITIPFeeAMM::calculateLiquidityCall>(calldata, |call| self.calculate_liquidity(call)),
 

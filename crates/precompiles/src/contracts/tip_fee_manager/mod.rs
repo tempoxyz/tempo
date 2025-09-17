@@ -2,7 +2,7 @@ pub mod amm;
 pub mod fee;
 
 use crate::{
-    DEFAULT_FEE_TOKEN,
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         TIP20Token, address_to_token_id_unchecked,
         storage::{StorageOps, StorageProvider},
@@ -173,6 +173,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
+    /// Collects fees from user before transaction execution.
+    ///
+    /// Determines fee token, verifies pool liquidity for swaps if needed, and transfers max fee amount.
+    /// Unused gas is later returned via collect_fee_post_tx
     pub fn collect_fee_pre_tx(
         &mut self,
         user: Address,
@@ -216,6 +220,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             }
 
             // Check pool reserves for sufficient liquidity
+            // TODO: also check pending liq/effective reserves
             let pool = amm.get_pool(&pool_id);
             if U256::from(pool.reserve_user_token) < Self::MINIMUM_BALANCE
                 || U256::from(pool.reserve_validator_token) < Self::MINIMUM_BALANCE
@@ -251,6 +256,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(user_token)
     }
 
+    /// Finalizes fee collection after transaction execution.
+    ///
+    /// Refunds unused tokens to user and tracks actual fee amount for swapping in `execute_block`
+    /// Called after transaction to settle the difference between max fee and actual usage.
     pub fn collect_fee_post_tx(
         &mut self,
         user: Address,
@@ -280,45 +289,55 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         // Track collected fees (only the actual used amount)
         if !actual_used.is_zero() {
-            self.track_collected_fees(&user_token, actual_used)?;
+            self.update_collected_fees(&user_token, actual_used)?;
         }
 
         Ok(())
     }
 
+    fn get_collected_fees(&mut self, token: &Address) -> U256 {
+        let fees_slot = collected_fees_slot(token);
+        self.sload(fees_slot)
+    }
+    fn insert_into_collected_fees(&mut self, token: &Address) {
+        let in_array_slot = token_in_fees_array_slot(token);
+        let in_array = self.sload(in_array_slot);
+
+        // If the token is not in the collected fees array
+        if in_array.is_zero() {
+            // Get current array length
+            let length_value = self.sload(slots::TOKENS_WITH_FEES_LENGTH);
+
+            // Store token address in the array at current index
+            let token_slot = slots::TOKENS_WITH_FEES_ARRAY + length_value;
+            self.sstore(token_slot, token.into_u256());
+
+            // Mark token as being in the array
+            self.sstore(in_array_slot, U256::ONE);
+
+            // Increment array length
+            self.sstore(slots::TOKENS_WITH_FEES_LENGTH, length_value + U256::from(1));
+        }
+    }
+
     /// Helper function to track collected fees and add token to tracking array if needed
-    fn track_collected_fees(
+    fn update_collected_fees(
         &mut self,
         token: &Address,
         amount: U256,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // Get current collected fees for this token
         let fees_slot = collected_fees_slot(token);
-        let current_amount = self.sload(fees_slot);
+
+        // Get current collected fees for this token
+        let collected_fees = self.get_collected_fees(token);
 
         // If this is the first time collecting fees for this token, add it to the tracking array
-        if current_amount.is_zero() {
-            let in_array_slot = token_in_fees_array_slot(token);
-            let in_array = self.sload(in_array_slot) != U256::ZERO;
-
-            if !in_array {
-                // Get current array length
-                let length_value = self.sload(slots::TOKENS_WITH_FEES_LENGTH);
-
-                // Store token address in the array at current index
-                let token_slot = slots::TOKENS_WITH_FEES_ARRAY + length_value;
-                self.sstore(token_slot, token.into_u256());
-
-                // Mark token as being in the array
-                self.sstore(in_array_slot, U256::ONE);
-
-                // Increment array length
-                self.sstore(slots::TOKENS_WITH_FEES_LENGTH, length_value + U256::from(1));
-            }
+        if collected_fees.is_zero() {
+            self.insert_into_collected_fees(token);
         }
 
         // Update collected fees amount
-        let new_amount = current_amount.saturating_add(amount);
+        let new_amount = collected_fees.saturating_add(amount);
         self.sstore(fees_slot, new_amount);
 
         Ok(())
@@ -337,8 +356,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         // Get validator's preferred token
         let validator_slot = validator_token_slot(&self.beneficiary);
-        let validator_token = self.sload(validator_slot).into_address();
+        let mut validator_token = self.sload(validator_slot).into_address();
 
+        // TODO: do we want to default to a token here or throw an error? We should probably
+        // enforce that a validator has a fee token
         if validator_token.is_zero() {
             // If no validator token set, nothing to do
             return Ok(());
@@ -349,10 +370,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         // Process each token with pending fees
         for i in 0..tokens_with_fees_length {
-            // Get token address from array
             let token_slot = slots::TOKENS_WITH_FEES_ARRAY + U256::from(i);
             let token_address = self.sload(token_slot).into_address();
 
+            // TODO: handle this case, token addr should never be zero here
             if token_address == Address::ZERO {
                 continue;
             }
@@ -361,7 +382,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             let fees_slot = collected_fees_slot(&token_address);
             let fees_value = self.sload(fees_slot);
             let fee_amount_u128 = (fees_value & U256::from(u128::MAX)).to::<u128>();
+            dbg!(fee_amount_u128);
 
+            // TODO: handle this case, feeamt should not be zero
             if fee_amount_u128 == 0 {
                 continue;
             }
@@ -390,22 +413,25 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 // Need to swap to validator's token via AMM
                 // TODO: Implement swap when the AMM swap function is available
                 // For now, just transfer the tokens as-is
+
+                // TODO: really we should just be collecting things here
+
                 let token_id = address_to_token_id_unchecked(&token_address);
                 let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
-                tip20_token
-                    .transfer(
-                        &self.contract_address,
-                        ITIP20::transferCall {
-                            to: self.beneficiary,
-                            amount: fee_amount,
-                        },
-                    )
-                    .map_err(|_| {
-                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                            IFeeManager::InsufficientFeeTokenBalance {},
-                        )
-                    })?;
+                // tip20_token
+                //     .transfer(
+                //         &self.contract_address,
+                //         ITIP20::transferCall {
+                //             to: self.beneficiary,
+                //             amount: fee_amount,
+                //         },
+                //     )
+                //     .map_err(|_| {
+                //         IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                //             IFeeManager::InsufficientFeeTokenBalance {},
+                //         )
+                //     })?;
             }
 
             // Clear the fee info for this token
@@ -578,22 +604,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         let pool_key = PoolKey::new(call.userToken, call.validatorToken);
         amm.get_pool(&pool_key.get_id()).into()
-    }
-
-    /// Execute a fee swap
-    pub fn fee_swap(
-        &mut self,
-        msg_sender: Address,
-        call: ITIPFeeAMM::feeSwapCall,
-    ) -> Result<U256, ITIPFeeAMM::ITIPFeeAMMErrors> {
-        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.fee_swap(
-            msg_sender,
-            call.userToken,
-            call.validatorToken,
-            call.amountIn,
-            call.to,
-        )
     }
 
     /// Execute a rebalance swap
