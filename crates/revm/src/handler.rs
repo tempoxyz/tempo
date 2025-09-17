@@ -143,7 +143,7 @@ where
         // Transfer will be done inside `*_inner` functions.
         if is_balance_check_disabled {
             // ignore balance check.
-        } else if max_balance_spending > U256::ZERO && account_balance < max_balance_spending {
+        } else if account_balance < max_balance_spending {
             return Err(InvalidTransaction::LackOfFundForMaxFee {
                 fee: Box::new(max_balance_spending),
                 balance: Box::new(account_balance),
