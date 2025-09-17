@@ -401,7 +401,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     }
 
     /// Drain all pending fee tokens by popping from the back until empty
-    /// Returns a Vec<Address> with all the tokens that were in storage
+    /// Returns a `Vec<Address>` with all the tokens that were in storage
     fn drain_pending_fee_tokens(&mut self) -> Vec<Address> {
         let mut tokens = Vec::new();
         let length_slot = pending_fee_tokens_length_slot();
