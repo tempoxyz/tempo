@@ -186,7 +186,7 @@ fn generate_config(
         eprintln!("\t{bootstrapper}");
     }
     eprintln!("To start validators, run:");
-    for (instance, (name, dst, cfg)) in configurations.iter().enumerate() {
+    for (instance, (name, dst, cfg)) in (1u32..).zip(&configurations) {
         let eth_dst = cfg.storage_directory.with_file_name("reth_storage");
         let command = format!(
             "cargo run --release --bin tempo-commonware -- \
