@@ -20,6 +20,7 @@ use reth::{
 };
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
+use reth_provider::BlockReaderIdExt;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::BlockReader as _;
@@ -69,6 +70,7 @@ where
 
         let finalizer = finalizer::Builder {
             execution_node: self.execution_node.clone(),
+            syncer: self.syncer_mailbox.clone(),
         }
         .build();
         let to_finalizer = finalizer.mailbox().clone();
@@ -242,6 +244,8 @@ where
             latest_proposed_block: self.latest_proposed_block.clone(),
             payload_builder: self.execution_node.payload_builder_handle.clone(),
             syncer_mailbox: self.syncer_mailbox.clone(),
+            execution_node: self.execution_node.clone(),
+            to_finalizer: self.to_finalizer.clone(),
         }
     }
 
@@ -266,12 +270,12 @@ where
         err
     )]
     fn verify(&self, verify: Verify) -> impl Future<Output = eyre::Result<()>> + 'static {
-        let engine = self
-            .execution_node
-            .add_ons_handle
-            .beacon_engine_handle
-            .clone();
+        let execution_node = self.execution_node.clone();
+        // .add_ons_handle
+        // .beacon_engine_handle
+        // .clone();
         let genesis_block = self.genesis_block.clone();
+        let to_finalizer = self.to_finalizer.clone();
         let mut syncer_mailbox = self.syncer_mailbox.clone();
 
         // XXX: this async block MUST remain the last expression. This code
@@ -291,6 +295,18 @@ where
                 payload,
                 mut response,
             } = verify;
+
+            if execution_node.provider.block_by_id(parent.1.0.into())
+                .wrap_err_with(|| format!(
+                    "failed to query execution node for `{}`, but need to check if it already knows about it or not",
+                    parent.1,
+                ))?
+                .is_none()
+            {
+                to_finalizer.backfill(parent.1).wrap_err("failed requesting backfill")?;
+                info!(parent = %parent.1, "execution layer does not know about parent block; asking for a backfill and aborting proposal");
+                bail!("cannot make a proposal because execution layer does not know about parent `{}`", parent.1);
+            }
 
             let verification_fut = async {
                 let parent_request = if parent.1 == genesis_block.digest() {
@@ -315,9 +331,13 @@ where
                     .await
                     .wrap_err("failed getting required blocks from syncer")?;
 
-                let is_good = verify_block(engine, &block, &parent)
-                    .await
-                    .wrap_err("failed verifying block against execution layer")?;
+                let is_good = verify_block(
+                    execution_node.add_ons_handle.beacon_engine_handle,
+                    &block,
+                    &parent,
+                )
+                .await
+                .wrap_err("failed verifying block against execution layer")?;
                 Ok::<_, eyre::Report>((block, is_good))
             };
 
@@ -364,8 +384,10 @@ where
     fee_recipient: alloy_primitives::Address,
     genesis_block: Arc<Block<TBlock>>,
     latest_proposed_block: Arc<RwLock<Option<Block<TBlock>>>>,
+    execution_node: TempoFullNode,
     payload_builder: PayloadBuilderHandle<TempoPayloadTypes>,
     syncer_mailbox: marshal::Mailbox<BlsScheme, Block<TBlock>>,
+    to_finalizer: finalizer::Mailbox,
 }
 
 impl RunPropose<tempo_primitives::Block> {
@@ -387,6 +409,8 @@ impl RunPropose<tempo_primitives::Block> {
             latest_proposed_block,
             payload_builder,
             mut syncer_mailbox,
+            execution_node,
+            to_finalizer,
         } = self;
         let Propose {
             view,
@@ -395,6 +419,18 @@ impl RunPropose<tempo_primitives::Block> {
         } = request;
 
         let proposal_fut = async move {
+            if execution_node.provider.block_by_id(parent.1.0.into())
+                .wrap_err_with(|| format!(
+                    "failed to query execution node for `{}`, but need to check if it already knows about it or not",
+                    parent.1,
+                ))?
+                .is_none()
+            {
+                to_finalizer.backfill(parent.1).wrap_err("failed requesting backfill")?;
+                info!(parent = %parent.1, "execution layer does not know about parent block; asking for a backfill and aborting proposal");
+                bail!("cannot make a proposal because execution layer does not know about parent `{}`", parent.1);
+            }
+
             let parent_request = if parent.1 == genesis_block.digest() {
                 Either::Left(futures_util::future::always_ready({
                     move || Ok((*genesis_block).clone())
@@ -403,10 +439,10 @@ impl RunPropose<tempo_primitives::Block> {
                 Either::Right(syncer_mailbox.subscribe(Some(parent.0), parent.1).await)
             };
             let parent = parent_request
-                        .await
-                        .map_err(|_| eyre!(
-                            "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
-                        ))?;
+                .await
+                .map_err(|_| eyre!(
+                    "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
+                ))?;
 
             // XXX: ensures the timestamp is strictly monotonically increasing.
             // This is a requirement to pass eth/reth checks.
