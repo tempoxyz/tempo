@@ -60,16 +60,20 @@ where
         let (tx, rx) = mpsc::channel(self.mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
 
-        let block = self
+        let genesis_block = self
             .execution_node
             .provider
             .block_by_number(0)
             .map_err(Into::<eyre::Report>::into)
             .and_then(|maybe| maybe.ok_or_eyre("block reader returned empty genesis block"))
             .wrap_err("failed reading genesis block from execution node")?;
+        let genesis_block = Arc::new(Block::from_execution_block(SealedBlock::seal_slow(
+            genesis_block,
+        )));
 
         let finalizer = finalizer::Builder {
             execution_node: self.execution_node.clone(),
+            genesis_block: genesis_block.clone(),
             syncer: self.syncer_mailbox.clone(),
         }
         .build();
@@ -87,7 +91,7 @@ where
             my_mailbox,
             syncer_mailbox: self.syncer_mailbox,
 
-            genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
+            genesis_block,
 
             latest_proposed_block: Arc::new(RwLock::new(None)),
 

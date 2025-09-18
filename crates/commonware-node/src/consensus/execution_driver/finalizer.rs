@@ -1,8 +1,10 @@
 //! Owns the strictly sequential finalization-queue.
 
+use std::sync::Arc;
+
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::marshal;
-use eyre::{OptionExt as _, WrapErr as _, ensure};
+use eyre::{OptionExt as _, WrapErr as _, bail, ensure};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::StreamExt as _;
 use reth_provider::{BlockNumReader, BlockReaderIdExt};
@@ -14,6 +16,7 @@ use crate::consensus::block::Block;
 
 pub(super) struct Builder {
     pub(super) execution_node: TempoFullNode,
+    pub(super) genesis_block: Arc<Block<tempo_primitives::Block>>,
     pub(super) syncer: marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
 }
 
@@ -21,11 +24,13 @@ impl Builder {
     pub(super) fn build(self) -> Finalizer {
         let Self {
             execution_node,
+            genesis_block,
             syncer,
         } = self;
         let (to_me, from_execution_driver) = futures_channel::mpsc::unbounded();
         Finalizer {
             execution_node,
+            genesis_block,
             syncer,
             from_execution_driver,
             my_mailbox: Mailbox { inner: to_me },
@@ -35,7 +40,8 @@ impl Builder {
 
 pub(super) struct Finalizer {
     execution_node: TempoFullNode,
-    pub(super) syncer: marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
+    genesis_block: Arc<Block<tempo_primitives::Block>>,
+    syncer: marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
 
     from_execution_driver: UnboundedReceiver<Message>,
 
@@ -95,7 +101,8 @@ impl Finalizer {
         // wait? When do I stop?
         let digest_of_last = Digest(last_execution_block.hash_slow());
         ensure!(
-            self.syncer.get(digest_of_last).await.await.wrap_err_with(||
+            digest_of_last == self.genesis_block.digest()
+            || self.syncer.get(digest_of_last).await.await.wrap_err_with(||
                 format!("syncer closed channel before responding with block for digest `{digest_of_last}`")
             )?.is_some(),
             "consensus does not know about block `{digest}`, even though it exists in the execution layer; this is a problem"
@@ -103,11 +110,12 @@ impl Finalizer {
         info!(%digest_of_last, "consensus layer knows about last execution block; good");
 
         // Next, starting from `digest`, walk backwards until we reach `digest_of_last`
-        // TODO: what about genesis? The genesis block is not in the syncer.
         let mut to_replay = Vec::new();
-        while digest_of_last != digest {
+        while digest_of_last != digest || digest_of_last != self.genesis_block.digest() {
             // TODO: this subscribe can potentially wait a very long time. We
             // don't have a way around this, but we should emit events.
+            // TODO: maybe we should just time this out after 5 seconds? The
+            // execution driver should push new backill requests anyways.
             info!(%digest, "requesting block from consensus");
             let block = self
                 .syncer
@@ -121,7 +129,12 @@ impl Finalizer {
                 })?;
             digest = block.parent_digest();
             to_replay.push(block);
-            // TODO: if genesis reached and not digest_of_last -> problem
+        }
+
+        if digest == self.genesis_block.digest() && digest != digest_of_last {
+            bail!(
+                "reached consensus layer genesis `{digest}``, but it still does match the latest block of the execution layer `{digest_of_last}`; this is a problem"
+            );
         }
         info!(
             amount = to_replay.len(),
