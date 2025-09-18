@@ -16,12 +16,14 @@
 
 use std::sync::Arc;
 
+use alloy_consensus::BlockHeader as _;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::marshal;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::StreamExt as _;
-use reth_provider::{BlockNumReader, BlockReaderIdExt};
+use reth::rpc::types::BlockId;
+use reth_provider::BlockReaderIdExt;
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, info, instrument};
@@ -89,23 +91,22 @@ impl Finalizer {
     #[instrument(skip_all, fields(%digest), err)]
     async fn backfill(&mut self, mut digest: Digest) -> eyre::Result<()> {
         // Figure out the last block that the execution layer does have.
-        let last_execution_height = self
+        let latest_execution_block = self
             .execution_node
             .provider
-            .last_block_number()
-            .wrap_err("failed to query the execution node for its last block number")?;
-        let last_execution_block = self
-            .execution_node
-            .provider
-            .block_by_id(last_execution_height.into())
+            .block_by_id(BlockId::latest())
             .map_err(eyre::Report::new)
-            .and_then(|maybe_block| maybe_block.ok_or_eyre("execution node did not know the block"))
-            .wrap_err_with(|| format!("failed to query the execution node for block `{last_execution_height}` even though it just returned it as the last available block number"))?;
+            .and_then(|maybe_block| {
+                maybe_block.ok_or_eyre("execution node reported it has no latest block")
+            })
+            .wrap_err(
+                "failed to get latest block from execution layer; cannot continue without it",
+            )?;
 
         info!(
-            %last_execution_height,
-            last_execution_block_hash = %last_execution_block.hash_slow(),
-            "execution layer reported last execution block and height",
+            latest_block.number = latest_execution_block.number(),
+            latest_bock.hash = %latest_execution_block.hash_slow(),
+            "read latest block from execution layer",
         );
 
         // Consistency check: if this block is in the execution layer but not in
@@ -113,7 +114,7 @@ impl Finalizer {
         // TODO(janis): That's for the case of killing a node locally and restarting.
         // What if I just copy over the reth db? Should I actually subscribe and
         // wait? When do I stop?
-        let digest_of_last = Digest(last_execution_block.hash_slow());
+        let digest_of_last = Digest(latest_execution_block.hash_slow());
         ensure!(
             digest_of_last == self.genesis_block.digest()
             || self.syncer.get(digest_of_last).await.await.wrap_err_with(||
