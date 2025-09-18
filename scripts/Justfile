@@ -52,3 +52,11 @@ registrar-delegation:
 	#!/bin/bash
 	./registrar-delegation.sh
 
+fee-token-test:
+	#!/bin/bash
+	./fee-token-test.sh
+
+create-tip20-token:
+	#!/bin/bash
+	./create-tip20-token.sh
+
