@@ -1,8 +1,5 @@
 use crate::utils::{setup_test_node, setup_test_token};
-use alloy::{
-    providers::ProviderBuilder,
-    signers::local::{MnemonicBuilder, coins_bip39::English},
-};
+use alloy::{providers::ProviderBuilder, signers::local::MnemonicBuilder};
 use std::env;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,

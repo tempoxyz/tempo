@@ -2,7 +2,7 @@ use crate::utils::{await_receipts, setup_test_node, setup_test_token};
 use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, coins_bip39::English},
+    signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
 use alloy_eips::BlockId;
