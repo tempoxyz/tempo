@@ -195,10 +195,7 @@ where
     }
 
     /// Pushes a `finalized` request to the back of the finalization queue.
-    fn handle_finalized(
-        &mut self,
-        finalized: Finalized<tempo_primitives::Block>,
-    ) -> eyre::Result<()> {
+    fn handle_finalized(&self, finalized: Finalized<tempo_primitives::Block>) -> eyre::Result<()> {
         self.to_finalizer.finalize(finalized)
     }
 
