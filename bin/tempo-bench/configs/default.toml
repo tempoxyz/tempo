@@ -6,6 +6,7 @@ batch_factor = 1
 
 error_sleep_ms = 100
 tx_queue_empty_sleep_ms = 25
+max_concurrent_setup_requests = 100
 
 [tx_gen_worker]
 chain_id = 1337
