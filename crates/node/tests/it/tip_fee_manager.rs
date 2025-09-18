@@ -56,9 +56,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
-        .build()?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let validator_address = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
