@@ -43,7 +43,7 @@ echo "Current beneficiary: $BENEFICIARY"
 BENEFICIARY_TOKEN_INITIAL=$(cast balance --erc20 $DEFAULT_TOKEN $BENEFICIARY)
 echo "Beneficiary initial token balance: $BENEFICIARY_TOKEN_INITIAL"
 
-# Step 1: Create a new token
+# Create a new token
 echo "Creating new fee token..."
 CREATE_TX=$(cast send $TIP20_FACTORY "createToken(string,string,string,address)" "TestFeeToken" "TFT" "USD" $USER_ADDR --private-key $USER_PK --json)
 sleep 2
@@ -83,7 +83,7 @@ fi
 VALIDATOR_FEE_TOKEN=$(cast call $TIP_FEE_MANAGER "validatorTokens(address)" $BENEFICIARY)
 echo "Validator's fee token: $VALIDATOR_FEE_TOKEN"
 
-# Step 4: Create a pool between user token and validator token if they're different
+# Create a pool between user token and validator token if they're different
 if [ "$NEW_TOKEN_ADDR" != "$VALIDATOR_FEE_TOKEN" ]; then
   echo "Creating fee token pool between user and validator tokens..."
 
@@ -113,20 +113,14 @@ if [ "$NEW_TOKEN_ADDR" != "$VALIDATOR_FEE_TOKEN" ]; then
   fi
 fi
 
-# Step 5: Record balances before transaction
-echo "Recording balances before test transaction..."
+# Record balances before transaction
 USER_NEW_TOKEN_BEFORE=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
 USER_DEFAULT_TOKEN_BEFORE=$(cast balance --erc20 $DEFAULT_TOKEN $USER_ADDR)
 BENEFICIARY_NEW_TOKEN_BEFORE=$(cast balance --erc20 $NEW_TOKEN_ADDR $BENEFICIARY)
 BENEFICIARY_DEFAULT_TOKEN_BEFORE=$(cast balance --erc20 $DEFAULT_TOKEN $BENEFICIARY)
 
-echo "BEFORE - User new token: $USER_NEW_TOKEN_BEFORE"
-echo "BEFORE - User default token: $USER_DEFAULT_TOKEN_BEFORE"
-echo "BEFORE - Beneficiary new token: $BENEFICIARY_NEW_TOKEN_BEFORE"
-echo "BEFORE - Beneficiary default token: $BENEFICIARY_DEFAULT_TOKEN_BEFORE"
-
-# Step 6: Execute a transaction that will consume gas fees
-echo "Executing test transaction that will consume gas fees..."
+#  Execute a transaction
+echo "Executing test transaction..."
 RECIPIENT_ADDR=$(cast wallet new --json | jq -r '.[0].address')
 TRANSFER_AMOUNT="1000000000000000000" # 1 token
 
@@ -134,59 +128,35 @@ TRANSFER_AMOUNT="1000000000000000000" # 1 token
 cast send $DEFAULT_TOKEN "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_AMOUNT --private-key $USER_PK
 sleep 3
 
-# Step 7: Check balances after transaction
-echo "Checking balances after test transaction..."
+# Check balances after transaction
 USER_NEW_TOKEN_AFTER=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
 USER_DEFAULT_TOKEN_AFTER=$(cast balance --erc20 $DEFAULT_TOKEN $USER_ADDR)
 BENEFICIARY_NEW_TOKEN_AFTER=$(cast balance --erc20 $NEW_TOKEN_ADDR $BENEFICIARY)
 BENEFICIARY_DEFAULT_TOKEN_AFTER=$(cast balance --erc20 $DEFAULT_TOKEN $BENEFICIARY)
 
-echo "AFTER - User new token: $USER_NEW_TOKEN_AFTER"
-echo "AFTER - User default token: $USER_DEFAULT_TOKEN_AFTER"
-echo "AFTER - Beneficiary new token: $BENEFICIARY_NEW_TOKEN_AFTER"
-echo "AFTER - Beneficiary default token: $BENEFICIARY_DEFAULT_TOKEN_AFTER"
-
-# Step 8: Verify fee payment logic
-echo "Analyzing fee payment results..."
-
+# Verify fee payment logic
 USER_NEW_TOKEN_DIFF=$(echo "$USER_NEW_TOKEN_BEFORE - $USER_NEW_TOKEN_AFTER" | bc)
 USER_DEFAULT_TOKEN_DIFF=$(echo "$USER_DEFAULT_TOKEN_BEFORE - $USER_DEFAULT_TOKEN_AFTER" | bc)
 BENEFICIARY_NEW_TOKEN_DIFF=$(echo "$BENEFICIARY_NEW_TOKEN_AFTER - $BENEFICIARY_NEW_TOKEN_BEFORE" | bc)
 BENEFICIARY_DEFAULT_TOKEN_DIFF=$(echo "$BENEFICIARY_DEFAULT_TOKEN_AFTER - $BENEFICIARY_DEFAULT_TOKEN_BEFORE" | bc)
 
-echo "User new token change: -$USER_NEW_TOKEN_DIFF"
-echo "User default token change: -$USER_DEFAULT_TOKEN_DIFF"
-echo "Beneficiary new token change: +$BENEFICIARY_NEW_TOKEN_DIFF"
-echo "Beneficiary default token change: +$BENEFICIARY_DEFAULT_TOKEN_DIFF"
-
-# Verify expectations
-echo "Verifying fee payment expectations..."
-
-if [ "$USER_NEW_TOKEN_DIFF" -gt "0" ]; then
-  echo "✓ User paid fees in new token (decreased by $USER_NEW_TOKEN_DIFF)"
-else
-  echo "✗ User did not pay fees in new token"
-fi
-
 if [ "$BENEFICIARY_DEFAULT_TOKEN_DIFF" -gt "0" ] || [ "$BENEFICIARY_NEW_TOKEN_DIFF" -gt "0" ]; then
-  echo "✓ Beneficiary received fee tokens"
+  echo "Beneficiary received fee tokens"
   if [ "$BENEFICIARY_DEFAULT_TOKEN_DIFF" -gt "0" ]; then
-    echo "  Beneficiary received $BENEFICIARY_DEFAULT_TOKEN_DIFF default tokens"
+    echo "Beneficiary received $BENEFICIARY_DEFAULT_TOKEN_DIFF default tokens"
   fi
   if [ "$BENEFICIARY_NEW_TOKEN_DIFF" -gt "0" ]; then
-    echo "  Beneficiary received $BENEFICIARY_NEW_TOKEN_DIFF new tokens"
+    echo "Beneficiary received $BENEFICIARY_NEW_TOKEN_DIFF new tokens"
   fi
 else
-  echo "✗ Beneficiary did not receive any fee tokens"
+  echo "Beneficiary did not receive any fee tokens"
 fi
 
 # Verify that the fee tokens are different between user and beneficiary
 if [ "$NEW_TOKEN_ADDR" != "$VALIDATOR_FEE_TOKEN" ]; then
-  echo "✓ User and validator have different fee tokens"
-  echo "  User fee token: $NEW_TOKEN_ADDR"
-  echo "  Validator fee token: $VALIDATOR_FEE_TOKEN"
+  echo "User and validator have different fee tokens"
+  echo "User fee token: $NEW_TOKEN_ADDR"
+  echo "Validator fee token: $VALIDATOR_FEE_TOKEN"
 else
-  echo "✗ User and validator have the same fee token"
+  echo "User and validator have the same fee token"
 fi
-
-echo "Fee token test completed!"
