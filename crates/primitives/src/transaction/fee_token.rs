@@ -1,5 +1,5 @@
 use alloy_consensus::{
-    SignableTransaction, Transaction,
+    SignableTransaction, Signed, Transaction,
     transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx},
 };
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
@@ -114,6 +114,12 @@ impl TxFeeToken {
         self.access_list.size() + // access_list
         self.authorization_list.len() * mem::size_of::<SignedAuthorization>() + // authorization_list
         self.input.len() // input
+    }
+
+    /// Combines this transaction with `signature`, taking `self`. Returns [`Signed`].
+    pub fn into_signed(self, signature: Signature) -> Signed<Self> {
+        let tx_hash = self.tx_hash(&signature);
+        Signed::new_unchecked(self, signature, tx_hash)
     }
 }
 

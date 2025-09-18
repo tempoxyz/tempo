@@ -181,6 +181,12 @@ impl<Eip4844> TryFrom<EthereumTxEnvelope<Eip4844>> for TempoTxEnvelope {
     }
 }
 
+impl From<Signed<TxFeeToken>> for TempoTxEnvelope {
+    fn from(value: Signed<TxFeeToken>) -> Self {
+        Self::FeeToken(value)
+    }
+}
+
 #[cfg(feature = "rpc")]
 impl reth_rpc_convert::SignableTxRequest<TempoTxEnvelope>
     for alloy_rpc_types_eth::TransactionRequest
