@@ -72,10 +72,8 @@ SENDER_TOKEN_BALANCE=$(cast balance --erc20 $NEW_TOKEN_ADDR $SENDER_ADDR)
 echo "Sender token balance after mint: $SENDER_TOKEN_BALANCE"
 
 # Assert token balance is mint amount
-if [ "$SENDER_TOKEN_BALANCE" = "$MINT_AMOUNT" ]; then
-  echo "✓ Sender token balance correct after mint: $SENDER_TOKEN_BALANCE"
-else
-  echo "✗ Sender token balance incorrect. Expected $MINT_AMOUNT, got $SENDER_TOKEN_BALANCE"
+if [ "$SENDER_TOKEN_BALANCE" != "$MINT_AMOUNT" ]; then
+  echo "Sender token balance incorrect. Expected $MINT_AMOUNT, got $SENDER_TOKEN_BALANCE"
   exit 1
 fi
 
@@ -95,14 +93,12 @@ echo "Recipient final token balance: $RECIPIENT_FINAL_BALANCE"
 
 # Verify the transfer worked
 EXPECTED_SENDER_BALANCE=$(echo "$MINT_AMOUNT - $TRANSFER_AMOUNT" | bc)
-if [ "$SENDER_FINAL_BALANCE" = "$EXPECTED_SENDER_BALANCE" ]; then
-  echo "✓ Sender balance correct: $SENDER_FINAL_BALANCE"
-else
-  echo "✗ Sender balance incorrect. Expected $EXPECTED_SENDER_BALANCE, got $SENDER_FINAL_BALANCE"
+if [ "$SENDER_FINAL_BALANCE" != "$EXPECTED_SENDER_BALANCE" ]; then
+  echo "Sender balance incorrect. Expected $EXPECTED_SENDER_BALANCE, got $SENDER_FINAL_BALANCE"
+  exit 1
 fi
 
-if [ "$RECIPIENT_FINAL_BALANCE" = "$TRANSFER_AMOUNT" ]; then
-  echo "✓ Recipient balance correct: $RECIPIENT_FINAL_BALANCE"
-else
-  echo "✗ Recipient balance incorrect. Expected $TRANSFER_AMOUNT, got $RECIPIENT_FINAL_BALANCE"
+if [ "$RECIPIENT_FINAL_BALANCE" != "$TRANSFER_AMOUNT" ]; then
+  echo "Recipient balance incorrect. Expected $TRANSFER_AMOUNT, got $RECIPIENT_FINAL_BALANCE"
+  exit 1
 fi

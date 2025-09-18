@@ -110,10 +110,9 @@ sleep 2
 echo "Liquidity added successfully"
 
 # Record balances before transaction
-USER_NEW_TOKEN_BEFORE=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
-USER_DEFAULT_TOKEN_BEFORE=$(cast balance --erc20 $DEFAULT_TOKEN $USER_ADDR)
-BENEFICIARY_NEW_TOKEN_BEFORE=$(cast balance --erc20 $NEW_TOKEN_ADDR $BENEFICIARY)
-BENEFICIARY_DEFAULT_TOKEN_BEFORE=$(cast balance --erc20 $DEFAULT_TOKEN $BENEFICIARY)
+USER_FEE_TOKEN_BEFORE=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
+BENEFICIARY_FEE_TOKEN_BEFORE=$(cast balance --erc20 $VALIDATOR_FEE_TOKEN $BENEFICIARY)
+RECIPIENT_BEFORE=$(cast balance --erc20 $DEFAULT_TOKEN $RECIPIENT_ADDR)
 
 #  Execute a transaction
 echo "Executing test transaction..."
@@ -125,34 +124,33 @@ cast send $DEFAULT_TOKEN "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_A
 sleep 2
 
 # Check balances after transaction
-USER_NEW_TOKEN_AFTER=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
-USER_DEFAULT_TOKEN_AFTER=$(cast balance --erc20 $DEFAULT_TOKEN $USER_ADDR)
-BENEFICIARY_NEW_TOKEN_AFTER=$(cast balance --erc20 $NEW_TOKEN_ADDR $BENEFICIARY)
-BENEFICIARY_DEFAULT_TOKEN_AFTER=$(cast balance --erc20 $DEFAULT_TOKEN $BENEFICIARY)
+USER_FEE_TOKEN_AFTER=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
+BENEFICIARY_FEE_TOKEN_AFTER=$(cast balance --erc20 $VALIDATOR_FEE_TOKEN $BENEFICIARY)
+RECIPIENT_AFTER=$(cast balance --erc20 $DEFAULT_TOKEN $RECIPIENT_ADDR)
 
-# Verify fee payment logic
-USER_NEW_TOKEN_DIFF=$(echo "$USER_NEW_TOKEN_BEFORE - $USER_NEW_TOKEN_AFTER" | bc)
-USER_DEFAULT_TOKEN_DIFF=$(echo "$USER_DEFAULT_TOKEN_BEFORE - $USER_DEFAULT_TOKEN_AFTER" | bc)
-BENEFICIARY_NEW_TOKEN_DIFF=$(echo "$BENEFICIARY_NEW_TOKEN_AFTER - $BENEFICIARY_NEW_TOKEN_BEFORE" | bc)
-BENEFICIARY_DEFAULT_TOKEN_DIFF=$(echo "$BENEFICIARY_DEFAULT_TOKEN_AFTER - $BENEFICIARY_DEFAULT_TOKEN_BEFORE" | bc)
+# Verify transfer and fee payment logic
+echo "Verifying test results..."
 
-if [ "$BENEFICIARY_DEFAULT_TOKEN_DIFF" -gt "0" ] || [ "$BENEFICIARY_NEW_TOKEN_DIFF" -gt "0" ]; then
-  echo "Beneficiary received fee tokens"
-  if [ "$BENEFICIARY_DEFAULT_TOKEN_DIFF" -gt "0" ]; then
-    echo "Beneficiary received $BENEFICIARY_DEFAULT_TOKEN_DIFF default tokens"
-  fi
-  if [ "$BENEFICIARY_NEW_TOKEN_DIFF" -gt "0" ]; then
-    echo "Beneficiary received $BENEFICIARY_NEW_TOKEN_DIFF new tokens"
-  fi
+# Check recipient received the transfer
+RECIPIENT_DIFF=$(echo "$RECIPIENT_AFTER - $RECIPIENT_BEFORE" | bc)
+if [ "$RECIPIENT_DIFF" = "$TRANSFER_AMOUNT" ]; then
+  echo "Recipient received transfer: $TRANSFER_AMOUNT"
 else
-  echo "Beneficiary did not receive any fee tokens"
+  echo "Recipient transfer failed. Expected $TRANSFER_AMOUNT, got $RECIPIENT_DIFF"
 fi
 
-# Verify that the fee tokens are different between user and beneficiary
-if [ "$NEW_TOKEN_ADDR" != "$VALIDATOR_FEE_TOKEN" ]; then
-  echo "User and validator have different fee tokens"
-  echo "User fee token: $NEW_TOKEN_ADDR"
-  echo "Validator fee token: $VALIDATOR_FEE_TOKEN"
+# Check user fee token balance decreased (user paid fees)
+USER_FEE_TOKEN_DIFF=$(echo "$USER_FEE_TOKEN_BEFORE - $USER_FEE_TOKEN_AFTER" | bc)
+if [ "$USER_FEE_TOKEN_DIFF" -gt "0" ]; then
+  echo "User paid fees in fee token: $USER_FEE_TOKEN_DIFF"
 else
-  echo "User and validator have the same fee token"
+  echo "User fee token balance did not decrease"
+fi
+
+# Check beneficiary fee token balance increased (beneficiary received fees)
+BENEFICIARY_FEE_TOKEN_DIFF=$(echo "$BENEFICIARY_FEE_TOKEN_AFTER - $BENEFICIARY_FEE_TOKEN_BEFORE" | bc)
+if [ "$BENEFICIARY_FEE_TOKEN_DIFF" -gt "0" ]; then
+  echo "Beneficiary received fees: $BENEFICIARY_FEE_TOKEN_DIFF"
+else
+  echo "Beneficiary fee token balance did not increase"
 fi
