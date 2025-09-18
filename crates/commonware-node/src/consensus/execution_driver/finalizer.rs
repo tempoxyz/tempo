@@ -50,7 +50,7 @@ impl Finalizer {
 
     async fn handle_message(&self, message: Message) -> eyre::Result<()> {
         match message {
-            Message::Finalize(finalized) => self.finalize(finalized).await,
+            Message::Finalize(finalized) => self.finalize(*finalized).await,
         }
     }
 
@@ -60,10 +60,7 @@ impl Finalizer {
         err(level = Level::WARN),
         ret,
     )]
-    async fn finalize(
-        &self,
-        finalized: super::Finalized<tempo_primitives::Block>,
-    ) -> eyre::Result<()> {
+    async fn finalize(&self, finalized: super::Finalized) -> eyre::Result<()> {
         let super::Finalized { block } = finalized;
 
         let block = block.clone().into_inner();
@@ -120,17 +117,14 @@ pub(super) struct Mailbox {
 }
 
 impl Mailbox {
-    pub(super) fn finalize(
-        &self,
-        finalized: super::Finalized<tempo_primitives::Block>,
-    ) -> eyre::Result<()> {
+    pub(super) fn finalize(&self, finalized: super::Finalized) -> eyre::Result<()> {
         self.inner
-            .unbounded_send(Message::Finalize(finalized))
+            .unbounded_send(Message::Finalize(finalized.into()))
             .wrap_err("failed sending finalization request to finalizer, this means it exited")
     }
 }
 
 #[derive(Clone, Debug)]
 enum Message {
-    Finalize(super::Finalized<tempo_primitives::Block>),
+    Finalize(Box<super::Finalized>),
 }

@@ -20,20 +20,14 @@ use tempo_commonware_node_cryptography::Digest;
 // Sealed because of the frequent accesses to the hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-// TODO: Can there be a reasonable default for TBlock?
-pub struct Block<TBlock>(SealedBlock<TBlock>)
-where
-    TBlock: reth_primitives_traits::Block;
+pub struct Block(SealedBlock<tempo_primitives::Block>);
 
-impl<TBlock> Block<TBlock>
-where
-    TBlock: reth_primitives_traits::Block,
-{
-    pub fn from_execution_block(block: SealedBlock<TBlock>) -> Self {
+impl Block {
+    pub fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {
         Self(block)
     }
 
-    pub fn into_inner(self) -> SealedBlock<TBlock> {
+    pub fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
         self.0
     }
 
@@ -56,31 +50,22 @@ where
     }
 }
 
-impl<TBlock> std::ops::Deref for Block<TBlock>
-where
-    TBlock: reth_primitives_traits::Block,
-{
-    type Target = SealedBlock<TBlock>;
+impl std::ops::Deref for Block {
+    type Target = SealedBlock<tempo_primitives::Block>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<TBlock> Write for Block<TBlock>
-where
-    TBlock: reth_primitives_traits::Block,
-{
+impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
         use alloy_rlp::Encodable as _;
         self.0.encode(buf);
     }
 }
 
-impl<TBlock> Read for Block<TBlock>
-where
-    TBlock: reth_primitives_traits::Block,
-{
+impl Read for Block {
     // TODO: Figure out what this is for/when to use it. This is () for both alto and summit.
     type Cfg = ();
 
@@ -113,20 +98,14 @@ where
     }
 }
 
-impl<TBlock> EncodeSize for Block<TBlock>
-where
-    TBlock: reth_primitives_traits::Block,
-{
+impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
         use alloy_rlp::Encodable as _;
         self.0.length()
     }
 }
 
-impl<TBlock> Committable for Block<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+impl Committable for Block {
     type Commitment = Digest;
 
     fn commitment(&self) -> Self::Commitment {
@@ -134,10 +113,7 @@ where
     }
 }
 
-impl<TBlock> Digestible for Block<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+impl Digestible for Block {
     type Digest = Digest;
 
     fn digest(&self) -> Self::Digest {
@@ -145,10 +121,7 @@ where
     }
 }
 
-impl<TBlock> commonware_consensus::Block for Block<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+impl commonware_consensus::Block for Block {
     fn parent(&self) -> Digest {
         self.parent_digest()
     }
