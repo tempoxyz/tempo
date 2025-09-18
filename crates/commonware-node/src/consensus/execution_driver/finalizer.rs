@@ -128,52 +128,12 @@ impl Finalizer {
             "found blocks to send to the execution layer"
         );
         // Now send the blocks to the execution layer, starting with the last.
+        // We will just push all of this into our own mailbox because this is
+        // duplicate work otherwise.
         for block in to_replay.into_iter().rev() {
-            let hash = block.hash();
-            let payload_status = self
-                .execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .new_payload(TempoExecutionData(block.into_inner()))
-                .await
-                .wrap_err(
-                    "failed sending new-payload request to execution \
-                        engine to query payload status of finalized block",
-                )?;
-
-            // TODO: accepted?
-            ensure!(
-                payload_status.is_valid(),
-                "payload status of block-to-be-finalized not valid: \
-                `{payload_status}`"
-            );
-
-            // Need to make it canonical because otherwise the execution
-            // layer will not respond to a block_by_id request.
-            let fcu_response = self
-                .execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .fork_choice_updated(
-                    ForkchoiceState {
-                        head_block_hash: hash,
-                        safe_block_hash: hash,
-                        finalized_block_hash: hash,
-                    },
-                    None,
-                    reth_node_builder::EngineApiMessageVersion::V3,
-                )
-                .await
-                .wrap_err(
-                    "failed running engine_forkchoiceUpdated to set the \
-                        finalized block hash",
-                )?;
-
-            ensure!(
-                fcu_response.is_valid(),
-                "payload status of forkchoice update response valid: `{}`",
-                fcu_response.payload_status,
-            );
+            self.my_mailbox
+                .finalize(super::Finalized { block })
+                .expect("in a self method; the channel must be alive");
         }
 
         Ok(())
