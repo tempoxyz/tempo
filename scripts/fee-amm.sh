@@ -74,11 +74,6 @@ sleep 2
 USER_NEW_TOKEN_BALANCE=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
 echo "User new token balance: $USER_NEW_TOKEN_BALANCE"
 
-# Set the new token as the user's fee token
-echo "Setting new token as user's fee token..."
-cast send $TIP_FEE_MANAGER "setUserToken(address)" $NEW_TOKEN_ADDR --private-key $USER_PK
-sleep 2
-
 # Get validator's fee token (should be default token)
 VALIDATOR_FEE_TOKEN_RAW=$(cast call $TIP_FEE_MANAGER "validatorTokens(address)" $BENEFICIARY)
 VALIDATOR_FEE_TOKEN=$(cast parse-bytes32-address "$VALIDATOR_FEE_TOKEN_RAW")
@@ -89,29 +84,34 @@ echo "Creating fee token pool between user and validator tokens..."
 cast send $TIP_FEE_MANAGER "createPool(address,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN --private-key $USER_PK
 sleep 2
 
-#
-# # Add liquidity to the pool
-# echo "Adding liquidity to the pool..."
-# LIQUIDITY_AMOUNT="100000000000000000000000" # 100K tokens
-#
-# # Mint liquidity
-# cast send $TIP_FEE_MANAGER "mint(address,address,uint256,uint256,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN $LIQUIDITY_AMOUNT $LIQUIDITY_AMOUNT $USER_ADDR --private-key $USER_PK
-# sleep 2
-# echo "Liquidity added successfully"
-#
-# # Record balances before transaction
-# USER_FEE_TOKEN_BEFORE=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
-# BENEFICIARY_FEE_TOKEN_BEFORE=$(cast balance --erc20 $VALIDATOR_FEE_TOKEN $BENEFICIARY)
-# RECIPIENT_BEFORE=$(cast balance --erc20 $DEFAULT_TOKEN $RECIPIENT_ADDR)
-#
-# #  Execute a transaction
-# echo "Executing test transaction..."
-# RECIPIENT_ADDR=$(cast wallet new --json | jq -r '.[0].address')
-# TRANSFER_AMOUNT="1000000000000000000" # 1 token
-#
-# # Use the default token for the actual transfer (to ensure the tx goes through)
-# cast send $DEFAULT_TOKEN "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_AMOUNT --private-key $USER_PK
-# sleep 2
+# Add liquidity to the pool
+echo "Adding liquidity to the pool..."
+LIQUIDITY_AMOUNT="100000000000000000000000" # 100K tokens
+
+# Mint liquidity
+cast send $TIP_FEE_MANAGER "mint(address,address,uint256,uint256,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN $LIQUIDITY_AMOUNT $LIQUIDITY_AMOUNT $USER_ADDR --private-key $USER_PK
+sleep 2
+echo "Liquidity added successfully"
+
+# Set the new token as the user's fee token
+echo "Setting new token as user's fee token..."
+cast send $TIP_FEE_MANAGER "setUserToken(address)" $NEW_TOKEN_ADDR --private-key $USER_PK
+sleep 2
+
+#  Execute a transaction
+echo "Executing test transaction..."
+RECIPIENT_ADDR=$(cast wallet new --json | jq -r '.[0].address')
+TRANSFER_AMOUNT="1000000000000000000" # 1 token
+
+# Record balances before transaction
+USER_FEE_TOKEN_BEFORE=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
+BENEFICIARY_FEE_TOKEN_BEFORE=$(cast balance --erc20 $VALIDATOR_FEE_TOKEN $BENEFICIARY)
+RECIPIENT_BEFORE=$(cast balance --erc20 $DEFAULT_TOKEN $RECIPIENT_ADDR)
+
+# Use the default token for the actual transfer (to ensure the tx goes through)
+cast send $DEFAULT_TOKEN "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_AMOUNT --private-key $USER_PK
+sleep 2
+
 #
 # # Check balances after transaction
 # USER_FEE_TOKEN_AFTER=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
