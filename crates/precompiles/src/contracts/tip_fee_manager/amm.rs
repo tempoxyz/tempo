@@ -182,8 +182,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .checked_add(pool.pending_fee_swap_in)
             .expect("TODO: handle overflow");
 
-        let amount_out = pool.reserve_validator_token - pending_out.to::<u128>();
-        pool.reserve_validator_token = amount_out;
+        let amount_out = pending_out.to::<u128>();
+        pool.reserve_validator_token -= amount_out;
 
         // Clear pending swap
         pool.pending_fee_swap_in = 0;
