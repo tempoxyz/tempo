@@ -1,6 +1,6 @@
 use crate::node::TempoNode;
 use alloy::{consensus::TxReceipt, network::Ethereum, primitives::U256};
-use alloy_primitives::{Address, uint};
+use alloy_primitives::Address;
 use alloy_rpc_types_eth::ReceiptWithBloom;
 use reth_ethereum::tasks::{
     TaskSpawner,
