@@ -16,6 +16,7 @@ pub mod engine;
 pub mod node;
 pub mod rpc;
 
+mod network;
 mod version;
 
 type TempoNodeAdapter = NodeAdapter<RethFullAdapter<Arc<DatabaseEnv>, TempoNode>>;

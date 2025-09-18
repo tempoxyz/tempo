@@ -3,6 +3,7 @@ use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError,
 };
 use alloy_primitives::{Address, B256, Signature, U256};
+use core::fmt;
 use reth_primitives_traits::InMemorySize;
 use tempo_precompiles::TIP20_PAYMENT_PREFIX;
 
@@ -170,6 +171,18 @@ impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
 impl InMemorySize for TempoTxType {
     fn size(&self) -> usize {
         core::mem::size_of::<Self>()
+    }
+}
+
+impl fmt::Display for TempoTxType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Legacy => write!(f, "Legacy"),
+            Self::Eip2930 => write!(f, "EIP-2930"),
+            Self::Eip1559 => write!(f, "EIP-1559"),
+            Self::Eip7702 => write!(f, "EIP-7702"),
+            Self::FeeToken => write!(f, "FeeToken"),
+        }
     }
 }
 
