@@ -28,7 +28,7 @@ echo "Checking initial balances..."
 SENDER_NATIVE_BALANCE=$(cast balance $SENDER_ADDR)
 echo "Sender native balance: $SENDER_NATIVE_BALANCE"
 if [ "$SENDER_NATIVE_BALANCE" != "0" ]; then
-  echo "ERROR: Expected sender native balance to be 0, got $SENDER_NATIVE_BALANCE"
+  echo "ERROR: Sender native balance incorrect. Expected 0, got $SENDER_NATIVE_BALANCE"
   exit 1
 fi
 

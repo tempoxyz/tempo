@@ -52,14 +52,11 @@ TOKEN_CREATED_LOG=$(echo "$CREATE_RECEIPT" | jq -r '.logs[0]')
 export NEW_TOKEN_ADDR=$(echo "$TOKEN_CREATED_LOG" | jq -r '.topics[1]' | sed 's/0x000000000000000000000000/0x/')
 echo "New token address: $NEW_TOKEN_ADDR"
 
-# Verify token properties
-echo "Checking token properties..."
-TOKEN_NAME=$(cast call $NEW_TOKEN_ADDR "name()")
-TOKEN_SYMBOL=$(cast call $NEW_TOKEN_ADDR "symbol()")
-TOKEN_CURRENCY=$(cast call $NEW_TOKEN_ADDR "currency()")
-echo "Token name: $(cast to-ascii $TOKEN_NAME)"
-echo "Token symbol: $(cast to-ascii $TOKEN_SYMBOL)"
-echo "Token currency: $(cast to-ascii $TOKEN_CURRENCY)"
+# Grant issuer role to sender for minting tokens
+echo "Granting issuer role to sender..."
+ISSUER_ROLE=$(cast keccak "ISSUER_ROLE")
+cast send $NEW_TOKEN_ADDR "grantRole(bytes32,address)" $ISSUER_ROLE $SENDER_ADDR --private-key $SENDER_PK
+sleep 2
 
 # Mint some tokens to the sender
 echo "Minting tokens to sender..."
@@ -73,7 +70,7 @@ echo "Sender token balance after mint: $SENDER_TOKEN_BALANCE"
 
 # Assert token balance is mint amount
 if [ "$SENDER_TOKEN_BALANCE" != "$MINT_AMOUNT" ]; then
-  echo "Sender token balance incorrect. Expected $MINT_AMOUNT, got $SENDER_TOKEN_BALANCE"
+  echo "ERROR: Sender token balance incorrect. Expected $MINT_AMOUNT, got $SENDER_TOKEN_BALANCE"
   exit 1
 fi
 
@@ -94,11 +91,11 @@ echo "Recipient final token balance: $RECIPIENT_FINAL_BALANCE"
 # Verify the transfer worked
 EXPECTED_SENDER_BALANCE=$(echo "$MINT_AMOUNT - $TRANSFER_AMOUNT" | bc)
 if [ "$SENDER_FINAL_BALANCE" != "$EXPECTED_SENDER_BALANCE" ]; then
-  echo "Sender balance incorrect. Expected $EXPECTED_SENDER_BALANCE, got $SENDER_FINAL_BALANCE"
+  echo "ERROR: Sender balance incorrect. Expected $EXPECTED_SENDER_BALANCE, got $SENDER_FINAL_BALANCE"
   exit 1
 fi
 
 if [ "$RECIPIENT_FINAL_BALANCE" != "$TRANSFER_AMOUNT" ]; then
-  echo "Recipient balance incorrect. Expected $TRANSFER_AMOUNT, got $RECIPIENT_FINAL_BALANCE"
+  echo "ERROR: Recipient balance incorrect. Expected $TRANSFER_AMOUNT, got $RECIPIENT_FINAL_BALANCE"
   exit 1
 fi
