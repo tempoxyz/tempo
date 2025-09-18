@@ -38,19 +38,16 @@ echo "Sender initial balance (for gas): $SENDER_INITIAL_BALANCE"
 
 # Create a new token
 echo "Creating new TIP20 token..."
-CREATE_TX=$(cast send $TIP20_FACTORY "createToken(string,string,string,address)" "MyAwesomeToken" "MAT" "USD" $SENDER_ADDR --private-key $SENDER_PK --json)
+CREATE_TX=$(cast send $TIP20_FACTORY "createToken(string,string,string,address)" "T" "T" "USD" $SENDER_ADDR --private-key $SENDER_PK --json)
 sleep 2
 
-echo "Token creation transaction: $(echo "$CREATE_TX" | jq -r '.transactionHash')"
-
-# Get the token creation event to find the new token address
-CREATE_RECEIPT=$(cast receipt $(echo "$CREATE_TX" | jq -r '.transactionHash'))
-echo "Token creation receipt obtained"
-
-# Get the TokenCreated event and decode it properly
 TX_HASH=$(echo "$CREATE_TX" | jq -r '.transactionHash')
-export NEW_TOKEN_ADDR=$(cast logs --from-block latest --address $TIP20_FACTORY 'TokenCreated(address indexed token, uint256 indexed id)' | cast decode-log 'TokenCreated(address indexed token, uint256 indexed id)' | head -1 | awk '{print $1}')
-echo "New token address: $NEW_TOKEN_ADDR"
+
+# Get the receipt
+RECEIPT=$(cast receipt "$TX_HASH" --json)
+
+TOPIC1=$(echo "$RECEIPT" | jq -r '.logs[0].topics[1]')
+export NEW_TOKEN_ADDR=$(cast parse-bytes32-address "$TOPIC1")
 
 # Grant issuer role to sender for minting tokens
 echo "Granting issuer role to sender..."
@@ -68,9 +65,10 @@ sleep 2
 SENDER_TOKEN_BALANCE=$(cast balance --erc20 $NEW_TOKEN_ADDR $SENDER_ADDR)
 echo "Sender token balance after mint: $SENDER_TOKEN_BALANCE"
 
-# Assert token balance is mint amount
-if [ "$SENDER_TOKEN_BALANCE" != "$MINT_AMOUNT" ]; then
-  echo "ERROR: Sender token balance incorrect. Expected $MINT_AMOUNT, got $SENDER_TOKEN_BALANCE"
+# Assert token balance is mint amount (extract numeric value)
+SENDER_BALANCE_NUM=$(echo "$SENDER_TOKEN_BALANCE" | awk '{print $1}')
+if [ "$SENDER_BALANCE_NUM" != "$MINT_AMOUNT" ]; then
+  echo "ERROR: Sender token balance incorrect. Expected $MINT_AMOUNT, got $SENDER_BALANCE_NUM"
   exit 1
 fi
 
@@ -88,14 +86,17 @@ RECIPIENT_FINAL_BALANCE=$(cast balance --erc20 $NEW_TOKEN_ADDR $RECIPIENT_ADDR)
 echo "Sender final token balance: $SENDER_FINAL_BALANCE"
 echo "Recipient final token balance: $RECIPIENT_FINAL_BALANCE"
 
-# Verify the transfer worked
+# Verify the transfer worked (extract numeric values)
 EXPECTED_SENDER_BALANCE=$(echo "$MINT_AMOUNT - $TRANSFER_AMOUNT" | bc)
-if [ "$SENDER_FINAL_BALANCE" != "$EXPECTED_SENDER_BALANCE" ]; then
-  echo "ERROR: Sender balance incorrect. Expected $EXPECTED_SENDER_BALANCE, got $SENDER_FINAL_BALANCE"
+SENDER_FINAL_NUM=$(echo "$SENDER_FINAL_BALANCE" | awk '{print $1}')
+RECIPIENT_FINAL_NUM=$(echo "$RECIPIENT_FINAL_BALANCE" | awk '{print $1}')
+
+if [ "$SENDER_FINAL_NUM" != "$EXPECTED_SENDER_BALANCE" ]; then
+  echo "ERROR: Sender balance incorrect. Expected $EXPECTED_SENDER_BALANCE, got $SENDER_FINAL_NUM"
   exit 1
 fi
 
-if [ "$RECIPIENT_FINAL_BALANCE" != "$TRANSFER_AMOUNT" ]; then
-  echo "ERROR: Recipient balance incorrect. Expected $TRANSFER_AMOUNT, got $RECIPIENT_FINAL_BALANCE"
+if [ "$RECIPIENT_FINAL_NUM" != "$TRANSFER_AMOUNT" ]; then
+  echo "ERROR: Recipient balance incorrect. Expected $TRANSFER_AMOUNT, got $RECIPIENT_FINAL_NUM"
   exit 1
 fi
