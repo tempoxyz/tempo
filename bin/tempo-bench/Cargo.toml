@@ -19,6 +19,7 @@ alloy = { workspace = true, features = [
 alloy-consensus = { workspace = true, features = ["secp256k1"] }
 clap = { workspace = true, features = ["derive", "env"] }
 eyre.workspace = true
+futures.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
