@@ -367,8 +367,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let (http_url, _local_node) = setup_test_node(source).await?;
 
     // Setup user and validator wallets
-    let user_wallet = MnemonicBuilder::<English>::default()
-        .phrase("test test test test test test test test test test test junk")
+    let user_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(1)?
         .build()?;
     let user_address = user_wallet.address();
