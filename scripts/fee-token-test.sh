@@ -55,9 +55,15 @@ TOKEN_CREATED_LOG=$(echo "$CREATE_RECEIPT" | jq -r '.logs[0]')
 export NEW_TOKEN_ADDR=$(echo "$TOKEN_CREATED_LOG" | jq -r '.topics[1]' | sed 's/0x000000000000000000000000/0x/')
 echo "New token address: $NEW_TOKEN_ADDR"
 
-# Mint some tokens to the user (need ISSUER_ROLE)
+# Grant issuer role to user for minting tokens
+echo "Granting issuer role to user..."
+ISSUER_ROLE=$(cast keccak "ISSUER_ROLE")
+cast send $NEW_TOKEN_ADDR "grantRole(bytes32,address)" $ISSUER_ROLE $USER_ADDR --private-key $USER_PK
+sleep 2
+
+# Mint tokens to the user (need ISSUER_ROLE)
 echo "Minting new tokens to user..."
-MINT_AMOUNT="1000000000000000000000" # 1000 tokens
+MINT_AMOUNT="1000000000000000000000000" # 1M tokens for liquidity
 cast send $NEW_TOKEN_ADDR "mint(address,uint256)" $USER_ADDR $MINT_AMOUNT --private-key $USER_PK
 sleep 2
 
@@ -79,39 +85,29 @@ if [ "$USER_FEE_TOKEN" != "$NEW_TOKEN_ADDR" ]; then
   exit 1
 fi
 
-# Get validator's fee token (should be default)
+# Get validator's fee token (should be default token)
 VALIDATOR_FEE_TOKEN=$(cast call $TIP_FEE_MANAGER "validatorTokens(address)" $BENEFICIARY)
 echo "Validator's fee token: $VALIDATOR_FEE_TOKEN"
 
-# Create a pool between user token and validator token if they're different
-if [ "$NEW_TOKEN_ADDR" != "$VALIDATOR_FEE_TOKEN" ]; then
-  echo "Creating fee token pool between user and validator tokens..."
-
-  # Check if pool exists
-  POOL_EXISTS=$(cast call $TIP_FEE_MANAGER "poolExists(bytes32)" $(cast call $TIP_FEE_MANAGER "getPoolId(address,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN))
-
-  if [ "$POOL_EXISTS" = "false" ]; then
-    echo "Pool doesn't exist, creating it..."
-    cast send $TIP_FEE_MANAGER "createPool(address,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN --private-key $USER_PK
-    sleep 2
-
-    # Add liquidity to the pool
-    echo "Adding liquidity to the pool..."
-    LIQUIDITY_AMOUNT="100000000000000000000" # 100 tokens each
-
-    # First approve the fee manager to spend our tokens
-    cast send $NEW_TOKEN_ADDR "approve(address,uint256)" $TIP_FEE_MANAGER $LIQUIDITY_AMOUNT --private-key $USER_PK
-    cast send $VALIDATOR_FEE_TOKEN "approve(address,uint256)" $TIP_FEE_MANAGER $LIQUIDITY_AMOUNT --private-key $USER_PK
-    sleep 2
-
-    # Mint liquidity
-    cast send $TIP_FEE_MANAGER "mint(address,address,uint256,uint256,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN $LIQUIDITY_AMOUNT $LIQUIDITY_AMOUNT $USER_ADDR --private-key $USER_PK
-    sleep 2
-    echo "Liquidity added successfully"
-  else
-    echo "Pool already exists"
-  fi
+# If validator fee token is not set, it defaults to the default token
+if [ "$VALIDATOR_FEE_TOKEN" = "0x0000000000000000000000000000000000000000" ]; then
+  VALIDATOR_FEE_TOKEN=$DEFAULT_TOKEN
+  echo "Using default token as validator fee token: $VALIDATOR_FEE_TOKEN"
 fi
+
+# Always create fee token pool (we just deployed a new fee token so there shouldn't be a pool)
+echo "Creating fee token pool between user and validator tokens..."
+cast send $TIP_FEE_MANAGER "createPool(address,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN --private-key $USER_PK
+sleep 2
+
+# Add liquidity to the pool
+echo "Adding liquidity to the pool..."
+LIQUIDITY_AMOUNT="100000000000000000000000" # 100K tokens
+
+# Mint liquidity
+cast send $TIP_FEE_MANAGER "mint(address,address,uint256,uint256,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN $LIQUIDITY_AMOUNT $LIQUIDITY_AMOUNT $USER_ADDR --private-key $USER_PK
+sleep 2
+echo "Liquidity added successfully"
 
 # Record balances before transaction
 USER_NEW_TOKEN_BEFORE=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
@@ -126,7 +122,7 @@ TRANSFER_AMOUNT="1000000000000000000" # 1 token
 
 # Use the default token for the actual transfer (to ensure the tx goes through)
 cast send $DEFAULT_TOKEN "transfer(address,uint256)" $RECIPIENT_ADDR $TRANSFER_AMOUNT --private-key $USER_PK
-sleep 3
+sleep 2
 
 # Check balances after transaction
 USER_NEW_TOKEN_AFTER=$(cast balance --erc20 $NEW_TOKEN_ADDR $USER_ADDR)
