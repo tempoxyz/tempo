@@ -415,7 +415,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .transfer_from(
                 &self.contract_address,
                 ITIP20::transferFromCall {
-                    from: to, // 'to' is actually the sender in this context
+                    from: msg_sender,
                     to: self.contract_address,
                     amount: amount_user_token,
                 },
@@ -427,7 +427,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .transfer_from(
                 &self.contract_address,
                 ITIP20::transferFromCall {
-                    from: to,
+                    from: msg_sender,
                     to: self.contract_address,
                     amount: amount_validator_token,
                 },
