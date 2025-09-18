@@ -1,7 +1,6 @@
 pub mod config;
 pub mod network;
 pub mod network_stats;
-mod report;
 pub mod tx_gen;
 pub mod tx_queue;
 pub mod utils;
