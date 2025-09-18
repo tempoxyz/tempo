@@ -1,4 +1,18 @@
 //! Owns the strictly sequential finalization-queue.
+//!
+//! The finalizer is responsible for finalization and backfilling.
+//!
+//! When serving a request to backfill a given `parent_digest`, the finalizer
+//! takes the following steps:
+//!
+//! 1. find the last available block in the execution layer at block number
+//!    `execution_height` with `execution_digest` (or "hash").
+//! 2. starting from `parent_digest`, start walking the consensus layer to
+//!    get `block(parent_digest)` and its ancestors until `execution_digest` is
+//!    reached.
+//! 3. replay all blocks by sending them to the execution layer and finalizing
+//!    them in inverse direction, starting from `block(execution_height + 1)`
+//!    all the way back to `parent_digest`.
 
 use std::sync::Arc;
 
