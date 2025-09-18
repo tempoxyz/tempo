@@ -35,8 +35,6 @@ use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
 
-pub const U256_U64_MAX: U256 = uint!(18446744073709551615_U256);
-
 /// Tempo RPC types.
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
@@ -238,7 +236,6 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         let adjusted_balance = fee_token
             .balance()
             .saturating_mul(USD_DECIMAL_FACTOR)
-            .min(U256_U64_MAX)
             .saturating_to::<u64>();
 
         Ok(adjusted_balance)
