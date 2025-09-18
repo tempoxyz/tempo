@@ -172,11 +172,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         validator_token: Address,
     ) -> Result<U256, TIPFeeAMMError> {
         let pool_id = self.get_pool_id(user_token, validator_token);
-        if !self.pool_exists(&pool_id) {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
-                ITIPFeeAMM::PoolDoesNotExist {},
-            ));
-        }
+        self.ensure_pool_exists(&pool_id)?;
 
         let mut pool = self.get_pool(&pool_id);
         let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
@@ -206,11 +202,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         to: Address,
     ) -> Result<U256, TIPFeeAMMError> {
         let pool_id = self.get_pool_id(user_token, validator_token);
-        if !self.pool_exists(&pool_id) {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
-                ITIPFeeAMM::PoolDoesNotExist {},
-            ));
-        }
+        self.ensure_pool_exists(&pool_id)?;
 
         let mut pool = self.get_pool(&pool_id);
 
@@ -368,11 +360,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         to: Address,
     ) -> Result<U256, TIPFeeAMMError> {
         let pool_id = self.get_pool_id(user_token, validator_token);
-        if !self.pool_exists(&pool_id) {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
-                ITIPFeeAMM::PoolDoesNotExist {},
-            ));
-        }
+        self.ensure_pool_exists(&pool_id)?;
 
         let mut pool = self.get_pool(&pool_id);
         let total_supply = self.get_total_supply(&pool_id);
@@ -474,12 +462,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         to: Address,
     ) -> Result<(U256, U256), TIPFeeAMMError> {
         let pool_id = self.get_pool_id(user_token, validator_token);
-
-        if !self.pool_exists(&pool_id) {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
-                ITIPFeeAMM::PoolDoesNotExist {},
-            ));
-        }
+        self.ensure_pool_exists(&pool_id)?;
 
         // Check user has sufficient liquidity
         let balance = self.get_balance_of(&pool_id, &to);
@@ -637,6 +620,16 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     fn set_pool_exists(&mut self, pool_id: &B256) {
         let slot = slots::pool_exists_slot(pool_id);
         self.sstore(slot, U256::ONE);
+    }
+
+    /// Ensure pool exists, returning error if it doesn't
+    fn ensure_pool_exists(&mut self, pool_id: &B256) -> Result<(), TIPFeeAMMError> {
+        if !self.pool_exists(pool_id) {
+            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::PoolDoesNotExist(
+                ITIPFeeAMM::PoolDoesNotExist {},
+            ));
+        }
+        Ok(())
     }
 
     /// Get total supply of LP tokens for a pool
