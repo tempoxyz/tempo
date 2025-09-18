@@ -1,13 +1,14 @@
 use alloy::consensus::{EthereumTxEnvelope, Transaction, TxEip4844, TxEip7702, error::ValueError};
+use alloy_eips::Typed2718;
 use alloy_network::TxSigner;
 use alloy_primitives::{Address, Signature};
-use alloy_rpc_types_eth::TransactionRequest;
+use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
 use reth_evm::revm::context::{BlockEnv, CfgEnv};
 use reth_rpc_convert::{
     EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv,
 };
 use serde::{Deserialize, Serialize};
-use tempo_primitives::{TempoTxEnvelope, TxFeeToken};
+use tempo_primitives::{TempoTxEnvelope, TxFeeToken, transaction::TempoTypedTransaction};
 use tempo_revm::TempoTxEnv;
 
 /// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
@@ -127,5 +128,84 @@ impl From<TransactionRequest> for TempoTransactionRequest {
 impl From<TempoTransactionRequest> for TransactionRequest {
     fn from(value: TempoTransactionRequest) -> Self {
         value.inner
+    }
+}
+
+impl From<TempoTxEnvelope> for TempoTransactionRequest {
+    fn from(value: TempoTxEnvelope) -> Self {
+        match value {
+            TempoTxEnvelope::Legacy(tx) => Self {
+                inner: tx.into_parts().0.into(),
+                fee_token: None,
+            },
+            TempoTxEnvelope::Eip2930(tx) => Self {
+                inner: tx.into_parts().0.into(),
+                fee_token: None,
+            },
+            TempoTxEnvelope::Eip1559(tx) => Self {
+                inner: tx.into_parts().0.into(),
+                fee_token: None,
+            },
+            TempoTxEnvelope::Eip7702(tx) => Self {
+                inner: tx.into_parts().0.into(),
+                fee_token: None,
+            },
+            TempoTxEnvelope::FeeToken(tx) => {
+                let tx = tx.into_parts().0;
+
+                Self {
+                    fee_token: tx.fee_token,
+                    inner: into_transaction_request(tx),
+                }
+            }
+        }
+    }
+}
+
+impl From<TempoTypedTransaction> for TempoTransactionRequest {
+    fn from(value: TempoTypedTransaction) -> Self {
+        match value {
+            TempoTypedTransaction::Legacy(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+            },
+            TempoTypedTransaction::Eip2930(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+            },
+            TempoTypedTransaction::Eip1559(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+            },
+            TempoTypedTransaction::Eip7702(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+            },
+            TempoTypedTransaction::FeeToken(tx) => Self {
+                fee_token: tx.fee_token,
+                inner: into_transaction_request(tx),
+            },
+        }
+    }
+}
+
+fn into_transaction_request(tx: TxFeeToken) -> TransactionRequest {
+    TransactionRequest {
+        from: None,
+        to: Some(tx.to),
+        gas_price: tx.gas_price(),
+        max_fee_per_gas: Some(tx.max_fee_per_gas),
+        max_priority_fee_per_gas: Some(tx.max_priority_fee_per_gas),
+        max_fee_per_blob_gas: tx.max_fee_per_blob_gas(),
+        gas: Some(tx.gas_limit),
+        value: Some(tx.value),
+        input: TransactionInput::new(tx.input.clone()),
+        nonce: Some(tx.nonce),
+        chain_id: Some(tx.chain_id),
+        transaction_type: Some(tx.ty()),
+        blob_versioned_hashes: tx.blob_versioned_hashes().map(|v| v.to_vec()),
+        sidecar: None,
+        authorization_list: Some(tx.authorization_list),
+        access_list: Some(tx.access_list),
     }
 }
