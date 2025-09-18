@@ -170,7 +170,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "584d716", feat
 ] }
 
 alloy = { version = "1.0.30", default-features = false }
-alloy-evm = "0.21"
+alloy-evm = "0.21.1"
 alloy-consensus = "1.0.30"
 alloy-eips = "1.0.30"
 alloy-genesis = "1.0.30"

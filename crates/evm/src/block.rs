@@ -80,17 +80,15 @@ where
     fn validate_system_tx(&self, tx: &TempoTxEnvelope) -> Result<(), BlockValidationError> {
         // todo: we likely want to change this once we have more system transactions
         if self.seen_system_tx {
-            // todo: change once <https://github.com/alloy-rs/evm/pull/176> is merged
-            return Err(BlockValidationError::DepositRequestDecode(
-                "only expecting one system transaction per block".to_string(),
+            return Err(BlockValidationError::msg(
+                "only expecting one system transaction per block",
             ));
         }
 
         if tx.to() != Some(TIP_FEE_MANAGER_ADDRESS) || tx.input() != &executeBlockCall.abi_encode()
         {
-            // todo: change once <https://github.com/alloy-rs/evm/pull/176> is merged
-            return Err(BlockValidationError::DepositRequestDecode(
-                "system transaction is not a fee manager execute block transaction".to_string(),
+            return Err(BlockValidationError::msg(
+                "system transaction is not a fee manager execute block transaction",
             ));
         }
 
@@ -118,9 +116,8 @@ where
         if tx.tx().is_system_tx() {
             self.validate_system_tx(tx.tx())?;
         } else if self.seen_system_tx {
-            // todo: change once <https://github.com/alloy-rs/evm/pull/176> is merged
-            return Err(BlockValidationError::DepositRequestDecode(
-                "regular transaction can't follow system transaction".to_string(),
+            return Err(BlockValidationError::msg(
+                "regular transaction can't follow system transaction",
             )
             .into());
         }
@@ -146,10 +143,7 @@ where
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         if !self.seen_system_tx {
-            return Err(BlockValidationError::DepositRequestDecode(
-                "system transaction not seen in block".to_string(),
-            )
-            .into());
+            return Err(BlockValidationError::msg("system transaction not seen in block").into());
         }
         self.inner.finish()
     }
