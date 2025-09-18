@@ -19,9 +19,9 @@ export DEFAULT_TOKEN="0x20c0000000000000000000000000000000000000"
 
 # Generate test wallet
 echo "Generating test wallet..."
-WALLET_JSON=$(cast wallet new --json)
-export USER_PK=$(echo "$WALLET_JSON" | jq -r '.[0].private_key')
-export USER_ADDR=$(echo "$WALLET_JSON" | jq -r '.[0].address')
+USER_WALLET_JSON=$(cast wallet new --json)
+export USER_PK=$(echo "$USER_WALLET_JSON" | jq -r '.[0].private_key')
+export USER_ADDR=$(echo "$USER_WALLET_JSON" | jq -r '.[0].address')
 echo "User wallet: $USER_ADDR"
 
 # Fund the user with default tokens for gas
@@ -40,8 +40,8 @@ export BENEFICIARY=$(echo "$LATEST_BLOCK" | jq -r '.miner')
 echo "Current beneficiary: $BENEFICIARY"
 
 # Check beneficiary's initial balances
-BENEFICIARY_DEFAULT_INITIAL=$(cast balance --erc20 $DEFAULT_TOKEN $BENEFICIARY)
-echo "Beneficiary initial default token balance: $BENEFICIARY_DEFAULT_INITIAL"
+BENEFICIARY_TOKEN_INITIAL=$(cast balance --erc20 $DEFAULT_TOKEN $BENEFICIARY)
+echo "Beneficiary initial token balance: $BENEFICIARY_TOKEN_INITIAL"
 
 # Step 1: Create a new token
 echo "Creating new fee token..."
@@ -49,19 +49,10 @@ CREATE_TX=$(cast send $TIP20_FACTORY "createToken(string,string,string,address)"
 sleep 2
 
 # Get the token creation event to find the new token address
-CREATE_RECEIPT=$(echo "$CREATE_TX" | jq -r '.transactionHash' | xargs -I {} cast receipt {})
-# Extract TokenCreated event - it should be the first log
+CREATE_RECEIPT=$(cast receipt $(echo "$CREATE_TX" | jq -r '.transactionHash'))
+# Extract TokenCreated event - the token address is in the first topic (after event signature)
 TOKEN_CREATED_LOG=$(echo "$CREATE_RECEIPT" | jq -r '.logs[0]')
-# The token address can be computed from tokenId, but let's extract it from the event
-# For now, let's get the tokenId and compute the address
-TOKEN_ID_HEX=$(echo "$TOKEN_CREATED_LOG" | jq -r '.topics[2]')
-TOKEN_ID_DECIMAL=$(cast to-dec $TOKEN_ID_HEX)
-echo "Created token with ID: $TOKEN_ID_DECIMAL"
-
-# Calculate the token address using the same logic as the contract
-# token_address = keccak256(abi.encode(token_id))[12:]
-TOKEN_ADDR_HASH=$(cast keccak $(cast abi-encode "f(uint256)" $TOKEN_ID_DECIMAL))
-export NEW_TOKEN_ADDR="0x$(echo $TOKEN_ADDR_HASH | cut -c27-66)"
+export NEW_TOKEN_ADDR=$(echo "$TOKEN_CREATED_LOG" | jq -r '.topics[1]' | sed 's/0x000000000000000000000000/0x/')
 echo "New token address: $NEW_TOKEN_ADDR"
 
 # Mint some tokens to the user (need ISSUER_ROLE)
