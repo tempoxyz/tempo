@@ -36,12 +36,12 @@ SIGNER_INITIAL_NONCE=$(cast nonce $SIGNER_ADDR)
 SIGNER_INITIAL_CODE=$(cast code $SIGNER_ADDR)
 
 if [ "$SIGNER_INITIAL_NONCE" != "0" ]; then
-  echo "ERROR: Expected signer nonce 0, got: $SIGNER_INITIAL_NONCE"
+  echo "ERROR: Signer nonce incorrect. Expected 0, got $SIGNER_INITIAL_NONCE"
   exit 1
 fi
 
 if [ "$SIGNER_INITIAL_CODE" != "0x" ]; then
-  echo "ERROR: Expected signer empty code (0x), got: $SIGNER_INITIAL_CODE"
+  echo "ERROR: Signer code incorrect. Expected 0x, got $SIGNER_INITIAL_CODE"
   exit 1
 fi
 
@@ -57,7 +57,7 @@ SIGNER_NONCE=$(cast nonce $SIGNER_ADDR)
 SIGNER_CODE=$(cast code $SIGNER_ADDR)
 
 if [ "$SIGNER_NONCE" != "0" ]; then
-  echo "ERROR: Expected signer nonce 0, got: $SIGNER_NONCE"
+  echo "ERROR: Signer nonce incorrect. Expected 0, got $SIGNER_NONCE"
   exit 1
 fi
 
