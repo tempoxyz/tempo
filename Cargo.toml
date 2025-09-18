@@ -25,7 +25,6 @@ members = [
   "crates/primitives",
   "crates/contracts",
   "crates/reth-malachite",
-  "crates/sequential-futures-queue",
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
