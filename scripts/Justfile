@@ -45,3 +45,10 @@ registrar-delegation:
 	#!/bin/bash
 	./registrar-delegation.sh
 
+create-tip20-token:
+	#!/bin/bash
+	./create-tip20-token.sh
+
+fee-amm:
+	#!/bin/bash
+	./fee-amm.sh

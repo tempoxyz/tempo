@@ -47,9 +47,9 @@ echo "Token creation transaction: $(echo "$CREATE_TX" | jq -r '.transactionHash'
 CREATE_RECEIPT=$(cast receipt $(echo "$CREATE_TX" | jq -r '.transactionHash'))
 echo "Token creation receipt obtained"
 
-# Extract TokenCreated event
-TOKEN_CREATED_LOG=$(echo "$CREATE_RECEIPT" | jq -r '.logs[0]')
-export NEW_TOKEN_ADDR=$(echo "$TOKEN_CREATED_LOG" | jq -r '.topics[1]' | sed 's/0x000000000000000000000000/0x/')
+# Get the TokenCreated event and decode it properly
+TX_HASH=$(echo "$CREATE_TX" | jq -r '.transactionHash')
+export NEW_TOKEN_ADDR=$(cast logs --from-block latest --address $TIP20_FACTORY 'TokenCreated(address indexed token, uint256 indexed id)' | cast decode-log 'TokenCreated(address indexed token, uint256 indexed id)' | head -1 | awk '{print $1}')
 echo "New token address: $NEW_TOKEN_ADDR"
 
 # Grant issuer role to sender for minting tokens

@@ -48,11 +48,9 @@ echo "Creating new fee token..."
 CREATE_TX=$(cast send $TIP20_FACTORY "createToken(string,string,string,address)" "TestFeeToken" "TFT" "USD" $USER_ADDR --private-key $USER_PK --json)
 sleep 2
 
-# Get the token creation event to find the new token address
-CREATE_RECEIPT=$(cast receipt $(echo "$CREATE_TX" | jq -r '.transactionHash'))
-# Extract TokenCreated event - the token address is in the first topic (after event signature)
-TOKEN_CREATED_LOG=$(echo "$CREATE_RECEIPT" | jq -r '.logs[0]')
-export NEW_TOKEN_ADDR=$(echo "$TOKEN_CREATED_LOG" | jq -r '.topics[1]' | sed 's/0x000000000000000000000000/0x/')
+# Get the TokenCreated event and decode it properly
+TX_HASH=$(echo "$CREATE_TX" | jq -r '.transactionHash')
+export NEW_TOKEN_ADDR=$(cast logs --from-block latest --address $TIP20_FACTORY 'TokenCreated(address indexed token, uint256 indexed id)' | cast decode-log 'TokenCreated(address indexed token, uint256 indexed id)' | head -1 | awk '{print $1}')
 echo "New token address: $NEW_TOKEN_ADDR"
 
 # Grant issuer role to user for minting tokens
