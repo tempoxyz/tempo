@@ -9,10 +9,10 @@ use alloy::{
 use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use dashmap::DashMap;
+use eyre::Context;
 use futures::{StreamExt, stream::FuturesUnordered};
 use rayon::prelude::*;
 use std::{sync::Arc, time::Instant};
-use eyre::Context;
 use tempo_precompiles::contracts::ITIP20;
 use thousands::Separable;
 
@@ -55,7 +55,8 @@ impl TxGenerator {
                     .build()
                     .map_err(|e| eyre::eyre!("invalid mnemonic provided: {}", e))
             })
-            .collect::<eyre::Result<Signers>>().wrap_err("failed to initialize the signers")?;
+            .collect::<eyre::Result<Signers>>()
+            .wrap_err("failed to initialize the signers")?;
 
         let duration = start.elapsed();
         println!(

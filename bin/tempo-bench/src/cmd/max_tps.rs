@@ -5,8 +5,8 @@ use crate::crescendo::{
     utils, workers,
 };
 use clap::Parser;
-use std::{future::pending, path::PathBuf, sync::Arc, thread, time::Duration};
 use eyre::WrapErr;
+use std::{future::pending, path::PathBuf, sync::Arc, thread, time::Duration};
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -43,7 +43,9 @@ impl TPSArgs {
                 .ok_or_else(|| eyre::eyre!("No core available for main runtime"))?,
         );
 
-        let tx_generator = TxGenerator::new().await.wrap_err("failed to construct transaction generator")?;
+        let tx_generator = TxGenerator::new()
+            .await
+            .wrap_err("failed to construct transaction generator")?;
 
         // Given our desired breakdown of workers, translate this into actual numbers of workers to spawn.
         let (workers, worker_counts) = workers::assign_workers(
