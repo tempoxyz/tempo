@@ -732,9 +732,6 @@ mod tests {
 
         // Call collect_fee_post_tx directly
         let result = fee_manager.collect_fee_post_tx(user, actual_used, refund_amount, token);
-        if let Err(e) = &result {
-            println!("Error: {:?}", e);
-        }
         assert!(result.is_ok());
 
         // Verify user got the refund
