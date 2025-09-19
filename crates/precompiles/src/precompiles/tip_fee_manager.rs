@@ -53,6 +53,7 @@ mod tests {
         contracts::{
             HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
             tip_fee_manager::amm::PoolKey,
+            token_id_to_address,
             types::{IFeeManager, ITIP20, ITIPFeeAMM},
         },
         fee_manager_err,
@@ -107,7 +108,7 @@ mod tests {
         let mut fee_manager =
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
         let validator = Address::random();
-        let token = Address::random();
+        let token = token_id_to_address(rand::random::<u64>());
 
         let calldata = IFeeManager::setValidatorTokenCall { token }.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &validator)?;
@@ -146,7 +147,7 @@ mod tests {
         let mut fee_manager =
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
         let user = Address::random();
-        let token = Address::random();
+        let token = token_id_to_address(rand::random::<u64>());
 
         let calldata = IFeeManager::setUserTokenCall { token }.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &user)?;

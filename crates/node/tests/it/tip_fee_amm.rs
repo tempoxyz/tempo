@@ -318,7 +318,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     // Check total supply and individual LP balances
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
-    let expected_initial_liquidity = (liquidity + liquidity) / U256::from(2) - MIN_LIQUIDITY;
+    let expected_initial_liquidity = (liquidity * liquidity) / U256::from(2) - MIN_LIQUIDITY;
     assert_eq!(total_supply, expected_initial_liquidity + MIN_LIQUIDITY);
 
     let user_lp_balance = fee_amm
