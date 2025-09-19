@@ -442,9 +442,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
         .await?;
     assert!(mint_receipt.status());
 
-    // Calculate expected liquidity (sqrt(amount0 * amount1) - MIN_LIQUIDITY)
-    // Since amounts are equal, sqrt(amount0 * amount1) = amount0 = amount1
-    // But we use the formula: (amount0 * amount1) / sqrt(2) - MIN_LIQUIDITY
+    // Calculate expected liquidity: (amount0 * amount1) / 2 - MIN_LIQUIDITY
     let expected_liquidity = (amount0 * amount1) / uint!(2_U256) - MIN_LIQUIDITY;
 
     // Check liquidity minted
@@ -560,29 +558,15 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     let user_balance0_after = user_token.balanceOf(alice).call().await?;
     let user_balance1_after = validator_token.balanceOf(alice).call().await?;
 
-    assert!(
-        user_balance0_after > user_balance0_before,
-        "Should receive userToken"
+    assert_eq!(
+        user_balance0_after,
+        user_balance0_before + expected_amount0,
+        "Should receive exact expected userToken amount"
     );
-    assert!(
-        user_balance1_after > user_balance1_before,
-        "Should receive validatorToken"
-    );
-
-    // Verify amounts match expectations (within small rounding tolerance)
-    let received0 = user_balance0_after - user_balance0_before;
-    let received1 = user_balance1_after - user_balance1_before;
-
-    // Allow for small rounding differences
-    assert!(
-        received0 >= expected_amount0 - U256::from(1)
-            && received0 <= expected_amount0 + U256::from(1),
-        "Received amount0 should be approximately half of deposited amount"
-    );
-    assert!(
-        received1 >= expected_amount1 - U256::from(1)
-            && received1 <= expected_amount1 + U256::from(1),
-        "Received amount1 should be approximately half of deposited amount"
+    assert_eq!(
+        user_balance1_after,
+        user_balance1_before + expected_amount1,
+        "Should receive exact expected validatorToken amount"
     );
 
     // Verify LP balance reduced
