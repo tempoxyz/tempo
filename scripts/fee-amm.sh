@@ -63,7 +63,7 @@ sleep 2
 
 # Mint tokens to the user
 echo "Minting new tokens to user..."
-MINT_AMOUNT="1000000000000000000000000" # 1M tokens for liquidity
+MINT_AMOUNT="5000000000000000000000"
 cast send $NEW_TOKEN_ADDR "mint(address,uint256)" $USER_ADDR $MINT_AMOUNT --private-key $USER_PK
 sleep 2
 
