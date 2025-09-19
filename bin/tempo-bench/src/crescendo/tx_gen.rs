@@ -12,6 +12,7 @@ use dashmap::DashMap;
 use futures::{StreamExt, stream::FuturesUnordered};
 use rayon::prelude::*;
 use std::{sync::Arc, time::Instant};
+use eyre::Context;
 use tempo_precompiles::contracts::ITIP20;
 use thousands::Separable;
 
@@ -50,11 +51,11 @@ impl TxGenerator {
                 MnemonicBuilder::<English>::default()
                     .phrase(&config.mnemonic)
                     .index(i)
-                    .unwrap()
+                    .expect("index should always be valid in this range")
                     .build()
-                    .unwrap()
+                    .map_err(|e| eyre::eyre!("invalid mnemonic provided: {}", e))
             })
-            .collect();
+            .collect::<eyre::Result<Signers>>().wrap_err("failed to initialize the signers")?;
 
         let duration = start.elapsed();
         println!(
@@ -68,15 +69,16 @@ impl TxGenerator {
 
     async fn get_nonces(addresses: &Signers) -> eyre::Result<Nonces> {
         let network_config = &config::get().network_worker;
+        let target_url = &network_config.target_urls[0];
         let client = ClientBuilder::default().http(
-            network_config.target_urls[0]
+            target_url
                 .parse()
-                .map_err(|e| eyre::eyre!("Invalid RPC URL: {}", e))?,
+                .wrap_err_with(|| format!("invalid RPC URL: {}", target_url))?,
         );
 
         let nonces: Nonces = DashMap::new();
         for chunk in addresses.chunks(network_config.max_concurrent_setup_requests) {
-            let mut nonce_futures: FuturesUnordered<_> = chunk
+            let mut nonce_futures = chunk
                 .iter()
                 .map(|signer| {
                     let address = signer.address();
@@ -86,20 +88,16 @@ impl TxGenerator {
                             .request("eth_getTransactionCount", &(address, "latest"))
                             .map_resp(|resp: U128| resp.to::<u64>())
                             .await
-                            .map_err(|e| {
-                                eyre::eyre!(
-                                    "Failed to get transaction count for address {}: {}",
-                                    address,
-                                    e
-                                )
+                            .wrap_err_with(|| {
+                                format!("failed to get transaction count for {}", address)
                             })?;
                         Ok::<(Address, u64), eyre::Error>((address, nonce))
                     }
                 })
-                .collect();
+                .collect::<FuturesUnordered<_>>();
 
             while let Some(result) = nonce_futures.next().await {
-                let (address, nonce) = result?;
+                let (address, nonce) = result.wrap_err("failed to get nonce")?;
                 nonces.insert(address, nonce);
             }
         }
@@ -107,7 +105,7 @@ impl TxGenerator {
         Ok(nonces)
     }
 
-    pub fn spawn_worker(self: Arc<Self>, worker_id: u32, worker_count: usize) {
+    pub fn tx_gen_worker(self: Arc<Self>, worker_id: u32, worker_count: usize) {
         let config = &config::get().tx_gen_worker;
 
         let mut tx_batch = Vec::with_capacity(config.batch_size as usize);
