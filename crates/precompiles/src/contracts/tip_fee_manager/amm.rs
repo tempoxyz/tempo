@@ -758,7 +758,10 @@ mod tests {
         // Execute fee swap - should fail
         let result = amm.fee_swap(user_token, validator_token, too_large_amount);
 
-        assert!(matches!(result, Err(TIPFeeAMMError::InsufficientLiquidity(_))))
+        assert!(matches!(
+            result,
+            Err(TIPFeeAMMError::InsufficientLiquidity(_))
+        ))
     }
 
     /// Test fee swap rounding consistency
@@ -894,12 +897,28 @@ mod tests {
         let x_after = U256::from(pool.reserve_user_token);
         let y_after = U256::from(pool.reserve_validator_token);
         assert!(x_after < x_before, "User token reserve should decrease");
-        assert_eq!(y_after, y_before + swap_amount, "Validator token reserve should increase by swap amount");
-        assert_eq!(x_before - x_after, amount_out, "Amount out should equal decrease in user reserve");
+        assert_eq!(
+            y_after,
+            y_before + swap_amount,
+            "Validator token reserve should increase by swap amount"
+        );
+        assert_eq!(
+            x_before - x_after,
+            amount_out,
+            "Amount out should equal decrease in user reserve"
+        );
 
         // Verify the swap reduces imbalance
-        let imbalance_before = if x_before > y_before { x_before - y_before } else { y_before - x_before };
-        let imbalance_after = if x_after > y_after { x_after - y_after } else { y_after - x_after };
+        let imbalance_before = if x_before > y_before {
+            x_before - y_before
+        } else {
+            y_before - x_before
+        };
+        let imbalance_after = if x_after > y_after {
+            x_after - y_after
+        } else {
+            y_after - x_after
+        };
         assert!(
             imbalance_after < imbalance_before,
             "Swap should reduce imbalance"
@@ -938,8 +957,10 @@ mod tests {
 
         // The swap should fail when trying to rebalance an already balanced pool
         // This fails during calculate_new_reserve with InvalidNewReserves
-        assert!(matches!(result, Err(TIPFeeAMMError::InvalidNewReserves(_))),
-            "Rebalancing a balanced pool should fail with InvalidNewReserves");
+        assert!(
+            matches!(result, Err(TIPFeeAMMError::InvalidNewReserves(_))),
+            "Rebalancing a balanced pool should fail with InvalidNewReserves"
+        );
     }
 
     /// Test has_liquidity function
@@ -998,8 +1019,10 @@ mod tests {
         // When y is much larger than liquidity, calculate_new_reserve should fail
         let large_y = uint!(1_000_000_U256) * uint!(10_U256).pow(U256::from(6));
         let extreme_result = amm.calculate_new_reserve(large_y, l);
-        assert!(matches!(extreme_result, Err(TIPFeeAMMError::InvalidNewReserves(_))),
-            "Should fail with InvalidNewReserves for extreme values where y > l");
+        assert!(
+            matches!(extreme_result, Err(TIPFeeAMMError::InvalidNewReserves(_))),
+            "Should fail with InvalidNewReserves for extreme values where y > l"
+        );
 
         Ok(())
     }
