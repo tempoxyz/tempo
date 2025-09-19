@@ -553,7 +553,7 @@ async fn verify_block(
             // FIXME: is this error message correct?
             bail!(
                 "failed validating block because payload is still syncing, \
-                this means the parent block was available to the consensus
+                this means the parent block was available to the consensus \
                 layer but not the execution layer"
             )
         }

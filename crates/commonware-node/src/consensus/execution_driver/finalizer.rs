@@ -77,8 +77,8 @@ impl Finalizer {
             )?;
 
         ensure!(
-            payload_status.is_valid(),
-            "payload status of block-to-be-finalized not valid: \
+            payload_status.is_valid() || payload_status.is_syncing(),
+            "payload status of block-to-be-finalized was neither valid nor syncing: \
             `{payload_status}`"
         );
 
@@ -102,12 +102,16 @@ impl Finalizer {
             )?;
 
         ensure!(
-            fcu_response.is_valid(),
-            "payload status of forkchoice update response valid: `{}`",
+            fcu_response.is_valid() || fcu_response.is_syncing(),
+            "payload status of forkchoice update response was neither valid nor syncing: `{}`",
             fcu_response.payload_status,
         );
 
         // Acknowledge that the block was finalized.
+        //
+        // TODO(janis): try to understand what this means for the marshaller. If we
+        // don't send the response here the marshaller will stall finalizations to
+        // the application until it receives an ack.
         if let Err(()) = response.send(()) {
             warn!("tried acknowledging finalization but channel was already closed");
         }
