@@ -321,6 +321,10 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         amount_validator_token: U256,
         to: Address,
     ) -> Result<U256, TIPFeeAMMError> {
+        if user_token == validator_token {
+            return Err(TIPFeeAMMError::identical_addresses());
+        }
+
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(&pool_id);
         let total_supply = self.get_total_supply(&pool_id);
@@ -421,8 +425,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         liquidity: U256,
         to: Address,
     ) -> Result<(U256, U256), TIPFeeAMMError> {
-        let pool_id = self.get_pool_id(user_token, validator_token);
+        if user_token == validator_token {
+            return Err(TIPFeeAMMError::identical_addresses());
+        }
 
+        let pool_id = self.get_pool_id(user_token, validator_token);
         // Check user has sufficient liquidity
         let balance = self.get_balance_of(&pool_id, &msg_sender);
         if balance < liquidity {
@@ -629,5 +636,43 @@ impl<'a, S: StorageProvider> StorageOps for TIPFeeAMM<'a, S> {
         self.storage
             .sload(self.contract_address, slot)
             .expect("Storage operation failed")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::{HashMapStorageProvider, types::TIPFeeAMMError};
+
+    #[test]
+    fn test_mint_identical_addresses() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_address = Address::random();
+        let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
+
+        let msg_sender = Address::random();
+        let token = Address::random();
+        let amount = U256::from(1000);
+        let to = Address::random();
+
+        let result = amm.mint(msg_sender, token, token, amount, amount, to);
+
+        assert!(matches!(result, Err(TIPFeeAMMError::IdenticalAddresses(_))));
+    }
+
+    #[test]
+    fn test_burn_identical_addresses() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_address = Address::random();
+        let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
+
+        let msg_sender = Address::random();
+        let token = Address::random();
+        let liquidity = U256::from(1000);
+        let to = Address::random();
+
+        let result = amm.burn(msg_sender, token, token, liquidity, to);
+
+        assert!(matches!(result, Err(TIPFeeAMMError::IdenticalAddresses(_))));
     }
 }
