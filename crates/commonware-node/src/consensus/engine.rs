@@ -114,37 +114,35 @@ where
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
-        let (syncer, syncer_mailbox): (
-            _,
-            marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
-        ) = marshal::Actor::init(
-            self.context.with_label("sync"),
-            marshal::Config {
-                public_key: self.signer.public_key(),
-                identity: *self.polynomial.constant(),
-                coordinator: supervisor.clone(),
-                partition_prefix: self.partition_prefix.clone(),
-                mailbox_size: self.mailbox_size,
-                backfill_quota: self.backfill_quota,
-                view_retention_timeout: self
-                    .activity_timeout
-                    .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
-                namespace: crate::config::NAMESPACE.to_vec(),
-                prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
-                immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                freezer_table_initial_size: self.blocks_freezer_table_initial_size,
-                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
-                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
-                freezer_journal_buffer_pool: buffer_pool.clone(),
-                replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
-                codec_config: (),
-                max_repair: MAX_REPAIR,
-            },
-        )
-        .await;
+        let (syncer, syncer_mailbox): (_, marshal::Mailbox<BlsScheme, Block>) =
+            marshal::Actor::init(
+                self.context.with_label("sync"),
+                marshal::Config {
+                    public_key: self.signer.public_key(),
+                    identity: *self.polynomial.constant(),
+                    coordinator: supervisor.clone(),
+                    partition_prefix: self.partition_prefix.clone(),
+                    mailbox_size: self.mailbox_size,
+                    backfill_quota: self.backfill_quota,
+                    view_retention_timeout: self
+                        .activity_timeout
+                        .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
+                    namespace: crate::config::NAMESPACE.to_vec(),
+                    prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
+                    immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+                    freezer_table_initial_size: self.blocks_freezer_table_initial_size,
+                    freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                    freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+                    freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                    freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
+                    freezer_journal_buffer_pool: buffer_pool.clone(),
+                    replay_buffer: REPLAY_BUFFER,
+                    write_buffer: WRITE_BUFFER,
+                    codec_config: (),
+                    max_repair: MAX_REPAIR,
+                },
+            )
+            .await;
 
         let execution_driver = super::execution_driver::Builder {
             context: self.context.with_label("execution_driver"),
@@ -220,12 +218,12 @@ where
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block<tempo_primitives::Block>>,
-    broadcast_mailbox: buffered::Mailbox<PublicKey, Block<tempo_primitives::Block>>,
+    broadcast: buffered::Engine<TContext, PublicKey, Block>,
+    broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
     execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
-    execution_driver_mailbox: crate::consensus::execution_driver::Mailbox<tempo_primitives::Block>,
+    execution_driver_mailbox: crate::consensus::execution_driver::Mailbox,
 
     /// Responsible for syncing(?) messages from/to other nodes.
     // FIXME: This is a complex beast, interacting with very many parts of the system. At
@@ -235,8 +233,7 @@ where
     // its peers...
     //
     // Alto calls this `marshal`, we opt to call it `syncer` which seems marginally more expressive.
-    syncer:
-        marshal::Actor<Block<tempo_primitives::Block>, TContext, BlsScheme, PublicKey, Supervisor>,
+    syncer: marshal::Actor<Block, TContext, BlsScheme, PublicKey, Supervisor>,
 
     consensus: crate::consensus::Consensus<TContext, TBlocker>,
 }

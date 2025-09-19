@@ -12,8 +12,6 @@ tempo-commonware-node-cryptography.workspace = true
 tempo-node.workspace = true
 tempo-primitives.workspace = true
 
-sequential-futures-queue.workspace = true
-
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true

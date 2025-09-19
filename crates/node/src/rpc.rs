@@ -4,7 +4,7 @@ pub use request::TempoTransactionRequest;
 
 use crate::node::TempoNode;
 use alloy::{consensus::TxReceipt, primitives::U256};
-use alloy_primitives::{Address, uint};
+use alloy_primitives::Address;
 use alloy_rpc_types_eth::ReceiptWithBloom;
 use reth_ethereum::tasks::{
     TaskSpawner,
@@ -38,8 +38,6 @@ use tempo_precompiles::contracts::{provider::TIPFeeDatabaseExt, tip_fee_manager:
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
-
-pub const U256_U64_MAX: U256 = uint!(18446744073709551615_U256);
 
 /// Tempo RPC types.
 #[derive(Debug, Clone, Copy, Default)]
@@ -242,7 +240,6 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         let adjusted_balance = fee_token
             .balance()
             .saturating_mul(USD_DECIMAL_FACTOR)
-            .min(U256_U64_MAX)
             .saturating_to::<u64>();
 
         Ok(adjusted_balance)

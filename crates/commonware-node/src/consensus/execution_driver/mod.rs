@@ -3,7 +3,6 @@
 use std::{sync::Arc, time::SystemTime};
 
 use alloy_primitives::{B64, B256};
-use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 
@@ -11,24 +10,22 @@ use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
 use futures_channel::{mpsc, oneshot};
 use futures_util::{
-    FutureExt as _, SinkExt as _, StreamExt as _, TryFutureExt,
-    future::{BoxFuture, Either, try_join},
+    SinkExt as _, StreamExt as _, TryFutureExt,
+    future::{Either, try_join},
 };
 use rand::{CryptoRng, Rng};
-use reth::{
-    payload::{EthPayloadBuilderAttributes, PayloadBuilderHandle},
-    rpc::types::Withdrawals,
-};
+use reth::{payload::EthPayloadBuilderAttributes, rpc::types::Withdrawals};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::BlockReader as _;
-use sequential_futures_queue::SequentialFuturesQueue;
 use tokio::sync::RwLock;
 use tracing::{Level, info, instrument};
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
+
+mod finalizer;
 
 use super::{View, block::Block};
 
@@ -45,7 +42,7 @@ pub struct Builder<TContext> {
 
     /// The syncer for subscribing to blocks distributed via the consensus
     /// p2p network.
-    pub syncer_mailbox: marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
+    pub syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
 
     /// A handle to the execution node to verify and create new payloads.
     pub execution_node: TempoFullNode,
@@ -66,6 +63,16 @@ where
             .map_err(Into::<eyre::Report>::into)
             .and_then(|maybe| maybe.ok_or_eyre("block reader returned empty genesis block"))
             .wrap_err("failed reading genesis block from execution node")?;
+
+        let finalizer = finalizer::Builder {
+            execution_node: self.execution_node.clone(),
+        }
+        .build();
+        let to_finalizer = finalizer.mailbox().clone();
+
+        self.context
+            .with_label("finalizer")
+            .spawn(move |_| finalizer.run());
         Ok(ExecutionDriver {
             context: self.context,
 
@@ -81,7 +88,7 @@ where
 
             execution_node: self.execution_node,
 
-            finalization_queue: SequentialFuturesQueue::new(),
+            to_finalizer,
         })
     }
 }
@@ -91,28 +98,24 @@ pub struct ExecutionDriver<TContext> {
 
     fee_recipient: alloy_primitives::Address,
 
-    from_consensus: mpsc::Receiver<Message<tempo_primitives::Block>>,
-    my_mailbox: Mailbox<tempo_primitives::Block>,
+    from_consensus: mpsc::Receiver<Message>,
+    my_mailbox: Mailbox,
 
-    syncer_mailbox: marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
+    syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
 
-    genesis_block: Arc<Block<tempo_primitives::Block>>,
-    latest_proposed_block: Arc<RwLock<Option<Block<tempo_primitives::Block>>>>,
+    genesis_block: Arc<Block>,
+    latest_proposed_block: Arc<RwLock<Option<Block>>>,
 
     execution_node: TempoFullNode,
 
-    /// A queue of finalizations, performed sequentially.
-    ///
-    /// Sequential finalization is critical so that an older forkchoice update
-    /// does not override a newer.
-    finalization_queue: SequentialFuturesQueue<BoxFuture<'static, eyre::Result<()>>>,
+    to_finalizer: finalizer::Mailbox,
 }
 
 impl<TContext> ExecutionDriver<TContext>
 where
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    pub(super) fn mailbox(&self) -> &Mailbox<tempo_primitives::Block> {
+    pub(super) fn mailbox(&self) -> &Mailbox {
         &self.my_mailbox
     }
 
@@ -122,17 +125,14 @@ where
                 // NOTE: biased because we prefer running finalizations above all else.
                 biased;
 
-                Some(_res) = self.finalization_queue.next() => {
-                    // TODO: decide what to do if finalizations fail.
-                    // Finalizations failing is pretty bad. Probably warrants
-                    // nuking the node since we can't go on.
-                    //
-                    // NOTE(return value): expected to be reported in the span
-                    // of the future.
-                }
-
                 Some(msg) = self.from_consensus.next() => {
-                    self.handle_message(msg);
+                    if let Err(error) =  self.handle_message(msg) {
+                        tracing::error_span!("handle message").in_scope(|| tracing::error!(
+                            %error,
+                            "critical error occurred while handling message; exiting"
+                        ));
+                        break;
+                    }
                 }
 
                 else => break,
@@ -144,14 +144,20 @@ where
         self.context.spawn_ref()(self.run())
     }
 
-    fn handle_message(&mut self, msg: Message<tempo_primitives::Block>) {
+    fn handle_message(&mut self, msg: Message) -> eyre::Result<()> {
         match msg {
             Message::Broadcast(broadcast) => self.handle_broadcast(broadcast),
-            Message::Finalized(finalized) => self.handle_finalized(*finalized),
+            Message::Finalized(finalized) => {
+                // XXX: being able to finalize is the only stop condition.
+                // There is no point continuing if this doesn't work.
+                self.handle_finalized(*finalized)
+                    .wrap_err("failed finalizing block")?;
+            }
             Message::Genesis(genesis) => _ = self.handle_genesis(genesis),
             Message::Propose(propose) => self.handle_propose(propose),
             Message::Verify(verify) => self.handle_verify(verify),
         }
+        Ok(())
     }
 
     fn handle_broadcast(&mut self, broadcast: Broadcast) {
@@ -167,8 +173,8 @@ where
             err(level = Level::ERROR))]
         async fn handle_broadcast(
             broadcast: Broadcast,
-            latest_proposed: Arc<RwLock<Option<Block<tempo_primitives::Block>>>>,
-            mut syncer: marshal::Mailbox<BlsScheme, Block<tempo_primitives::Block>>,
+            latest_proposed: Arc<RwLock<Option<Block>>>,
+            mut syncer: marshal::Mailbox<BlsScheme, Block>,
         ) -> eyre::Result<()> {
             let Some(latest_proposed) = latest_proposed.read().await.clone() else {
                 return Err(eyre!("there was no latest block to broadcast"));
@@ -186,9 +192,8 @@ where
     }
 
     /// Pushes a `finalized` request to the back of the finalization queue.
-    fn handle_finalized(&mut self, finalized: Finalized<tempo_primitives::Block>) {
-        self.finalization_queue
-            .push(self.finalize(finalized).boxed());
+    fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
+        self.to_finalizer.finalize(finalized)
     }
 
     #[instrument(
@@ -226,13 +231,13 @@ where
     // XXX: I wish this could have been implemented a bit more elegantly and
     // without the extra RunPropose indirection, but the requirement of feeding
     // in the context/system time when spawning makes this necessary.
-    fn propose(&self, propose: Propose) -> RunPropose<tempo_primitives::Block> {
+    fn propose(&self, propose: Propose) -> RunPropose {
         RunPropose {
             request: propose,
             fee_recipient: self.fee_recipient,
             genesis_block: self.genesis_block.clone(),
             latest_proposed_block: self.latest_proposed_block.clone(),
-            payload_builder: self.execution_node.payload_builder_handle.clone(),
+            execution_node: self.execution_node.clone(),
             syncer_mailbox: self.syncer_mailbox.clone(),
         }
     }
@@ -345,90 +350,19 @@ where
             Ok::<(), eyre::Report>(())
         }
     }
-
-    #[instrument(
-        skip_all,
-        fields(finalized_block.digest = %finalized.block.digest()),
-        err(level = Level::WARN),
-        ret,
-    )]
-    fn finalize(
-        &self,
-        finalized: Finalized<tempo_primitives::Block>,
-    ) -> impl Future<Output = eyre::Result<()>> + 'static {
-        let engine = self
-            .execution_node
-            .add_ons_handle
-            .beacon_engine_handle
-            .clone();
-        // XXX: This async block *must* be the last expression in this
-        // function so that `instrument` wraps the async block and not
-        // statements before it.
-        async move {
-            let Finalized { block } = finalized;
-
-            let block = block.clone().into_inner();
-            let hash = block.hash();
-            let payload_status = engine
-                .new_payload(TempoExecutionData(block))
-                .await
-                .wrap_err(
-                    "failed sending new-payload request to execution \
-                    engine to query payload status of finalized block",
-                )?;
-
-            // TODO: just die if this fails? This condition really should not
-            // happen because all finalized blocks up to this point are fed in
-            // through the syncer.
-            // If this happens regardless some invariant was violated and we
-            // have no way to recover.
-            ensure!(
-                payload_status.is_valid(),
-                "payload status of block-to-be-finalized not valid: \
-                `{payload_status}`"
-            );
-
-            let fcu_response = engine
-                .fork_choice_updated(
-                    ForkchoiceState {
-                        head_block_hash: hash,
-                        safe_block_hash: hash,
-                        finalized_block_hash: hash,
-                    },
-                    None,
-                    reth_node_builder::EngineApiMessageVersion::V3,
-                )
-                .await
-                .wrap_err(
-                    "failed running engine_forkchoiceUpdated to set the \
-                    finalized block hash",
-                )?;
-
-            ensure!(
-                fcu_response.is_valid(),
-                "payload status of forkchoice update response valid: `{}`",
-                fcu_response.payload_status,
-            );
-
-            Ok(())
-        }
-    }
 }
 
 /// Holds all objects to run a proposal via [`Self::given_timestamp`].
-struct RunPropose<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+struct RunPropose {
     request: Propose,
     fee_recipient: alloy_primitives::Address,
-    genesis_block: Arc<Block<TBlock>>,
-    latest_proposed_block: Arc<RwLock<Option<Block<TBlock>>>>,
-    payload_builder: PayloadBuilderHandle<TempoPayloadTypes>,
-    syncer_mailbox: marshal::Mailbox<BlsScheme, Block<TBlock>>,
+    genesis_block: Arc<Block>,
+    latest_proposed_block: Arc<RwLock<Option<Block>>>,
+    execution_node: TempoFullNode,
+    syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
 }
 
-impl RunPropose<tempo_primitives::Block> {
+impl RunPropose {
     #[instrument(
         name = "propose",
         skip_all,
@@ -445,7 +379,7 @@ impl RunPropose<tempo_primitives::Block> {
             fee_recipient,
             genesis_block,
             latest_proposed_block,
-            payload_builder,
+            execution_node,
             mut syncer_mailbox,
         } = self;
         let Propose {
@@ -480,7 +414,8 @@ impl RunPropose<tempo_primitives::Block> {
                 timestamp = parent.timestamp().saturating_add(1);
             }
 
-            let payload_id = payload_builder
+            let payload_id = execution_node
+                .payload_builder_handle
                 .send_new_payload(EthPayloadBuilderAttributes {
                     // XXX: payload builder attributes are caller defined, so the
                     // consensus `view` is a good place for it.
@@ -513,7 +448,8 @@ impl RunPropose<tempo_primitives::Block> {
             // before fetching the payload. Hard sleep is always iffy, but maybe that
             // is a viable alternative to force normal processing to stay within
             // proposal timings?
-            let payload = payload_builder
+            let payload = execution_node
+                .payload_builder_handle
                 .resolve_kind(payload_id, reth_node_builder::PayloadKind::WaitForPending)
                 .await
                 // XXX: this returns Option<Result<_, _>>; drilling into
@@ -579,8 +515,8 @@ impl RunPropose<tempo_primitives::Block> {
 )]
 async fn verify_block(
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
-    block: &Block<tempo_primitives::Block>,
-    parent: &Block<tempo_primitives::Block>,
+    block: &Block,
+    parent: &Block,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
     if block.parent_digest() != parent.digest() {
@@ -624,10 +560,7 @@ async fn verify_block(
     }
 }
 
-impl<TBlock> Automaton for Mailbox<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+impl Automaton for Mailbox {
     type Context = super::Context;
 
     type Digest = Digest;
@@ -694,10 +627,7 @@ where
     }
 }
 
-impl<TBlock> Relay for Mailbox<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+impl Relay for Mailbox {
     type Digest = Digest;
 
     async fn broadcast(&mut self, digest: Self::Digest) {
@@ -709,11 +639,8 @@ where
     }
 }
 
-impl<TBlock> Reporter for Mailbox<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
-    type Activity = Block<TBlock>;
+impl Reporter for Mailbox {
+    type Activity = Block;
 
     async fn report(&mut self, block: Self::Activity) {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
@@ -725,18 +652,12 @@ where
 }
 
 #[derive(Clone)]
-pub struct Mailbox<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
-    to_execution_driver: mpsc::Sender<Message<TBlock>>,
+pub struct Mailbox {
+    to_execution_driver: mpsc::Sender<Message>,
 }
 
-impl<TBlock> Mailbox<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
-    fn from_sender(to_execution_driver: mpsc::Sender<Message<TBlock>>) -> Self {
+impl Mailbox {
+    fn from_sender(to_execution_driver: mpsc::Sender<Message>) -> Self {
         Self {
             to_execution_driver,
         }
@@ -745,12 +666,9 @@ where
 
 /// Messages forwarded from consensus to execution driver.
 // TODO: add trace spans into all of these messages.
-enum Message<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+enum Message {
     Broadcast(Broadcast),
-    Finalized(Box<Finalized<TBlock>>),
+    Finalized(Box<Finalized>),
     Genesis(Genesis),
     Propose(Propose),
     Verify(Verify),
@@ -760,10 +678,7 @@ struct Genesis {
     response: oneshot::Sender<Digest>,
 }
 
-impl<TBlock> From<Genesis> for Message<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+impl From<Genesis> for Message {
     fn from(value: Genesis) -> Self {
         Self::Genesis(value)
     }
@@ -775,10 +690,7 @@ struct Propose {
     response: oneshot::Sender<Digest>,
 }
 
-impl<TBlock> From<Propose> for Message<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+impl From<Propose> for Message {
     fn from(value: Propose) -> Self {
         Self::Propose(value)
     }
@@ -788,10 +700,7 @@ struct Broadcast {
     payload: Digest,
 }
 
-impl<TBlock> From<Broadcast> for Message<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+impl From<Broadcast> for Message {
     fn from(value: Broadcast) -> Self {
         Self::Broadcast(value)
     }
@@ -804,27 +713,19 @@ struct Verify {
     response: oneshot::Sender<bool>,
 }
 
-impl<TBlock> From<Verify> for Message<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
+impl From<Verify> for Message {
     fn from(value: Verify) -> Self {
         Self::Verify(value)
     }
 }
 
-struct Finalized<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
-    block: Block<TBlock>,
+#[derive(Clone, Debug)]
+struct Finalized {
+    block: Block,
 }
 
-impl<TBlock> From<Finalized<TBlock>> for Message<TBlock>
-where
-    TBlock: reth_primitives_traits::Block + 'static,
-{
-    fn from(value: Finalized<TBlock>) -> Self {
+impl From<Finalized> for Message {
+    fn from(value: Finalized) -> Self {
         Self::Finalized(value.into())
     }
 }
