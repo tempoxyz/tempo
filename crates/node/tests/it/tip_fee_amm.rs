@@ -3,7 +3,6 @@ use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
-    sol_types::SolEvent,
 };
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
@@ -150,23 +149,7 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     let mut pending = vec![];
     pending.push(token_0.mint(caller, amount).send().await?);
     pending.push(token_1.mint(caller, amount).send().await?);
-    pending.push(
-        token_0
-            .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-            .send()
-            .await?,
-    );
-    pending.push(
-        token_1
-            .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-            .send()
-            .await?,
-    );
-
-    for tx in pending {
-        let receipt = tx.get_receipt().await?;
-        assert!(receipt.status());
-    }
+    await_receipts(&mut pending).await?;
 
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = pool_key.get_id();
