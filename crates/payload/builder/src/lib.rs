@@ -66,16 +66,22 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     /// Builds system transaction to TipFeeManager to seal the block.
     fn build_seal_block_tx(&self, block_env: &BlockEnv) -> Recovered<TempoTxEnvelope> {
+        let input = executeBlockCall
+            .abi_encode()
+            .into_iter()
+            .chain(block_env.number.to_be_bytes_vec())
+            .collect();
+
         Recovered::new_unchecked(
             TempoTxEnvelope::Legacy(Signed::new_unhashed(
                 TxLegacy {
                     chain_id: Some(self.provider.chain_spec().chain().id()),
-                    nonce: block_env.number.saturating_to(),
+                    nonce: 0,
                     gas_price: 0,
                     gas_limit: 0,
                     to: TIP_FEE_MANAGER_ADDRESS.into(),
                     value: U256::ZERO,
-                    input: executeBlockCall.abi_encode().into(),
+                    input,
                 },
                 TEMPO_SYSTEM_TX_SIGNATURE,
             )),
