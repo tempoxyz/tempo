@@ -255,9 +255,6 @@ sol! {
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function executeBlock() external;
 
-        // Fee tracking view functions
-        function collectedFees(address token) external view returns (uint256);
-
         // Events
         event UserTokenSet(address indexed user, address indexed token);
         event ValidatorTokenSet(address indexed validator, address indexed token);

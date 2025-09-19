@@ -8,10 +8,7 @@ use crate::{
         storage::{StorageOps, StorageProvider},
         tip_fee_manager::{
             amm::{PoolKey, TIPFeeAMM},
-            slots::{
-                collected_fees_slot, pending_fee_tokens_length_slot, pending_fee_tokens_slot,
-                user_token_slot, validator_token_slot,
-            },
+            slots::{collected_fees_slot, user_token_slot, validator_token_slot},
         },
         types::{FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
     },
@@ -311,9 +308,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })?;
 
             if user_token == validator_token {
-                let slot = collected_fees_slot();
-                let current_fees = self.sload(slot);
-                self.sstore(slot, current_fees + actual_used);
+                self.increment_collected_fees(actual_used);
             } else {
                 // Track the token to be swapped
                 let slot = slots::token_in_fees_array_slot(&user_token);
@@ -375,6 +370,8 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                         IFeeManager::InsufficientFeeTokenBalance {},
                     )
                 })?;
+
+            self.clear_collected_fees();
         }
 
         Ok(())
@@ -414,6 +411,19 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         self.sstore(length_slot, U256::ZERO);
 
         tokens
+    }
+
+    /// Increment collected fees for the validator token
+    fn increment_collected_fees(&mut self, amount: U256) {
+        let slot = collected_fees_slot();
+        let current_fees = self.sload(slot);
+        self.sstore(slot, current_fees + amount);
+    }
+
+    /// Clear collected fees
+    fn clear_collected_fees(&mut self) {
+        let slot = collected_fees_slot();
+        self.sstore(slot, U256::ZERO);
     }
 
     pub fn user_tokens(&mut self, call: IFeeManager::userTokensCall) -> Address {
@@ -573,7 +583,7 @@ mod tests {
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
-        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE},
+        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE, token_id_to_address},
     };
 
     fn setup_token_with_balance(
@@ -617,7 +627,7 @@ mod tests {
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
 
         let user = Address::random();
-        let token = Address::random();
+        let token = token_id_to_address(rand::random::<u64>());
 
         let call = IFeeManager::setUserTokenCall { token };
         let result = fee_manager.set_user_token(&user, call);
@@ -634,7 +644,7 @@ mod tests {
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
 
         let validator = Address::random();
-        let token = Address::random();
+        let token = token_id_to_address(rand::random::<u64>());
 
         let call = IFeeManager::setValidatorTokenCall { token };
         let result = fee_manager.set_validator_token(&validator, call);
@@ -650,7 +660,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
         let validator = Address::random();
-        let token = Address::random();
+        let token = token_id_to_address(rand::random::<u64>());
         let max_amount = U256::from(10000);
 
         // Setup token with balance and approval
@@ -670,7 +680,7 @@ mod tests {
             .unwrap();
 
         // Call collect_fee_pre_tx directly
-        let result = fee_manager.collect_fee_pre_tx(user, max_amount, validator);
+        let result = fee_manager.collect_fee_pre_tx(user, validator, max_amount);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), token);
     }
@@ -679,7 +689,7 @@ mod tests {
     fn test_collect_fee_post_tx() {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
-        let token = Address::random();
+        let token = token_id_to_address(rand::random::<u64>());
         let actual_used = U256::from(6000);
         let refund_amount = U256::from(4000);
 
@@ -723,7 +733,7 @@ mod tests {
         }
 
         // Verify fees were tracked
-        let fees_slot = collected_fees_slot(&token);
+        let fees_slot = collected_fees_slot();
         let tracked_amount = storage.sload(TIP_FEE_MANAGER_ADDRESS, fees_slot).unwrap();
         assert_eq!(tracked_amount, actual_used);
     }

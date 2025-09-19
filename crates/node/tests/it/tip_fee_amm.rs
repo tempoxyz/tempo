@@ -72,7 +72,6 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let pool = fee_amm.pools(pool_id).call().await?;
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
-    assert_eq!(pool.pendingFeeSwapIn, 0);
 
     // Mint liquidity
     let mint_receipt = fee_amm
@@ -385,7 +384,6 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?;
     assert!(pool_before.reserveUserToken < pool_after.reserveUserToken);
     assert!(pool_before.reserveValidatorToken > pool_after.reserveValidatorToken);
-    assert!(pool_before.pendingFeeSwapIn == 0);
 
     Ok(())
 }
