@@ -226,13 +226,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             let pool_key = PoolKey::new(user_token, validator_token);
             let pool_id = pool_key.get_id();
 
-            // Check if pool exists
-            if !amm.pool_exists(&pool_id) {
-                return Err(IFeeManager::IFeeManagerErrors::PoolDoesNotExist(
-                    IFeeManager::PoolDoesNotExist {},
-                ));
-            }
-
             // Check pool reserves for sufficient liquidity
             // TODO: also check pending liq/effective reserves
             let pool = amm.get_pool(&pool_id);
@@ -478,12 +471,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         amm.get_pool(&call.poolId).into()
     }
 
-    /// Checks if a pool exists
-    pub fn pool_exists(&mut self, call: ITIPFeeAMM::poolExistsCall) -> bool {
-        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.pool_exists(&call.poolId)
-    }
-
     /// Mint liquidity tokens
     pub fn mint(
         &mut self,
@@ -531,27 +518,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> U256 {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.get_balance_of(&call.poolId, &call.user)
-    }
-
-    /// Creates a new liquidity pool. Calls inner [`TIPFeeAMM::create_pool`] to initialize storage
-    /// pool related variables.
-    pub fn create_pool(
-        &mut self,
-        call: ITIPFeeAMM::createPoolCall,
-    ) -> Result<(), ITIPFeeAMM::ITIPFeeAMMErrors> {
-        // Delegate to TIPFeeAMM using the SAME contract address and storage
-        // This works because FeeManager "is" a TIPFeeAMM at the storage level
-        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.create_pool(call.userToken, call.validatorToken)?;
-
-        // Initialize fee tracking for the pool tokens
-        let user_token_slot = collected_fees_slot(&call.userToken);
-        let validator_token_slot = collected_fees_slot(&call.validatorToken);
-        let fee_info_value = U256::from(1u128) << 128;
-        self.sstore(user_token_slot, fee_info_value);
-        self.sstore(validator_token_slot, fee_info_value);
-
-        Ok(())
     }
 
     pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> alloy::primitives::B256 {
@@ -643,28 +609,6 @@ mod tests {
                 },
             )
             .unwrap();
-    }
-
-    #[test]
-    fn test_create_pool() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut fee_manager =
-            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
-
-        let token_a = Address::random();
-        let token_b = Address::random();
-        let call = ITIPFeeAMM::createPoolCall {
-            userToken: token_a,
-            validatorToken: token_b,
-        };
-
-        let result = fee_manager.create_pool(call);
-        assert!(result.is_ok());
-
-        let pool_key = PoolKey::new(token_a, token_b);
-        let pool_id = pool_key.get_id();
-        let exists_call = ITIPFeeAMM::poolExistsCall { poolId: pool_id };
-        assert!(fee_manager.pool_exists(exists_call));
     }
 
     #[test]

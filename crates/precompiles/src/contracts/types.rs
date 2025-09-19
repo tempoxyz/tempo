@@ -176,11 +176,9 @@ sol! {
         }
 
         // Pool Management
-        function createPool(address userToken, address validatorToken) external;
         function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
         function getPool(address userToken, address validatorToken) external view returns (Pool memory);
         function pools(bytes32 poolId) external view returns (Pool memory);
-        function poolExists(bytes32 poolId) external view returns (bool);
 
         // Liquidity Operations
         function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
@@ -195,7 +193,6 @@ sol! {
         function calculateLiquidity(uint256 x, uint256 y) external pure returns (uint256);
 
         // Events
-        event PoolCreated(address indexed userToken, address indexed validatorToken);
         event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
         event Burn(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity, address to);
         event RebalanceSwap(address indexed userToken, address indexed validatorToken, address indexed swapper, uint256 amountIn, uint256 amountOut);
