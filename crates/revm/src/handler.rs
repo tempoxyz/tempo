@@ -160,7 +160,7 @@ where
 
             // Call the precompile function to collect the fee
             fee_manager
-                .collect_fee_pre_tx(tx.caller(), gas_balance_spending, beneficiary)
+                .collect_fee_pre_tx(tx.caller(), beneficiary, gas_balance_spending)
                 .map_err(|_| InvalidTransaction::LackOfFundForMaxFee {
                     fee: Box::new(max_balance_spending),
                     balance: Box::new(account_balance),
@@ -199,11 +199,12 @@ where
         let mut fee_manager =
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
 
-        // Call collectFeePostTx (handles both refund and fee queuing)
-        fee_manager
-            .collect_fee_post_tx(caller, actual_used, refund_amount, self.fee_token)
-            .map_err(|_| EVMError::Custom("Failed to collect post-tx fee".to_string()))?;
-
+        if !actual_used.is_zero() || !refund_amount.is_zero() {
+            // Call collectFeePostTx (handles both refund and fee queuing)
+            fee_manager
+                .collect_fee_post_tx(caller, actual_used, refund_amount, self.fee_token)
+                .map_err(|_| EVMError::Custom("Failed to collect post-tx fee".to_string()))?;
+        }
         Ok(())
     }
 

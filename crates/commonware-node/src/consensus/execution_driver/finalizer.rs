@@ -5,7 +5,7 @@ use eyre::{WrapErr as _, ensure};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::StreamExt as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, instrument};
+use tracing::{Level, instrument, warn};
 
 pub(super) struct Builder {
     pub(super) execution_node: TempoFullNode,
@@ -61,7 +61,7 @@ impl Finalizer {
         ret,
     )]
     async fn finalize(&self, finalized: super::Finalized) -> eyre::Result<()> {
-        let super::Finalized { block } = finalized;
+        let super::Finalized { block, response } = finalized;
 
         let block = block.clone().into_inner();
         let hash = block.hash();
@@ -107,6 +107,11 @@ impl Finalizer {
             fcu_response.payload_status,
         );
 
+        // Acknowledge that the block was finalized.
+        if let Err(()) = response.send(()) {
+            warn!("tried acknowledging finalization but channel was already closed");
+        }
+
         Ok(())
     }
 }
@@ -124,7 +129,7 @@ impl Mailbox {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum Message {
     Finalize(Box<super::Finalized>),
 }

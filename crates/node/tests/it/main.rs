@@ -6,6 +6,7 @@ mod tip20;
 mod tip20_factory;
 mod tip20_gas_fees;
 mod tip_fee_amm;
+mod tip_fee_manager;
 mod utils;
 
 use tempo_node as _;

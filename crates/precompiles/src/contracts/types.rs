@@ -162,12 +162,10 @@ sol! {
     #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
     interface ITIPFeeAMM {
-
         // Structs
         struct Pool {
             uint128 reserveUserToken;
             uint128 reserveValidatorToken;
-            uint128 pendingFeeSwapIn;
         }
 
         struct PoolKey {
@@ -176,11 +174,9 @@ sol! {
         }
 
         // Pool Management
-        function createPool(address userToken, address validatorToken) external;
         function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
         function getPool(address userToken, address validatorToken) external view returns (Pool memory);
         function pools(bytes32 poolId) external view returns (Pool memory);
-        function poolExists(bytes32 poolId) external view returns (bool);
 
         // Liquidity Operations
         function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
@@ -190,10 +186,16 @@ sol! {
         function totalSupply(bytes32 poolId) external view returns (uint256);
         function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
 
+        // TODO: has liquidity
+
+        // Swapping
+        function rebalanceSwap(address userToken, address validatorToken, uint256 amountIn, address to) external returns (uint256 amountOut);
+        function calculateLiquidity(uint256 x, uint256 y) external pure returns (uint256);
+
         // Events
-        event PoolCreated(address indexed userToken, address indexed validatorToken);
         event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
         event Burn(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity, address to);
+        event RebalanceSwap(address indexed userToken, address indexed validatorToken, address indexed swapper, uint256 amountIn, uint256 amountOut);
 
         // Errors
         error IdenticalAddresses();
@@ -202,11 +204,21 @@ sol! {
         error PoolDoesNotExist();
         error InvalidToken();
         error InsufficientLiquidity();
+        error OnlyProtocol();
         error InsufficientPoolBalance();
         error InsufficientReserves();
         error InsufficientLiquidityBalance();
         error MustDepositLowerBalanceToken();
         error InvalidAmount();
+        error InvalidRebalanceState();
+        error InvalidRebalanceDirection();
+        error InvalidNewReserves();
+        error CannotSupportPendingSwaps();
+        error DivisionByZero();
+        error InvalidSwapCalculation();
+        error InsufficientLiquidityForPending();
+        error TokenTransferFailed();
+        error InternalError();
     }
 
 
@@ -245,12 +257,6 @@ sol! {
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function executeBlock() external;
 
-        // Fee tracking view functions
-        function collectedFees(address token) external view returns (uint256);
-        function getTokensWithFeesLength() external view returns (uint256);
-        function getTokenWithFees(uint256 index) external view returns (address);
-        function tokenInFeesArray(address token) external view returns (bool);
-
         // Events
         event UserTokenSet(address indexed user, address indexed token);
         event ValidatorTokenSet(address indexed validator, address indexed token);
@@ -260,8 +266,9 @@ sol! {
         error OnlySystemContract();
         error InvalidToken();
         error PoolDoesNotExist();
-        error InsufficientPoolBalance();
+        error InsufficientLiquidity();
         error InsufficientFeeTokenBalance();
+        error InternalError();
     }
 }
 

@@ -172,7 +172,6 @@ where
                 reporter: syncer_mailbox,
                 supervisor,
                 partition: format!("{}-consensus", self.partition_prefix),
-                compression: None,
                 mailbox_size: self.mailbox_size,
                 leader_timeout: self.leader_timeout,
                 notarization_timeout: self.notarization_timeout,
