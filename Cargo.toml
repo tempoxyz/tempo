@@ -183,14 +183,14 @@ alloy-signer-local = "1.0.30"
 alloy-trie = "0.9.1"
 arbitrary = { version = "1.3", features = ["derive"] }
 
-commonware-broadcast = "0.0.58"
-commonware-codec = "0.0.58"
-commonware-consensus = "0.0.58"
-commonware-cryptography = "0.0.58"
-commonware-p2p = "0.0.58"
-commonware-resolver = "0.0.58"
-commonware-runtime = "0.0.58"
-commonware-utils = "0.0.58"
+commonware-broadcast = "0.0.62"
+commonware-codec = "0.0.62"
+commonware-consensus = "0.0.62"
+commonware-cryptography = "0.0.62"
+commonware-p2p = "0.0.62"
+commonware-resolver = "0.0.62"
+commonware-runtime = "0.0.62"
+commonware-utils = "0.0.62"
 
 malachitebft-app = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app" }
 malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app-channel" }
