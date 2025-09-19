@@ -589,11 +589,11 @@ pub fn sqrt(x: U256) -> U256 {
     if x == U256::ZERO {
         return U256::ZERO;
     }
-    let mut z = (x + U256::from(1)) / U256::from(2);
+    let mut z = (x + U256::ONE) / uint!(2_U256);
     let mut y = x;
     while z < y {
         y = z;
-        z = (x / z + z) / U256::from(2);
+        z = (x / z + z) / uint!(2_U256);
     }
     y
 }
