@@ -7,13 +7,10 @@ use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::ITIPFeeAMM};
 
 const RPC: &str = "https://eng:zealous-mayer@rpc-adagietto.tempoxyz.dev ";
 
-/// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
 pub struct Args {
     #[arg(short, long, default_value = RPC)]
     rpc_url: String,
-
-    /// Mnemonic to use for transaction submission
     #[arg(
         short,
         long,

@@ -516,7 +516,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         &mut self,
         user_token: Address,
         validator_token: Address,
-    ) -> U256 {
+    ) -> Result<U256, TIPFeeAMMError> {
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(&pool_id);
 
@@ -544,7 +544,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             )
             .map_err(|_| TIPFeeAMMError::internal_error())?;
 
-        pending_out
+        Ok(pending_out)
     }
 
     /// Set pool data in storage

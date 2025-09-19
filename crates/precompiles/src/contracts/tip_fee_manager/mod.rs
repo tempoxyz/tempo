@@ -331,7 +331,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 let pool = fee_amm.get_pool(&pool_id);
 
                 if pool.reserve_user_token > 0 || pool.reserve_validator_token > 0 {
-                    collected_fees += fee_amm.execute_pending_fee_swaps(*token, validator_token);
+                    collected_fees += fee_amm
+                        .execute_pending_fee_swaps(*token, validator_token)
+                        .expect("TODO: Good error handling");
                 }
             }
         }
