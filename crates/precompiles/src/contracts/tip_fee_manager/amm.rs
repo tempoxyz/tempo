@@ -698,7 +698,7 @@ mod tests {
     /// Test basic fee swap functionality
     /// Corresponds to testFeeSwap in StableAMM.t.sol
     #[test]
-    fn test_fee_swap() {
+    fn test_fee_swap() -> Result<(), TIPFeeAMMError> {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup pool with 100,000 tokens each
@@ -718,8 +718,7 @@ mod tests {
         let expected_out = (amount_in * M) / SCALE;
 
         // Execute fee swap
-        let result = amm.fee_swap(user_token, validator_token, amount_in);
-        assert!(result.is_ok(), "Fee swap should succeed");
+        amm.fee_swap(user_token, validator_token, amount_in)?;
 
         // Check pending swaps updated
         let pending_in = amm.get_pending_fee_swap_in(&pool_id);
@@ -733,6 +732,8 @@ mod tests {
             expected_out,
             amount_in * uint!(9975_U256) / uint!(10000_U256)
         );
+
+        Ok(())
     }
 
     /// Test fee swap with insufficient liquidity
@@ -763,7 +764,7 @@ mod tests {
     /// Test fee swap rounding consistency
     /// Corresponds to testFeeSwapRoundingConsistency in StableAMM.t.sol
     #[test]
-    fn test_fee_swap_rounding_consistency() {
+    fn test_fee_swap_rounding_consistency() -> Result<(), TIPFeeAMMError> {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup pool with 100,000 tokens each
@@ -780,8 +781,7 @@ mod tests {
         let amount_in = uint!(10000_U256) * uint!(10_U256).pow(U256::from(6));
 
         // Execute fee swap
-        let result = amm.fee_swap(user_token, validator_token, amount_in);
-        assert!(result.is_ok());
+        amm.fee_swap(user_token, validator_token, amount_in)?;
 
         // Calculate expected output using integer division (rounds down)
         let expected_out = (amount_in * M) / SCALE;
@@ -802,11 +802,13 @@ mod tests {
             liquidity_amount - actual_out,
             "Validator token reserve should decrease by output"
         );
+
+        Ok(())
     }
 
     /// Test execute pending fee swaps
     #[test]
-    fn test_execute_pending_fee_swaps() {
+    fn test_execute_pending_fee_swaps() -> Result<(), TIPFeeAMMError> {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup pool
@@ -824,9 +826,9 @@ mod tests {
         let swap2 = uint!(2000_U256) * uint!(10_U256).pow(U256::from(6));
         let swap3 = uint!(3000_U256) * uint!(10_U256).pow(U256::from(6));
 
-        assert!(amm.fee_swap(user_token, validator_token, swap1).is_ok());
-        assert!(amm.fee_swap(user_token, validator_token, swap2).is_ok());
-        assert!(amm.fee_swap(user_token, validator_token, swap3).is_ok());
+        amm.fee_swap(user_token, validator_token, swap1)?;
+        amm.fee_swap(user_token, validator_token, swap2)?;
+        amm.fee_swap(user_token, validator_token, swap3)?;
 
         // Check total pending
         let total_pending = swap1 + swap2 + swap3;
@@ -850,6 +852,8 @@ mod tests {
             U256::from(pool.reserve_validator_token),
             initial_amount - total_out
         );
+
+        Ok(())
     }
 
     /// Test rebalance swap in correct direction
@@ -988,7 +992,7 @@ mod tests {
     /// Test calculate_new_reserve
     #[test]
     #[ignore = "InvalidNewReserves error due to liquidity calculation constraints with these values"]
-    fn test_calculate_new_reserve() {
+    fn test_calculate_new_reserve() -> Result<(), TIPFeeAMMError> {
         let (amm, _, _, _) = setup_test_amm();
 
         // Setup a known liquidity value (smaller to avoid overflow)
@@ -996,14 +1000,13 @@ mod tests {
         let known_y = uint!(800_U256) * uint!(10_U256).pow(U256::from(6)); // 800 * 1e6
 
         // Calculate new x
-        let result = amm.calculate_new_reserve(known_y, l);
-        assert!(result.is_ok(), "Should calculate new reserve");
-
-        let new_x = result.unwrap();
+        let new_x = amm.calculate_new_reserve(known_y, l)?;
         assert!(new_x > 0, "New reserve should be positive");
 
         // Test error handling with extreme values
         let large_y = uint!(1_000_000_U256) * uint!(10_U256).pow(U256::from(6));
         let _zero_result = amm.calculate_new_reserve(large_y, l);
+
+        Ok(())
     }
 }
