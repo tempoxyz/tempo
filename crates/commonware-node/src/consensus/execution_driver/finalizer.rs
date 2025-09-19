@@ -1,22 +1,29 @@
 //! Owns the strictly sequential finalization-queue.
 
-use alloy_rpc_types_engine::ForkchoiceState;
 use eyre::{WrapErr as _, ensure};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::StreamExt as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, instrument, warn};
 
+use super::forkchoice_updater;
+
 pub(super) struct Builder {
     pub(super) execution_node: TempoFullNode,
+    pub(super) to_forkchoice_updater: forkchoice_updater::Mailbox,
 }
 
 impl Builder {
     pub(super) fn build(self) -> Finalizer {
-        let Self { execution_node } = self;
+        let Self {
+            execution_node,
+            to_forkchoice_updater,
+        } = self;
         let (to_me, from_execution_driver) = futures_channel::mpsc::unbounded();
         Finalizer {
             execution_node,
+            to_forkchoice_updater,
+
             from_execution_driver,
             my_mailbox: Mailbox { inner: to_me },
         }
@@ -25,9 +32,9 @@ impl Builder {
 
 pub(super) struct Finalizer {
     execution_node: TempoFullNode,
+    to_forkchoice_updater: forkchoice_updater::Mailbox,
 
     from_execution_driver: UnboundedReceiver<Message>,
-
     my_mailbox: Mailbox,
 }
 
@@ -82,30 +89,18 @@ impl Finalizer {
             `{payload_status}`"
         );
 
-        let fcu_response = self
-            .execution_node
-            .add_ons_handle
-            .beacon_engine_handle
-            .fork_choice_updated(
-                ForkchoiceState {
-                    head_block_hash: hash,
-                    safe_block_hash: hash,
-                    finalized_block_hash: hash,
-                },
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
+        // TODO(janis): this is basically success-or-die. If we are unable
+        // to finalize, then we cannot recover and just exit. Is this the
+        // right thing to do? Can we relax this somewhat? Should the
+        // forkchoice-update report what went wrong?
+        self.to_forkchoice_updater
+            .set_finalized(hash)
             .await
-            .wrap_err(
-                "failed running engine_forkchoiceUpdated to set the \
-                    finalized block hash",
-            )?;
-
-        ensure!(
-            fcu_response.is_valid(),
-            "payload status of forkchoice update response valid: `{}`",
-            fcu_response.payload_status,
-        );
+            .wrap_err_with(|| {
+                format!(
+                    "unable to finalize hash `{hash}`; we will not be able to recover form that"
+                )
+            })?;
 
         // Acknowledge that the block was finalized.
         if let Err(()) = response.send(()) {

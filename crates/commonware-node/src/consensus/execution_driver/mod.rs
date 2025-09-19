@@ -3,7 +3,6 @@
 use std::{sync::Arc, time::SystemTime};
 
 use alloy_primitives::{B64, B256};
-use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 
@@ -22,11 +21,12 @@ use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::BlockReader as _;
 use tokio::sync::RwLock;
-use tracing::{Level, info, instrument};
+use tracing::{Level, info, instrument, warn};
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 
 mod finalizer;
+mod forkchoice_updater;
 
 use super::{View, block::Block};
 
@@ -65,15 +65,6 @@ where
             .and_then(|maybe| maybe.ok_or_eyre("block reader returned empty genesis block"))
             .wrap_err("failed reading genesis block from execution node")?;
 
-        let finalizer = finalizer::Builder {
-            execution_node: self.execution_node.clone(),
-        }
-        .build();
-        let to_finalizer = finalizer.mailbox().clone();
-
-        self.context
-            .with_label("finalizer")
-            .spawn(move |_| finalizer.run());
         Ok(ExecutionDriver {
             context: self.context,
 
@@ -89,7 +80,8 @@ where
 
             execution_node: self.execution_node,
 
-            to_finalizer,
+            to_finalizer: None,
+            to_forkchoice_updater: None,
         })
     }
 }
@@ -109,7 +101,10 @@ pub struct ExecutionDriver<TContext> {
 
     execution_node: TempoFullNode,
 
-    to_finalizer: finalizer::Mailbox,
+    // TODO: Put these into some kind runtime-initialized struct so we can
+    // combine them.
+    to_finalizer: Option<finalizer::Mailbox>,
+    to_forkchoice_updater: Option<forkchoice_updater::Mailbox>,
 }
 
 impl<TContext> ExecutionDriver<TContext>
@@ -125,9 +120,37 @@ where
         // TODO(janis): this should be placed under a shutdown signal so
         // we don't just stall on startup. We don't have shutdown signals yet
         // though.
-        if self.initialize_latest_finalized_block().await.is_err() {
+        let Ok(forkchoice_updater) = self
+            .find_last_finalized_digest_and_initalize_forkchoice_updater()
+            .await
+        else {
             return;
+        };
+
+        let finalizer = finalizer::Builder {
+            execution_node: self.execution_node.clone(),
+            to_forkchoice_updater: forkchoice_updater.mailbox().clone(),
         }
+        .build();
+
+        claims::assert_none!(
+            self.to_finalizer.replace(finalizer.mailbox().clone()),
+            "finalier must be initialized only once",
+        );
+
+        claims::assert_none!(
+            self.to_forkchoice_updater
+                .replace(forkchoice_updater.mailbox().clone()),
+            "forkchoice updater must be initialized only once",
+        );
+
+        self.context
+            .with_label("finalizer")
+            .spawn(move |_| finalizer.run());
+
+        self.context
+            .with_label("forkchoice updater")
+            .spawn(move |_| forkchoice_updater.run());
 
         loop {
             tokio::select!(
@@ -154,50 +177,35 @@ where
     }
 
     #[instrument(skip_all, err)]
-    async fn initialize_latest_finalized_block(&mut self) -> eyre::Result<()> {
-        let Some((finalized_height, finalized_digest)) =
-            // TODO(janis): does this have the potential to stall indefinitely?
-            // If so, we should have some kind of heartbeat to inform telemetry.
-            self.syncer_mailbox.get_finalized().await.await.unwrap()
-        else {
-            info!(
-                "consensus returned that there is no finalized height or digest, this means we are still at genesis"
-            );
-            return Ok(());
+    async fn find_last_finalized_digest_and_initalize_forkchoice_updater(
+        &mut self,
+    ) -> eyre::Result<forkchoice_updater::ForkchoiceUpdater> {
+        // TODO(janis): does this have the potential to stall indefinitely?
+        // If so, we should have some kind of heartbeat to inform telemetry.
+        let initial_block_hash = match self.syncer_mailbox.get_finalized().await.await.unwrap() {
+            Some((finalized_height, finalized_digest)) => {
+                info!(
+                    finalized_height,
+                    %finalized_digest,
+                    "consensus returned last finalized block, sending to execution layer",
+                );
+                finalized_digest.0
+            }
+            None => {
+                info!(
+                    "consensus returned that there is no finalized height or digest, this means we are still at genesis"
+                );
+                self.genesis_block.hash()
+            }
         };
-        info!(
-            finalized_height,
-            %finalized_digest,
-            "consensus returned last finalized block, sending to execution layer",
-        );
 
-        let finalized_hash = finalized_digest.0;
-        let fcu_response = self
-            .execution_node
-            .add_ons_handle
-            .beacon_engine_handle
-            .fork_choice_updated(
-                ForkchoiceState {
-                    head_block_hash: finalized_hash,
-                    safe_block_hash: finalized_hash,
-                    finalized_block_hash: finalized_hash,
-                },
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
-            .await
-            .wrap_err(
-                "failed running engine_forkchoiceUpdated to set the \
-                    finalized block hash",
-            )?;
-
-        ensure!(
-            fcu_response.is_valid() || fcu_response.is_syncing(),
-            "payload status of forkchoice update response was neither valid nor syncing: `{}`",
-            fcu_response.payload_status,
-        );
-
-        Ok(())
+        forkchoice_updater::Builder {
+            execution_node: self.execution_node.clone(),
+            initial_block_hash,
+        }
+        .try_init()
+        .await
+        .wrap_err("failed initializing forkchoice updater agent")
     }
 
     fn handle_message(&mut self, msg: Message) -> eyre::Result<()> {
@@ -249,7 +257,7 @@ where
 
     /// Pushes a `finalized` request to the back of the finalization queue.
     fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
-        self.to_finalizer.finalize(finalized)
+        self.to_finalizer.as_ref().expect("must only be called from within the event loop and only after the finalizer was initialized").finalize(finalized)
     }
 
     #[instrument(
@@ -294,6 +302,11 @@ where
             genesis_block: self.genesis_block.clone(),
             latest_proposed_block: self.latest_proposed_block.clone(),
             execution_node: self.execution_node.clone(),
+            to_forkchoice_updater: self
+                .to_forkchoice_updater
+                .as_ref()
+                .expect("must only be called from within the event loop and after the forkchoice updater was initialized")
+                .clone(),
             syncer_mailbox: self.syncer_mailbox.clone(),
         }
     }
@@ -326,6 +339,11 @@ where
             .clone();
         let genesis_block = self.genesis_block.clone();
         let mut syncer_mailbox = self.syncer_mailbox.clone();
+        let to_forkchoice_updater = self
+            .to_forkchoice_updater
+            .as_ref()
+            .expect("must only be called from within the event loop and after the forkchoice updater was initialized")
+            .clone();
 
         // XXX: this async block MUST remain the last expression. This code
         // makes use of how tracing evaluates function bodies to determine
@@ -392,6 +410,8 @@ where
             // XXX: storing the verified block is moved outside the
             // previous select! statement such that valid blocks are
             // always cached.
+            // TODO: this should be moved until after the response was rendered
+            // so that consensus can go on.
             if is_good {
                 syncer_mailbox.verified(view, block).await;
             }
@@ -402,6 +422,21 @@ where
                         receiver already dropped the channel"
                 )
             })?;
+
+            // XXX: advancing the tip of the execution node is not so important
+            // for consensus. The relevant consensus bits have already been
+            // performed before so we do this at the very end so as not to
+            // stall consensus.
+            if let Err(error) = to_forkchoice_updater.set_head(payload.0).await {
+                // FIXME(janis): the error message here might be extremely funky
+                // to outside observers because it will say that some channel
+                // was dropped. Probably just ignore?
+                warn!(
+                    block_hash = %payload.0,
+                    %error,
+                    "failed updating the head block hash of the execution layer, but can continue without it",
+                );
+            }
 
             Ok::<(), eyre::Report>(())
         }
@@ -415,6 +450,7 @@ struct RunPropose {
     genesis_block: Arc<Block>,
     latest_proposed_block: Arc<RwLock<Option<Block>>>,
     execution_node: TempoFullNode,
+    to_forkchoice_updater: forkchoice_updater::Mailbox,
     syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
 }
 
@@ -436,6 +472,7 @@ impl RunPropose {
             genesis_block,
             latest_proposed_block,
             execution_node,
+            to_forkchoice_updater,
             mut syncer_mailbox,
         } = self;
         let Propose {
@@ -543,6 +580,24 @@ impl RunPropose {
         {
             let mut lock = latest_proposed_block.write().await;
             *lock = Some(consensus_block);
+        }
+
+        // XXX: advancing the tip of the execution node is not so important
+        // for consensus. The relevant consensus bits have already been
+        // performed before so we do this at the very end so as not to
+        // stall consensus.
+        if let Err(error) = to_forkchoice_updater
+            .set_head(proposed_block_digest.0)
+            .await
+        {
+            // FIXME(janis): the error message here might be extremely funky
+            // to outside observers because it will say that some channel
+            // was dropped. Probably just ignore?
+            warn!(
+                block_hash = %proposed_block_digest.0,
+                %error,
+                "failed updating the head block hash of the execution layer, but can continue without it",
+            );
         }
 
         Ok::<(), eyre::Report>(())
