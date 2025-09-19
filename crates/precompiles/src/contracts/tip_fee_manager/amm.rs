@@ -702,7 +702,7 @@ mod tests {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup pool with 100,000 tokens each
-        let liquidity_amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(18));
+        let liquidity_amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
         let pool_id = setup_pool_with_liquidity(
             &mut amm,
             user_token,
@@ -712,7 +712,7 @@ mod tests {
         );
 
         // Execute fee swap for 1000 tokens
-        let amount_in = uint!(1000_U256) * uint!(10_U256).pow(U256::from(18));
+        let amount_in = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
 
         // Calculate expected output: amountIn * 0.9975
         let expected_out = (amount_in * M) / SCALE;
@@ -742,7 +742,7 @@ mod tests {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup pool with only 100 tokens each
-        let small_liquidity = uint!(100_U256) * uint!(10_U256).pow(U256::from(18));
+        let small_liquidity = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
         setup_pool_with_liquidity(
             &mut amm,
             user_token,
@@ -752,7 +752,7 @@ mod tests {
         );
 
         // Try to swap 201 tokens (would output ~200.7 tokens, but only 100 available)
-        let too_large_amount = uint!(201_U256) * uint!(10_U256).pow(U256::from(18));
+        let too_large_amount = uint!(201_U256) * uint!(10_U256).pow(U256::from(6));
 
         // Execute fee swap - should fail
         let result = amm.fee_swap(user_token, validator_token, too_large_amount);
@@ -772,7 +772,7 @@ mod tests {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup pool with 100,000 tokens each
-        let liquidity_amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(18));
+        let liquidity_amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
         let pool_id = setup_pool_with_liquidity(
             &mut amm,
             user_token,
@@ -782,7 +782,7 @@ mod tests {
         );
 
         // Test with a clean input amount
-        let amount_in = uint!(10000_U256) * uint!(10_U256).pow(U256::from(18));
+        let amount_in = uint!(10000_U256) * uint!(10_U256).pow(U256::from(6));
 
         // Execute fee swap
         let result = amm.fee_swap(user_token, validator_token, amount_in);
@@ -815,7 +815,7 @@ mod tests {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup pool
-        let initial_amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(18));
+        let initial_amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
         let pool_id = setup_pool_with_liquidity(
             &mut amm,
             user_token,
@@ -825,9 +825,9 @@ mod tests {
         );
 
         // Execute multiple fee swaps
-        let swap1 = uint!(1000_U256) * uint!(10_U256).pow(U256::from(18));
-        let swap2 = uint!(2000_U256) * uint!(10_U256).pow(U256::from(18));
-        let swap3 = uint!(3000_U256) * uint!(10_U256).pow(U256::from(18));
+        let swap1 = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
+        let swap2 = uint!(2000_U256) * uint!(10_U256).pow(U256::from(6));
+        let swap3 = uint!(3000_U256) * uint!(10_U256).pow(U256::from(6));
 
         assert!(amm.fee_swap(user_token, validator_token, swap1).is_ok());
         assert!(amm.fee_swap(user_token, validator_token, swap2).is_ok());
@@ -921,7 +921,7 @@ mod tests {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup balanced pool
-        let balanced_amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(18));
+        let balanced_amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
         let pool_id = setup_pool_with_liquidity(
             &mut amm,
             user_token,
@@ -934,7 +934,7 @@ mod tests {
 
         // Try to swap user tokens when pool is balanced
         // This would increase imbalance, so should fail
-        let _swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(18));
+        let _swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
 
         // Simulate what would happen in execute_rebalance_swap
         let x = U256::from(pool.reserve_user_token);
@@ -958,18 +958,18 @@ mod tests {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup pool with 100 tokens
-        let liquidity = uint!(100_U256) * uint!(10_U256).pow(U256::from(18));
+        let liquidity = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
         setup_pool_with_liquidity(&mut amm, user_token, validator_token, liquidity, liquidity);
 
         // Test with amount that would work
-        let ok_amount = uint!(100_U256) * uint!(10_U256).pow(U256::from(18));
+        let ok_amount = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
         assert!(
             amm.has_liquidity(user_token, validator_token, ok_amount),
             "Should have liquidity for 100 tokens"
         );
 
         // Test with amount that would fail
-        let too_much = uint!(101_U256) * uint!(10_U256).pow(U256::from(18));
+        let too_much = uint!(101_U256) * uint!(10_U256).pow(U256::from(6));
         assert!(
             !amm.has_liquidity(user_token, validator_token, too_much),
             "Should not have liquidity for 101 tokens"
