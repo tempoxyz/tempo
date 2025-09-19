@@ -32,8 +32,12 @@ pub struct TxGenerator {
 
 impl TxGenerator {
     pub async fn new() -> eyre::Result<Arc<Self>> {
-        let signers = Self::initialize_signers().await.wrap_err("failed to initialize signers")?;
-        let nonces = Self::get_nonces(&signers).await.wrap_err("failed to fetch nonces")?;
+        let signers = Self::initialize_signers()
+            .await
+            .wrap_err("failed to initialize signers")?;
+        let nonces = Self::get_nonces(&signers)
+            .await
+            .wrap_err("failed to fetch nonces")?;
 
         Ok(Arc::new(Self {
             nonces: Arc::new(nonces),
