@@ -196,6 +196,12 @@ sol! {
         event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
         event Burn(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity, address to);
         event RebalanceSwap(address indexed userToken, address indexed validatorToken, address indexed swapper, uint256 amountIn, uint256 amountOut);
+        event FeeSwap(
+            address indexed userToken,
+            address indexed validatorToken,
+            uint256 amountIn,
+            uint256 amountOut
+        );
 
         // Errors
         error IdenticalAddresses();

@@ -28,7 +28,7 @@ members = [
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
-  "xtask",
+  "xtask", "bin/tempo-arber",
 ]
 
 # Resolver 3 is available with edition 2024
