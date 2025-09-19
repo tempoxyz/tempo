@@ -11,7 +11,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         ITIP20::ITIP20Instance,
-        tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, sqrt},
+        tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
         token_id_to_address,
         types::{
             IFeeManager, ITIP20,
@@ -92,7 +92,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
 
-    let expected_liquidity = sqrt(amount * amount) - MIN_LIQUIDITY;
+    let expected_liquidity = (amount * amount) / uint!(2_U256) - MIN_LIQUIDITY;
     assert_eq!(lp_balance, expected_liquidity);
     let expected_total_supply = expected_liquidity + MIN_LIQUIDITY;
     assert_eq!(total_supply, expected_total_supply);
