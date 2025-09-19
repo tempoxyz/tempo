@@ -22,63 +22,6 @@ use tempo_precompiles::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_create_pool() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = setup_test_node(source).await?;
-
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-
-    // Setup test tokens and fee AMM
-    let token_0 = Address::random();
-    let token_1 = Address::random();
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-
-    // Create pool
-    let create_pool_receipt = fee_amm
-        .createPool(token_0, token_1)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(create_pool_receipt.status());
-
-    // Assert pool exists
-    let pool_key = PoolKey::new(token_0, token_1);
-    let pool_id = pool_key.get_id();
-    assert!(fee_amm.poolExists(pool_id).call().await?);
-
-    // Assert pool initial state
-    let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserveUserToken, 0);
-    assert_eq!(pool.reserveValidatorToken, 0);
-    assert_eq!(pool.pendingFeeSwapIn, 0);
-
-    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
-    assert_eq!(total_supply, U256::ZERO);
-
-    // Assert PoolCreated event was emitted
-    let pool_created_event = create_pool_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIPFeeAMM::PoolCreated::decode_log(&log.inner).ok())
-        .next()
-        .expect("PoolCreated event should be emitted");
-
-    // Assert event values match the pool key
-    assert_eq!(pool_created_event.userToken, pool_key.user_token);
-    assert_eq!(pool_created_event.validatorToken, pool_key.validator_token);
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn test_mint_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -104,35 +47,11 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let mut pending = vec![];
     pending.push(token_0.mint(caller, amount).send().await?);
     pending.push(token_1.mint(caller, amount).send().await?);
-    pending.push(
-        token_0
-            .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-            .send()
-            .await?,
-    );
-    pending.push(
-        token_1
-            .approve(TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-            .send()
-            .await?,
-    );
-    pending.push(
-        fee_amm
-            .createPool(*token_0.address(), *token_1.address())
-            .send()
-            .await?,
-    );
-
-    for tx in pending {
-        let receipt = tx.get_receipt().await?;
-        assert!(receipt.status());
-    }
+    await_receipts(&mut pending).await?;
 
     // Assert initial state
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = pool_key.get_id();
-    assert!(fee_amm.poolExists(pool_id).call().await?);
-
     let user_token0_balance = token_0.balanceOf(caller).call().await?;
     assert_eq!(user_token0_balance, amount);
 
@@ -243,12 +162,6 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    pending.push(
-        fee_amm
-            .createPool(*token_0.address(), *token_1.address())
-            .send()
-            .await?,
-    );
 
     for tx in pending {
         let receipt = tx.get_receipt().await?;
@@ -257,7 +170,6 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = pool_key.get_id();
-    assert!(fee_amm.poolExists(pool_id).call().await?);
 
     // Mint liquidity first
     let mint_receipt = fee_amm
@@ -394,20 +306,12 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let mint_amount = U256::from(u128::MAX);
     let mut pending = vec![];
     pending.push(user_token.mint(user_address, mint_amount).send().await?);
+    await_receipts(&mut pending).await?;
 
     // Create new pool for fee tokens
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    pending.push(
-        fee_amm
-            .createPool(*user_token.address(), *validator_token.address())
-            .send()
-            .await?,
-    );
-    await_receipts(&mut pending).await?;
-
     let pool_key = PoolKey::new(*user_token.address(), *validator_token.address());
     let pool_id = pool_key.get_id();
-    assert!(fee_amm.poolExists(pool_id).call().await?);
 
     // User provides both tokens for liquidity, with minimum balance
     let liquidity = U256::from(u16::MAX) + uint!(1_000_000_000_U256);
