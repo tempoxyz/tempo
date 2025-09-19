@@ -82,9 +82,25 @@ if [ "$VALIDATOR_FEE_TOKEN" = "$NEW_TOKEN_ADDR" ]; then
   exit 1
 fi
 
-# Add liquidity to the pool
+# Request more default tokens from faucet for liquidity
+echo "Requesting more default tokens from faucet for liquidity..."
+for i in {1..5}; do
+  cast rpc tempo_fundAddress $USER_ADDR > /dev/null 2>&1
+  sleep 1
+done
+
+# Approve tokens for the fee manager
+echo "Approving tokens for fee manager..."
+cast send $NEW_TOKEN_ADDR "approve(address,uint256)" $TIP_FEE_MANAGER "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" --private-key $USER_PK
+sleep 2
+cast send $VALIDATOR_FEE_TOKEN "approve(address,uint256)" $TIP_FEE_MANAGER "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" --private-key $USER_PK
+sleep 2
+
+# Calculate liquidity amounts based on actual balances
 echo "Adding liquidity to the pool..."
-LIQUIDITY_AMOUNT="10000000000000"
+VALIDATOR_TOKEN_BALANCE=$(cast balance --erc20 $VALIDATOR_FEE_TOKEN $USER_ADDR | awk '{print $1}')
+# Use 80% of validator token balance (keep 20% for gas)
+LIQUIDITY_AMOUNT=$((VALIDATOR_TOKEN_BALANCE * 8 / 10))
 cast send $TIP_FEE_MANAGER "mint(address,address,uint256,uint256,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN $LIQUIDITY_AMOUNT $LIQUIDITY_AMOUNT $USER_ADDR --private-key $USER_PK
 sleep 2
 echo "Liquidity added successfully"
