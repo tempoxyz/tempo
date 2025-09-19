@@ -757,12 +757,7 @@ mod tests {
         // Execute fee swap - should fail
         let result = amm.fee_swap(user_token, validator_token, too_large_amount);
 
-        match result {
-            Err(TIPFeeAMMError::InsufficientLiquidity(_)) => {
-                // Expected error
-            }
-            _ => panic!("Expected InsufficientLiquidity error"),
-        }
+        assert!(matches!(result, Err(TIPFeeAMMError::InsufficientLiquidity(_))))
     }
 
     /// Test fee swap rounding consistency
