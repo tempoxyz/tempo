@@ -235,7 +235,7 @@ fn create_and_mint_token(
     name: &str,
     currency: &str,
     admin: Address,
-    recipients: &Vec<Address>,
+    recipients: &[Address],
     mint_amount: U256,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<(u64, Address)> {
@@ -347,7 +347,7 @@ fn mint_pairwise_liquidity(
 
     let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
 
-    for token_addresses in tokens.into_iter().permutations(2).into_iter() {
+    for token_addresses in tokens.into_iter().permutations(2) {
         let (token_a, token_b) = (token_addresses[0], token_addresses[1]);
 
         fee_manager
