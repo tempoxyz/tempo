@@ -643,11 +643,19 @@ impl Reporter for Mailbox {
     type Activity = Block;
 
     async fn report(&mut self, block: Self::Activity) {
+        let (response, rx) = oneshot::channel();
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         self.to_execution_driver
-            .send(Finalized { block }.into())
+            .send(Finalized { block, response }.into())
             .await
             .expect("application is present and ready to receive broadcasts");
+
+        // XXX: This is used as an acknowledgement that the application
+        // finalized the block:
+        // Response on this channel -> future returns -> marshaller gets an ack
+        //
+        // TODO(janis): report if this channel gets dropped?
+        let _ = rx.await;
     }
 }
 
@@ -719,9 +727,10 @@ impl From<Verify> for Message {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Finalized {
     block: Block,
+    response: oneshot::Sender<()>,
 }
 
 impl From<Finalized> for Message {
