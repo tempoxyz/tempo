@@ -113,7 +113,8 @@ impl GenesisArgs {
         initialize_fee_manager(alpha_token_address, addresses, &mut evm);
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
-            vec![alpha_token_address, beta_token_address, theta_token_address],
+            alpha_token_address,
+            vec![beta_token_address, theta_token_address],
             U256::from(10u64.pow(10)),
             admin,
             &mut evm,
@@ -336,7 +337,8 @@ fn initialize_fee_manager(
 }
 
 fn mint_pairwise_liquidity(
-    tokens: Vec<Address>,
+    a_token: Address,
+    b_tokens: Vec<Address>,
     amount: U256,
     admin: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
@@ -347,15 +349,13 @@ fn mint_pairwise_liquidity(
 
     let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
 
-    for token_addresses in tokens.into_iter().permutations(2) {
-        let (token_a, token_b) = (token_addresses[0], token_addresses[1]);
-
+    for b_token_address in b_tokens {
         fee_manager
             .mint(
                 admin,
                 ITIPFeeAMM::mintCall {
-                    userToken: token_a,
-                    validatorToken: token_b,
+                    validatorToken: a_token,
+                    userToken: b_token_address,
                     amountUserToken: amount,
                     amountValidatorToken: amount,
                     to: admin,
