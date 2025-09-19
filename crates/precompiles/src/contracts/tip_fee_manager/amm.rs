@@ -22,7 +22,6 @@ pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 pub struct Pool {
     pub reserve_user_token: u128,
     pub reserve_validator_token: u128,
-    pub pending_fee_swap_in: u128,
 }
 
 impl From<Pool> for ITIPFeeAMM::Pool {
@@ -30,7 +29,6 @@ impl From<Pool> for ITIPFeeAMM::Pool {
         Self {
             reserveUserToken: value.reserve_user_token,
             reserveValidatorToken: value.reserve_validator_token,
-            pendingFeeSwapIn: value.pending_fee_swap_in,
         }
     }
 }
@@ -62,12 +60,18 @@ pub mod slots {
 
     // FeeAMM storage slots
     pub const POOLS: U256 = uint!(0_U256);
-    pub const TOTAL_SUPPLY: U256 = uint!(1_U256);
-    pub const BALANCE_OF: U256 = uint!(2_U256);
+    pub const PENDING_FEE_SWAP_IN: U256 = uint!(1_U256);
+    pub const TOTAL_SUPPLY: U256 = uint!(2_U256);
+    pub const BALANCE_OF: U256 = uint!(3_U256);
 
     /// Get storage slot for pool data
     pub fn pool_slot(pool_id: &B256) -> U256 {
         mapping_slot(pool_id, POOLS)
+    }
+
+    /// Get storage slot for pending fee swap in amount
+    pub fn pending_fee_swap_in_slot(pool_id: &B256) -> U256 {
+        mapping_slot(pool_id, PENDING_FEE_SWAP_IN)
     }
 
     /// Get storage slot for total supply of LP tokens
@@ -107,42 +111,59 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let reserve_user_token = (reserves & U256::from(u128::MAX)).to::<u128>();
         let reserve_validator_token = reserves.wrapping_shr(128).to::<u128>();
 
-        let slot = slots::pool_slot(pool_id);
-        let pending_fee_swap_in = self.sload(slot + U256::ONE).to::<u128>();
-
         Pool {
             reserve_user_token,
             reserve_validator_token,
-            pending_fee_swap_in,
         }
     }
 
-    /// Execute a pending fee swaps
-    pub fn execute_pending_fee_swaps(
+    // TODO: docs
+    pub fn has_liquidity(
         &mut self,
         user_token: Address,
         validator_token: Address,
-    ) -> Result<U256, TIPFeeAMMError> {
-        let pool_id = self.get_pool_id(user_token, validator_token);
-        let mut pool = self.get_pool(&pool_id);
-        let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
-
-        pool.reserve_user_token = pool
-            .reserve_user_token
-            .checked_add(pool.pending_fee_swap_in)
-            .expect("TODO: handle overflow");
-
-        let amount_out = pending_out.to::<u128>();
-        pool.reserve_validator_token -= amount_out;
-
-        // Clear pending swap
-        pool.pending_fee_swap_in = 0;
-        self.set_pool(&pool_id, &pool);
-
-        Ok(U256::from(amount_out))
+        amount_in: U256,
+    ) -> bool {
+        let pool_id = PoolKey::new(user_token, validator_token).get_id();
+        let amount_out = (amount_in * M) / SCALE;
+        let available_validator_token = self.get_effective_validator_reserve(&pool_id);
+        amount_out <= available_validator_token
     }
 
-    /// Execute a rebalancing swap
+    fn get_effective_validator_reserve(&mut self, pool_id: &B256) -> U256 {
+        let pool = self.get_pool(&pool_id);
+        let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
+        let pending_out = (pending_fee_swap_in * M) / SCALE;
+
+        U256::from(pool.reserve_validator_token) - pending_out
+    }
+
+    fn get_effective_user_reserve(&mut self, pool_id: &B256) -> U256 {
+        let pool = self.get_pool(&pool_id);
+        let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
+
+        U256::from(pool.reserve_user_token) + pending_fee_swap_in
+    }
+
+    pub fn fee_swap(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+        amount_in: U256,
+    ) -> Result<(), TIPFeeAMMError> {
+        if !self.has_liquidity(user_token, validator_token, amount_in) {
+            return Err(TIPFeeAMMError::InsufficientLiquidity(
+                ITIPFeeAMM::InsufficientLiquidity {},
+            ));
+        }
+
+        let pool_id = self.get_pool_id(user_token, validator_token);
+        let current_pending = self.get_pending_fee_swap_in(&pool_id);
+        self.set_pending_fee_swap_in(&pool_id, current_pending + amount_in);
+
+        Ok(())
+    }
+
     pub fn rebalance_swap(
         &mut self,
         msg_sender: Address,
@@ -153,9 +174,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     ) -> Result<U256, TIPFeeAMMError> {
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(&pool_id);
-        let amount_out = self.execute_rebalance_swap(&mut pool, amount_in)?;
+        let amount_out = self.execute_rebalance_swap(&pool_id, &mut pool, amount_in)?;
 
-        // Transfer tokens
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
         let _ = TIP20Token::new(validator_token_id, self.storage)
             .transfer_from(
@@ -179,9 +199,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             )
             .expect("TODO: handle error");
 
-        self.set_pool(&pool_id, &pool);
-
-        // Emit RebalanceSwap event
         self.storage
             .emit_event(
                 self.contract_address,
@@ -199,53 +216,39 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok(amount_out)
     }
 
-    /// Execute rebalance swap implementation
     fn execute_rebalance_swap(
         &mut self,
+        pool_id: &B256,
         pool: &mut Pool,
         amount_in: U256,
     ) -> Result<U256, TIPFeeAMMError> {
-        // Use current reserves for pricing
         let x = U256::from(pool.reserve_user_token);
         let y = U256::from(pool.reserve_validator_token);
 
-        // For rebalancing, we are adding validatorToken (y), removing userToken (x)
-        // This is valid only when y < x
-        if y >= x {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidRebalanceState(
-                ITIPFeeAMM::InvalidRebalanceState {},
-            ));
-        }
-
-        // Calculate dynamic liquidity L based on current reserves
         let l = self.calculate_liquidity(x, y);
-        let y_1 = y + amount_in;
-        let x_1 = self.calculate_new_reserve(y_1, l)?;
 
-        if x_1 >= x {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidRebalanceDirection(
-                ITIPFeeAMM::InvalidRebalanceDirection {},
+        let new_y = y + amount_in;
+        let new_x = self.calculate_new_reserve(new_y, l)?;
+
+        if new_x >= x {
+            return Err(TIPFeeAMMError::InvalidSwapCalculation(
+                ITIPFeeAMM::InvalidSwapCalculation {},
             ));
         }
 
-        if y_1 > x_1 {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidNewReserves(
-                ITIPFeeAMM::InvalidNewReserves {},
+        let amount_out = x - new_x;
+
+        if !self.can_support_pending_swaps(pool_id, new_y) {
+            return Err(TIPFeeAMMError::InsufficientLiquidityForPending(
+                ITIPFeeAMM::InsufficientLiquidityForPending {},
             ));
         }
 
-        // Check that the new reserves can support pending fee swaps
-        if !self.can_support_pending_swap(pool, y_1) {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::CannotSupportPendingSwaps(
-                ITIPFeeAMM::CannotSupportPendingSwaps {},
-            ));
-        }
+        pool.reserve_user_token = new_x.to::<u128>();
+        pool.reserve_validator_token = new_y.to::<u128>();
+        self.set_pool(pool_id, pool);
 
-        // Update pool reserves
-        pool.reserve_user_token = x_1.to::<u128>();
-        pool.reserve_validator_token = y_1.to::<u128>();
-
-        Ok(x - x_1)
+        Ok(amount_out)
     }
 
     /// Calculate liquidity based on reserves
@@ -310,9 +313,9 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let mut pool = self.get_pool(&pool_id);
         let total_supply = self.get_total_supply(&pool_id);
 
-        // TODO: ensure min balance
         let liquidity = if total_supply.is_zero() {
-            let mean = (amount_user_token + amount_validator_token) / uint!(2_U256);
+            // TODO: checked math
+            let mean = (amount_user_token * amount_validator_token) / uint!(2_U256);
             if mean <= MIN_LIQUIDITY {
                 return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
                     ITIPFeeAMM::InsufficientLiquidity {},
@@ -409,7 +412,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let pool_id = self.get_pool_id(user_token, validator_token);
 
         // Check user has sufficient liquidity
-        let balance = self.get_balance_of(&pool_id, &to);
+        let balance = self.get_balance_of(&pool_id, &msg_sender);
         if balance < liquidity {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
                 ITIPFeeAMM::InsufficientLiquidity {},
@@ -422,7 +425,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             self.calculate_burn_amounts(&pool, &pool_id, liquidity)?;
 
         // Burn LP tokens
-        self.set_balance_of(&pool_id, &to, balance - liquidity);
+        self.set_balance_of(&pool_id, &msg_sender, balance - liquidity);
         let total_supply = self.get_total_supply(&pool_id);
         self.set_total_supply(&pool_id, total_supply - liquidity);
 
@@ -493,9 +496,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
 
         // Check that withdrawal does not violate pending swaps
-
-        let available_user_token = self.get_effective_user_reserve(pool);
-        let available_validator_token = self.get_effective_validator_reserve(pool);
+        let available_user_token = self.get_effective_user_reserve(pool_id);
+        let available_validator_token = self.get_effective_validator_reserve(pool_id);
 
         if amount_user_token > available_user_token {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientReserves(
@@ -512,37 +514,26 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok((amount_user_token, amount_validator_token))
     }
 
-    /// Get total pending swaps for a specific pool
-    pub fn get_total_pending_swaps(
+    pub fn execute_pending_fee_swaps(
         &mut self,
         user_token: Address,
         validator_token: Address,
     ) -> U256 {
         let pool_id = self.get_pool_id(user_token, validator_token);
-        let pool = self.get_pool(&pool_id);
-        U256::from(pool.pending_fee_swap_in)
-    }
+        let mut pool = self.get_pool(&pool_id);
 
-    /// Get effective user token reserve
-    // NOTE: this function will be used for swap logic
-    fn get_effective_user_reserve(&self, pool: &Pool) -> U256 {
-        U256::from(pool.reserve_user_token + pool.pending_fee_swap_in)
-    }
+        let amount_in = self.get_pending_fee_swap_in(&pool_id);
+        let pending_out = (amount_in * M) / SCALE;
 
-    /// Get effective validator token reserve (current - pending out)
-    fn get_effective_validator_reserve(&self, pool: &Pool) -> U256 {
-        let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
-        U256::from(pool.reserve_validator_token) - pending_out
-    }
+        // TODO: use checked math for these operations
+        pool.reserve_user_token = (U256::from(pool.reserve_user_token) + amount_in).to::<u128>();
+        pool.reserve_validator_token =
+            (U256::from(pool.reserve_validator_token) - pending_out).to::<u128>();
 
-    /// Check if swap can be supported by current reserves
-    fn can_support_pending_swap(&self, pool: &Pool, new_validator_reserve: U256) -> bool {
-        // Check if new reserves can support all pending fee swaps
-        let pending_out = (U256::from(pool.pending_fee_swap_in) * M) / SCALE;
+        self.set_pool(&pool_id, &pool);
+        self.set_pending_fee_swap_in(&pool_id, U256::ZERO);
 
-        // userToken will increase by pendingFeeSwapIn
-        // validatorToken will decrease by pendingOut
-        new_validator_reserve >= pending_out
+        pending_out
     }
 
     /// Set pool data in storage
@@ -551,7 +542,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let packed =
             U256::from(pool.reserve_user_token) | (U256::from(pool.reserve_validator_token) << 128);
         self.sstore(slot, packed);
-        self.sstore(slot + U256::ONE, U256::from(pool.pending_fee_swap_in));
     }
 
     /// Get total supply of LP tokens for a pool
@@ -577,6 +567,25 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let slot = slots::balance_of_slot(pool_id, user);
         self.sstore(slot, balance);
     }
+
+    // NOTE: pendingFeeSwapIn is u128 in reference impl
+    pub fn get_pending_fee_swap_in(&mut self, pool_id: &B256) -> U256 {
+        let slot = slots::pending_fee_swap_in_slot(pool_id);
+        self.sload(slot)
+    }
+
+    // NOTE: pendingFeeSwapIn is u128 in reference impl
+    fn set_pending_fee_swap_in(&mut self, pool_id: &B256, amount: U256) {
+        let slot = slots::pending_fee_swap_in_slot(pool_id);
+        self.sstore(slot, amount);
+    }
+
+    fn can_support_pending_swaps(&mut self, pool_id: &B256, new_validator_reserve: U256) -> bool {
+        let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
+        let pending_out = (pending_fee_swap_in * M) / SCALE;
+
+        new_validator_reserve >= pending_out
+    }
 }
 
 /// Integer square root
@@ -584,11 +593,11 @@ pub fn sqrt(x: U256) -> U256 {
     if x == U256::ZERO {
         return U256::ZERO;
     }
-    let mut z = (x + U256::from(1)) / U256::from(2);
+    let mut z = (x + U256::ONE) / uint!(2_U256);
     let mut y = x;
     while z < y {
         y = z;
-        z = (x / z + z) / U256::from(2);
+        z = (x / z + z) / uint!(2_U256);
     }
     y
 }

@@ -23,7 +23,6 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             IFeeManager::userTokensCall::SELECTOR => view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call)),
             IFeeManager::validatorTokensCall::SELECTOR => view::<IFeeManager::validatorTokensCall>(calldata, |call| self.validator_tokens(call)),
             IFeeManager::getFeeTokenBalanceCall::SELECTOR => view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| self.get_fee_token_balance(call)),
-            IFeeManager::collectedFeesCall::SELECTOR => view::<IFeeManager::collectedFeesCall>(calldata, |call| self.get_collected_fees(&call.token)),
             ITIPFeeAMM::getPoolIdCall::SELECTOR => view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| self.get_pool_id(call)),
             ITIPFeeAMM::getPoolCall::SELECTOR => view::<ITIPFeeAMM::getPoolCall>(calldata, |call| self.get_pool(call)),
             ITIPFeeAMM::poolsCall::SELECTOR => view::<ITIPFeeAMM::poolsCall>(calldata, |call| self.pools(call)),
@@ -227,33 +226,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fee_manager_with_nonexistent_pool() -> Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let user = Address::random();
-        let validator = Address::random();
-        let token_a = Address::random();
-        let token_b = Address::random();
-
-        // Setup tokens with balance
-        setup_token_with_balance(&mut storage, token_a, user, U256::MAX);
-
-        let mut fee_manager =
-            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
-
-        // Set different tokens for user and validator (requires pool)
-        fee_manager.call(
-            &Bytes::from(IFeeManager::setValidatorTokenCall { token: token_b }.abi_encode()),
-            &validator,
-        )?;
-        fee_manager.call(
-            &Bytes::from(IFeeManager::setUserTokenCall { token: token_a }.abi_encode()),
-            &user,
-        )?;
-
-        Ok(())
-    }
-
-    #[test]
     fn test_pool_id_calculation() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut fee_manager =
@@ -318,14 +290,7 @@ mod tests {
         let user = Address::random();
         setup_token_with_balance(&mut storage, token, user, U256::MAX);
 
-        let mut fee_manager =
-            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
-
-        // Set validator token
-        fee_manager.call(
-            &Bytes::from(IFeeManager::setValidatorTokenCall { token }.abi_encode()),
-            &validator,
-        )?;
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
 
         // Call executeBlock (only system contract can call)
         let call = IFeeManager::executeBlockCall {};

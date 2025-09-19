@@ -162,12 +162,10 @@ sol! {
     #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
     interface ITIPFeeAMM {
-
         // Structs
         struct Pool {
             uint128 reserveUserToken;
             uint128 reserveValidatorToken;
-            uint128 pendingFeeSwapIn;
         }
 
         struct PoolKey {
@@ -187,6 +185,8 @@ sol! {
         // Liquidity Balances
         function totalSupply(bytes32 poolId) external view returns (uint256);
         function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
+
+        // TODO: has liquidity
 
         // Swapping
         function rebalanceSwap(address userToken, address validatorToken, uint256 amountIn, address to) external returns (uint256 amountOut);
@@ -215,6 +215,8 @@ sol! {
         error InvalidNewReserves();
         error CannotSupportPendingSwaps();
         error DivisionByZero();
+        error InvalidSwapCalculation();
+        error InsufficientLiquidityForPending();
     }
 
 
@@ -253,9 +255,6 @@ sol! {
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function executeBlock() external;
 
-        // Fee tracking view functions
-        function collectedFees(address token) external view returns (uint256);
-
         // Events
         event UserTokenSet(address indexed user, address indexed token);
         event ValidatorTokenSet(address indexed validator, address indexed token);
@@ -265,7 +264,7 @@ sol! {
         error OnlySystemContract();
         error InvalidToken();
         error PoolDoesNotExist();
-        error InsufficientPoolBalance();
+        error InsufficientLiquidity();
         error InsufficientFeeTokenBalance();
     }
 }
