@@ -924,25 +924,22 @@ mod tests {
         );
 
         let pool = amm.get_pool(&pool_id);
+        assert_eq!(
+            pool.reserve_user_token, pool.reserve_validator_token,
+            "Pool should be balanced initially"
+        );
 
-        // Try to swap user tokens when pool is balanced
-        // This would increase imbalance, so should fail
-        let _swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
+        // Try to rebalance a balanced pool - this should fail
+        // because it would increase imbalance rather than reduce it
+        let swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
+        let mut pool_copy = pool.clone();
 
-        // Simulate what would happen in execute_rebalance_swap
-        let x = U256::from(pool.reserve_user_token);
-        let y = U256::from(pool.reserve_validator_token);
+        let result = amm.execute_rebalance_swap(&pool_id, &mut pool_copy, swap_amount);
 
-        // For a balanced pool, swapping user tokens would mean:
-        // new_x = x + swap_amount (increasing user tokens)
-        // This is wrong direction since pool is already balanced
-
-        // In the actual implementation, this check happens:
-        // if new_x >= x { return Err(InvalidSwapCalculation) }
-
-        // Since we're swapping FROM validator TO user in rebalance_swap,
-        // and pool is balanced, this would unbalance it
-        assert_eq!(x, y, "Pool should be balanced initially");
+        // The swap should fail when trying to rebalance an already balanced pool
+        // This fails during calculate_new_reserve with InvalidNewReserves
+        assert!(matches!(result, Err(TIPFeeAMMError::InvalidNewReserves(_))),
+            "Rebalancing a balanced pool should fail with InvalidNewReserves");
     }
 
     /// Test has_liquidity function
