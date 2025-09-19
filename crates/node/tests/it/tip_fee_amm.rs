@@ -387,3 +387,201 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_first_liquidity_provider() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let alice = wallet.address();
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Setup test tokens and fee AMM
+    let user_token = setup_test_token(provider.clone(), alice).await?;
+    let validator_token = setup_test_token(provider.clone(), alice).await?;
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    // Define amounts (100000 * 1e18)
+    let amount0 = uint!(100000_000000000000000000_U256);
+    let amount1 = uint!(100000_000000000000000000_U256);
+
+    // Mint tokens to alice
+    let mut pending = vec![];
+    pending.push(user_token.mint(alice, amount0).send().await?);
+    pending.push(validator_token.mint(alice, amount1).send().await?);
+    await_receipts(&mut pending).await?;
+
+    // Get pool info
+    let pool_key = PoolKey::new(*user_token.address(), *validator_token.address());
+    let pool_id = pool_key.get_id();
+
+    // Verify pool doesn't exist yet
+    let pool = fee_amm.pools(pool_id).call().await?;
+    assert_eq!(pool.reserveUserToken, 0);
+    assert_eq!(pool.reserveValidatorToken, 0);
+
+    // Add liquidity which creates the pool
+    let mint_receipt = fee_amm
+        .mint(
+            pool_key.user_token,
+            pool_key.validator_token,
+            amount0,
+            amount1,
+            alice,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(mint_receipt.status());
+
+    // Calculate expected liquidity (sqrt(amount0 * amount1) - MIN_LIQUIDITY)
+    // Since amounts are equal, sqrt(amount0 * amount1) = amount0 = amount1
+    // But we use the formula: (amount0 * amount1) / sqrt(2) - MIN_LIQUIDITY
+    let expected_liquidity = (amount0 * amount1) / uint!(2_U256) - MIN_LIQUIDITY;
+
+    // Check liquidity minted
+    let lp_balance = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+    assert_eq!(lp_balance, expected_liquidity);
+
+    // Check total supply
+    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
+    assert_eq!(total_supply, expected_liquidity + MIN_LIQUIDITY);
+
+    // Check reserves updated
+    let pool = fee_amm.pools(pool_id).call().await?;
+    assert_eq!(pool.reserveUserToken, amount0.to::<u128>());
+    assert_eq!(pool.reserveValidatorToken, amount1.to::<u128>());
+
+    // Verify tokens were transferred to fee manager
+    let fee_manager_balance0 = user_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    assert_eq!(fee_manager_balance0, amount0);
+
+    let fee_manager_balance1 = validator_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    assert_eq!(fee_manager_balance1, amount1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_burn_liquidity_partial() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let alice = wallet.address();
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Setup test tokens and fee AMM
+    let user_token = setup_test_token(provider.clone(), alice).await?;
+    let validator_token = setup_test_token(provider.clone(), alice).await?;
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    // Define amounts (100000 * 1e18)
+    let amount0 = uint!(100000_000000000000000000_U256);
+    let amount1 = uint!(100000_000000000000000000_U256);
+
+    // Mint tokens to alice
+    let mut pending = vec![];
+    pending.push(user_token.mint(alice, amount0).send().await?);
+    pending.push(validator_token.mint(alice, amount1).send().await?);
+    await_receipts(&mut pending).await?;
+
+    // Get pool info
+    let pool_key = PoolKey::new(*user_token.address(), *validator_token.address());
+    let pool_id = pool_key.get_id();
+
+    // Add liquidity
+    let mint_receipt = fee_amm
+        .mint(
+            pool_key.user_token,
+            pool_key.validator_token,
+            amount0,
+            amount1,
+            alice,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(mint_receipt.status());
+
+    // Get liquidity balance
+    let liquidity = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+
+    // Record balances before burn
+    let user_balance0_before = user_token.balanceOf(alice).call().await?;
+    let user_balance1_before = validator_token.balanceOf(alice).call().await?;
+
+    // Burn half of the liquidity
+    let burn_amount = liquidity / U256::from(2);
+
+    // Get pool state before burn
+    let pool_before = fee_amm.pools(pool_id).call().await?;
+    let total_supply_before = fee_amm.totalSupply(pool_id).call().await?;
+
+    // Burn partial liquidity
+    let burn_receipt = fee_amm
+        .burn(
+            pool_key.user_token,
+            pool_key.validator_token,
+            burn_amount,
+            alice,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(burn_receipt.status());
+
+    // Calculate expected amounts returned
+    let expected_amount0 = (burn_amount * U256::from(pool_before.reserveUserToken)) / total_supply_before;
+    let expected_amount1 = (burn_amount * U256::from(pool_before.reserveValidatorToken)) / total_supply_before;
+
+    // Verify we got tokens back
+    let user_balance0_after = user_token.balanceOf(alice).call().await?;
+    let user_balance1_after = validator_token.balanceOf(alice).call().await?;
+
+    assert!(user_balance0_after > user_balance0_before, "Should receive userToken");
+    assert!(user_balance1_after > user_balance1_before, "Should receive validatorToken");
+
+    // Verify amounts match expectations (within small rounding tolerance)
+    let received0 = user_balance0_after - user_balance0_before;
+    let received1 = user_balance1_after - user_balance1_before;
+
+    // Allow for small rounding differences
+    assert!(received0 >= expected_amount0 - U256::from(1) && received0 <= expected_amount0 + U256::from(1),
+            "Received amount0 should be approximately half of deposited amount");
+    assert!(received1 >= expected_amount1 - U256::from(1) && received1 <= expected_amount1 + U256::from(1),
+            "Received amount1 should be approximately half of deposited amount");
+
+    // Verify LP balance reduced
+    let lp_balance_after = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+    assert_eq!(lp_balance_after, liquidity - burn_amount);
+
+    // Verify reserves updated correctly
+    let pool_after = fee_amm.pools(pool_id).call().await?;
+    assert_eq!(
+        pool_after.reserveUserToken,
+        pool_before.reserveUserToken - expected_amount0.to::<u128>()
+    );
+    assert_eq!(
+        pool_after.reserveValidatorToken,
+        pool_before.reserveValidatorToken - expected_amount1.to::<u128>()
+    );
+
+    Ok(())
+}
