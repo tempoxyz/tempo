@@ -3,7 +3,6 @@
 use std::{sync::Arc, time::SystemTime};
 
 use alloy_primitives::{B64, B256};
-use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 
@@ -11,8 +10,8 @@ use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
 use futures_channel::{mpsc, oneshot};
 use futures_util::{
-    FutureExt as _, SinkExt as _, StreamExt as _, TryFutureExt,
-    future::{BoxFuture, Either, try_join},
+    SinkExt as _, StreamExt as _, TryFutureExt,
+    future::{Either, try_join},
 };
 use rand::{CryptoRng, Rng};
 use reth::{
@@ -24,11 +23,12 @@ use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::BlockReader as _;
-use sequential_futures_queue::SequentialFuturesQueue;
 use tokio::sync::RwLock;
 use tracing::{Level, info, instrument};
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
+
+mod finalizer;
 
 use super::{View, block::Block};
 
@@ -66,6 +66,16 @@ where
             .map_err(Into::<eyre::Report>::into)
             .and_then(|maybe| maybe.ok_or_eyre("block reader returned empty genesis block"))
             .wrap_err("failed reading genesis block from execution node")?;
+
+        let finalizer = finalizer::Builder {
+            execution_node: self.execution_node.clone(),
+        }
+        .build();
+        let to_finalizer = finalizer.mailbox().clone();
+
+        self.context
+            .with_label("finalizer")
+            .spawn(move |_| finalizer.run());
         Ok(ExecutionDriver {
             context: self.context,
 
@@ -81,7 +91,7 @@ where
 
             execution_node: self.execution_node,
 
-            finalization_queue: SequentialFuturesQueue::new(),
+            to_finalizer,
         })
     }
 }
@@ -101,11 +111,7 @@ pub struct ExecutionDriver<TContext> {
 
     execution_node: TempoFullNode,
 
-    /// A queue of finalizations, performed sequentially.
-    ///
-    /// Sequential finalization is critical so that an older forkchoice update
-    /// does not override a newer.
-    finalization_queue: SequentialFuturesQueue<BoxFuture<'static, eyre::Result<()>>>,
+    to_finalizer: finalizer::Mailbox,
 }
 
 impl<TContext> ExecutionDriver<TContext>
@@ -122,17 +128,14 @@ where
                 // NOTE: biased because we prefer running finalizations above all else.
                 biased;
 
-                Some(_res) = self.finalization_queue.next() => {
-                    // TODO: decide what to do if finalizations fail.
-                    // Finalizations failing is pretty bad. Probably warrants
-                    // nuking the node since we can't go on.
-                    //
-                    // NOTE(return value): expected to be reported in the span
-                    // of the future.
-                }
-
                 Some(msg) = self.from_consensus.next() => {
-                    self.handle_message(msg);
+                    if let Err(error) =  self.handle_message(msg) {
+                        tracing::error_span!("handle message").in_scope(|| tracing::error!(
+                            %error,
+                            "critical error occurred while handling message; exiting"
+                        ));
+                        break;
+                    }
                 }
 
                 else => break,
@@ -144,14 +147,20 @@ where
         self.context.spawn_ref()(self.run())
     }
 
-    fn handle_message(&mut self, msg: Message<tempo_primitives::Block>) {
+    fn handle_message(&mut self, msg: Message<tempo_primitives::Block>) -> eyre::Result<()> {
         match msg {
             Message::Broadcast(broadcast) => self.handle_broadcast(broadcast),
-            Message::Finalized(finalized) => self.handle_finalized(*finalized),
+            Message::Finalized(finalized) => {
+                // XXX: being able to finalize is the only stop condition.
+                // There is no point continuing if this doesn't work.
+                self.handle_finalized(*finalized)
+                    .wrap_err("failed finalizing block")?;
+            }
             Message::Genesis(genesis) => _ = self.handle_genesis(genesis),
             Message::Propose(propose) => self.handle_propose(propose),
             Message::Verify(verify) => self.handle_verify(verify),
         }
+        Ok(())
     }
 
     fn handle_broadcast(&mut self, broadcast: Broadcast) {
@@ -186,9 +195,8 @@ where
     }
 
     /// Pushes a `finalized` request to the back of the finalization queue.
-    fn handle_finalized(&mut self, finalized: Finalized<tempo_primitives::Block>) {
-        self.finalization_queue
-            .push(self.finalize(finalized).boxed());
+    fn handle_finalized(&self, finalized: Finalized<tempo_primitives::Block>) -> eyre::Result<()> {
+        self.to_finalizer.finalize(finalized)
     }
 
     #[instrument(
@@ -343,74 +351,6 @@ where
             })?;
 
             Ok::<(), eyre::Report>(())
-        }
-    }
-
-    #[instrument(
-        skip_all,
-        fields(finalized_block.digest = %finalized.block.digest()),
-        err(level = Level::WARN),
-        ret,
-    )]
-    fn finalize(
-        &self,
-        finalized: Finalized<tempo_primitives::Block>,
-    ) -> impl Future<Output = eyre::Result<()>> + 'static {
-        let engine = self
-            .execution_node
-            .add_ons_handle
-            .beacon_engine_handle
-            .clone();
-        // XXX: This async block *must* be the last expression in this
-        // function so that `instrument` wraps the async block and not
-        // statements before it.
-        async move {
-            let Finalized { block } = finalized;
-
-            let block = block.clone().into_inner();
-            let hash = block.hash();
-            let payload_status = engine
-                .new_payload(TempoExecutionData(block))
-                .await
-                .wrap_err(
-                    "failed sending new-payload request to execution \
-                    engine to query payload status of finalized block",
-                )?;
-
-            // TODO: just die if this fails? This condition really should not
-            // happen because all finalized blocks up to this point are fed in
-            // through the syncer.
-            // If this happens regardless some invariant was violated and we
-            // have no way to recover.
-            ensure!(
-                payload_status.is_valid(),
-                "payload status of block-to-be-finalized not valid: \
-                `{payload_status}`"
-            );
-
-            let fcu_response = engine
-                .fork_choice_updated(
-                    ForkchoiceState {
-                        head_block_hash: hash,
-                        safe_block_hash: hash,
-                        finalized_block_hash: hash,
-                    },
-                    None,
-                    reth_node_builder::EngineApiMessageVersion::V3,
-                )
-                .await
-                .wrap_err(
-                    "failed running engine_forkchoiceUpdated to set the \
-                    finalized block hash",
-                )?;
-
-            ensure!(
-                fcu_response.is_valid(),
-                "payload status of forkchoice update response valid: `{}`",
-                fcu_response.payload_status,
-            );
-
-            Ok(())
         }
     }
 }
@@ -813,6 +753,7 @@ where
     }
 }
 
+#[derive(Clone, Debug)]
 struct Finalized<TBlock>
 where
     TBlock: reth_primitives_traits::Block + 'static,

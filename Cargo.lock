@@ -309,9 +309,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-evm"
-version = "0.21.0"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2b2845e4c4844e53dd08bf24d3af7b163ca7d1e3c68eb587e38c4e976659089"
+checksum = "48e536feefca2ba96c75798ac75a31046e8adfcefecdb6653803361045cc65b9"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -685,7 +685,7 @@ dependencies = [
  "alloy-serde",
  "alloy-sol-types",
  "arbitrary",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -3461,7 +3461,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3720,7 +3720,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4052,22 +4052,6 @@ name = "futures-task"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f90f7dce0722e95104fcb095585910c0977252f286e354b5e3bd38902cd99988"
-
-[[package]]
-name = "futures-test"
-version = "0.3.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5961fb6311645f46e2cdc2964a8bfae6743fd72315eaec181a71ae3eb2467113"
-dependencies = [
- "futures-core",
- "futures-executor",
- "futures-io",
- "futures-macro",
- "futures-sink",
- "futures-task",
- "futures-util",
- "pin-project",
-]
 
 [[package]]
 name = "futures-timer"
@@ -4637,7 +4621,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -7838,7 +7822,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "once_cell",
@@ -7858,7 +7842,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -8020,7 +8004,7 @@ dependencies = [
  "once_cell",
  "socket2 0.5.10",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -11546,7 +11530,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -11853,17 +11837,6 @@ name = "send_wrapper"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
-
-[[package]]
-name = "sequential-futures-queue"
-version = "0.1.0"
-dependencies = [
- "futures-channel",
- "futures-executor",
- "futures-test",
- "futures-util",
- "pin-project-lite",
-]
 
 [[package]]
 name = "serde"
@@ -12442,7 +12415,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.61.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -12575,7 +12548,6 @@ dependencies = [
  "reth-node-core",
  "reth-primitives-traits",
  "reth-provider",
- "sequential-futures-queue",
  "tempo-commonware-node-config",
  "tempo-commonware-node-cryptography",
  "tempo-node",
@@ -12684,6 +12656,7 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "alloy-eips",
+ "alloy-network",
  "alloy-primitives",
  "alloy-rpc-types-eth",
  "clap",
@@ -12704,10 +12677,12 @@ dependencies = [
  "reth-provider",
  "reth-rpc",
  "reth-rpc-builder",
+ "reth-rpc-convert",
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
  "reth-tracing",
  "reth-transaction-pool",
+ "serde",
  "serde_json",
  "tempo-chainspec",
  "tempo-consensus",
@@ -12718,6 +12693,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-revm",
  "tempo-transaction-pool",
  "tokio",
  "vergen",

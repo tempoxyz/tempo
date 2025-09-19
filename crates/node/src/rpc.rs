@@ -1,6 +1,10 @@
+mod request;
+
+pub use request::TempoTransactionRequest;
+
 use crate::node::TempoNode;
-use alloy::{consensus::TxReceipt, network::Ethereum, primitives::U256};
-use alloy_primitives::{Address, uint};
+use alloy::{consensus::TxReceipt, primitives::U256};
+use alloy_primitives::Address;
 use alloy_rpc_types_eth::ReceiptWithBloom;
 use reth_ethereum::tasks::{
     TaskSpawner,
@@ -35,8 +39,6 @@ use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
 
-pub const U256_U64_MAX: U256 = uint!(18446744073709551615_U256);
-
 /// Tempo RPC types.
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
@@ -48,7 +50,7 @@ impl RpcTypes for TempoRpcTypes {
         ReceiptWithBloom<TempoReceipt<alloy_rpc_types_eth::Log>>,
     >;
     type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
-    type TransactionRequest = alloy_rpc_types_eth::TransactionRequest;
+    type TransactionRequest = TempoTransactionRequest;
 }
 
 /// Tempo `Eth` API implementation.
@@ -137,7 +139,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> RpcNodeCoreExt for TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiSpec for TempoEthApi<N> {
     type Transaction = TxTy<N::Types>;
-    type Rpc = Ethereum;
+    type Rpc = TempoRpcTypes;
 
     #[inline]
     fn starting_block(&self) -> U256 {
@@ -238,7 +240,6 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         let adjusted_balance = fee_token
             .balance()
             .saturating_mul(USD_DECIMAL_FACTOR)
-            .min(U256_U64_MAX)
             .saturating_to::<u64>();
 
         Ok(adjusted_balance)

@@ -54,11 +54,10 @@ mod tests {
             HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
             tip_fee_manager::amm::PoolKey,
             token_id_to_address,
-            types::{IFeeManager, ITIP20, ITIPFeeAMM},
+            types::{IFeeManager, ITIP20, ITIPFeeAMM, TIPFeeAMMError},
         },
         fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
-        tip_fee_amm_err,
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -136,7 +135,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &validator);
-        expect_precompile_error(&result, tip_fee_amm_err!(InvalidToken));
+        expect_precompile_error(&result, TIPFeeAMMError::invalid_token());
 
         Ok(())
     }
@@ -175,7 +174,95 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &user);
-        expect_precompile_error(&result, tip_fee_amm_err!(InvalidToken));
+        expect_precompile_error(&result, TIPFeeAMMError::invalid_token());
+    }
+
+    #[test]
+    fn test_create_pool() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
+        let token_a = Address::random();
+        let token_b = Address::random();
+
+        let calldata = ITIPFeeAMM::createPoolCall {
+            userToken: token_a,
+            validatorToken: token_b,
+        }
+        .abi_encode();
+        let result = fee_manager
+            .call(&Bytes::from(calldata), &Address::random())
+            .unwrap();
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        // Verify pool exists
+        let pool_key = PoolKey::new(token_a, token_b);
+        let pool_id = pool_key.get_id();
+
+        let calldata = ITIPFeeAMM::poolExistsCall { poolId: pool_id }.abi_encode();
+        let result = fee_manager
+            .call(&Bytes::from(calldata), &Address::random())
+            .unwrap();
+        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+        let exists = bool::abi_decode(&result.bytes).unwrap();
+        assert!(exists);
+    }
+
+    #[test]
+    fn test_create_pool_identical_addresses() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
+        let token = Address::random();
+
+        let calldata = ITIPFeeAMM::createPoolCall {
+            userToken: token,
+            validatorToken: token,
+        }
+        .abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
+        expect_precompile_error(&result, TIPFeeAMMError::identical_addresses());
+    }
+
+    #[test]
+    fn test_create_pool_zero_address() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
+        let token = Address::random();
+
+        let calldata = ITIPFeeAMM::createPoolCall {
+            userToken: Address::ZERO,
+            validatorToken: token,
+        }
+        .abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
+        expect_precompile_error(&result, TIPFeeAMMError::invalid_token());
+    }
+
+    #[test]
+    fn test_create_pool_already_exists() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager =
+            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
+        let token_a = Address::random();
+        let token_b = Address::random();
+
+        let calldata = ITIPFeeAMM::createPoolCall {
+            userToken: token_a,
+            validatorToken: token_b,
+        }
+        .abi_encode();
+
+        // Create pool first time
+        let result = fee_manager
+            .call(&Bytes::from(calldata.clone()), &Address::random())
+            .unwrap();
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        // Try to create same pool again
+        let result = fee_manager.call(&Bytes::from(calldata), &Address::random());
+        expect_precompile_error(&result, TIPFeeAMMError::pool_exists());
     }
 
     #[test]
