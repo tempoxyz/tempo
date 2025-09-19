@@ -66,6 +66,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     /// Builds system transaction to TipFeeManager to seal the block.
     fn build_seal_block_tx(&self, block_env: &BlockEnv) -> Recovered<TempoTxEnvelope> {
+        // append encoded block number to the calldata to ensure that system transactions hashes do not collide
         let input = executeBlockCall
             .abi_encode()
             .into_iter()
