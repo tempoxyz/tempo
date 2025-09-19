@@ -860,7 +860,7 @@ mod tests {
     /// Corresponds to disabled_testRebalanceSwapTowardBalance in StableAMM.t.sol
     #[test]
     #[ignore = "Overflow in calculateLiquidity when called during rebalanceSwap (same as Solidity disabled test)"]
-    fn test_rebalance_swap_toward_balance() {
+    fn test_rebalance_swap_toward_balance() -> Result<(), TIPFeeAMMError> {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Add balanced liquidity first (using same decimals as Solidity test)
@@ -875,43 +875,37 @@ mod tests {
 
         // Make the pool imbalanced by executing a fee swap
         let user_token_in = uint!(20000_U256) * uint!(10_U256).pow(U256::from(6)); // 20000 * 1e6
-        amm.fee_swap(user_token, validator_token, user_token_in)
-            .unwrap();
+        amm.fee_swap(user_token, validator_token, user_token_in)?;
         amm.execute_pending_fee_swaps(user_token, validator_token);
 
         let pool_before = amm.get_pool(&pool_id);
+        let x_before = U256::from(pool_before.reserve_user_token);
+        let y_before = U256::from(pool_before.reserve_validator_token);
 
-        // Execute rebalancing swap
+        // Execute rebalancing swap using the actual function
         let swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6)); // 1000 * 1e6
+        let mut pool = pool_before.clone();
+        let amount_out = amm.execute_rebalance_swap(&pool_id, &mut pool, swap_amount)?;
 
-        // Mock token transfers (in real scenario, would need actual token setup)
-        // For unit test, we focus on the AMM logic
+        // Verify the swap output
+        assert!(amount_out > 0, "Should receive user tokens");
 
-        // Calculate expected output
-        let x = U256::from(pool_before.reserve_user_token);
-        let y = U256::from(pool_before.reserve_validator_token);
-        let l = amm.calculate_liquidity(x, y);
-        let new_y = y + swap_amount;
-        let new_x = amm
-            .calculate_new_reserve(new_y, l)
-            .expect("Should calculate new reserve");
-        let expected_out = x - new_x;
+        // Verify reserves were updated correctly
+        let x_after = U256::from(pool.reserve_user_token);
+        let y_after = U256::from(pool.reserve_validator_token);
+        assert!(x_after < x_before, "User token reserve should decrease");
+        assert_eq!(y_after, y_before + swap_amount, "Validator token reserve should increase by swap amount");
+        assert_eq!(x_before - x_after, amount_out, "Amount out should equal decrease in user reserve");
 
-        // Verify swap reduces imbalance
-        assert!(new_x < x, "User token reserve should decrease");
-        assert!(expected_out > 0, "Should receive user tokens");
-
-        // Verify the swap is in the correct direction
-        let imbalance_before = if x > y { x - y } else { y - x };
-        let imbalance_after = if new_x > new_y {
-            new_x - new_y
-        } else {
-            new_y - new_x
-        };
+        // Verify the swap reduces imbalance
+        let imbalance_before = if x_before > y_before { x_before - y_before } else { y_before - x_before };
+        let imbalance_after = if x_after > y_after { x_after - y_after } else { y_after - x_after };
         assert!(
             imbalance_after < imbalance_before,
             "Swap should reduce imbalance"
         );
+
+        Ok(())
     }
 
     /// Test rebalance swap in wrong direction
