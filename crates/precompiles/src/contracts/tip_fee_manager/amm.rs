@@ -412,7 +412,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let pool_id = self.get_pool_id(user_token, validator_token);
 
         // Check user has sufficient liquidity
-        let balance = self.get_balance_of(&pool_id, &to);
+        let balance = self.get_balance_of(&pool_id, &msg_sender);
         if balance < liquidity {
             return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
                 ITIPFeeAMM::InsufficientLiquidity {},
@@ -425,7 +425,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             self.calculate_burn_amounts(&pool, &pool_id, liquidity)?;
 
         // Burn LP tokens
-        self.set_balance_of(&pool_id, &to, balance - liquidity);
+        self.set_balance_of(&pool_id, &msg_sender, balance - liquidity);
         let total_supply = self.get_total_supply(&pool_id);
         self.set_total_supply(&pool_id, total_supply - liquidity);
 
