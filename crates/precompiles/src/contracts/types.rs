@@ -162,12 +162,10 @@ sol! {
     #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
     interface ITIPFeeAMM {
-
         // Structs
         struct Pool {
             uint128 reserveUserToken;
             uint128 reserveValidatorToken;
-            uint128 pendingFeeSwapIn;
         }
 
         struct PoolKey {
@@ -187,6 +185,8 @@ sol! {
         // Liquidity Balances
         function totalSupply(bytes32 poolId) external view returns (uint256);
         function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
+
+        // TODO: has liquidity
 
         // Swapping
         function rebalanceSwap(address userToken, address validatorToken, uint256 amountIn, address to) external returns (uint256 amountOut);
