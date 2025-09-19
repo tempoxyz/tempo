@@ -42,7 +42,7 @@ impl TPSArgs {
                 .ok_or_else(|| eyre::eyre!("No core available for main runtime"))?,
         );
 
-        let tx_generator = TxGenerator::new().await?;
+        let tx_generator = TxGenerator::new().await.wrap_err("failed to construct transaction generator")?;
 
         // Given our desired breakdown of workers, translate this into actual numbers of workers to spawn.
         let (workers, worker_counts) = workers::assign_workers(
