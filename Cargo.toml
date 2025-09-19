@@ -248,3 +248,13 @@ criterion = "0.7.0"
 # build deps
 vergen = "9"
 vergen-git2 = "1"
+
+[patch.crates-io]
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
