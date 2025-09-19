@@ -57,10 +57,11 @@ fn main() {
                 .node(TempoNode::new(args.clone()))
                 .extend_rpc_modules(move |ctx| {
                     if args.faucet_args.enabled {
+                        info!(target: "reth::cli", "Enabling faucet API");
                         let txpool = ctx.pool().clone();
                         let ext = TempoFaucetExt::new(
                             txpool,
-                            args.faucet_args.address(),
+                            args.faucet_args.addresses(),
                             args.faucet_args.amount(),
                             args.faucet_args.provider(),
                         );
