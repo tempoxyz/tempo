@@ -887,7 +887,7 @@ mod tests {
 
         // Execute rebalancing swap using the actual function
         let swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6)); // 1000 * 1e6
-        let mut pool = pool_before.clone();
+        let mut pool = pool_before;
         let amount_out = amm.execute_rebalance_swap(&pool_id, &mut pool, swap_amount)?;
 
         // Verify the swap output
@@ -951,7 +951,7 @@ mod tests {
         // Try to rebalance a balanced pool - this should fail
         // because it would increase imbalance rather than reduce it
         let swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
-        let mut pool_copy = pool.clone();
+        let mut pool_copy = pool;
 
         let result = amm.execute_rebalance_swap(&pool_id, &mut pool_copy, swap_amount);
 
