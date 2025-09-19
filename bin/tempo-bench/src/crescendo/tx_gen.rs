@@ -32,8 +32,8 @@ pub struct TxGenerator {
 
 impl TxGenerator {
     pub async fn new() -> eyre::Result<Arc<Self>> {
-        let signers = Self::initialize_signers().await?;
-        let nonces = Self::get_nonces(&signers).await?;
+        let signers = Self::initialize_signers().await.wrap_err("failed to initialize signers")?;
+        let nonces = Self::get_nonces(&signers).await.wrap_err("failed to fetch nonces")?;
 
         Ok(Arc::new(Self {
             nonces: Arc::new(nonces),
@@ -51,8 +51,7 @@ impl TxGenerator {
                 MnemonicBuilder::<English>::default()
                     .phrase(&config.mnemonic)
                     .index(i)
-                    .expect("index should always be valid in this range")
-                    .build()
+                    .and_then(|builder| builder.build())
                     .map_err(|e| eyre::eyre!("invalid mnemonic provided: {}", e))
             })
             .collect::<eyre::Result<Signers>>()
