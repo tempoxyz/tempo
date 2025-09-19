@@ -162,9 +162,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         amount_in: U256,
     ) -> Result<(), TIPFeeAMMError> {
         if !self.has_liquidity(user_token, validator_token, amount_in) {
-            return Err(TIPFeeAMMError::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
+            return Err(TIPFeeAMMError::insufficient_liquidity());
         }
 
         let pool_id = self.get_pool_id(user_token, validator_token);
@@ -197,7 +195,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_in,
                 },
             )
-            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
+            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
         let user_token_id = address_to_token_id_unchecked(&user_token);
         TIP20Token::new(user_token_id, self.storage)
@@ -208,7 +206,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_out,
                 },
             )
-            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
+            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
         self.storage
             .emit_event(
@@ -222,7 +220,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 })
                 .into_log_data(),
             )
-            .map_err(|_| TIPFeeAMMError::InternalError(ITIPFeeAMM::InternalError {}))?;
+            .map_err(|_| TIPFeeAMMError::internal_error())?;
 
         Ok(amount_out)
     }
@@ -243,17 +241,13 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let new_x = self.calculate_new_reserve(new_y, l)?;
 
         if new_x >= x {
-            return Err(TIPFeeAMMError::InvalidSwapCalculation(
-                ITIPFeeAMM::InvalidSwapCalculation {},
-            ));
+            return Err(TIPFeeAMMError::invalid_swap_calculation());
         }
 
         let amount_out = x - new_x;
 
         if !self.can_support_pending_swaps(pool_id, new_y) {
-            return Err(TIPFeeAMMError::InsufficientLiquidityForPending(
-                ITIPFeeAMM::InsufficientLiquidityForPending {},
-            ));
+            return Err(TIPFeeAMMError::insufficient_liquidity_for_pending());
         }
 
         pool.reserve_user_token = new_x.to::<u128>();
@@ -296,16 +290,12 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let denominator = known_validator_reserve + l_sqrt_m;
 
         if denominator.is_zero() {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::DivisionByZero(
-                ITIPFeeAMM::DivisionByZero {},
-            ));
+            return Err(TIPFeeAMMError::division_by_zero());
         }
 
         let result = l2 / denominator;
         if result <= l {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InvalidNewReserves(
-                ITIPFeeAMM::InvalidNewReserves {},
-            ));
+            return Err(TIPFeeAMMError::invalid_new_reserves());
         }
 
         Ok(result - l)
@@ -329,9 +319,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             // TODO: checked math
             let mean = (amount_user_token * amount_validator_token) / uint!(2_U256);
             if mean <= MIN_LIQUIDITY {
-                return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                    ITIPFeeAMM::InsufficientLiquidity {},
-                ));
+                return Err(TIPFeeAMMError::insufficient_liquidity());
             }
             self.set_total_supply(&pool_id, MIN_LIQUIDITY);
             mean - MIN_LIQUIDITY
@@ -352,9 +340,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         };
 
         if liquidity.is_zero() {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
+            return Err(TIPFeeAMMError::insufficient_liquidity());
         }
 
         // Transfer tokens from user to contract
@@ -368,7 +354,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_user_token,
                 },
             )
-            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
+            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
         let _ = TIP20Token::new(validator_token_id, self.storage)
@@ -380,7 +366,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_validator_token,
                 },
             )
-            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
+            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
         // Update reserves
         pool.reserve_user_token += amount_user_token.to::<u128>();
@@ -407,7 +393,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 })
                 .into_log_data(),
             )
-            .map_err(|_| TIPFeeAMMError::InternalError(ITIPFeeAMM::InternalError {}))?;
+            .map_err(|_| TIPFeeAMMError::internal_error())?;
 
         Ok(liquidity)
     }
@@ -426,9 +412,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         // Check user has sufficient liquidity
         let balance = self.get_balance_of(&pool_id, &msg_sender);
         if balance < liquidity {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
+            return Err(TIPFeeAMMError::insufficient_liquidity());
         }
 
         let mut pool = self.get_pool(&pool_id);
@@ -456,7 +440,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_user_token,
                 },
             )
-            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
+            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
         let _ = TIP20Token::new(validator_token_id, self.storage)
@@ -467,7 +451,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_validator_token,
                 },
             )
-            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
+            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
         // Emit Burn event
         self.storage
@@ -484,7 +468,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 })
                 .into_log_data(),
             )
-            .map_err(|_| TIPFeeAMMError::InternalError(ITIPFeeAMM::InternalError {}))?;
+            .map_err(|_| TIPFeeAMMError::internal_error())?;
 
         Ok((amount_user_token, amount_validator_token))
     }
@@ -502,9 +486,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             (liquidity * U256::from(pool.reserve_validator_token)) / total_supply;
 
         if amount_user_token.is_zero() || amount_validator_token.is_zero() {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientLiquidity(
-                ITIPFeeAMM::InsufficientLiquidity {},
-            ));
+            return Err(TIPFeeAMMError::insufficient_liquidity());
         }
 
         // Check that withdrawal does not violate pending swaps
@@ -512,15 +494,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let available_validator_token = self.get_effective_validator_reserve(pool_id);
 
         if amount_user_token > available_user_token {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientReserves(
-                ITIPFeeAMM::InsufficientReserves {},
-            ));
+            return Err(TIPFeeAMMError::insufficient_reserves());
         }
 
         if amount_validator_token > available_validator_token {
-            return Err(ITIPFeeAMM::ITIPFeeAMMErrors::InsufficientReserves(
-                ITIPFeeAMM::InsufficientReserves {},
-            ));
+            return Err(TIPFeeAMMError::insufficient_reserves());
         }
 
         Ok((amount_user_token, amount_validator_token))

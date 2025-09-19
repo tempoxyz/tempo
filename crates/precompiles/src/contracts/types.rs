@@ -327,6 +327,36 @@ impl TIPFeeAMMError {
     pub const fn invalid_amount() -> Self {
         Self::InvalidAmount(ITIPFeeAMM::InvalidAmount {})
     }
+
+    /// Creates an error for token transfer failure.
+    pub const fn token_transfer_failed() -> Self {
+        Self::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {})
+    }
+
+    /// Creates an error for invalid swap calculation.
+    pub const fn invalid_swap_calculation() -> Self {
+        Self::InvalidSwapCalculation(ITIPFeeAMM::InvalidSwapCalculation {})
+    }
+
+    /// Creates an error for insufficient liquidity for pending operations.
+    pub const fn insufficient_liquidity_for_pending() -> Self {
+        Self::InsufficientLiquidityForPending(ITIPFeeAMM::InsufficientLiquidityForPending {})
+    }
+
+    /// Creates an error for division by zero.
+    pub const fn division_by_zero() -> Self {
+        Self::DivisionByZero(ITIPFeeAMM::DivisionByZero {})
+    }
+
+    /// Creates an error for invalid new reserves.
+    pub const fn invalid_new_reserves() -> Self {
+        Self::InvalidNewReserves(ITIPFeeAMM::InvalidNewReserves {})
+    }
+
+    /// Creates an error for internal errors.
+    pub const fn internal_error() -> Self {
+        Self::InternalError(ITIPFeeAMM::InternalError {})
+    }
 }
 
 impl TIP20Error {
