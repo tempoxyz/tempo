@@ -995,8 +995,11 @@ mod tests {
         assert!(new_x > 0, "New reserve should be positive");
 
         // Test error handling with extreme values
+        // When y is much larger than liquidity, calculate_new_reserve should fail
         let large_y = uint!(1_000_000_U256) * uint!(10_U256).pow(U256::from(6));
-        let _zero_result = amm.calculate_new_reserve(large_y, l);
+        let extreme_result = amm.calculate_new_reserve(large_y, l);
+        assert!(matches!(extreme_result, Err(TIPFeeAMMError::InvalidNewReserves(_))),
+            "Should fail with InvalidNewReserves for extreme values where y > l");
 
         Ok(())
     }
