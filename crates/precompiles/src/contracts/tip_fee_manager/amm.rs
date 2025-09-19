@@ -238,7 +238,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         let amount_out = x - new_x;
 
-        if !self.can_support_pending_swaps(pool_id, new_x, new_y) {
+        if !self.can_support_pending_swaps(pool_id, new_y) {
             return Err(TIPFeeAMMError::InsufficientLiquidityForPending(
                 ITIPFeeAMM::InsufficientLiquidityForPending {},
             ));
@@ -496,7 +496,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
 
         // Check that withdrawal does not violate pending swaps
-
         let available_user_token = self.get_effective_user_reserve(pool_id);
         let available_validator_token = self.get_effective_validator_reserve(pool_id);
 
@@ -513,6 +512,24 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
 
         Ok((amount_user_token, amount_validator_token))
+    }
+
+    fn execute_pending_fee_swaps(&mut self, user_token: Address, validator_token: Address) -> U256 {
+        let pool_id = self.get_pool_id(user_token, validator_token);
+        let mut pool = self.get_pool(&pool_id);
+
+        let amount_in = self.get_pending_fee_swap_in(&pool_id);
+        let pending_out = (amount_in * M) / SCALE;
+
+        // TODO: use checked math for these operations
+        pool.reserve_user_token = (U256::from(pool.reserve_user_token) + amount_in).to::<u128>();
+        pool.reserve_validator_token =
+            (U256::from(pool.reserve_validator_token) - pending_out).to::<u128>();
+
+        self.set_pool(&pool_id, &pool);
+        self.set_pending_fee_swap_in(&pool_id, U256::ZERO);
+
+        pending_out
     }
 
     /// Set pool data in storage
@@ -559,34 +576,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.sstore(slot, amount);
     }
 
-    fn can_support_pending_swaps(
-        &mut self,
-        pool_id: &B256,
-        new_user_reserve: U256,
-        new_validator_reserve: U256,
-    ) -> bool {
+    fn can_support_pending_swaps(&mut self, pool_id: &B256, new_validator_reserve: U256) -> bool {
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
         let pending_out = (pending_fee_swap_in * M) / SCALE;
 
         new_validator_reserve >= pending_out
-    }
-
-    fn execute_pending_fee_swaps(&mut self, user_token: Address, validator_token: Address) -> U256 {
-        let pool_id = self.get_pool_id(user_token, validator_token);
-        let mut pool = self.get_pool(&pool_id);
-
-        let amount_in = self.get_pending_fee_swap_in(&pool_id);
-        let pending_out = (amount_in * M) / SCALE;
-
-        // TODO: use checked math for these operations
-        pool.reserve_user_token = (U256::from(pool.reserve_user_token) + amount_in).to::<u128>();
-        pool.reserve_validator_token =
-            (U256::from(pool.reserve_validator_token) - pending_out).to::<u128>();
-
-        self.set_pool(&pool_id, &pool);
-        self.set_pending_fee_swap_in(&pool_id, U256::ZERO);
-
-        pending_out
     }
 }
 
