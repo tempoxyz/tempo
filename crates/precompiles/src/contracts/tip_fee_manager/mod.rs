@@ -43,10 +43,9 @@ pub mod slots {
     pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
     pub const USER_TOKENS: U256 = uint!(5_U256);
     pub const COLLECTED_FEES: U256 = uint!(6_U256);
-
-    // Pending fee tokens dynamic array
-    pub const PENDING_FEE_TOKENS_LENGTH: U256 = uint!(7_U256);
-    pub const PENDING_FEE_TOKENS_BASE: U256 = uint!(8_U256);
+    pub const TOKENS_WITH_FEES_LENGTH: U256 = uint!(7_U256);
+    pub const TOKENS_WITH_FEES_BASE: U256 = uint!(8_U256);
+    pub const TOKEN_IN_FEES_ARRAY: U256 = uint!(9_U256);
 
     pub fn validator_token_slot(validator: &Address) -> U256 {
         mapping_slot(validator, VALIDATOR_TOKENS)
@@ -56,19 +55,34 @@ pub mod slots {
         mapping_slot(user, USER_TOKENS)
     }
 
-    pub fn collected_fees_slot(token: &Address) -> U256 {
-        mapping_slot(token, COLLECTED_FEES)
+    pub fn collected_fees_slot() -> U256 {
+        COLLECTED_FEES
     }
 
-    /// Get slot for the length of pending fee tokens array
-    pub fn pending_fee_tokens_length_slot() -> U256 {
-        PENDING_FEE_TOKENS_LENGTH
+    /// Get slot for the length of tokens with fees array
+    pub fn tokens_with_fees_length_slot() -> U256 {
+        TOKENS_WITH_FEES_LENGTH
     }
 
-    /// Get slot for specific index in pending fee tokens array
-    pub fn pending_fee_tokens_slot(index: U256) -> U256 {
-        PENDING_FEE_TOKENS_BASE + index
+    /// Get slot for specific index in tokens with fees array
+    pub fn tokens_with_fees_slot(index: U256) -> U256 {
+        TOKENS_WITH_FEES_BASE + index
     }
+
+    /// Get slot for token in fees array mapping
+    pub fn token_in_fees_array_slot(token: &Address) -> U256 {
+        mapping_slot(token, TOKEN_IN_FEES_ARRAY)
+    }
+}
+
+// TODO: find a better way to implement this validation
+fn is_tip20(token: &Address) -> bool {
+    let bytes = token.as_slice();
+    bytes.len() == 20
+        && &bytes[0..14]
+            == &[
+                0x20, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ]
 }
 
 /// TipFeeManager implements the FeeManager contract which inherits from TIPFeeAMM.
@@ -119,7 +133,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn get_validator_token(&mut self) -> Address {
         let validator_slot = validator_token_slot(&self.beneficiary);
         let token = self.sload(validator_slot).into_address();
-
         if token.is_zero() {
             DEFAULT_FEE_TOKEN
         } else {
@@ -132,13 +145,17 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         sender: &Address,
         call: IFeeManager::setValidatorTokenCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // TODO: ensure sender is a validator
+        // TODO: prevent changing within the validator's own block to avoid edge cases
+        // require(msg.sender != block.coinbase, "CANNOT_CHANGE_WITHIN_BLOCK");
 
-        if call.token.is_zero() {
+        if !is_tip20(&call.token) {
             return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
                 IFeeManager::InvalidToken {},
             ));
         }
+
+        // TODO: validate USD currency requirement
+        // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
 
         let slot = validator_token_slot(sender);
         self.sstore(slot, call.token.into_u256());
@@ -163,11 +180,14 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         sender: &Address,
         call: IFeeManager::setUserTokenCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        if call.token.is_zero() {
+        if !is_tip20(&call.token) {
             return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
                 IFeeManager::InvalidToken {},
             ));
         }
+
+        // TODO: validate USD currency requirement
+        // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
 
         let slot = user_token_slot(sender);
         self.sstore(slot, call.token.into_u256());
@@ -194,56 +214,40 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn collect_fee_pre_tx(
         &mut self,
         user: Address,
+        to: Address,
         max_amount: U256,
-        validator: Address,
     ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
         // Get the validator's token preference
-        let validator_slot = validator_token_slot(&validator);
-        let validator_token = self.sload(validator_slot).into_address();
+        let validator_slot = validator_token_slot(&self.beneficiary);
+        let mut validator_token = self.sload(validator_slot).into_address();
 
         if validator_token.is_zero() {
-            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
-                IFeeManager::InvalidToken {},
-            ));
+            validator_token = DEFAULT_FEE_TOKEN;
         }
 
-        // Get the user's fee token preference (falls back to validator token if not set)
+        // Determine user token based on preference hierarchy
         let user_slot = user_token_slot(&user);
-        let user_token_raw = self.sload(user_slot).into_address();
-        let user_token = if user_token_raw.is_zero() {
-            if validator_token.is_zero() {
-                DEFAULT_FEE_TOKEN
-            } else {
-                validator_token
-            }
+        let user_token_preference = self.sload(user_slot).into_address();
+        let user_token = if user_token_preference.is_zero() {
+            // NOTE: this is a special case on Tempo where we check if the user has a fee token preference.
+            // Fee token preferences follow the following hierarchy: transaction > account > to_address > validator
+            if is_tip20(&to) { to } else { validator_token }
         } else {
-            user_token_raw
+            user_token_preference
         };
 
         // Verify pool liquidity if user token differs from validator token
         if user_token != validator_token {
             let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-            let pool_key = PoolKey::new(user_token, validator_token);
-            let pool_id = pool_key.get_id();
-
-            // Check pool reserves for sufficient liquidity
-            // TODO: also check pending liq/effective reserves
-            let pool = amm.get_pool(&pool_id);
-            if U256::from(pool.reserve_user_token) < Self::MINIMUM_BALANCE
-                || U256::from(pool.reserve_validator_token) < Self::MINIMUM_BALANCE
-            {
-                return Err(IFeeManager::IFeeManagerErrors::InsufficientPoolBalance(
-                    IFeeManager::InsufficientPoolBalance {},
+            if !amm.has_liquidity(user_token, validator_token, max_amount) {
+                return Err(IFeeManager::IFeeManagerErrors::InsufficientLiquidity(
+                    IFeeManager::InsufficientLiquidity {},
                 ));
             }
         }
 
-        // Transfer maximum fee from user to fee manager
-        // TODO: Add validation when setting user/validator tokens to ensure they are TIP20s
-        // rather than checking here. This validation should be added in setUserToken/setValidatorToken.
         let token_id = address_to_token_id_unchecked(&user_token);
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
-
         tip20_token
             .transfer_from(
                 &self.contract_address,
@@ -274,8 +278,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         refund_amount: U256,
         user_token: Address,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // TODO: should we skip if user.is_zero()?
-
         // Refund unused tokens to user
         if !refund_amount.is_zero() {
             let token_id = address_to_token_id_unchecked(&user_token);
@@ -296,23 +298,30 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })?;
         }
 
-        // Track collected fees
+        // Execute fee swap and track collecte fees
         if !actual_used.is_zero() {
-            // If the validator token is different than the user token, add the amount used to
-            // pending fee swaps to be executed in `execute_block`
             let validator_token = self.get_validator_token();
-            if user_token != validator_token {
-                let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
-                let pool_id = fee_amm.get_pool_id(user_token, validator_token);
-                let mut pool = fee_amm.get_pool(&pool_id);
-                pool.pending_fee_swap_in += actual_used.to::<u128>();
-                fee_amm.set_pool(&pool_id, &pool);
+            let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
+            fee_amm
+                .fee_swap(user_token, validator_token, actual_used)
+                .map_err(|_| {
+                    IFeeManager::IFeeManagerErrors::InsufficientLiquidity(
+                        IFeeManager::InsufficientLiquidity {},
+                    )
+                })?;
 
-                // Add user_token to pending fee tokens array for processing in execute_block
-                self.push_pending_fee_token(user_token);
+            if user_token == validator_token {
+                let slot = collected_fees_slot();
+                let current_fees = self.sload(slot);
+                self.sstore(slot, current_fees + actual_used);
+            } else {
+                // Track the token to be swapped
+                let slot = slots::token_in_fees_array_slot(&user_token);
+                if self.sload(slot).is_zero() {
+                    self.add_token_to_fees_array(user_token);
+                    self.sstore(slot, U256::from(true));
+                }
             }
-
-            self.increment_collected_fees(&user_token, actual_used);
         }
 
         Ok(())
@@ -322,44 +331,43 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         &mut self,
         sender: &Address,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // Only protocol can call this (block-end execution)
+        // Only protocol can call this
         if *sender != Address::ZERO {
             return Err(IFeeManager::IFeeManagerErrors::OnlySystemContract(
                 IFeeManager::OnlySystemContract {},
             ));
         }
 
+        // Get current validator's preferred token
+        // If the token is not set we return the default fee token
         let validator_token = self.get_validator_token();
-        // TODO: do we want to default to a token here or throw an error? We should probably
-        // enforce that a validator has a fee token
-        if validator_token.is_zero() {
-            // If no validator token set, nothing to do
-            return Ok(());
-        }
 
-        let pending_fee_tokens = self.drain_pending_fee_tokens();
+        // Process all collected fees and execute pending swaps
+        let tokens_with_fees = self.drain_tokens_with_fees();
         let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
 
-        let mut total_amount_out = U256::ZERO;
-        for user_token in pending_fee_tokens.iter() {
-            let amount_out = fee_amm
-                .execute_pending_fee_swaps(*user_token, validator_token)
-                .expect("TODO: handle error");
+        let mut collected_fees = U256::ZERO;
+        for token in tokens_with_fees.iter() {
+            if *token != validator_token {
+                // Check if pool exists
+                let pool_id = fee_amm.get_pool_id(*token, validator_token);
+                let pool = fee_amm.get_pool(&pool_id);
 
-            total_amount_out += amount_out;
+                if pool.reserve_user_token > 0 || pool.reserve_validator_token > 0 {
+                    collected_fees += fee_amm.execute_pending_fee_swaps(*token, validator_token);
+                }
+            }
         }
 
-        if !total_amount_out.is_zero() {
-            // Transfer the total amount out to the beneficiary
+        if !collected_fees.is_zero() {
             let token_id = address_to_token_id_unchecked(&validator_token);
             let mut token = TIP20Token::new(token_id, self.storage);
-
             token
                 .transfer(
                     &self.contract_address,
                     ITIP20::transferCall {
                         to: self.beneficiary,
-                        amount: total_amount_out,
+                        amount: collected_fees,
                     },
                 )
                 .map_err(|_| {
@@ -372,46 +380,37 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
-    pub fn get_collected_fees(&mut self, token: &Address) -> U256 {
-        let slot = collected_fees_slot(token);
-        self.sload(slot)
-    }
-
-    fn increment_collected_fees(&mut self, token: &Address, value: U256) {
-        let slot = collected_fees_slot(token);
-        let current_val = self.sload(slot);
-        self.sstore(slot, current_val + value);
-    }
-
-    /// Push a token to the pending fee tokens array
-    fn push_pending_fee_token(&mut self, token: Address) {
-        // Get length of the array and store the pending token
-        let length_slot = pending_fee_tokens_length_slot();
+    /// Add a token to the tokens with fees array
+    fn add_token_to_fees_array(&mut self, token: Address) {
+        let length_slot = slots::tokens_with_fees_length_slot();
         let length = self.sload(length_slot);
-        let slot = pending_fee_tokens_slot(length);
-        self.sstore(slot, token.into_u256());
-
-        // Update the length of the array
+        let token_slot = slots::tokens_with_fees_slot(length);
+        self.sstore(token_slot, token.into_u256());
         self.sstore(length_slot, length + U256::ONE);
     }
 
-    /// Drain all pending fee tokens by popping from the back until empty
+    /// Drain all tokens with fees by popping from the back until empty
     /// Returns a `Vec<Address>` with all the tokens that were in storage
-    fn drain_pending_fee_tokens(&mut self) -> Vec<Address> {
+    /// Also sets token_in_fees_array to false for each token
+    fn drain_tokens_with_fees(&mut self) -> Vec<Address> {
         let mut tokens = Vec::new();
-        let length_slot = pending_fee_tokens_length_slot();
+        let length_slot = slots::tokens_with_fees_length_slot();
         let mut length = self.sload(length_slot);
 
         while !length.is_zero() {
             let last_index = length - U256::ONE;
-            let slot = pending_fee_tokens_slot(last_index);
+            let slot = slots::tokens_with_fees_slot(last_index);
             let token = self.sload(slot).into_address();
             tokens.push(token);
+
+            // Set token in fees array to false
+            let in_fees_slot = slots::token_in_fees_array_slot(&token);
+            self.sstore(in_fees_slot, U256::ZERO);
 
             length = last_index;
         }
 
-        // Update storage with final length (0)
+        // Update storage with final length
         self.sstore(length_slot, U256::ZERO);
 
         tokens

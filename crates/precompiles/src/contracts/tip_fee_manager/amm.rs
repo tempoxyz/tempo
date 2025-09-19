@@ -145,7 +145,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         U256::from(pool.reserve_user_token) + pending_fee_swap_in
     }
 
-    fn fee_swap(
+    pub fn fee_swap(
         &mut self,
         user_token: Address,
         validator_token: Address,
@@ -514,7 +514,11 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok((amount_user_token, amount_validator_token))
     }
 
-    fn execute_pending_fee_swaps(&mut self, user_token: Address, validator_token: Address) -> U256 {
+    pub fn execute_pending_fee_swaps(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+    ) -> U256 {
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(&pool_id);
 

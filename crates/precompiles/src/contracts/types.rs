@@ -267,7 +267,7 @@ sol! {
         error OnlySystemContract();
         error InvalidToken();
         error PoolDoesNotExist();
-        error InsufficientPoolBalance();
+        error InsufficientLiquidity();
         error InsufficientFeeTokenBalance();
     }
 }
