@@ -5,6 +5,7 @@ use alloy::{
 };
 use alloy_signer_local::coins_bip39::English;
 use clap::Parser;
+use itertools::Itertools;
 use rayon::prelude::*;
 use reth::revm::{
     context::ContextTr,
@@ -23,7 +24,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
-        tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE,
+        tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE, types::ITIPFeeAMM,
     },
 };
 
@@ -78,53 +79,45 @@ impl GenesisArgs {
         // Deploy TestUSD fee token
         let admin = addresses[0];
         let mut evm = setup_tempo_evm();
-        let fee_token_id = create_and_mint_token(
-            "TestUSD",
-            "TestUSD",
+        let (_, alpha_token_address) = create_and_mint_token(
+            "AlphaUSD",
+            "AlphaUSD",
             "USD",
             admin,
+            &addresses,
             U256::from(u128::MAX),
             &mut evm,
         )?;
 
-        {
-            let block = evm.block.clone();
-            let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-            let mut provider = EvmStorageProvider::new(evm_internals, 1);
-            let mut token = TIP20Token::new(fee_token_id, &mut provider);
-            let fee_token = token.token_address;
-            println!("Minting TestUSD to all addresses");
-            // Mint TestUSD to all addresses
-            for address in addresses.iter().tqdm() {
-                token
-                    .mint(
-                        &admin,
-                        ITIP20::mintCall {
-                            to: *address,
-                            amount: U256::from(u64::MAX),
-                        },
-                    )
-                    .expect("Could not mint fee token");
-            }
+        let (_, beta_token_address) = create_and_mint_token(
+            "BetaUSD",
+            "BetaUSD",
+            "USD",
+            admin,
+            &addresses,
+            U256::from(u128::MAX),
+            &mut evm,
+        )?;
 
-            let mut fee_manager =
-                TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, token.storage);
-            fee_manager
-                .initialize()
-                .expect("Could not init fee manager");
-            for address in addresses.iter().tqdm() {
-                fee_manager
-                    .set_user_token(address, IFeeManager::setUserTokenCall { token: fee_token })
-                    .expect("Could not set fee token");
-            }
+        let (_, theta_token_address) = create_and_mint_token(
+            "ThetaUSD",
+            "ThetaUSD",
+            "USD",
+            admin,
+            &addresses,
+            U256::from(u128::MAX),
+            &mut evm,
+        )?;
 
-            fee_manager
-                .set_validator_token(
-                    &Address::ZERO,
-                    IFeeManager::setValidatorTokenCall { token: fee_token },
-                )
-                .expect("Could not 0x00 validator fee token");
-        }
+        println!("Initializing fee manager");
+        initialize_fee_manager(alpha_token_address, addresses, &mut evm);
+        println!("Minting pairwise FeeAMM liquidity");
+        mint_pairwise_liquidity(
+            vec![alpha_token_address, beta_token_address, theta_token_address],
+            U256::from(10u64.pow(10)),
+            admin,
+            &mut evm,
+        );
 
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
@@ -242,9 +235,10 @@ fn create_and_mint_token(
     name: &str,
     currency: &str,
     admin: Address,
+    recipients: &Vec<Address>,
     mint_amount: U256,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-) -> eyre::Result<u64> {
+) -> eyre::Result<(u64, Address)> {
     let chain_id = evm.chain_id();
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
@@ -292,5 +286,81 @@ fn create_and_mint_token(
         )
         .expect("Token minting failed");
 
-    Ok(token_id)
+    for address in recipients.iter().tqdm() {
+        token
+            .mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: *address,
+                    amount: U256::from(u64::MAX),
+                },
+            )
+            .expect("Could not mint fee token");
+    }
+
+    Ok((token_id, token.token_address))
+}
+
+fn initialize_fee_manager(
+    default_fee_address: Address,
+    initial_accounts: Vec<Address>,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+) {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+    let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
+    fee_manager
+        .initialize()
+        .expect("Could not init fee manager");
+    for address in initial_accounts.iter().tqdm() {
+        fee_manager
+            .set_user_token(
+                address,
+                IFeeManager::setUserTokenCall {
+                    token: default_fee_address,
+                },
+            )
+            .expect("Could not set fee token");
+    }
+
+    fee_manager
+        .set_validator_token(
+            &Address::ZERO,
+            IFeeManager::setValidatorTokenCall {
+                token: default_fee_address,
+            },
+        )
+        .expect("Could not 0x00 validator fee token");
+}
+
+fn mint_pairwise_liquidity(
+    tokens: Vec<Address>,
+    amount: U256,
+    admin: Address,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+) {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+    let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
+
+    for token_addresses in tokens.into_iter().permutations(2).into_iter() {
+        let (token_a, token_b) = (token_addresses[0], token_addresses[1]);
+
+        fee_manager
+            .mint(
+                admin,
+                ITIPFeeAMM::mintCall {
+                    userToken: token_a,
+                    validatorToken: token_b,
+                    amountUserToken: amount,
+                    amountValidatorToken: amount,
+                    to: admin,
+                },
+            )
+            .expect("Could not mint A -> B Liquidity pool");
+    }
 }

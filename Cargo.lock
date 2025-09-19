@@ -12466,6 +12466,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "itertools 0.14.0",
  "mimalloc",
  "parking_lot",
  "ratelimit",

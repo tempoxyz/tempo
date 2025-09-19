@@ -39,6 +39,7 @@ http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
+itertools = "0.14.0"
 mimalloc = "0.1.47"
 parking_lot = "0.12.4"
 ratelimit = "0.10"
