@@ -215,6 +215,8 @@ sol! {
         error InvalidNewReserves();
         error CannotSupportPendingSwaps();
         error DivisionByZero();
+        error InvalidSwapCalculation();
+        error InsufficientLiquidityForPending();
     }
 
 
