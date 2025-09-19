@@ -1,18 +1,19 @@
 use crate::crescendo::{config, tx_queue::TX_QUEUE};
 use alloy::{
     network::TxSignerSync,
-    primitives::{Address, TxKind, U128, U256},
+    primitives::{Address, TxHash, TxKind, U128, U256},
     rpc::client::ClientBuilder,
     sol,
     sol_types::SolCall,
 };
-use alloy_consensus::{SignableTransaction, TxLegacy};
+use alloy_consensus::{SignableTransaction, TxLegacy, transaction::RlpEcdsaEncodableTx};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use dashmap::DashMap;
 use eyre::Context;
 use futures::{StreamExt, stream::FuturesUnordered};
 use rayon::prelude::*;
 use std::{sync::Arc, time::Instant};
+use alloy::providers::ProviderBuilder;
 use tempo_precompiles::contracts::ITIP20;
 use thousands::Separable;
 
@@ -166,11 +167,12 @@ impl TxGenerator {
     }
 }
 
-pub fn sign_and_encode_tx(signer: &PrivateKeySigner, mut tx: TxLegacy) -> Vec<u8> {
+pub fn sign_and_encode_tx(signer: &PrivateKeySigner, mut tx: TxLegacy) -> (TxHash, Vec<u8>) {
     // TODO: Upstream to alloy the ability to use the secp256k1
     // crate instead of k256 for this which is like 5x+ faster.
     let signature = signer.sign_transaction_sync(&mut tx).unwrap();
     let mut payload = Vec::new();
+    let tx_hash = tx.tx_hash(&signature);
     tx.into_signed(signature).eip2718_encode(&mut payload);
-    payload
+    (tx_hash, payload)
 }
