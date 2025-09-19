@@ -531,6 +531,19 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.set_pool(&pool_id, &pool);
         self.set_pending_fee_swap_in(&pool_id, U256::ZERO);
 
+        self.storage
+            .emit_event(
+                self.contract_address,
+                TIPFeeAMMEvent::FeeSwap(ITIPFeeAMM::FeeSwap {
+                    userToken: user_token,
+                    validatorToken: validator_token,
+                    amountIn: amount_in,
+                    amountOut: pending_out,
+                })
+                .into_log_data(),
+            )
+            .map_err(|_| TIPFeeAMMError::internal_error())?;
+
         pending_out
     }
 
