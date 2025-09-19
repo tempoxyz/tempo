@@ -5,7 +5,6 @@ use alloy::{
 };
 use alloy_signer_local::coins_bip39::English;
 use clap::Parser;
-use itertools::Itertools;
 use rayon::prelude::*;
 use reth::revm::{
     context::ContextTr,
