@@ -137,9 +137,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         sender: &Address,
         call: IFeeManager::setValidatorTokenCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
-        // TODO: prevent changing within the validator's own block to avoid edge cases
-        // require(msg.sender != block.coinbase, "CANNOT_CHANGE_WITHIN_BLOCK");
-
         if !is_tip20(&call.token) {
             return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
                 IFeeManager::InvalidToken {},
@@ -575,9 +572,6 @@ impl<'a, S: StorageProvider> StorageOps for TipFeeManager<'a, S> {
 
 #[cfg(test)]
 mod tests {
-
-    use std::u64;
-
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,

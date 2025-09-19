@@ -131,7 +131,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     fn get_effective_validator_reserve(&mut self, pool_id: &B256) -> U256 {
-        let pool = self.get_pool(&pool_id);
+        let pool = self.get_pool(pool_id);
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
         let pending_out = (pending_fee_swap_in * M) / SCALE;
 
@@ -139,7 +139,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 
     fn get_effective_user_reserve(&mut self, pool_id: &B256) -> U256 {
-        let pool = self.get_pool(&pool_id);
+        let pool = self.get_pool(pool_id);
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
 
         U256::from(pool.reserve_user_token) + pending_fee_swap_in
