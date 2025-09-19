@@ -217,6 +217,8 @@ sol! {
         error DivisionByZero();
         error InvalidSwapCalculation();
         error InsufficientLiquidityForPending();
+        error TokenTransferFailed();
+        error InternalError();
     }
 
 

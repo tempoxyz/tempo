@@ -40,6 +40,8 @@ pub struct PoolKey {
 }
 
 impl PoolKey {
+    /// Creates a new pool key from user and validator token addresses.
+    /// This key uniquely identifies a trading pair in the AMM.
     pub fn new(user_token: Address, validator_token: Address) -> Self {
         Self {
             user_token,
@@ -47,6 +49,8 @@ impl PoolKey {
         }
     }
 
+    /// Generates a unique pool ID by hashing the token pair addresses.
+    /// Uses keccak256 to create a deterministic identifier for this pool.
     pub fn get_id(&self) -> B256 {
         keccak256((self.user_token, self.validator_token).abi_encode())
     }
@@ -91,7 +95,8 @@ pub struct TIPFeeAMM<'a, S: StorageProvider> {
 }
 
 impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
-    /// Create new FeeAMM instance
+    /// Creates a new TIPFeeAMM instance with the given contract address and storage provider.
+    /// This is the main entry point for interacting with the AMM contract.
     pub fn new(contract_address: Address, storage: &'a mut S) -> Self {
         Self {
             contract_address,
@@ -99,12 +104,14 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
     }
 
-    /// Get pool ID for a token pair
+    /// Gets the pool id for a given set of tokens. Note that the pool id is dependent on the
+    /// ordering of the tokens ie. (token_a, token_b) results in a different pool id
+    /// than (token_b, token_a)
     pub fn get_pool_id(&self, user_token: Address, validator_token: Address) -> B256 {
         PoolKey::new(user_token, validator_token).get_id()
     }
 
-    /// Get pool data for the given pool ID
+    /// Retrieves a pool for a given `pool_id` from storage
     pub fn get_pool(&mut self, pool_id: &B256) -> Pool {
         let slot = slots::pool_slot(pool_id);
         let reserves = self.sload(slot);
@@ -117,7 +124,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         }
     }
 
-    // TODO: docs
+    /// Checks if pool has enough liquidity for a fee swap
     pub fn has_liquidity(
         &mut self,
         user_token: Address,
@@ -130,6 +137,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         amount_out <= available_validator_token
     }
 
+    /// Calculate validator token reserve minus pending swaps
     fn get_effective_validator_reserve(&mut self, pool_id: &B256) -> U256 {
         let pool = self.get_pool(pool_id);
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
@@ -138,6 +146,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         U256::from(pool.reserve_validator_token) - pending_out
     }
 
+    /// Calculate user token reserve plus pending swaps
     fn get_effective_user_reserve(&mut self, pool_id: &B256) -> U256 {
         let pool = self.get_pool(pool_id);
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
@@ -145,6 +154,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         U256::from(pool.reserve_user_token) + pending_fee_swap_in
     }
 
+    /// Execute a swap from one fee token to another
     pub fn fee_swap(
         &mut self,
         user_token: Address,
@@ -164,6 +174,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok(())
     }
 
+    /// Swap to rebalance a fee token pool
     pub fn rebalance_swap(
         &mut self,
         msg_sender: Address,
@@ -177,7 +188,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let amount_out = self.execute_rebalance_swap(&pool_id, &mut pool, amount_in)?;
 
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
-        let _ = TIP20Token::new(validator_token_id, self.storage)
+        TIP20Token::new(validator_token_id, self.storage)
             .transfer_from(
                 &self.contract_address,
                 ITIP20::transferFromCall {
@@ -186,10 +197,10 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_in,
                 },
             )
-            .expect("TODO: handle error");
+            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
 
         let user_token_id = address_to_token_id_unchecked(&user_token);
-        let _ = TIP20Token::new(user_token_id, self.storage)
+        TIP20Token::new(user_token_id, self.storage)
             .transfer(
                 &self.contract_address,
                 ITIP20::transferCall {
@@ -197,7 +208,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_out,
                 },
             )
-            .expect("TODO: handle error");
+            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
 
         self.storage
             .emit_event(
@@ -211,11 +222,12 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(|_| TIPFeeAMMError::InternalError(ITIPFeeAMM::InternalError {}))?;
 
         Ok(amount_out)
     }
 
+    /// Execute a rebalance swap and calculation reserve updates
     fn execute_rebalance_swap(
         &mut self,
         pool_id: &B256,
@@ -269,7 +281,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         (numerator * SQRT_SCALE) / denominator
     }
 
-    /// Calculate new reserve after swap
+    /// Calculate new reserve after a fee token swap
     pub fn calculate_new_reserve(
         &self,
         known_validator_reserve: U256,
@@ -299,7 +311,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok(result - l)
     }
 
-    /// Mint liquidity tokens
+    /// Mint LP tokens for a given pool
     pub fn mint(
         &mut self,
         msg_sender: Address,
@@ -356,7 +368,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_user_token,
                 },
             )
-            .expect("TODO: handle error");
+            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
 
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
         let _ = TIP20Token::new(validator_token_id, self.storage)
@@ -368,7 +380,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_validator_token,
                 },
             )
-            .expect("TODO: handle error");
+            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
 
         // Update reserves
         pool.reserve_user_token += amount_user_token.to::<u128>();
@@ -395,12 +407,12 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(|_| TIPFeeAMMError::InternalError(ITIPFeeAMM::InternalError {}))?;
 
         Ok(liquidity)
     }
 
-    /// Burn liquidity tokens
+    /// Burn LP tokens for a given pool
     pub fn burn(
         &mut self,
         msg_sender: Address,
@@ -444,7 +456,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_user_token,
                 },
             )
-            .expect("TODO: handle error");
+            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
 
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
         let _ = TIP20Token::new(validator_token_id, self.storage)
@@ -455,7 +467,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                     amount: amount_validator_token,
                 },
             )
-            .expect("TODO: handle error");
+            .map_err(|_| TIPFeeAMMError::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {}))?;
 
         // Emit Burn event
         self.storage
@@ -472,7 +484,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(|_| TIPFeeAMMError::InternalError(ITIPFeeAMM::InternalError {}))?;
 
         Ok((amount_user_token, amount_validator_token))
     }
@@ -514,6 +526,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         Ok((amount_user_token, amount_validator_token))
     }
 
+    /// Execute all pending fee swaps for a pool
     pub fn execute_pending_fee_swaps(
         &mut self,
         user_token: Address,
@@ -568,18 +581,19 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.sstore(slot, balance);
     }
 
-    // NOTE: pendingFeeSwapIn is u128 in reference impl
+    /// Get pending fee swap amount for a pool
     pub fn get_pending_fee_swap_in(&mut self, pool_id: &B256) -> U256 {
         let slot = slots::pending_fee_swap_in_slot(pool_id);
         self.sload(slot)
     }
 
-    // NOTE: pendingFeeSwapIn is u128 in reference impl
+    /// Set pending fee swap amount for a pool
     fn set_pending_fee_swap_in(&mut self, pool_id: &B256, amount: U256) {
         let slot = slots::pending_fee_swap_in_slot(pool_id);
         self.sstore(slot, amount);
     }
 
+    /// Check if new validator reserve can support pending swaps
     fn can_support_pending_swaps(&mut self, pool_id: &B256, new_validator_reserve: U256) -> bool {
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
         let pending_out = (pending_fee_swap_in * M) / SCALE;
@@ -588,7 +602,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     }
 }
 
-/// Integer square root
+/// Calculate integer square rootu
 pub fn sqrt(x: U256) -> U256 {
     if x == U256::ZERO {
         return U256::ZERO;
@@ -603,12 +617,14 @@ pub fn sqrt(x: U256) -> U256 {
 }
 
 impl<'a, S: StorageProvider> StorageOps for TIPFeeAMM<'a, S> {
+    /// Store value in contract storage
     fn sstore(&mut self, slot: U256, value: U256) {
         self.storage
             .sstore(self.contract_address, slot, value)
             .expect("Storage operation failed");
     }
 
+    /// Load value from contract storage
     fn sload(&mut self, slot: U256) -> U256 {
         self.storage
             .sload(self.contract_address, slot)
