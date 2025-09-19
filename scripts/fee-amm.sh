@@ -82,11 +82,6 @@ if [ "$VALIDATOR_FEE_TOKEN" = "$NEW_TOKEN_ADDR" ]; then
   exit 1
 fi
 
-# Create a new pool to fx between fee tokens
-echo "Creating fee token pool between user and validator tokens..."
-cast send $TIP_FEE_MANAGER "createPool(address,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN --private-key $USER_PK
-sleep 2
-
 # Add liquidity to the pool
 echo "Adding liquidity to the pool..."
 LIQUIDITY_AMOUNT="10000000000000"
