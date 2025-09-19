@@ -10,7 +10,7 @@ use crate::{
             amm::{PoolKey, TIPFeeAMM},
             slots::{collected_fees_slot, user_token_slot, validator_token_slot},
         },
-        types::{FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
+        types::{FeeManagerError, FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
     },
 };
 
@@ -119,9 +119,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 self.contract_address,
                 Bytecode::new_legacy(Bytes::from_static(&[0xef])),
             )
-            .map_err(|_| {
-                IFeeManager::IFeeManagerErrors::InternalError(IFeeManager::InternalError {})
-            })?;
+            .map_err(|_| FeeManagerError::internal_error())?;
         Ok(())
     }
 
@@ -141,9 +139,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         call: IFeeManager::setValidatorTokenCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         if !is_tip20(&call.token) {
-            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
-                IFeeManager::InvalidToken {},
-            ));
+            return Err(FeeManagerError::invalid_token());
         }
 
         // TODO: validate USD currency requirement
@@ -162,9 +158,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })
                 .into_log_data(),
             )
-            .map_err(|_| {
-                IFeeManager::IFeeManagerErrors::InternalError(IFeeManager::InternalError {})
-            })?;
+            .map_err(|_| FeeManagerError::internal_error())?;
 
         Ok(())
     }
@@ -175,9 +169,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         call: IFeeManager::setUserTokenCall,
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         if !is_tip20(&call.token) {
-            return Err(IFeeManager::IFeeManagerErrors::InvalidToken(
-                IFeeManager::InvalidToken {},
-            ));
+            return Err(FeeManagerError::invalid_token());
         }
 
         // TODO: validate USD currency requirement
@@ -196,9 +188,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })
                 .into_log_data(),
             )
-            .map_err(|_| {
-                IFeeManager::IFeeManagerErrors::InternalError(IFeeManager::InternalError {})
-            })?;
+            .map_err(|_| FeeManagerError::internal_error())?;
 
         Ok(())
     }
@@ -236,9 +226,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         if user_token != validator_token {
             let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
             if !amm.has_liquidity(user_token, validator_token, max_amount) {
-                return Err(IFeeManager::IFeeManagerErrors::InsufficientLiquidity(
-                    IFeeManager::InsufficientLiquidity {},
-                ));
+                return Err(FeeManagerError::insufficient_liquidity());
             }
         }
 
@@ -253,11 +241,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                     amount: max_amount,
                 },
             )
-            .map_err(|_| {
-                IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                    IFeeManager::InsufficientFeeTokenBalance {},
-                )
-            })?;
+            .map_err(|_| FeeManagerError::insufficient_fee_token_balance())?;
 
         // Return the user's token preference
         Ok(user_token)
@@ -328,9 +312,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         // Only protocol can call this
         if *sender != Address::ZERO {
-            return Err(IFeeManager::IFeeManagerErrors::OnlySystemContract(
-                IFeeManager::OnlySystemContract {},
-            ));
+            return Err(FeeManagerError::only_system_contract());
         }
 
         // Get current validator's preferred token

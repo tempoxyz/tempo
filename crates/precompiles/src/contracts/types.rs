@@ -359,6 +359,33 @@ impl TIPFeeAMMError {
     }
 }
 
+impl FeeManagerError {
+    /// Creates an error for invalid token.
+    pub const fn invalid_token() -> Self {
+        Self::InvalidToken(IFeeManager::InvalidToken {})
+    }
+
+    /// Creates an error for internal errors.
+    pub const fn internal_error() -> Self {
+        Self::InternalError(IFeeManager::InternalError {})
+    }
+
+    /// Creates an error for insufficient liquidity.
+    pub const fn insufficient_liquidity() -> Self {
+        Self::InsufficientLiquidity(IFeeManager::InsufficientLiquidity {})
+    }
+
+    /// Creates an error for insufficient fee token balance.
+    pub const fn insufficient_fee_token_balance() -> Self {
+        Self::InsufficientFeeTokenBalance(IFeeManager::InsufficientFeeTokenBalance {})
+    }
+
+    /// Creates an error for only system contract access.
+    pub const fn only_system_contract() -> Self {
+        Self::OnlySystemContract(IFeeManager::OnlySystemContract {})
+    }
+}
+
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
     pub const fn insufficient_balance() -> Self {
