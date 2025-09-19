@@ -464,7 +464,10 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     let fee_manager_balance0 = user_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     assert_eq!(fee_manager_balance0, amount0);
 
-    let fee_manager_balance1 = validator_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let fee_manager_balance1 = validator_token
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .call()
+        .await?;
     assert_eq!(fee_manager_balance1, amount1);
 
     Ok(())
@@ -548,25 +551,39 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     assert!(burn_receipt.status());
 
     // Calculate expected amounts returned
-    let expected_amount0 = (burn_amount * U256::from(pool_before.reserveUserToken)) / total_supply_before;
-    let expected_amount1 = (burn_amount * U256::from(pool_before.reserveValidatorToken)) / total_supply_before;
+    let expected_amount0 =
+        (burn_amount * U256::from(pool_before.reserveUserToken)) / total_supply_before;
+    let expected_amount1 =
+        (burn_amount * U256::from(pool_before.reserveValidatorToken)) / total_supply_before;
 
     // Verify we got tokens back
     let user_balance0_after = user_token.balanceOf(alice).call().await?;
     let user_balance1_after = validator_token.balanceOf(alice).call().await?;
 
-    assert!(user_balance0_after > user_balance0_before, "Should receive userToken");
-    assert!(user_balance1_after > user_balance1_before, "Should receive validatorToken");
+    assert!(
+        user_balance0_after > user_balance0_before,
+        "Should receive userToken"
+    );
+    assert!(
+        user_balance1_after > user_balance1_before,
+        "Should receive validatorToken"
+    );
 
     // Verify amounts match expectations (within small rounding tolerance)
     let received0 = user_balance0_after - user_balance0_before;
     let received1 = user_balance1_after - user_balance1_before;
 
     // Allow for small rounding differences
-    assert!(received0 >= expected_amount0 - U256::from(1) && received0 <= expected_amount0 + U256::from(1),
-            "Received amount0 should be approximately half of deposited amount");
-    assert!(received1 >= expected_amount1 - U256::from(1) && received1 <= expected_amount1 + U256::from(1),
-            "Received amount1 should be approximately half of deposited amount");
+    assert!(
+        received0 >= expected_amount0 - U256::from(1)
+            && received0 <= expected_amount0 + U256::from(1),
+        "Received amount0 should be approximately half of deposited amount"
+    );
+    assert!(
+        received1 >= expected_amount1 - U256::from(1)
+            && received1 <= expected_amount1 + U256::from(1),
+        "Received amount1 should be approximately half of deposited amount"
+    );
 
     // Verify LP balance reduced
     let lp_balance_after = fee_amm.liquidityBalances(pool_id, alice).call().await?;
