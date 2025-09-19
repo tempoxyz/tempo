@@ -431,7 +431,13 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
     pub fn validator_tokens(&mut self, call: IFeeManager::validatorTokensCall) -> Address {
         let slot = validator_token_slot(&call.validator);
-        self.sload(slot).into_address()
+        let token = self.sload(slot).into_address();
+
+        if token.is_zero() {
+            DEFAULT_FEE_TOKEN
+        } else {
+            token
+        }
     }
 
     pub fn get_fee_token_balance(
