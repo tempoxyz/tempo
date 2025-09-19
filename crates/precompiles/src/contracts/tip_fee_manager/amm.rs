@@ -662,11 +662,10 @@ mod tests {
         Address,
     ) {
         let storage = Box::leak(Box::new(HashMapStorageProvider::new(1)));
-        let contract_address = Address::from([0x1u8; 20]);
         let user_token = token_id_to_address(1);
         let validator_token = token_id_to_address(2);
-        let amm = TIPFeeAMM::new(contract_address, storage);
-        (amm, contract_address, user_token, validator_token)
+        let amm = TIPFeeAMM::new(Address::ZERO, storage);
+        (amm, Address::ZERO, user_token, validator_token)
     }
 
     fn setup_pool_with_liquidity(
