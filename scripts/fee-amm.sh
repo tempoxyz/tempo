@@ -63,7 +63,7 @@ sleep 2
 
 # Mint tokens to the user
 echo "Minting new tokens to user..."
-MINT_AMOUNT="5000000000000000000000"
+MINT_AMOUNT="10000000000000000000000000000000000000"
 cast send $NEW_TOKEN_ADDR "mint(address,uint256)" $USER_ADDR $MINT_AMOUNT --private-key $USER_PK
 sleep 2
 
@@ -84,7 +84,7 @@ fi
 
 # Add liquidity to the pool
 echo "Adding liquidity to the pool..."
-LIQUIDITY_AMOUNT="10000000000000"
+LIQUIDITY_AMOUNT="10000000000000000000000000000000"
 cast send $TIP_FEE_MANAGER "mint(address,address,uint256,uint256,address)" $NEW_TOKEN_ADDR $VALIDATOR_FEE_TOKEN $LIQUIDITY_AMOUNT $LIQUIDITY_AMOUNT $USER_ADDR --private-key $USER_PK
 sleep 2
 echo "Liquidity added successfully"
