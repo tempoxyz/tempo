@@ -268,6 +268,7 @@ sol! {
         error PoolDoesNotExist();
         error InsufficientLiquidity();
         error InsufficientFeeTokenBalance();
+        error InternalError();
     }
 }
 

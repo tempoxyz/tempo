@@ -10,7 +10,7 @@ use crate::{
             amm::{PoolKey, TIPFeeAMM},
             slots::{collected_fees_slot, user_token_slot, validator_token_slot},
         },
-        types::{FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
+        types::{FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM, TIPFeeAMMError},
     },
 };
 
@@ -112,14 +112,17 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     /// Initializes the contract
     ///
     /// This ensures the [`TipFeeManager`] isn't empty and prevents state clear.
-    pub fn initialize(&mut self) {
+    pub fn initialize(&mut self) -> Result<(), IFeeManager::IFeeManagerErrors> {
         // must ensure the account is not empty, by setting some code
         self.storage
             .set_code(
                 self.contract_address,
                 Bytecode::new_legacy(Bytes::from_static(&[0xef])),
             )
-            .expect("TODO: handle error");
+            .map_err(|_| {
+                IFeeManager::IFeeManagerErrors::InternalError(IFeeManager::InternalError {})
+            })?;
+        Ok(())
     }
 
     pub fn get_validator_token(&mut self) -> Address {
@@ -159,7 +162,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(|_| {
+                IFeeManager::IFeeManagerErrors::InternalError(IFeeManager::InternalError {})
+            })?;
 
         Ok(())
     }
@@ -191,7 +196,9 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(|_| {
+                IFeeManager::IFeeManagerErrors::InternalError(IFeeManager::InternalError {})
+            })?;
 
         Ok(())
     }
@@ -560,13 +567,13 @@ impl<'a, S: StorageProvider> StorageOps for TipFeeManager<'a, S> {
     fn sstore(&mut self, slot: U256, value: U256) {
         self.storage
             .sstore(self.contract_address, slot, value)
-            .expect("TODO: handle error");
+            .expect("Storage operation failed");
     }
 
     fn sload(&mut self, slot: U256) -> U256 {
         self.storage
             .sload(self.contract_address, slot)
-            .expect("TODO: handle error")
+            .expect("Storage operation failed")
     }
 }
 
