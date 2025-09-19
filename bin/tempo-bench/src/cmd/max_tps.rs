@@ -6,6 +6,7 @@ use crate::crescendo::{
 };
 use clap::Parser;
 use std::{future::pending, path::PathBuf, sync::Arc, thread, time::Duration};
+use eyre::WrapErr;
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -75,10 +76,10 @@ impl TPSArgs {
         for (core_id, worker_type) in workers {
             match worker_type {
                 WorkerType::TxGen => {
-                    let tx_gen_clone = Arc::clone(&tx_generator);
+                    let tx_gen_clone: Arc<TxGenerator> = Arc::clone(&tx_generator);
                     thread::spawn(move || {
                         utils::maybe_pin_thread(core_id);
-                        tx_gen_clone.spawn_worker(tx_gen_worker_id, tx_gen_worker_count);
+                        tx_gen_clone.tx_gen_worker(tx_gen_worker_id, tx_gen_worker_count);
                     });
                     tx_gen_worker_id += 1;
                 }
