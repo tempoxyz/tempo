@@ -200,7 +200,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn collect_fee_pre_tx(
         &mut self,
         user: Address,
-        to: Address,
+        _to: Address,
         max_amount: U256,
     ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
         // Get the validator's token preference
@@ -215,9 +215,13 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let user_slot = user_token_slot(&user);
         let user_token_preference = self.sload(user_slot).into_address();
         let user_token = if user_token_preference.is_zero() {
-            // NOTE: this is a special case on Tempo where we check if the user has a fee token preference.
-            // Fee token preferences follow the following hierarchy: transaction > account > to_address > validator
-            if is_tip20(&to) { to } else { validator_token }
+            // TODO: If a user mints a token before setting their fee token, the tx
+            // incorrectly charges the `to` address as the fee. Disabling this path
+            // for now until we finalize the fee token UX.
+            // // NOTE: this is a special case on Tempo where we check if the user has a fee token preference.
+            // // Fee token preferences follow the following hierarchy: transaction > account > to_address > validator
+            // if is_tip20(&to) { to } else { validator_token }
+            validator_token
         } else {
             user_token_preference
         };

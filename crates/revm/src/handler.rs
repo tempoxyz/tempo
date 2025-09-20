@@ -145,8 +145,10 @@ where
             // ignore balance check.
         } else if account_balance < max_balance_spending {
             return Err(InvalidTransaction::LackOfFundForMaxFee {
-                fee: Box::new(max_balance_spending),
-                balance: Box::new(account_balance),
+                // fee: Box::new(max_balance_spending),
+                // balance: Box::new(account_balance),
+                fee: Box::new(U256::ZERO),
+                balance: Box::new(U256::ZERO),
             }
             .into());
         } else if !max_balance_spending.is_zero() {
@@ -159,12 +161,13 @@ where
                 TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
 
             // Call the precompile function to collect the fee
+            // We specify the `to_addr` to account for the case where the to address is a tip20
+            // token and the fee token is not set for the specified caller.
+            // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
+            let to_addr = tx.kind().into_to().unwrap_or_default();
             fee_manager
-                .collect_fee_pre_tx(tx.caller(), beneficiary, gas_balance_spending)
-                .map_err(|_| InvalidTransaction::LackOfFundForMaxFee {
-                    fee: Box::new(max_balance_spending),
-                    balance: Box::new(account_balance),
-                })?;
+                .collect_fee_pre_tx(tx.caller(), to_addr, gas_balance_spending)
+                .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }
 
         // journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
@@ -203,7 +206,7 @@ where
             // Call collectFeePostTx (handles both refund and fee queuing)
             fee_manager
                 .collect_fee_post_tx(caller, actual_used, refund_amount, self.fee_token)
-                .map_err(|_| EVMError::Custom("Failed to collect post-tx fee".to_string()))?;
+                .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }
         Ok(())
     }

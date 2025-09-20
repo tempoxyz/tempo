@@ -179,7 +179,7 @@ fn main() -> eyre::Result<()> {
                         let txpool = ctx.pool().clone();
                         let ext = TempoFaucetExt::new(
                             txpool,
-                            faucet_args.address(),
+                            faucet_args.addresses(),
                             faucet_args.amount(),
                             faucet_args.provider(),
                         );

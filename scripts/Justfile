@@ -1,6 +1,7 @@
 tempo-dev-up:
 	#!/bin/bash
 	mkdir -p logs
+	RUST_LOG=debug,tempo=trace,tempo_precompiles=trace \
 	cargo run --bin tempo node \
 		--chain genesis/staccato.json \
 		--datadir data \
@@ -29,7 +30,7 @@ tempo-dev-down:
 	else
 		echo "No tempo-dev processes found"
 	fi
-	# Clean up logs and data  
+	# Clean up logs and data
 	rm -rf logs data
 	echo "Cleaned up logs and data directories"
 

@@ -8,8 +8,6 @@ use alloy::{
         Provider,
         fillers::{FillProvider, TxFiller},
     },
-    rpc::types::{TransactionInput, TransactionRequest},
-    sol_types::SolCall,
     transports::{RpcError, TransportErrorKind},
 };
 use async_trait::async_trait;
@@ -27,7 +25,7 @@ use tempo_transaction_pool::transaction::TempoPooledTransaction;
 #[rpc(server, namespace = "tempo")]
 pub trait TempoFaucetExtApi {
     #[method(name = "fundAddress")]
-    async fn fund_address(&self, address: Address) -> RpcResult<B256>;
+    async fn fund_address(&self, address: Address) -> RpcResult<Vec<B256>>;
 }
 
 pub struct TempoFaucetExt<Pool, P, F>
@@ -36,7 +34,7 @@ where
     F: TxFiller<Ethereum>,
 {
     pool: Pool,
-    tip20_address: Address,
+    faucet_token_addresses: Vec<Address>,
     funding_amount: U256,
     provider: FillProvider<F, P, Ethereum>,
 }
@@ -48,13 +46,13 @@ where
 {
     pub fn new(
         pool: Pool,
-        tip20_address: Address,
+        faucet_token_addresses: Vec<Address>,
         funding_amount: U256,
         provider: FillProvider<F, P, Ethereum>,
     ) -> Self {
         Self {
             pool,
-            tip20_address,
+            faucet_token_addresses,
             funding_amount,
             provider,
         }
@@ -96,40 +94,42 @@ where
     P: Provider + Clone + 'static,
     F: TxFiller<Ethereum> + Send + Sync + 'static,
 {
-    async fn fund_address(&self, address: Address) -> RpcResult<B256> {
-        let transfer_call_data = ITIP20::transferCall {
-            to: address,
-            amount: self.funding_amount,
+    async fn fund_address(&self, address: Address) -> RpcResult<Vec<B256>> {
+        let requests = self.faucet_token_addresses.iter().map(|token_address| {
+            ITIP20::new(*token_address, &self.provider)
+                .transfer(address, self.funding_amount)
+                .into_transaction_request()
+        });
+
+        let mut tx_hashes = Vec::new();
+
+        for request in requests {
+            let filled_tx = self
+                .provider
+                .fill(request)
+                .await
+                .map_err(FaucetError::FillError)?;
+
+            let tx: TxEnvelope = filled_tx
+                .try_into_envelope()
+                .map_err(|e| FaucetError::ConversionError(Box::new(e)))?;
+
+            let tx_hash = *tx.hash();
+
+            let tx = tx
+                .try_into_recovered()
+                .map_err(FaucetError::SignatureRecoveryError)?
+                .try_convert::<_, ValueError<TxEnvelope>>()
+                .map_err(|e| FaucetError::ConversionError(Box::new(e)))?;
+
+            self.pool
+                .add_consensus_transaction(tx, TransactionOrigin::Local)
+                .await
+                .map_err(FaucetError::TxPoolError)?;
+
+            tx_hashes.push(tx_hash);
         }
-        .abi_encode();
 
-        let request = TransactionRequest::default()
-            .to(self.tip20_address)
-            .input(TransactionInput::from(transfer_call_data));
-
-        let filled_tx = self
-            .provider
-            .fill(request)
-            .await
-            .map_err(FaucetError::FillError)?;
-
-        let tx: TxEnvelope = filled_tx
-            .try_into_envelope()
-            .map_err(|e| FaucetError::ConversionError(Box::new(e)))?;
-
-        let tx_hash = *tx.hash();
-
-        let tx = tx
-            .try_into_recovered()
-            .map_err(FaucetError::SignatureRecoveryError)?
-            .try_convert::<_, ValueError<TxEnvelope>>()
-            .map_err(|e| FaucetError::ConversionError(Box::new(e)))?;
-
-        self.pool
-            .add_consensus_transaction(tx, TransactionOrigin::Local)
-            .await
-            .map_err(FaucetError::TxPoolError)?;
-
-        Ok(tx_hash)
+        Ok(tx_hashes)
     }
 }
