@@ -10,6 +10,7 @@ members = [
   "bin/tempo-bench",
   "bin/tempo-commonware",
   "bin/tempo-sidecar",
+  "bin/tempo-arber",
   "crates/chainspec",
   "crates/commonware-node",
   "crates/commonware-node-config",
@@ -28,7 +29,7 @@ members = [
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
-  "xtask", "bin/tempo-arber",
+  "xtask",
 ]
 
 # Resolver 3 is available with edition 2024

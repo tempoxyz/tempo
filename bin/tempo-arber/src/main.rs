@@ -1,3 +1,6 @@
+//! Tempo Arbitrage Bot
+//! This binary launches an arb bot responsible for reblancing pools on the TIPFeeAMM
+
 use std::time::Duration;
 
 use alloy::{providers::ProviderBuilder, signers::local::MnemonicBuilder};
