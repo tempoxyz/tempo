@@ -1,6 +1,6 @@
 use crate::rpc::TempoTransactionRequest;
 use alloy::{
-    consensus::{ReceiptWithBloom, TxType, TypedTransaction},
+    consensus::{ReceiptWithBloom, TxType},
     rpc::types::AccessList,
 };
 use alloy_network::{
@@ -8,13 +8,14 @@ use alloy_network::{
     UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
-use std::{error, fmt, fmt::Formatter};
 use tempo_primitives::{
-    TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
+    TempoReceipt, TempoTxEnvelope, TempoTxType,
+    transaction::{TempoTypedTransaction, UnsupportedTransactionTypeEip4844},
 };
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct TempoNetwork;
 
 impl Network for TempoNetwork {
@@ -131,10 +132,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
-        TransactionBuilder::complete_type(
-            &self.inner,
-            into_tx_type_checked(ty).unwrap_or(TxType::Eip7702),
-        )
+        TransactionBuilder::complete_type(&self.inner, ty.try_into().unwrap_or(TxType::Eip7702))
     }
 
     fn can_submit(&self) -> bool {
@@ -154,7 +152,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             return Some(TempoTxType::FeeToken);
         }
 
-        into_tempo_tx_type_checked(self.inner.output_tx_type_checked()?)
+        self.inner.output_tx_type_checked()?.try_into().ok()
     }
 
     fn prep_for_submission(&mut self) {
@@ -163,10 +161,10 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
         if let Err((tx_type, missing)) = self.inner.missing_keys() {
-            return Err(TransactionBuilderError::InvalidTransactionRequest(
-                into_tempo_tx_type_checked(tx_type).unwrap(),
-                missing,
-            )
+            return Err(match tx_type.try_into() {
+                Ok(tx_type) => TransactionBuilderError::InvalidTransactionRequest(tx_type, missing),
+                Err(err) => TransactionBuilderError::from(err),
+            }
             .into_unbuilt(self));
         }
 
@@ -190,7 +188,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
                 .build_typed_tx()
                 .expect("checked by missing_keys");
 
-            Ok(into_tempo_typed_tx_checked(inner).expect("checked by above condition"))
+            Ok(inner.try_into().expect("checked by above condition"))
         }
     }
 
@@ -201,44 +199,3 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
         Ok(wallet.sign_request(self).await?)
     }
 }
-
-fn into_tempo_tx_type_checked(value: TxType) -> Option<TempoTxType> {
-    Some(match value {
-        TxType::Legacy => TempoTxType::Legacy,
-        TxType::Eip2930 => TempoTxType::Eip2930,
-        TxType::Eip1559 => TempoTxType::Eip1559,
-        TxType::Eip4844 => return None,
-        TxType::Eip7702 => TempoTxType::Eip7702,
-    })
-}
-
-fn into_tx_type_checked(value: TempoTxType) -> Option<TxType> {
-    Some(match value {
-        TempoTxType::Legacy => TxType::Legacy,
-        TempoTxType::Eip2930 => TxType::Eip2930,
-        TempoTxType::Eip1559 => TxType::Eip1559,
-        TempoTxType::Eip7702 => TxType::Eip7702,
-        TempoTxType::FeeToken => return None,
-    })
-}
-
-fn into_tempo_typed_tx_checked(value: TypedTransaction) -> Option<TempoTypedTransaction> {
-    Some(match value {
-        TypedTransaction::Legacy(tx) => TempoTypedTransaction::Legacy(tx),
-        TypedTransaction::Eip2930(tx) => TempoTypedTransaction::Eip2930(tx),
-        TypedTransaction::Eip1559(tx) => TempoTypedTransaction::Eip1559(tx),
-        TypedTransaction::Eip4844(_) => return None,
-        TypedTransaction::Eip7702(tx) => TempoTypedTransaction::Eip7702(tx),
-    })
-}
-
-#[derive(Debug)]
-pub struct UnsupportedTransactionTypeEip4844;
-
-impl fmt::Display for UnsupportedTransactionTypeEip4844 {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Unsupported transaction type EIP-4844")
-    }
-}
-
-impl error::Error for UnsupportedTransactionTypeEip4844 {}

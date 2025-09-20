@@ -1,8 +1,13 @@
-use alloy::consensus::{EthereumTxEnvelope, Transaction, TxEip4844, TxEip7702, error::ValueError};
-use alloy_eips::Typed2718;
+use alloy::{
+    consensus::{
+        EthereumTxEnvelope, Signed, Transaction, TxEip1559, TxEip2930, TxEip4844, TxEip7702,
+        TxLegacy, error::ValueError,
+    },
+    rpc::types::TransactionTrait,
+};
 use alloy_network::TxSigner;
 use alloy_primitives::{Address, Signature};
-use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
+use alloy_rpc_types_eth::TransactionRequest;
 use reth_evm::revm::context::{BlockEnv, CfgEnv};
 use reth_rpc_convert::{
     EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv,
@@ -134,30 +139,54 @@ impl From<TempoTransactionRequest> for TransactionRequest {
 impl From<TempoTxEnvelope> for TempoTransactionRequest {
     fn from(value: TempoTxEnvelope) -> Self {
         match value {
-            TempoTxEnvelope::Legacy(tx) => Self {
-                inner: tx.into_parts().0.into(),
-                fee_token: None,
-            },
-            TempoTxEnvelope::Eip2930(tx) => Self {
-                inner: tx.into_parts().0.into(),
-                fee_token: None,
-            },
-            TempoTxEnvelope::Eip1559(tx) => Self {
-                inner: tx.into_parts().0.into(),
-                fee_token: None,
-            },
-            TempoTxEnvelope::Eip7702(tx) => Self {
-                inner: tx.into_parts().0.into(),
-                fee_token: None,
-            },
-            TempoTxEnvelope::FeeToken(tx) => {
-                let tx = tx.into_parts().0;
+            TempoTxEnvelope::Legacy(tx) => tx.into(),
+            TempoTxEnvelope::Eip2930(tx) => tx.into(),
+            TempoTxEnvelope::Eip1559(tx) => tx.into(),
+            TempoTxEnvelope::Eip7702(tx) => tx.into(),
+            TempoTxEnvelope::FeeToken(tx) => tx.into(),
+        }
+    }
+}
 
-                Self {
-                    fee_token: tx.fee_token,
-                    inner: into_transaction_request(tx),
-                }
-            }
+trait FeeToken {
+    fn fee_token(&self) -> Option<Address>;
+}
+
+impl FeeToken for TxFeeToken {
+    fn fee_token(&self) -> Option<Address> {
+        self.fee_token
+    }
+}
+
+impl FeeToken for TxEip7702 {
+    fn fee_token(&self) -> Option<Address> {
+        None
+    }
+}
+
+impl FeeToken for TxEip1559 {
+    fn fee_token(&self) -> Option<Address> {
+        None
+    }
+}
+
+impl FeeToken for TxEip2930 {
+    fn fee_token(&self) -> Option<Address> {
+        None
+    }
+}
+
+impl FeeToken for TxLegacy {
+    fn fee_token(&self) -> Option<Address> {
+        None
+    }
+}
+
+impl<T: TransactionTrait + FeeToken> From<Signed<T>> for TempoTransactionRequest {
+    fn from(value: Signed<T>) -> Self {
+        Self {
+            fee_token: value.tx().fee_token(),
+            inner: TransactionRequest::from_transaction(value),
         }
     }
 }
@@ -183,29 +212,8 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
             },
             TempoTypedTransaction::FeeToken(tx) => Self {
                 fee_token: tx.fee_token,
-                inner: into_transaction_request(tx),
+                inner: TransactionRequest::from_transaction(tx),
             },
         }
-    }
-}
-
-fn into_transaction_request(tx: TxFeeToken) -> TransactionRequest {
-    TransactionRequest {
-        from: None,
-        to: Some(tx.to),
-        gas_price: tx.gas_price(),
-        max_fee_per_gas: Some(tx.max_fee_per_gas),
-        max_priority_fee_per_gas: Some(tx.max_priority_fee_per_gas),
-        max_fee_per_blob_gas: tx.max_fee_per_blob_gas(),
-        gas: Some(tx.gas_limit),
-        value: Some(tx.value),
-        input: TransactionInput::new(tx.input.clone()),
-        nonce: Some(tx.nonce),
-        chain_id: Some(tx.chain_id),
-        transaction_type: Some(tx.ty()),
-        blob_versioned_hashes: tx.blob_versioned_hashes().map(|v| v.to_vec()),
-        sidecar: None,
-        authorization_list: Some(tx.authorization_list),
-        access_list: Some(tx.access_list),
     }
 }
