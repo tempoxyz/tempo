@@ -10,7 +10,7 @@ use alloy::{
 };
 use alloy_primitives::IntoLogData;
 
-/// Constants from th
+/// Constants from the Solidity reference implementation
 pub const M: U256 = uint!(9970_U256); // m = 0.9970 (scaled by 10000)
 pub const N: U256 = uint!(9985_U256);
 pub const SCALE: U256 = uint!(10000_U256);
