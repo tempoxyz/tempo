@@ -187,8 +187,15 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         // Rebalancing swaps are always from validatorToken to userToken
         // Calculate input and update reserves
         let amount_in = (amount_out * N) / SCALE + U256::ONE;
-        pool.reserve_user_token += amount_in.to::<u128>();
-        pool.reserve_validator_token -= amount_out.to::<u128>();
+
+        let amount_in: u128 = amount_in.try_into().map_err(|_| TIPFeeAMMError::invalid_amount())?;
+        let amount_out: u128 = amount_out.try_into().map_err(|_| TIPFeeAMMError::invalid_amount())?;
+
+        // Check for overflow when adding to user token reserve
+        pool.reserve_user_token = pool.reserve_user_token.checked_add(amount_in).ok_or(TIPFeeAMMError::invalid_amount())?;
+
+        // Check for underflow when subtracting from validator token reserve
+        pool.reserve_validator_token = pool.reserve_validator_token.checked_sub(amount_out).ok_or(TIPFeeAMMError::insufficient_reserves())?;
 
         if !self.can_support_pending_swaps(&pool_id, U256::from(pool.reserve_validator_token)) {
             return Err(TIPFeeAMMError::insufficient_liquidity_for_pending());
@@ -196,6 +203,8 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         self.set_pool(&pool_id, &pool);
 
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
+        let amount_in = U256::from(amount_in);
+        let amount_out = U256::from(amount_out);
         TIP20Token::new(validator_token_id, self.storage)
             .transfer_from(
                 &self.contract_address,
@@ -306,9 +315,23 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             )
             .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
-        // Update reserves
-        pool.reserve_user_token += amount_user_token.to::<u128>();
-        pool.reserve_validator_token += amount_validator_token.to::<u128>();
+        // Update reserves with overflow checks
+        let user_amount: u128 = amount_user_token
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+        let validator_amount: u128 = amount_validator_token
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+
+        pool.reserve_user_token = pool
+            .reserve_user_token
+            .checked_add(user_amount)
+            .ok_or(TIPFeeAMMError::invalid_amount())?;
+
+        pool.reserve_validator_token = pool
+            .reserve_validator_token
+            .checked_add(validator_amount)
+            .ok_or(TIPFeeAMMError::invalid_amount())?;
         self.set_pool(&pool_id, &pool);
 
         // Mint LP tokens
@@ -366,9 +389,22 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let total_supply = self.get_total_supply(&pool_id);
         self.set_total_supply(&pool_id, total_supply - liquidity);
 
-        // Update reserves
-        pool.reserve_user_token -= amount_user_token.to::<u128>();
-        pool.reserve_validator_token -= amount_validator_token.to::<u128>();
+        // Update reserves with underflow checks
+        let user_amount: u128 = amount_user_token
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+        let validator_amount: u128 = amount_validator_token
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+
+        pool.reserve_user_token = pool
+            .reserve_user_token
+            .checked_sub(user_amount)
+            .ok_or(TIPFeeAMMError::insufficient_reserves())?;
+        pool.reserve_validator_token = pool
+            .reserve_validator_token
+            .checked_sub(validator_amount)
+            .ok_or(TIPFeeAMMError::insufficient_reserves())?;
         self.set_pool(&pool_id, &pool);
 
         // Transfer tokens to user
@@ -457,10 +493,16 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let amount_in = self.get_pending_fee_swap_in(&pool_id);
         let pending_out = (amount_in * M) / SCALE;
 
-        // TODO: use checked math for these operations
-        pool.reserve_user_token = (U256::from(pool.reserve_user_token) + amount_in).to::<u128>();
-        pool.reserve_validator_token =
-            (U256::from(pool.reserve_validator_token) - pending_out).to::<u128>();
+        // Use checked math for these operations
+        let new_user_reserve = U256::from(pool.reserve_user_token) + amount_in;
+        let new_validator_reserve = U256::from(pool.reserve_validator_token) - pending_out;
+
+        pool.reserve_user_token = new_user_reserve
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+        pool.reserve_validator_token = new_validator_reserve
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
 
         self.set_pool(&pool_id, &pool);
         self.set_pending_fee_swap_in(&pool_id, U256::ZERO);
