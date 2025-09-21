@@ -137,14 +137,14 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    let amount = U256::from(rand::random::<u128>());
+    let amount = U256::from(u64::MAX);
 
     // Setup test token and fee AMM
     let token_0 = setup_test_token(provider.clone(), caller).await?;
     let token_1 = setup_test_token(provider.clone(), caller).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
-    // Mint, approve and create pool
+    // Mint tokens to caller
     let mut pending = vec![];
     pending.push(token_0.mint(caller, amount).send().await?);
     pending.push(token_1.mint(caller, amount).send().await?);
