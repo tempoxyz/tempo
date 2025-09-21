@@ -543,12 +543,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             call.to,
         )
     }
-
-    /// Calculate liquidity
-    pub fn calculate_liquidity(&mut self, call: ITIPFeeAMM::calculateLiquidityCall) -> U256 {
-        let amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.calculate_liquidity(call.x, call.y)
-    }
 }
 
 impl<'a, S: StorageProvider> StorageOps for TipFeeManager<'a, S> {

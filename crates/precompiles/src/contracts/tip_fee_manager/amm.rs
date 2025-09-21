@@ -10,9 +10,9 @@ use alloy::{
 };
 use alloy_primitives::IntoLogData;
 
-/// Constants from the Solidity reference implementation
-pub const M: U256 = uint!(9975_U256);
-pub const SQRT_M: U256 = uint!(99874921_U256); // sqrt(0.9975) scaled by 100000
+/// Constants from th
+pub const M: U256 = uint!(9970_U256); // m = 0.9970 (scaled by 10000)
+pub const N: U256 = uint!(9985_U256);
 pub const SCALE: U256 = uint!(10000_U256);
 pub const SQRT_SCALE: U256 = uint!(100000_U256);
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
@@ -178,12 +178,23 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         msg_sender: Address,
         user_token: Address,
         validator_token: Address,
-        amount_in: U256,
+        amount_out: U256,
         to: Address,
     ) -> Result<U256, TIPFeeAMMError> {
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(&pool_id);
-        let amount_out = self.execute_rebalance_swap(&pool_id, &mut pool, amount_in)?;
+
+        // Rebalancing swaps are always from validatorToken to userToken
+        // Calculate input and update reserves
+        // Round up
+        let amount_in = (amount_out * N) / SCALE + U256::ONE;
+        pool.reserve_user_token += amount_in.to::<u128>();
+        pool.reserve_validator_token -= amount_out.to::<u128>();
+
+        if !self.can_support_pending_swaps(&pool_id, U256::from(pool.reserve_validator_token)) {
+            return Err(TIPFeeAMMError::insufficient_liquidity_for_pending());
+        }
+        self.set_pool(&pool_id, &pool);
 
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
         TIP20Token::new(validator_token_id, self.storage)
@@ -222,83 +233,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             )
             .map_err(|_| TIPFeeAMMError::internal_error())?;
 
-        Ok(amount_out)
-    }
-
-    /// Execute a rebalance swap and calculation reserve updates
-    fn execute_rebalance_swap(
-        &mut self,
-        pool_id: &B256,
-        pool: &mut Pool,
-        amount_in: U256,
-    ) -> Result<U256, TIPFeeAMMError> {
-        let x = U256::from(pool.reserve_user_token);
-        let y = U256::from(pool.reserve_validator_token);
-
-        let l = self.calculate_liquidity(x, y);
-
-        let new_y = y + amount_in;
-        let new_x = self.calculate_new_reserve(new_y, l)?;
-
-        if new_x >= x {
-            return Err(TIPFeeAMMError::invalid_swap_calculation());
-        }
-
-        let amount_out = x - new_x;
-
-        if !self.can_support_pending_swaps(pool_id, new_y) {
-            return Err(TIPFeeAMMError::insufficient_liquidity_for_pending());
-        }
-
-        pool.reserve_user_token = new_x.to::<u128>();
-        pool.reserve_validator_token = new_y.to::<u128>();
-        self.set_pool(pool_id, pool);
-
-        Ok(amount_out)
-    }
-
-    /// Calculate liquidity based on reserves
-    pub fn calculate_liquidity(&self, x: U256, y: U256) -> U256 {
-        //  L = (y + sqrt(m)*x + sqrt(y^2 + m*x^2 + (4-2*sqrt(m))*x*y)) / (2*(1-sqrt(m)))
-        let sqrt_m_x = (SQRT_M * x) / SQRT_SCALE;
-        let m_x2 = (M * x * x) / SCALE;
-        let y2 = y * y;
-
-        let coefficient = uint!(4_U256) * SQRT_SCALE - uint!(2_U256) * SQRT_M;
-        let coeff_xy = (coefficient * x * y) / SQRT_SCALE;
-        let under_sqrt = y2 + m_x2 + coeff_xy;
-
-        let sqrt_term = sqrt(under_sqrt);
-        let numerator = y + sqrt_m_x + sqrt_term;
-        let denominator = uint!(2_U256) * (SQRT_SCALE - SQRT_M);
-
-        (numerator * SQRT_SCALE) / denominator
-    }
-
-    /// Calculate new reserve after a fee token swap
-    pub fn calculate_new_reserve(
-        &self,
-        known_validator_reserve: U256,
-        l: U256,
-    ) -> Result<U256, TIPFeeAMMError> {
-        // From the invariant: (x + L)(y + L*sqrt(m)) = L^2
-        // For rebalancing swaps (validatorToken → userToken), we know new y, solve for new x:
-        // x = L^2 / (y + L*sqrt(m)) - L
-
-        let l_sqrt_m = (l * SQRT_M) / SQRT_SCALE;
-        let l2 = l * l;
-        let denominator = known_validator_reserve + l_sqrt_m;
-
-        if denominator.is_zero() {
-            return Err(TIPFeeAMMError::division_by_zero());
-        }
-
-        let result = l2 / denominator;
-        if result <= l {
-            return Err(TIPFeeAMMError::invalid_new_reserves());
-        }
-
-        Ok(result - l)
+        Ok(amount_in)
     }
 
     /// Mint LP tokens for a given pool
