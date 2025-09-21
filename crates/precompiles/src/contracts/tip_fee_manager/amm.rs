@@ -188,14 +188,24 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         // Calculate input and update reserves
         let amount_in = (amount_out * N) / SCALE + U256::ONE;
 
-        let amount_in: u128 = amount_in.try_into().map_err(|_| TIPFeeAMMError::invalid_amount())?;
-        let amount_out: u128 = amount_out.try_into().map_err(|_| TIPFeeAMMError::invalid_amount())?;
+        let amount_in: u128 = amount_in
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+        let amount_out: u128 = amount_out
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
 
         // Check for overflow when adding to user token reserve
-        pool.reserve_user_token = pool.reserve_user_token.checked_add(amount_in).ok_or(TIPFeeAMMError::invalid_amount())?;
+        pool.reserve_user_token = pool
+            .reserve_user_token
+            .checked_add(amount_in)
+            .ok_or(TIPFeeAMMError::invalid_amount())?;
 
         // Check for underflow when subtracting from validator token reserve
-        pool.reserve_validator_token = pool.reserve_validator_token.checked_sub(amount_out).ok_or(TIPFeeAMMError::insufficient_reserves())?;
+        pool.reserve_validator_token = pool
+            .reserve_validator_token
+            .checked_sub(amount_out)
+            .ok_or(TIPFeeAMMError::insufficient_reserves())?;
 
         if !self.can_support_pending_swaps(&pool_id, U256::from(pool.reserve_validator_token)) {
             return Err(TIPFeeAMMError::insufficient_liquidity_for_pending());
