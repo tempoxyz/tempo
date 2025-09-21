@@ -186,7 +186,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
 
         // Rebalancing swaps are always from validatorToken to userToken
         // Calculate input and update reserves
-        // Round up
         let amount_in = (amount_out * N) / SCALE + U256::ONE;
         pool.reserve_user_token += amount_in.to::<u128>();
         pool.reserve_validator_token -= amount_out.to::<u128>();
