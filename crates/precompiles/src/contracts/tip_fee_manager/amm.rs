@@ -940,7 +940,7 @@ mod tests {
         let pool = amm.get_pool(&pool_id);
         assert_eq!(pool.reserve_user_token, pool.reserve_validator_token,);
 
-        let msg_sender = Address::random(); // Random address with no token balance
+        let msg_sender = Address::random();
         let to = Address::random();
         let result = amm.rebalance_swap(
             msg_sender,
