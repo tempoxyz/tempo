@@ -1,24 +1,39 @@
 //! Owns the strictly sequential finalization-queue.
+//!
+//! The finalizer forwards finalized blocks to the execution layer, and keeps
+//! track of its latest finalized digest. This is available through
+//! [`Mailbox::latest_finalized_digest`].
 
-use alloy_rpc_types_engine::ForkchoiceState;
 use eyre::{WrapErr as _, ensure};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::StreamExt as _;
+use tempo_commonware_node_cryptography::Digest;
 use tempo_node::{TempoExecutionData, TempoFullNode};
+use tokio::sync::watch;
 use tracing::{Level, instrument, warn};
 
 pub(super) struct Builder {
     pub(super) execution_node: TempoFullNode,
+    pub(super) latest_finalized_digest: Digest,
 }
 
 impl Builder {
     pub(super) fn build(self) -> Finalizer {
-        let Self { execution_node } = self;
+        let Self {
+            execution_node,
+            latest_finalized_digest,
+        } = self;
         let (to_me, from_execution_driver) = futures_channel::mpsc::unbounded();
+        let (latest_finalized_digest, latest_finalized_digest_rx) =
+            watch::channel(latest_finalized_digest);
         Finalizer {
             execution_node,
             from_execution_driver,
-            my_mailbox: Mailbox { inner: to_me },
+            latest_finalized_digest,
+            my_mailbox: Mailbox {
+                inner: to_me,
+                latest_finalized_digest: latest_finalized_digest_rx,
+            },
         }
     }
 }
@@ -27,6 +42,7 @@ pub(super) struct Finalizer {
     execution_node: TempoFullNode,
 
     from_execution_driver: UnboundedReceiver<Message>,
+    latest_finalized_digest: watch::Sender<Digest>,
 
     my_mailbox: Mailbox,
 }
@@ -63,8 +79,8 @@ impl Finalizer {
     async fn finalize(&self, finalized: super::Finalized) -> eyre::Result<()> {
         let super::Finalized { block, response } = finalized;
 
-        let block = block.clone().into_inner();
-        let hash = block.hash();
+        let digest = block.digest();
+        let block = block.into_inner();
         let payload_status = self
             .execution_node
             .add_ons_handle
@@ -72,40 +88,17 @@ impl Finalizer {
             .new_payload(TempoExecutionData(block))
             .await
             .wrap_err(
-                "failed sending new-payload request to execution \
-                    engine to query payload status of finalized block",
+                "failed sending new-payload request to execution engine to \
+                query payload status of finalized block",
             )?;
 
         ensure!(
-            payload_status.is_valid(),
-            "payload status of block-to-be-finalized not valid: \
-            `{payload_status}`"
+            payload_status.is_valid() || payload_status.is_syncing(),
+            "this is a problem: payload status of block-to-be-finalized was \
+            neither valid nor syncing: `{payload_status}`"
         );
 
-        let fcu_response = self
-            .execution_node
-            .add_ons_handle
-            .beacon_engine_handle
-            .fork_choice_updated(
-                ForkchoiceState {
-                    head_block_hash: hash,
-                    safe_block_hash: hash,
-                    finalized_block_hash: hash,
-                },
-                None,
-                reth_node_builder::EngineApiMessageVersion::V3,
-            )
-            .await
-            .wrap_err(
-                "failed running engine_forkchoiceUpdated to set the \
-                    finalized block hash",
-            )?;
-
-        ensure!(
-            fcu_response.is_valid(),
-            "payload status of forkchoice update response valid: `{}`",
-            fcu_response.payload_status,
-        );
+        let _ = self.latest_finalized_digest.send_replace(digest);
 
         // Acknowledge that the block was finalized.
         if let Err(()) = response.send(()) {
@@ -118,10 +111,15 @@ impl Finalizer {
 
 #[derive(Clone, Debug)]
 pub(super) struct Mailbox {
+    latest_finalized_digest: watch::Receiver<Digest>,
     inner: UnboundedSender<Message>,
 }
 
 impl Mailbox {
+    pub(super) fn latest_finalized_digest(&self) -> Digest {
+        *self.latest_finalized_digest.borrow()
+    }
+
     pub(super) fn finalize(&self, finalized: super::Finalized) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message::Finalize(finalized.into()))
