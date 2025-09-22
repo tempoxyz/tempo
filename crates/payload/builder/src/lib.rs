@@ -43,6 +43,9 @@ use tempo_primitives::{
 use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTransaction};
 use tracing::{debug, trace, warn};
 
+mod laned;
+use laned::LanedTransactions;
+
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -192,7 +195,11 @@ where
         let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
         let base_fee = builder.evm_mut().block().basefee;
 
-        let mut best_txs = best_txs(BestTransactionsAttributes::new(
+        // Calculate non-payment gas limit (50% of block gas limit by default)
+        // TODO: Make this configurable via chain spec or attributes
+        let non_payment_gas_limit = block_gas_limit / 2;
+
+        let best_txs_inner = best_txs(BestTransactionsAttributes::new(
             base_fee,
             builder
                 .evm_mut()
@@ -200,6 +207,7 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let mut best_txs = LanedTransactions::new(best_txs_inner, non_payment_gas_limit);
         let mut total_fees = U256::ZERO;
 
         builder.apply_pre_execution_changes().map_err(|err| {
@@ -213,6 +221,21 @@ where
         while let Some(pool_tx) = best_txs.next() {
             // ensure we still have capacity for this transaction
             if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
+                // If we're in non-payment lane and hit block gas limit, switch to payment lane
+                // to ensure we can still include payment transactions
+                if !best_txs.is_in_payment_lane() && !pool_tx.transaction.is_payment() {
+                    best_txs.switch_to_payment_lane();
+                    // Mark this transaction as invalid to skip it
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::ExceedsGasLimit(
+                            pool_tx.gas_limit(),
+                            block_gas_limit - cumulative_gas_used,
+                        ),
+                    );
+                    continue;
+                }
+
                 // we can't fit this transaction into the block, so we need to mark it as invalid
                 // which also removes all dependent transaction from the iterator before we can
                 // continue
@@ -251,7 +274,13 @@ where
             }
 
             let gas_used = match builder.execute_transaction(tx.clone()) {
-                Ok(gas_used) => gas_used,
+                Ok(gas_used) => {
+                    // Update non-payment gas tracking if we're still in non-payment lane
+                    if !best_txs.is_in_payment_lane() && !pool_tx.transaction.is_payment() {
+                        best_txs.update_non_payment_gas_used(gas_used);
+                    }
+                    gas_used
+                }
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
                     ..
