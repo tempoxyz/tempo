@@ -725,10 +725,7 @@ mod tests {
         );
 
         // Verify the expected output calculation
-        assert_eq!(
-            expected_out,
-            amount_in * uint!(9975_U256) / uint!(10000_U256)
-        );
+        assert_eq!(expected_out, amount_in * M / SCALE);
 
         Ok(())
     }
