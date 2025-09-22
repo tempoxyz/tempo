@@ -144,7 +144,8 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn output_tx_type(&self) -> TempoTxType {
-        self.output_tx_type_checked().unwrap()
+        self.output_tx_type_checked()
+            .unwrap_or(TempoTxType::Eip1559)
     }
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
