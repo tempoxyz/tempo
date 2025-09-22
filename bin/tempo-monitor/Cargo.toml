@@ -20,7 +20,3 @@ tracing-log = "0.2.0"
 tokio.workspace = true
 log = "0.4.28"
 tracing.workspace = true
-
-
-[lints]
-workspace = true
