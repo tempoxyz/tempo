@@ -5,10 +5,9 @@ pub use header::Header;
 pub use request::TempoTransactionRequest;
 use tempo_revm::TempoTxEnv;
 
-use crate::node::TempoNode;
+use crate::{TempoNetwork, node::TempoNode};
 use alloy::{consensus::TxReceipt, primitives::U256};
 use alloy_primitives::Address;
-use alloy_rpc_types_eth::ReceiptWithBloom;
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -20,7 +19,7 @@ use reth_node_builder::{
     rpc::{EthApiBuilder, EthApiCtx},
 };
 use reth_provider::ChainSpecProvider;
-use reth_rpc::{DynRpcConverter, RpcTypes, eth::EthApi};
+use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
@@ -38,23 +37,9 @@ use reth_rpc_eth_types::{
 };
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
-use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::TempoReceipt;
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
-
-/// Tempo RPC types.
-#[derive(Debug, Clone, Copy, Default)]
-#[non_exhaustive]
-pub struct TempoRpcTypes;
-
-impl RpcTypes for TempoRpcTypes {
-    type Header = crate::rpc::Header;
-    type Receipt = alloy_rpc_types_eth::TransactionReceipt<
-        ReceiptWithBloom<TempoReceipt<alloy_rpc_types_eth::Log>>,
-    >;
-    type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
-    type TransactionRequest = TempoTransactionRequest;
-}
 
 /// Tempo `Eth` API implementation.
 ///
@@ -69,13 +54,13 @@ impl RpcTypes for TempoRpcTypes {
 #[derive(Clone)]
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
-    inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoRpcTypes>>,
+    inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     /// Creates a new `TempoEthApi`.
     pub fn new(
-        eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoRpcTypes>>,
+        eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
     ) -> Self {
         Self { inner: eth_api }
     }
@@ -96,8 +81,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiTypes for TempoEthApi<N> {
     type Error = EthApiError;
-    type NetworkTypes = TempoRpcTypes;
-    type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoRpcTypes>;
+    type NetworkTypes = TempoNetwork;
+    type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoNetwork>;
 
     fn tx_resp_builder(&self) -> &Self::RpcConvert {
         self.inner.tx_resp_builder()
@@ -141,7 +126,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> RpcNodeCoreExt for TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiSpec for TempoEthApi<N> {
     type Transaction = TxTy<N::Types>;
-    type Rpc = TempoRpcTypes;
+    type Rpc = TempoNetwork;
 
     #[inline]
     fn starting_block(&self) -> U256 {
@@ -292,7 +277,7 @@ where
             .eth_api_builder()
             .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
             .map_converter(|_| {
-                RpcConverter::<TempoRpcTypes, TempoEvmConfig, _>::new(
+                RpcConverter::<TempoNetwork, TempoEvmConfig, _>::new(
                     EthReceiptConverter::new(chain_spec).with_builder(
                         |receipt: TempoReceipt, next_log_index, meta| {
                             receipt.into_rpc(next_log_index, meta).into_with_bloom()
