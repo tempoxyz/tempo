@@ -3,8 +3,10 @@
 
 use std::time::Duration;
 
-use alloy::providers::ProviderBuilder;
-use alloy::network::{EthereumWallet, TxSigner};
+use alloy::{
+    network::{EthereumWallet, TxSigner},
+    providers::ProviderBuilder,
+};
 use clap::Parser;
 use foundry_wallets::WalletOpts;
 use futures::StreamExt;
@@ -18,7 +20,7 @@ pub struct Args {
     rpc_url: String,
 
     #[command(flatten)]
-    pub wallet: WalletOpts
+    pub wallet: WalletOpts,
 }
 
 #[tokio::main]
