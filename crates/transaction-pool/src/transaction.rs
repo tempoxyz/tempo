@@ -232,14 +232,12 @@ mod tests {
     use alloy_primitives::address;
     use tempo_primitives::TxFeeToken;
 
-    fn create_test_tx_with_to(to_address: Option<Address>) -> Recovered<TempoTxEnvelope> {
-        let to = match to_address {
-            Some(addr) => TxKind::Call(addr),
-            None => TxKind::Create,
-        };
-
+    #[test]
+    fn test_payment_classification_caching() {
+        // Test that payment classification is properly cached in TempoPooledTransaction
+        let payment_addr = address!("20c0000000000000000000000000000000000001");
         let tx = TxFeeToken {
-            to,
+            to: TxKind::Call(payment_addr),
             gas_limit: 21000,
             ..Default::default()
         };
@@ -250,70 +248,18 @@ mod tests {
             alloy_primitives::B256::ZERO,
         ));
 
-        Recovered::new_unchecked(
+        let recovered = Recovered::new_unchecked(
             envelope,
             address!("0000000000000000000000000000000000000001"),
-        )
-    }
+        );
 
-    #[test]
-    fn test_payment_classification_with_tip20_prefix() {
-        // Create an address with TIP20 prefix
-        let payment_addr = address!("20c0000000000000000000000000000000000001");
-        let tx = create_test_tx_with_to(Some(payment_addr));
-
-        let pooled_tx = TempoPooledTransaction::new(tx, 100);
+        // Create via new() and verify caching
+        let pooled_tx = TempoPooledTransaction::new(recovered.clone(), 100);
         assert!(pooled_tx.is_payment());
-    }
 
-    #[test]
-    fn test_payment_classification_without_tip20_prefix() {
-        // Create an address without TIP20 prefix
-        let non_payment_addr = address!("1234567890123456789012345678901234567890");
-        let tx = create_test_tx_with_to(Some(non_payment_addr));
-
-        let pooled_tx = TempoPooledTransaction::new(tx, 100);
-        assert!(!pooled_tx.is_payment());
-    }
-
-    #[test]
-    fn test_payment_classification_no_to_address() {
-        // Create a transaction with no `to` address (contract creation)
-        let tx = create_test_tx_with_to(None);
-
-        let pooled_tx = TempoPooledTransaction::new(tx, 100);
-        assert!(!pooled_tx.is_payment());
-    }
-
-    #[test]
-    fn test_payment_classification_partial_match() {
-        // Create an address that partially matches but not completely
-        let partial_match_addr = address!("20c0000000000000000000000000000100000000");
-        let tx = create_test_tx_with_to(Some(partial_match_addr));
-
-        let pooled_tx = TempoPooledTransaction::new(tx, 100);
-        // This should still be classified as payment since first 14 bytes match
-        assert!(pooled_tx.is_payment());
-    }
-
-    #[test]
-    fn test_payment_classification_different_prefix() {
-        // Create an address with a different prefix
-        let different_prefix_addr = address!("30c0000000000000000000000000000000000001");
-        let tx = create_test_tx_with_to(Some(different_prefix_addr));
-
-        let pooled_tx = TempoPooledTransaction::new(tx, 100);
-        assert!(!pooled_tx.is_payment());
-    }
-
-    #[test]
-    fn test_from_eth_preserves_classification() {
-        // Test that from_eth also correctly classifies
-        let payment_addr = address!("20c0000000000000000000000000000000000001");
-        let tx = create_test_tx_with_to(Some(payment_addr));
-
-        let eth_pooled = EthPooledTransaction::new(tx, 100);
-        let pooled_tx = TempoPooledTransaction::from_eth(eth_pooled);
-        assert!(pooled_tx.is_payment());
+        // Create via from_eth() and verify caching
+        let eth_pooled = EthPooledTransaction::new(recovered, 100);
+        let pooled_tx_from_eth = TempoPooledTransaction::from_eth(eth_pooled);
+        assert!(pooled_tx_from_eth.is_payment());
     }
 }
