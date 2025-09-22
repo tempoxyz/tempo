@@ -205,12 +205,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        // Ensure rebalancing doesn't create invalid reserves where user token < validator token
-        // This prevents rebalancing in the wrong direction
-        if pool.reserve_user_token < pool.reserve_validator_token {
-            return Err(TIPFeeAMMError::invalid_new_reserves());
-        }
-
         if !self.can_support_pending_swaps(&pool_id, U256::from(pool.reserve_validator_token)) {
             return Err(TIPFeeAMMError::insufficient_liquidity_for_pending());
         }
