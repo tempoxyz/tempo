@@ -71,6 +71,13 @@ sequenceDiagram
 
 ### Propose
 
+Proposing new blocks is done directly via reth's payload builder, not through
+the consensus engine. The execution driver derives the payload ID from the
+parent digest. This way, if payload building takes too long and the consensus
+engine cancels the proposal task, once consensus cycles back to the original
+node it can pick up the payload that was kicked off before. This is assuming
+that all other consensus nodes would equally struggle building a block in time.
+
 ```mermaid
 sequenceDiagram
   participant CL as Commonware Consensus Engine
@@ -82,10 +89,8 @@ sequenceDiagram
   CL->>ED: Automaton::propose(view, parent.digest)
   ED->>SY: Subscribe(parent.digest)
   SY->>ED: parent
-  ED->>EE: fork_choice_update(head == safe == finalized == parent.hash)
-  EE->>ED: payload_id
-  ED-->>EB: resolve_id(payload_id)
-  EB-->>ED: proposal := EthBuiltPayload
+  ED->>EB: send_new_payload(id(parent), parent_hash)
+  ED->>EB: proposal := resolve_id(payload_id)
   ED->>CL: proposal.digest
   CL->>ED: Relay::broadcast(proposal.digest)
   ED->>SY: broadcast(proposal)
