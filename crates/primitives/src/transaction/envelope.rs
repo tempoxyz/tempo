@@ -4,7 +4,6 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Signature, U256};
 use reth_primitives_traits::InMemorySize;
-use tempo_chainspec::PAYMENT_CLASSIFIER_ID;
 use tempo_precompiles::TIP20_PAYMENT_PREFIX;
 
 /// Fake signature for Tempo system transactions.
@@ -83,23 +82,16 @@ impl TempoTxEnvelope {
         matches!(self, Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE)
     }
 
-    /// Classify a transaction as payment or non-payment based on the current classifier.
+    /// Classify a transaction as payment or non-payment.
     ///
-    /// The ClassifierID selects which classification rules to use.
-    /// Classifier v1: transaction is a payment if the `to` address has the TIP20 prefix.
+    /// Currently uses classifier v1: transaction is a payment if the `to` address has the TIP20 prefix.
     pub fn is_payment(&self) -> bool {
         use alloy_consensus::Transaction;
 
-        match PAYMENT_CLASSIFIER_ID {
-            1 => {
-                // Classifier v1: Check if the transaction has a `to` address with TIP20 prefix
-                if let Some(to) = self.to() {
-                    return to.as_slice().starts_with(&TIP20_PAYMENT_PREFIX);
-                }
-                false
-            }
-            _ => false, // Unknown classifier versions default to non-payment
+        if let Some(to) = self.to() {
+            return to.as_slice().starts_with(&TIP20_PAYMENT_PREFIX);
         }
+        false
     }
 }
 

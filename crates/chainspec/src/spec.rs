@@ -14,9 +14,6 @@ use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 pub const TEMPO_BASE_FEE: u64 = 44;
 
-/// Classifier ID for payment transaction classification rules
-pub const PAYMENT_CLASSIFIER_ID: u8 = 1;
-
 /// Tempo chain specification parser.
 #[derive(Debug, Clone, Default)]
 pub struct TempoChainSpecParser;

@@ -9,7 +9,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-tempo-chainspec.workspace = true
 tempo-precompiles.workspace = true
 
 # Alloy

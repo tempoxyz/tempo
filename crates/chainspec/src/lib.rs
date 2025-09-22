@@ -4,4 +4,4 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 pub mod spec;
-pub use spec::{PAYMENT_CLASSIFIER_ID, TempoChainSpec};
+pub use spec::TempoChainSpec;
