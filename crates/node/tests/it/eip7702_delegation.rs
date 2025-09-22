@@ -59,12 +59,12 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
 
     let bob_bal_before = token.balanceOf(bob_addr).call().await?;
     assert_eq!(bob_bal_before, mint_amount);
-    
+
     // Create three random recipients
     let recipient_0 = Address::random();
     let recipient_1 = Address::random();
     let recipient_2 = Address::random();
-    
+
     // Verify initial balances
     let recip_0_bal_before = token.balanceOf(recipient_0).call().await?;
     let recip_1_bal_before = token.balanceOf(recipient_1).call().await?;
@@ -127,9 +127,12 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     let recip_0_bal_after = token.balanceOf(recipient_0).call().await?;
     let recip_1_bal_after = token.balanceOf(recipient_1).call().await?;
     let recip_2_bal_after = token.balanceOf(recipient_2).call().await?;
-    
+
     // Bob should have spent 3 * transfer_amount
-    assert_eq!(bob_bal_after, bob_bal_before - (transfer_amount * U256::from(3)));
+    assert_eq!(
+        bob_bal_after,
+        bob_bal_before - (transfer_amount * U256::from(3))
+    );
     // Each recipient should have received transfer_amount
     assert_eq!(recip_0_bal_after, transfer_amount);
     assert_eq!(recip_1_bal_after, transfer_amount);
