@@ -3,6 +3,7 @@
 use std::{sync::Arc, time::SystemTime};
 
 use alloy_primitives::{B64, B256};
+use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 
@@ -120,6 +121,14 @@ where
     }
 
     async fn run(mut self) {
+        // XXX: relying on instrumentation to emit an error event
+        // TODO(janis): this should be placed under a shutdown signal so
+        // we don't just stall on startup. We don't have shutdown signals yet
+        // though.
+        if self.initialize_latest_finalized_block().await.is_err() {
+            return;
+        }
+
         loop {
             tokio::select!(
                 // NOTE: biased because we prefer running finalizations above all else.
@@ -142,6 +151,53 @@ where
 
     pub(super) fn start(mut self) -> Handle<()> {
         self.context.spawn_ref()(self.run())
+    }
+
+    #[instrument(skip_all, err)]
+    async fn initialize_latest_finalized_block(&mut self) -> eyre::Result<()> {
+        let Some((finalized_height, finalized_digest)) =
+            // TODO(janis): does this have the potential to stall indefinitely?
+            // If so, we should have some kind of heartbeat to inform telemetry.
+            self.syncer_mailbox.get_finalized().await.await.unwrap()
+        else {
+            info!(
+                "consensus returned that there is no finalized height or digest, this means we are still at genesis"
+            );
+            return Ok(());
+        };
+        info!(
+            finalized_height,
+            %finalized_digest,
+            "consensus returned last finalized block, sending to execution layer",
+        );
+
+        let finalized_hash = finalized_digest.0;
+        let fcu_response = self
+            .execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .fork_choice_updated(
+                ForkchoiceState {
+                    head_block_hash: finalized_hash,
+                    safe_block_hash: finalized_hash,
+                    finalized_block_hash: finalized_hash,
+                },
+                None,
+                reth_node_builder::EngineApiMessageVersion::V3,
+            )
+            .await
+            .wrap_err(
+                "failed running engine_forkchoiceUpdated to set the \
+                    finalized block hash",
+            )?;
+
+        ensure!(
+            fcu_response.is_valid() || fcu_response.is_syncing(),
+            "payload status of forkchoice update response was neither valid nor syncing: `{}`",
+            fcu_response.payload_status,
+        );
+
+        Ok(())
     }
 
     fn handle_message(&mut self, msg: Message) -> eyre::Result<()> {
