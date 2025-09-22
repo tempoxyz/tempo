@@ -6,11 +6,16 @@
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use eyre::{WrapErr as _, ensure};
-use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
+use futures_channel::{
+    mpsc::{UnboundedReceiver, UnboundedSender},
+    oneshot,
+};
 use futures_util::StreamExt as _;
 use tempo_commonware_node_cryptography::Digest;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, instrument, warn};
+
+use crate::consensus::block::Block;
 
 pub(super) struct Builder {
     /// A handle to the execution node layer. Used to forward finalized blocks
@@ -87,8 +92,8 @@ impl Executor {
     async fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
-            Command::Finalize(finalized) => {
-                let _ = self.finalize(*finalized, cause).await;
+            Command::Finalize { block, response } => {
+                let _ = self.finalize(*block, response, cause).await;
             }
             Command::Update(digest) => {
                 let _ = self.update(digest, cause).await;
@@ -96,20 +101,26 @@ impl Executor {
         }
     }
 
+    /// Finalizes `block` by sending it to the execution layer.
+    ///
+    /// If `response` is set, a successful finalization will be acknowledged
+    /// on that channel. `response` is also taken as the indicator for when
+    /// `block` is at the tip of the finalized chain. If is set, then the
+    /// block's digest will be taken as the latest finalized block. If it is
+    /// not set, then the block is assumed to be an older backfilled one.
     #[instrument(
         skip_all,
         follows_from = [cause],
-        fields(finalized_block.digest = %finalized.block.digest()),
+        fields(block.digest = %block.digest()),
         err(level = Level::WARN),
         ret,
     )]
     async fn finalize(
         &mut self,
-        finalized: super::Finalized,
+        block: Block,
+        response: Option<oneshot::Sender<()>>,
         cause: tracing::Span,
     ) -> eyre::Result<()> {
-        let super::Finalized { block, response } = finalized;
-
         let digest = block.digest();
         let block = block.into_inner();
         let payload_status = self
@@ -129,16 +140,18 @@ impl Executor {
             neither valid nor syncing: `{payload_status}`"
         );
 
-        self.latest_finalized_digest = digest;
+        if let Some(response) = response {
+            self.latest_finalized_digest = digest;
 
-        // TODO(janis): this acknowledges to the marshaller that the finalized
-        // block was successfully delivered to the state machine, but we don't
-        // actually set the finalized head. That will only happen once the next
-        // update request is sent. We can postpone sending a response here and
-        // instead store the channel internally, sending an ack once the
-        // canonical (including finalized) is actually updated.
-        if let Err(()) = response.send(()) {
-            warn!("tried acknowledging finalization but channel was already closed");
+            // TODO(janis): this acknowledges to the marshaller that the finalized
+            // block was successfully delivered to the state machine, but we don't
+            // actually set the finalized head. That will only happen once the next
+            // update request is sent. We can postpone sending a response here and
+            // instead store the channel internally, sending an ack once the
+            // canonical (including finalized) is actually updated.
+            if let Err(()) = response.send(()) {
+                warn!("tried acknowledging finalization but channel was already closed");
+            }
         }
 
         Ok(())
@@ -184,12 +197,31 @@ pub(super) struct ExecutorMailbox {
 }
 
 impl ExecutorMailbox {
+    /// Instructs the agent to backfill an old finalized block to the.
+    ///
+    /// Calling this is usually only necessary on startup when catching the
+    /// execution layer up to the finalization state of the consensus layer.
+    pub(super) fn backfill(&self, block: Block) -> eyre::Result<()> {
+        self.inner
+            .unbounded_send(Message {
+                cause: tracing::Span::current(),
+                command: Command::Finalize {
+                    block: Box::new(block),
+                    response: None,
+                },
+            })
+            .wrap_err("failed sending backfill request to finalizer, this means it exited")
+    }
+
     /// Instructs the agent to forward a finalized block to the execution layer.
     pub(super) fn forward_finalized(&self, finalized: super::Finalized) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
                 cause: tracing::Span::current(),
-                command: Command::Finalize(finalized.into()),
+                command: Command::Finalize {
+                    block: Box::new(finalized.block),
+                    response: Some(finalized.response),
+                },
             })
             .wrap_err("failed sending finalization request to agent, this means it exited")
     }
@@ -213,6 +245,14 @@ struct Message {
 
 #[derive(Debug)]
 enum Command {
-    Finalize(Box<super::Finalized>),
+    /// Commands the canonical chain engine to forward a finalized block to
+    /// the execution layer.
+    ///
+    /// The response channel is set if the finalized block is new (i.e. at the
+    /// tip of the finalized chain).
+    Finalize {
+        block: Box<Block>,
+        response: Option<oneshot::Sender<()>>,
+    },
     Update(Digest),
 }

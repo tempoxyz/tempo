@@ -20,7 +20,7 @@ use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
-use reth_provider::BlockReader as _;
+use reth_provider::{BlockNumReader as _, BlockReader as _};
 use tokio::sync::RwLock;
 use tracing::{Level, info, instrument};
 
@@ -148,12 +148,12 @@ where
     /// This includes:
     ///
     /// 1. reading the last finalized digest from the consensus marshaller.
-    /// 2. starting the finalizer task and storing its handle.
+    /// 2. starting the canonical chain engine and storing its handle.
     #[instrument(skip_all, err)]
     async fn runtime_init(&mut self) -> eyre::Result<()> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
-        let (finalized_height, finalized_digest) = self
+        let (finalized_consensus_height, finalized_consensus_digest) = self
             .syncer_mailbox
             .get_finalized()
             .await
@@ -161,22 +161,44 @@ where
             .wrap_err("consensus dropped channel before returning the last finalized block")?
             .unwrap_or_else(|| (0, self.genesis_block.digest()));
 
+        let latest_execution_block_number =
+            self.execution_node.provider.last_block_number().wrap_err(
+                "failed getting last block number from execution layer; cannot continue without it",
+            )?;
+
         info!(
-            finalized_height,
-            %finalized_digest,
-            "consensus returned last finalized block, sending to execution layer",
+            finalized_consensus_height,
+            %finalized_consensus_digest,
+            latest_execution_block_number,
+            "consensus and execution layers reported their latest local state; \
+            setting forkchoice-state and catching up execution layer, if necessary",
         );
 
-        let finalizer = executor::Builder {
+        let executor = executor::Builder {
             execution_node: self.execution_node.clone(),
-            latest_finalized_digest: finalized_digest,
+            latest_finalized_digest: finalized_consensus_digest,
         }
         .build();
-        claims::assert_none!(self.executor_mailbox.replace(finalizer.mailbox().clone()));
+        claims::assert_none!(self.executor_mailbox.replace(executor.mailbox().clone()));
+
+        self.context.with_label("replay missing finalized").spawn({
+            let executor = executor.mailbox().clone();
+            let syncer = self.syncer_mailbox.clone();
+            let current_span = tracing::Span::current();
+            move |_| {
+                replay_missing_finalized(
+                    current_span,
+                    executor,
+                    syncer,
+                    finalized_consensus_height,
+                    latest_execution_block_number,
+                )
+            }
+        });
 
         self.context
-            .with_label("finalizer")
-            .spawn(move |_| finalizer.run());
+            .with_label("executor")
+            .spawn(move |_| executor.run());
 
         Ok(())
     }
@@ -810,6 +832,59 @@ impl From<Finalized> for Message {
     fn from(value: Finalized) -> Self {
         Self::Finalized(value.into())
     }
+}
+
+/// Forwards already finalized blocks from the consensus layer to the execution
+/// layer.
+///
+/// This function is meant to only run at start. If consensus is ahead of
+/// the execution layer (this can happen when the node was shut down without
+/// the execution layer having flushed all its blocks to disk), then we can
+/// catch up the node quickly from local storage.
+///
+/// Blocks will be forwarded in reverse order, starting from the newest first.
+/// This is to allow the node to participate in consensus as fast as possible.
+#[instrument(
+    skip_all,
+    follows_from = [cause],
+    fields(latest_consensus_finalized_height, latest_execution_block_number),
+    err
+)]
+async fn replay_missing_finalized(
+    cause: tracing::Span,
+    executor: executor::ExecutorMailbox,
+    mut syncer: marshal::Mailbox<BlsScheme, Block>,
+    latest_consensus_finalized_height: u64,
+    latest_execution_block_number: u64,
+) -> eyre::Result<()> {
+    let mut next_height = latest_consensus_finalized_height;
+    // NOTE: this is done sequentially because this data is read from local
+    // storage or from memory and likely for small numbers only. So concurrency
+    // likely really doesn't matter.
+    while next_height > latest_execution_block_number {
+        let block = syncer
+            .get_block_by_height(next_height)
+            .await
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed reading finalized block for height \
+                    `{next_height}` from consensus"
+                )
+            })?
+            .ok_or_else(|| {
+                eyre!(
+                    "consensus returned that no block for height \
+                    `{next_height}` exists, even though it is at or below its \
+                    latest finalized height"
+                )
+            })?;
+        executor
+            .backfill(block)
+            .wrap_err("failed sending catch-up block to finalizer")?;
+        next_height = next_height.saturating_sub(1);
+    }
+    Ok(())
 }
 
 /// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
