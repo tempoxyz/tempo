@@ -3,8 +3,7 @@
 use std::{sync::Arc, time::SystemTime};
 
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::ForkchoiceState;
-use alloy_rpc_types_engine::PayloadId;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 
