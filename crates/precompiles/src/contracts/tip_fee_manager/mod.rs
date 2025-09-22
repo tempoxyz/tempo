@@ -539,7 +539,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             msg_sender,
             call.userToken,
             call.validatorToken,
-            call.amountIn,
+            call.amountOut,
             call.to,
         )
     }
