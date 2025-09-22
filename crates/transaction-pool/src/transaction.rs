@@ -1,5 +1,7 @@
 use std::{convert::Infallible, fmt::Debug, sync::Arc};
 
+use tempo_chainspec::{PAYMENT_CLASSIFIER_ID, TIP20_PAYMENT_PREFIX};
+
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -21,16 +23,26 @@ use tempo_primitives::TempoTxEnvelope;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
+    /// Cached payment classification for efficient block building
+    is_payment: bool,
 }
 
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>, encoded_length: usize) -> Self {
-        Self::from_eth(EthPooledTransaction::new(transaction, encoded_length))
+        let is_payment = Self::classify_payment(&transaction);
+        Self {
+            inner: EthPooledTransaction::new(transaction, encoded_length),
+            is_payment,
+        }
     }
 
     pub fn from_eth(eth_pooled: EthPooledTransaction<TempoTxEnvelope>) -> Self {
-        Self { inner: eth_pooled }
+        let is_payment = Self::classify_payment(&eth_pooled.transaction);
+        Self {
+            inner: eth_pooled,
+            is_payment,
+        }
     }
 
     /// Get the cost of the transaction in the fee token.
@@ -41,6 +53,34 @@ impl TempoPooledTransaction {
     /// Returns a reference to inner [`TempoTxEnvelope`].
     pub fn inner(&self) -> &TempoTxEnvelope {
         &self.inner.transaction
+    }
+
+    /// Returns whether this is a payment transaction.
+    ///
+    /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
+    pub fn is_payment(&self) -> bool {
+        self.is_payment
+    }
+
+    /// Classify a transaction as payment or non-payment based on the current classifier.
+    ///
+    /// The ClassifierID selects which classification rules to use.
+    /// Classifier v1: transaction is a payment if the `to` address has the TIP20 prefix.
+    fn classify_payment(tx: &Recovered<TempoTxEnvelope>) -> bool {
+        match PAYMENT_CLASSIFIER_ID {
+            1 => {
+                // Classifier v1: Check if the transaction has a `to` address with TIP20 prefix
+                if let Some(to) = tx.to() {
+                    let to_bytes = to.as_slice();
+                    // Check if the first 14 bytes match the TIP20 prefix
+                    if to_bytes.len() >= TIP20_PAYMENT_PREFIX.len() {
+                        return to_bytes[..TIP20_PAYMENT_PREFIX.len()] == TIP20_PAYMENT_PREFIX;
+                    }
+                }
+                false
+            }
+            _ => false, // Unknown classifier versions default to non-payment
+        }
     }
 }
 
@@ -206,5 +246,97 @@ impl EthPoolTransaction for TempoPooledTransaction {
         Err(BlobTransactionValidationError::NotBlobTransaction(
             self.ty(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::address;
+    use tempo_primitives::TxFeeToken;
+
+    fn create_test_tx_with_to(to_address: Option<Address>) -> Recovered<TempoTxEnvelope> {
+        let to = match to_address {
+            Some(addr) => TxKind::Call(addr),
+            None => TxKind::Create,
+        };
+
+        let tx = TxFeeToken {
+            to,
+            gas_limit: 21000,
+            ..Default::default()
+        };
+
+        let envelope = TempoTxEnvelope::FeeToken(alloy_consensus::Signed::new_unchecked(
+            tx,
+            alloy_primitives::Signature::test_signature(),
+            alloy_primitives::B256::ZERO,
+        ));
+
+        Recovered::new_unchecked(
+            envelope,
+            address!("0000000000000000000000000000000000000001"),
+        )
+    }
+
+    #[test]
+    fn test_payment_classification_with_tip20_prefix() {
+        // Create an address with TIP20 prefix
+        let payment_addr = address!("20c0000000000000000000000000000000000001");
+        let tx = create_test_tx_with_to(Some(payment_addr));
+
+        let pooled_tx = TempoPooledTransaction::new(tx, 100);
+        assert!(pooled_tx.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_without_tip20_prefix() {
+        // Create an address without TIP20 prefix
+        let non_payment_addr = address!("1234567890123456789012345678901234567890");
+        let tx = create_test_tx_with_to(Some(non_payment_addr));
+
+        let pooled_tx = TempoPooledTransaction::new(tx, 100);
+        assert!(!pooled_tx.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_no_to_address() {
+        // Create a transaction with no `to` address (contract creation)
+        let tx = create_test_tx_with_to(None);
+
+        let pooled_tx = TempoPooledTransaction::new(tx, 100);
+        assert!(!pooled_tx.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_partial_match() {
+        // Create an address that partially matches but not completely
+        let partial_match_addr = address!("20c0000000000000000000000000000100000000");
+        let tx = create_test_tx_with_to(Some(partial_match_addr));
+
+        let pooled_tx = TempoPooledTransaction::new(tx, 100);
+        // This should still be classified as payment since first 14 bytes match
+        assert!(pooled_tx.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_different_prefix() {
+        // Create an address with a different prefix
+        let different_prefix_addr = address!("30c0000000000000000000000000000000000001");
+        let tx = create_test_tx_with_to(Some(different_prefix_addr));
+
+        let pooled_tx = TempoPooledTransaction::new(tx, 100);
+        assert!(!pooled_tx.is_payment());
+    }
+
+    #[test]
+    fn test_from_eth_preserves_classification() {
+        // Test that from_eth also correctly classifies
+        let payment_addr = address!("20c0000000000000000000000000000000000001");
+        let tx = create_test_tx_with_to(Some(payment_addr));
+
+        let eth_pooled = EthPooledTransaction::new(tx, 100);
+        let pooled_tx = TempoPooledTransaction::from_eth(eth_pooled);
+        assert!(pooled_tx.is_payment());
     }
 }
