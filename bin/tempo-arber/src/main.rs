@@ -3,8 +3,10 @@
 
 use std::time::Duration;
 
-use alloy::{providers::ProviderBuilder, signers::local::MnemonicBuilder};
+use alloy::providers::ProviderBuilder;
+use alloy::network::{EthereumWallet, TxSigner};
 use clap::Parser;
+use foundry_wallets::WalletOpts;
 use futures::StreamExt;
 use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::ITIPFeeAMM};
 
@@ -14,12 +16,9 @@ const RPC: &str = "https://eng:zealous-mayer@rpc-adagietto.tempoxyz.dev ";
 pub struct Args {
     #[arg(short, long, default_value = RPC)]
     rpc_url: String,
-    #[arg(
-        short,
-        long,
-        default_value = "test test test test test test test test test test test junk"
-    )]
-    pub mnemonic: String,
+
+    #[command(flatten)]
+    pub wallet: WalletOpts
 }
 
 #[tokio::main]
@@ -28,9 +27,9 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
     // TODO: Refactor to use any kind of signer.
-    let wallet = MnemonicBuilder::english().phrase(&args.mnemonic).build()?;
-    let signer = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect(RPC).await?;
+    let signer = EthereumWallet::new(args.wallet.signer().await?);
+    let address = signer.default_signer().address();
+    let provider = ProviderBuilder::new().wallet(signer).connect(RPC).await?;
 
     // Configure the Fee AMM contract ABI @ the Fee Manager address.
     let amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
@@ -46,7 +45,7 @@ async fn main() -> eyre::Result<()> {
         let amm = amm.clone();
         tokio::spawn(async move {
             let tx = amm
-                .rebalanceSwap(log.userToken, log.validatorToken, log.amountIn, signer)
+                .rebalanceSwap(log.userToken, log.validatorToken, log.amountIn, address)
                 .send()
                 .await?;
             let receipt = tx.get_receipt().await?;
