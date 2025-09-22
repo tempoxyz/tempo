@@ -9,11 +9,7 @@
     redir https://{host}{uri} permanent
 }
 
-:443 {
-    log
-    json_parse
-    tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
-
+(auth) {
     basic_auth {
         ttest $2a$14$rSSf4Mq.sMBa8dIJ/sg5MO3hTjyY9Cd2HDTE1EaI3Ek4CTu5w/y7a
         tempo $2a$14$ETLDK0qfPjsrmqm7COPZoOZIXG/9IxHKfZT.NHMErAG8lo7Wkjjme
@@ -29,27 +25,57 @@
         brave-fermat $2a$14$wfYo41Ib2NiwyAPy5iDOSO.6RtkGfZ7rLYAtqLHzSZzjbyk5P6nFu
         dreamy-northcutt $2a$14$siPi3FO4VIKOAE0JzYBxIutKeg5ZoVNnog8suK8XTOQyKtlYy1tV2
     }
+}
 
-    reverse_proxy localhost:8545 {
-        header_up Host {host}
-        header_up X-Real-IP {remote}
-        header_up X-Forwarded-For {remote}
-        header_up X-Forwarded-Proto {scheme}
-    }
-
-    log_append user "{http.auth.user.id}"
-    log_append eth_method "{json.method}"
-
-    # Enable CORS for JSON-RPC requests
+(cors) {
     header {
         Access-Control-Allow-Origin "*"
         Access-Control-Allow-Methods "GET, POST, OPTIONS"
         Access-Control-Allow-Headers "Content-Type, Authorization"
     }
-    
+}
+
+:443 {
+    log
+    json_parse
+    tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+
+
+    # Enable CORS for JSON-RPC requests
+
     # Handle preflight requests
     @options {
         method OPTIONS
     }
     respond @options 204
+
+    @ws {
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+
+    handle @ws {
+        import auth
+        reverse_proxy localhost:8546 {
+            header_up Host {host}
+            header_up X-Real-IP {remote}
+            header_up X-Forwarded-For {remote}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    handle {
+        import cors
+        import auth
+        reverse_proxy localhost:8545 {
+            header_up Host {host}
+            header_up X-Real-IP {remote}
+            header_up X-Forwarded-For {remote}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    log_append user "{http.auth.user.id}"
+    log_append eth_method "{json.method}"
+
 }
