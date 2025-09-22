@@ -250,11 +250,11 @@ vergen = "9"
 vergen-git2 = "1"
 
 [patch.crates-io]
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", branch = "marshal-get-height" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
