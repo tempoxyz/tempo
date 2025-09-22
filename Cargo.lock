@@ -12497,6 +12497,7 @@ dependencies = [
  "thiserror 2.0.16",
  "thousands",
  "tokio",
+ "tokio-util",
  "toml",
 ]
 

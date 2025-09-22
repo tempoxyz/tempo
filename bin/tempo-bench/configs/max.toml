@@ -1,6 +1,6 @@
 inherits = "aggressive.toml"
 
-[rate_limiting]
+[benchmark]
 initial_ratelimit = 500
 ratelimit_thresholds = [
     [2_500, 1_000],

@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::crescendo::{TX_TRACKER, config, network_stats::NETWORK_STATS, tx_queue::TX_QUEUE};
 use alloy::primitives::{Bytes, hex};
 use http::StatusCode;
 use http_body_util::{BodyExt, Full};
@@ -9,10 +10,9 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 use thousands::Separable;
+use tokio_util::sync::CancellationToken;
 
-use crate::crescendo::{config, network_stats::NETWORK_STATS, tx_queue::TX_QUEUE, TX_TRACKER};
-
-pub async fn network_worker(worker_id: usize) {
+pub async fn network_worker(worker_id: usize, cancellation_token: CancellationToken) {
     let config = &config::get().network_worker;
 
     let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new())
@@ -26,7 +26,7 @@ pub async fn network_worker(worker_id: usize) {
             connector
         });
 
-    loop {
+    while !cancellation_token.is_cancelled() {
         if let Some(txs) = TX_QUEUE.pop_at_most(config.batch_factor).await {
             let json_body = format!(
                 "[{}]",
@@ -100,8 +100,7 @@ pub async fn network_worker(worker_id: usize) {
                         Err(e) => {
                             eprintln!("[!] Failed to read response body: {e:?}");
                             NETWORK_STATS.inc_errors_by(txs.len());
-                            tokio::time::sleep(Duration::from_millis(config.error_sleep_ms))
-                                .await;
+                            tokio::time::sleep(Duration::from_millis(config.error_sleep_ms)).await;
                         }
                     }
                 }

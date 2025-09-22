@@ -13,9 +13,9 @@ use eyre::Context;
 use futures::{StreamExt, stream::FuturesUnordered};
 use rayon::prelude::*;
 use std::{sync::Arc, time::Instant};
-use alloy::providers::ProviderBuilder;
 use tempo_precompiles::contracts::ITIP20;
 use thousands::Separable;
+use tokio_util::sync::CancellationToken;
 
 type Nonces = DashMap<Address, u64>;
 type Signers = Vec<PrivateKeySigner>;
@@ -110,7 +110,12 @@ impl TxGenerator {
         Ok(nonces)
     }
 
-    pub fn tx_gen_worker(self: Arc<Self>, worker_id: u32, worker_count: usize) {
+    pub fn tx_gen_worker(
+        self: Arc<Self>,
+        worker_id: u32,
+        worker_count: usize,
+        cancellation_token: CancellationToken,
+    ) {
         let config = &config::get().tx_gen_worker;
 
         let mut tx_batch = Vec::with_capacity(config.batch_size as usize);
@@ -119,7 +124,7 @@ impl TxGenerator {
             .chunks(self.signers.len() / worker_count)
             .collect::<Vec<_>>()[worker_id as usize];
 
-        loop {
+        while !cancellation_token.is_cancelled() {
             // Account we'll be sending from.
             let sender_index = fastrand::usize(..worker_signers.len());
             // Send to 1/Nth of the accounts.

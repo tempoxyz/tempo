@@ -23,7 +23,9 @@ max_transfer_amount = 10
 
 batch_size = 1_000 # Number of transactions to generate before pushing to queue.
 
-[rate_limiting]
+[benchmark]
+duration = 60 # seconds
+cool_down_duration = 5 # seconds
 initial_ratelimit = 100 # txs/s
 
 # Rate limit thresholds: [(threshold, rate_limit)]
