@@ -12799,6 +12799,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-rpc-convert",
  "serde",
+ "tempo-chainspec",
  "test-fuzz",
 ]
 
@@ -12858,7 +12859,6 @@ dependencies = [
  "reth-provider",
  "reth-storage-api",
  "reth-transaction-pool",
- "tempo-chainspec",
  "tempo-precompiles",
  "tempo-primitives",
  "tokio",
