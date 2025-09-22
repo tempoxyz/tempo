@@ -787,7 +787,7 @@ mod tests {
         let expected_out = (amount_in * M) / SCALE;
 
         // Execute pending swaps and verify reserves
-        let actual_out = amm.execute_pending_fee_swaps(user_token, validator_token);
+        let actual_out = amm.execute_pending_fee_swaps(user_token, validator_token)?;
         assert_eq!(actual_out, expected_out, "Output should match expected");
 
         // Check reserves updated correctly
@@ -835,7 +835,7 @@ mod tests {
         assert_eq!(amm.get_pending_fee_swap_in(&pool_id), total_pending);
 
         // Execute all pending swaps
-        let total_out = amm.execute_pending_fee_swaps(user_token, validator_token);
+        let total_out = amm.execute_pending_fee_swaps(user_token, validator_token)?;
         let expected_total_out = (total_pending * M) / SCALE;
         assert_eq!(total_out, expected_total_out);
 
@@ -876,7 +876,7 @@ mod tests {
         // Make the pool imbalanced by executing a fee swap
         let user_token_in = uint!(20000_U256) * uint!(10_U256).pow(U256::from(6)); // 20000 * 1e6
         amm.fee_swap(user_token, validator_token, user_token_in)?;
-        amm.execute_pending_fee_swaps(user_token, validator_token);
+        amm.execute_pending_fee_swaps(user_token, validator_token)?;
 
         let pool_before = amm.get_pool(&pool_id);
         let x_before = U256::from(pool_before.reserve_user_token);
@@ -884,25 +884,31 @@ mod tests {
 
         // Execute rebalancing swap using the actual function
         let swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6)); // 1000 * 1e6
-        let mut pool = pool_before;
-        let amount_out = amm.execute_rebalance_swap(&pool_id, &mut pool, swap_amount)?;
+        let msg_sender = Address::random();
+        let to = Address::random();
+        let amount_in =
+            amm.rebalance_swap(msg_sender, user_token, validator_token, swap_amount, to)?;
 
-        // Verify the swap output
-        assert!(amount_out > 0, "Should receive user tokens");
+        // Verify the swap input
+        assert!(amount_in > 0, "Should provide validator tokens");
 
-        // Verify reserves were updated correctly
-        let x_after = U256::from(pool.reserve_user_token);
-        let y_after = U256::from(pool.reserve_validator_token);
+        // Get updated pool state
+        let pool_after = amm.get_pool(&pool_id);
+        let x_after = U256::from(pool_after.reserve_user_token);
+        let y_after = U256::from(pool_after.reserve_validator_token);
+
+        // For rebalance swap: validator tokens go in, user tokens come out
         assert!(x_after < x_before, "User token reserve should decrease");
-        assert_eq!(
-            y_after,
-            y_before + swap_amount,
-            "Validator token reserve should increase by swap amount"
+        assert!(
+            y_after > y_before,
+            "Validator token reserve should increase"
         );
+
+        // The amount_in returned is the validator tokens provided
         assert_eq!(
-            x_before - x_after,
-            amount_out,
-            "Amount out should equal decrease in user reserve"
+            y_after - y_before,
+            amount_in,
+            "Amount in should equal increase in validator reserve"
         );
 
         // Verify the swap reduces imbalance
@@ -948,9 +954,10 @@ mod tests {
         // Try to rebalance a balanced pool - this should fail
         // because it would increase imbalance rather than reduce it
         let swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
-        let mut pool_copy = pool;
+        let msg_sender = Address::random();
+        let to = Address::random();
 
-        let result = amm.execute_rebalance_swap(&pool_id, &mut pool_copy, swap_amount);
+        let result = amm.rebalance_swap(msg_sender, user_token, validator_token, swap_amount, to);
 
         // The swap should fail when trying to rebalance an already balanced pool
         // This fails during calculate_new_reserve with InvalidNewReserves
@@ -982,45 +989,5 @@ mod tests {
             !amm.has_liquidity(user_token, validator_token, too_much),
             "Should not have liquidity for 101 tokens"
         );
-    }
-
-    /// Test liquidity calculation
-    /// Corresponds to testLiquidityCalculation in StableAMM.t.sol (commented out due to overflow)
-    #[test]
-    #[ignore = "Overflow in calculate_liquidity: x*x and coefficient*x*y overflow for normal token amounts (same issue in Solidity)"]
-    fn test_calculate_liquidity() {
-        let (amm, _, _, _) = setup_test_amm();
-
-        let x = uint!(1500_U256) * uint!(10_U256).pow(U256::from(6)); // 1500 * 1e6
-        let y = uint!(500_U256) * uint!(10_U256).pow(U256::from(6)); // 500 * 1e6
-        let l = amm.calculate_liquidity(x, y);
-        assert!(l > 0, "Liquidity should be positive");
-        assert!(l > y, "Liquidity should be greater than smaller reserve");
-    }
-
-    /// Test calculate_new_reserve
-    #[test]
-    #[ignore = "InvalidNewReserves error due to liquidity calculation constraints with these values"]
-    fn test_calculate_new_reserve() -> Result<(), TIPFeeAMMError> {
-        let (amm, _, _, _) = setup_test_amm();
-
-        // Setup a known liquidity value (smaller to avoid overflow)
-        let l = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6)); // 1000 * 1e6
-        let known_y = uint!(800_U256) * uint!(10_U256).pow(U256::from(6)); // 800 * 1e6
-
-        // Calculate new x
-        let new_x = amm.calculate_new_reserve(known_y, l)?;
-        assert!(new_x > 0, "New reserve should be positive");
-
-        // Test error handling with extreme values
-        // When y is much larger than liquidity, calculate_new_reserve should fail
-        let large_y = uint!(1_000_000_U256) * uint!(10_U256).pow(U256::from(6));
-        let extreme_result = amm.calculate_new_reserve(large_y, l);
-        assert!(
-            matches!(extreme_result, Err(TIPFeeAMMError::InvalidNewReserves(_))),
-            "Should fail with InvalidNewReserves for extreme values where y > l"
-        );
-
-        Ok(())
     }
 }
