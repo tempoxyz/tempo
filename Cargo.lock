@@ -12800,6 +12800,7 @@ dependencies = [
  "reth-rpc-convert",
  "serde",
  "tempo-chainspec",
+ "tempo-precompiles",
  "test-fuzz",
 ]
 

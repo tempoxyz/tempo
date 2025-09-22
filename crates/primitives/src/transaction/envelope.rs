@@ -4,7 +4,8 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Signature, U256};
 use reth_primitives_traits::InMemorySize;
-use tempo_chainspec::{PAYMENT_CLASSIFIER_ID, TIP20_PAYMENT_PREFIX};
+use tempo_chainspec::PAYMENT_CLASSIFIER_ID;
+use tempo_precompiles::TIP20_PAYMENT_PREFIX;
 
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
