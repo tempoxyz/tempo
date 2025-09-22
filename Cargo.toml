@@ -9,6 +9,7 @@ members = [
   "bin/tempo",
   "bin/tempo-bench",
   "bin/tempo-commonware",
+  "bin/tempo-monitor",
   "bin/tempo-sidecar",
   "bin/tempo-arber",
   "crates/chainspec",
