@@ -205,6 +205,12 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
+        // Ensure rebalancing doesn't create invalid reserves where user token < validator token
+        // This prevents rebalancing in the wrong direction
+        if pool.reserve_user_token < pool.reserve_validator_token {
+            return Err(TIPFeeAMMError::invalid_new_reserves());
+        }
+
         if !self.can_support_pending_swaps(&pool_id, U256::from(pool.reserve_validator_token)) {
             return Err(TIPFeeAMMError::insufficient_liquidity_for_pending());
         }
@@ -857,7 +863,7 @@ mod tests {
     /// Corresponds to disabled_testRebalanceSwapTowardBalance in StableAMM.t.sol
     #[test]
     #[ignore = "Overflow in calculateLiquidity when called during rebalanceSwap (same as Solidity disabled test)"]
-    fn test_rebalance_swap_toward_balance() -> Result<(), TIPFeeAMMError> {
+    fn test_rebalance_swap() -> Result<(), TIPFeeAMMError> {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Add balanced liquidity first (using same decimals as Solidity test)
@@ -927,9 +933,9 @@ mod tests {
         Ok(())
     }
 
-    /// Test rebalance swap in wrong direction
+    /// Test rebalance swap invalid new balance
     #[test]
-    fn test_rebalance_swap_wrong_direction() {
+    fn test_rebalance_swap_invalid_new_balance() {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup balanced pool
@@ -943,25 +949,15 @@ mod tests {
         );
 
         let pool = amm.get_pool(&pool_id);
-        assert_eq!(
-            pool.reserve_user_token, pool.reserve_validator_token,
-            "Pool should be balanced initially"
-        );
+        assert_eq!(pool.reserve_user_token, pool.reserve_validator_token,);
 
-        // Try to rebalance a balanced pool - this should fail
-        // because it would increase imbalance rather than reduce it
+        // Try to rebalance where the user token balance < validator token balance
         let swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
         let msg_sender = Address::random();
         let to = Address::random();
 
         let result = amm.rebalance_swap(msg_sender, user_token, validator_token, swap_amount, to);
-
-        // The swap should fail when trying to rebalance an already balanced pool
-        // This fails during calculate_new_reserve with InvalidNewReserves
-        assert!(
-            matches!(result, Err(TIPFeeAMMError::InvalidNewReserves(_))),
-            "Rebalancing a balanced pool should fail with InvalidNewReserves"
-        );
+        assert!(matches!(result, Err(TIPFeeAMMError::InvalidNewReserves(_))),);
     }
 
     /// Test has_liquidity function
