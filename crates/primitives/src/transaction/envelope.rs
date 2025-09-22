@@ -94,11 +94,7 @@ impl TempoTxEnvelope {
             1 => {
                 // Classifier v1: Check if the transaction has a `to` address with TIP20 prefix
                 if let Some(to) = self.to() {
-                    let to_bytes = to.as_slice();
-                    // Check if the first 14 bytes match the TIP20 prefix
-                    if to_bytes.len() >= TIP20_PAYMENT_PREFIX.len() {
-                        return to_bytes[..TIP20_PAYMENT_PREFIX.len()] == TIP20_PAYMENT_PREFIX;
-                    }
+                    return to.as_slice().starts_with(&TIP20_PAYMENT_PREFIX);
                 }
                 false
             }
