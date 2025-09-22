@@ -28,7 +28,6 @@ async fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    // TODO: Refactor to use any kind of signer.
     let signer = EthereumWallet::new(args.wallet.signer().await?);
     let address = signer.default_signer().address();
     let provider = ProviderBuilder::new().wallet(signer).connect(RPC).await?;
