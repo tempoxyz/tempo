@@ -52,9 +52,10 @@ pub struct FaucetArgs {
     #[arg(
         long = "faucet.address",
         requires = "enabled",
-        required_if_eq("enabled", "true")
+        required_if_eq("enabled", "true"),
+        num_args(0..)
     )]
-    pub token_address: Option<Address>,
+    pub token_addresses: Option<Vec<Address>>,
 
     #[arg(
         long = "faucet.node-address",
@@ -73,8 +74,10 @@ impl FaucetArgs {
         EthereumWallet::new(signer)
     }
 
-    pub fn address(&self) -> Address {
-        self.token_address.expect("No TIP20 token address provided")
+    pub fn addresses(&self) -> Vec<Address> {
+        self.token_addresses
+            .clone()
+            .expect("No TIP20 token addresses provided")
     }
 
     pub fn amount(&self) -> U256 {

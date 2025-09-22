@@ -1,5 +1,6 @@
 use crate::evm::TempoEvm;
 use alloy_consensus::Transaction;
+use alloy_primitives::Bytes;
 use alloy_sol_types::SolCall;
 use reth_evm::{
     Database, Evm, OnStateHook,
@@ -85,8 +86,13 @@ where
             ));
         }
 
-        if tx.to() != Some(TIP_FEE_MANAGER_ADDRESS) || tx.input() != &executeBlockCall.abi_encode()
-        {
+        let expected_calldata = executeBlockCall
+            .abi_encode()
+            .into_iter()
+            .chain(self.evm().block().number.to_be_bytes_vec())
+            .collect::<Bytes>();
+
+        if tx.to() != Some(TIP_FEE_MANAGER_ADDRESS) || tx.input() != &expected_calldata {
             return Err(BlockValidationError::msg(
                 "system transaction is not a fee manager execute block transaction",
             ));

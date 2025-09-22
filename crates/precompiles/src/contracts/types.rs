@@ -162,12 +162,10 @@ sol! {
     #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
     interface ITIPFeeAMM {
-
         // Structs
         struct Pool {
             uint128 reserveUserToken;
             uint128 reserveValidatorToken;
-            uint128 pendingFeeSwapIn;
         }
 
         struct PoolKey {
@@ -176,11 +174,9 @@ sol! {
         }
 
         // Pool Management
-        function createPool(address userToken, address validatorToken) external;
         function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
         function getPool(address userToken, address validatorToken) external view returns (Pool memory);
         function pools(bytes32 poolId) external view returns (Pool memory);
-        function poolExists(bytes32 poolId) external view returns (bool);
 
         // Liquidity Operations
         function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
@@ -190,10 +186,22 @@ sol! {
         function totalSupply(bytes32 poolId) external view returns (uint256);
         function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
 
+        // TODO: has liquidity
+
+        // Swapping
+        function rebalanceSwap(address userToken, address validatorToken, uint256 amountIn, address to) external returns (uint256 amountOut);
+        function calculateLiquidity(uint256 x, uint256 y) external pure returns (uint256);
+
         // Events
-        event PoolCreated(address indexed userToken, address indexed validatorToken);
         event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
         event Burn(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity, address to);
+        event RebalanceSwap(address indexed userToken, address indexed validatorToken, address indexed swapper, uint256 amountIn, uint256 amountOut);
+        event FeeSwap(
+            address indexed userToken,
+            address indexed validatorToken,
+            uint256 amountIn,
+            uint256 amountOut
+        );
 
         // Errors
         error IdenticalAddresses();
@@ -202,11 +210,21 @@ sol! {
         error PoolDoesNotExist();
         error InvalidToken();
         error InsufficientLiquidity();
+        error OnlyProtocol();
         error InsufficientPoolBalance();
         error InsufficientReserves();
         error InsufficientLiquidityBalance();
         error MustDepositLowerBalanceToken();
         error InvalidAmount();
+        error InvalidRebalanceState();
+        error InvalidRebalanceDirection();
+        error InvalidNewReserves();
+        error CannotSupportPendingSwaps();
+        error DivisionByZero();
+        error InvalidSwapCalculation();
+        error InsufficientLiquidityForPending();
+        error TokenTransferFailed();
+        error InternalError();
     }
 
 
@@ -245,12 +263,6 @@ sol! {
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function executeBlock() external;
 
-        // Fee tracking view functions
-        function collectedFees(address token) external view returns (uint256);
-        function getTokensWithFeesLength() external view returns (uint256);
-        function getTokenWithFees(uint256 index) external view returns (address);
-        function tokenInFeesArray(address token) external view returns (bool);
-
         // Events
         event UserTokenSet(address indexed user, address indexed token);
         event ValidatorTokenSet(address indexed validator, address indexed token);
@@ -260,8 +272,9 @@ sol! {
         error OnlySystemContract();
         error InvalidToken();
         error PoolDoesNotExist();
-        error InsufficientPoolBalance();
+        error InsufficientLiquidity();
         error InsufficientFeeTokenBalance();
+        error InternalError();
     }
 }
 
@@ -319,6 +332,63 @@ impl TIPFeeAMMError {
     /// Creates an error for invalid amount.
     pub const fn invalid_amount() -> Self {
         Self::InvalidAmount(ITIPFeeAMM::InvalidAmount {})
+    }
+
+    /// Creates an error for token transfer failure.
+    pub const fn token_transfer_failed() -> Self {
+        Self::TokenTransferFailed(ITIPFeeAMM::TokenTransferFailed {})
+    }
+
+    /// Creates an error for invalid swap calculation.
+    pub const fn invalid_swap_calculation() -> Self {
+        Self::InvalidSwapCalculation(ITIPFeeAMM::InvalidSwapCalculation {})
+    }
+
+    /// Creates an error for insufficient liquidity for pending operations.
+    pub const fn insufficient_liquidity_for_pending() -> Self {
+        Self::InsufficientLiquidityForPending(ITIPFeeAMM::InsufficientLiquidityForPending {})
+    }
+
+    /// Creates an error for division by zero.
+    pub const fn division_by_zero() -> Self {
+        Self::DivisionByZero(ITIPFeeAMM::DivisionByZero {})
+    }
+
+    /// Creates an error for invalid new reserves.
+    pub const fn invalid_new_reserves() -> Self {
+        Self::InvalidNewReserves(ITIPFeeAMM::InvalidNewReserves {})
+    }
+
+    /// Creates an error for internal errors.
+    pub const fn internal_error() -> Self {
+        Self::InternalError(ITIPFeeAMM::InternalError {})
+    }
+}
+
+impl FeeManagerError {
+    /// Creates an error for invalid token.
+    pub const fn invalid_token() -> Self {
+        Self::InvalidToken(IFeeManager::InvalidToken {})
+    }
+
+    /// Creates an error for internal errors.
+    pub const fn internal_error() -> Self {
+        Self::InternalError(IFeeManager::InternalError {})
+    }
+
+    /// Creates an error for insufficient liquidity.
+    pub const fn insufficient_liquidity() -> Self {
+        Self::InsufficientLiquidity(IFeeManager::InsufficientLiquidity {})
+    }
+
+    /// Creates an error for insufficient fee token balance.
+    pub const fn insufficient_fee_token_balance() -> Self {
+        Self::InsufficientFeeTokenBalance(IFeeManager::InsufficientFeeTokenBalance {})
+    }
+
+    /// Creates an error for only system contract access.
+    pub const fn only_system_contract() -> Self {
+        Self::OnlySystemContract(IFeeManager::OnlySystemContract {})
     }
 }
 

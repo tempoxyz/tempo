@@ -4,21 +4,21 @@ total_connections = 10_000 # Limited by # of ephemeral ports.
 
 batch_factor = 1
 
+max_concurrent_setup_requests = 100
 error_sleep_ms = 100
 tx_queue_empty_sleep_ms = 25
-max_concurrent_setup_requests = 100
 
 [tx_gen_worker]
-chain_id = 1337
+chain_id = 31337
 
 mnemonic = "test test test test test test test test test test test junk"
-num_accounts = 25_000 # Limited by the number in the genesis (see generate_genesis_alloc.rs)
+num_accounts = 1000 # Limited by the number in the genesis (see generate_genesis_alloc.rs)
 
 gas_price = 100000000000 # 100 gwei
 gas_limit = 100_000
 
 token_contract_address = "0x2000000000000000000000000000000000000001"
-recipient_distribution_factor = 20 # 1/20 of accounts receive transfers.
+recipient_distribution_factor = 1 # 1/20 of accounts receive transfers.
 max_transfer_amount = 10
 
 batch_size = 1_000 # Number of transactions to generate before pushing to queue.
@@ -30,20 +30,11 @@ initial_ratelimit = 100 # txs/s
 # threshold = number of transactions sent
 # rate_limit = new transactions per second limit
 ratelimit_thresholds = [
-    [1_562, 250],      # NUM_ACCOUNTS / 16
-    [3_125, 500],      # NUM_ACCOUNTS / 8
-    [25_000, 1_000],    # NUM_ACCOUNTS
-    [50_000, 2_500],    # NUM_ACCOUNTS * 2
-    [100_000, 5_000],   # NUM_ACCOUNTS * 4
-    [200_000, 7_500],   # NUM_ACCOUNTS * 8
-    [250_000, 12_500],  # NUM_ACCOUNTS * 10
-    [300_000, 15_000],  # NUM_ACCOUNTS * 12
-    [350_000, 20_000],  # NUM_ACCOUNTS * 14
-    [400_000, 25_000],  # NUM_ACCOUNTS * 16
+    [1_562, 1000],      # NUM_ACCOUNTS / 16
 ]
 
 [workers]
-thread_pinning = true
+thread_pinning = false
 tx_gen_worker_percentage = 0.1
 network_worker_percentage = 0.9
 

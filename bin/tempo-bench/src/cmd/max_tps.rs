@@ -1,10 +1,12 @@
 use crate::crescendo::{
     DesireType, NETWORK_STATS, TX_QUEUE, WorkerType,
     config::{self, Config},
+    tx_gen::TxGenerator,
     utils, workers,
 };
 use clap::Parser;
-use std::{future::pending, path::PathBuf, thread, time::Duration};
+use eyre::WrapErr;
+use std::{future::pending, path::PathBuf, sync::Arc, thread, time::Duration};
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -41,6 +43,10 @@ impl TPSArgs {
                 .ok_or_else(|| eyre::eyre!("No core available for main runtime"))?,
         );
 
+        let tx_generator = TxGenerator::new()
+            .await
+            .wrap_err("failed to construct transaction generator")?;
+
         // Given our desired breakdown of workers, translate this into actual numbers of workers to spawn.
         let (workers, worker_counts) = workers::assign_workers(
             core_ids, // Doesn't include the main runtime core.
@@ -62,6 +68,7 @@ impl TPSArgs {
         println!("[*] Connections per network worker: {connections_per_network_worker}");
 
         // TODO: Having the assign_workers function do this would be cleaner.
+        let tx_gen_worker_count = worker_counts[&WorkerType::TxGen] as usize;
         let mut tx_gen_worker_id = 0;
         let mut network_worker_id = 0;
 
@@ -71,9 +78,10 @@ impl TPSArgs {
         for (core_id, worker_type) in workers {
             match worker_type {
                 WorkerType::TxGen => {
+                    let tx_gen_clone: Arc<TxGenerator> = Arc::clone(&tx_generator);
                     thread::spawn(move || {
                         utils::maybe_pin_thread(core_id);
-                        workers::tx_gen_worker(tx_gen_worker_id);
+                        tx_gen_clone.tx_gen_worker(tx_gen_worker_id, tx_gen_worker_count);
                     });
                     tx_gen_worker_id += 1;
                 }

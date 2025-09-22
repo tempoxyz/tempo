@@ -9,6 +9,7 @@ use alloy::{
     signers::local::MnemonicBuilder,
     sol_types::{SolCall, SolEvent},
 };
+use alloy_eips::BlockId;
 use alloy_rpc_types_eth::TransactionInput;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use std::env;
@@ -16,7 +17,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::contracts::{
     ITIP20::{self, transferCall},
     storage::slots::mapping_slot,
-    tip20,
+    tip20, token_id_to_address,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -247,6 +248,118 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
+    assert!(receipt.gas_used <= gas);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+
+    let (http_url, _node_handle) = setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let user_address = wallet.address();
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Get beneficiary (validator) from latest block
+    let block = provider
+        .get_block(BlockId::latest())
+        .await?
+        .expect("Could not get latest block");
+    let validator_address = block.header.beneficiary;
+    assert!(!validator_address.is_zero());
+
+    // Create different fee tokens for user and validator
+    let user_fee_token = setup_test_token(provider.clone(), user_address).await?;
+
+    let mint_amount = U256::from(u128::MAX);
+    user_fee_token
+        .mint(user_address, mint_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Setup fee manager to configure different tokens
+    let fee_manager = tempo_precompiles::contracts::types::IFeeManager::new(
+        tempo_precompiles::TIP_FEE_MANAGER_ADDRESS,
+        provider.clone(),
+    );
+
+    // Supply liquidity to enable fee token swapping
+    let validator_token_address = token_id_to_address(0); // predeployed token
+
+    let fee_amm = tempo_precompiles::contracts::types::ITIPFeeAMM::new(
+        tempo_precompiles::TIP_FEE_MANAGER_ADDRESS,
+        provider.clone(),
+    );
+
+    // Provide liquidity for the fee token pair
+    let liquidity_amount = U256::from(u32::MAX);
+    fee_amm
+        .mint(
+            *user_fee_token.address(),
+            validator_token_address,
+            liquidity_amount,
+            liquidity_amount,
+            user_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Set different fee tokens for user and validator
+    // Note that the validator defaults to the predeployed fee token
+    fee_manager
+        .setUserToken(*user_fee_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Verify the tokens are set correctly
+    let user_token = fee_manager.userTokens(user_address).call().await?;
+    let validator_token = fee_manager
+        .validatorTokens(validator_address)
+        .call()
+        .await?;
+
+    assert_eq!(user_token, *user_fee_token.address());
+    assert_eq!(validator_token, validator_token_address);
+    assert_ne!(user_token, validator_token_address);
+
+    // Create a test transaction to estimate gas for
+    let recipient = Address::random();
+    let calldata = user_fee_token
+        .transfer(recipient, U256::ONE)
+        .calldata()
+        .clone();
+    let tx = TransactionRequest::default()
+        .from(user_address)
+        .to(*user_fee_token.address())
+        .input(TransactionInput::new(calldata));
+
+    // Estimate gas when user fee token differs from validator fee token
+    let gas = provider.estimate_gas(tx.clone()).await?;
+    assert!(gas > 0 && gas < 30000);
+
+    // Verify we can execute the transaction with the estimated gas
+    let receipt = provider
+        .send_transaction(tx.gas_limit(gas))
+        .await?
+        .get_receipt()
+        .await?;
+
+    assert!(receipt.status());
     assert!(receipt.gas_used <= gas);
 
     Ok(())

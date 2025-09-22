@@ -63,6 +63,7 @@ pub struct NetworkWorkerConfig {
     pub total_connections: u64,
 
     pub batch_factor: usize,
+    pub max_concurrent_setup_requests: usize,
 
     pub error_sleep_ms: u64,
     pub tx_queue_empty_sleep_ms: u64,

@@ -12437,6 +12437,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-arber"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "clap",
+ "eyre",
+ "futures",
+ "tempo-precompiles",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.20",
+]
+
+[[package]]
 name = "tempo-bench"
 version = "0.1.0"
 dependencies = [
@@ -12449,6 +12463,7 @@ dependencies = [
  "dashmap 6.1.0",
  "eyre",
  "fastrand",
+ "futures",
  "hex",
  "http",
  "http-body-util",

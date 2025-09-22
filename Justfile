@@ -27,6 +27,6 @@ tempo-dev-up: scripts::tempo-dev-up
 tempo-dev-down: scripts::tempo-dev-down
 
 [group('test')]
-feature-test: scripts::auto-7702-delegation  scripts::basic-transfer scripts::registrar-delegation
+feature-test: scripts::auto-7702-delegation  scripts::basic-transfer scripts::registrar-delegation scripts::create-tip20-token scripts::fee-amm
 
-
+fee-amm: scripts::fee-amm
