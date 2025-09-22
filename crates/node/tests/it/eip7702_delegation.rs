@@ -44,9 +44,10 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
         .build()?;
     let bob_addr = bob.address();
 
-    let amount = U256::random();
+    let transfer_amount = U256::from(1000);
+    let mint_amount = transfer_amount * U256::from(3);
     token
-        .mint(bob_addr, amount)
+        .mint(bob_addr, mint_amount)
         .send()
         .await?
         .get_receipt()
@@ -57,21 +58,52 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     assert!(code_before.is_empty(),);
 
     let bob_bal_before = token.balanceOf(bob_addr).call().await?;
-    assert_eq!(bob_bal_before, amount);
-    let recipient = Address::random();
-    let recip_bal_before = token.balanceOf(recipient).call().await?;
-    assert_eq!(recip_bal_before, U256::ZERO);
+    assert_eq!(bob_bal_before, mint_amount);
+    
+    // Create three random recipients
+    let recipient_0 = Address::random();
+    let recipient_1 = Address::random();
+    let recipient_2 = Address::random();
+    
+    // Verify initial balances
+    let recip_0_bal_before = token.balanceOf(recipient_0).call().await?;
+    let recip_1_bal_before = token.balanceOf(recipient_1).call().await?;
+    let recip_2_bal_before = token.balanceOf(recipient_2).call().await?;
+    assert_eq!(recip_0_bal_before, U256::ZERO);
+    assert_eq!(recip_1_bal_before, U256::ZERO);
+    assert_eq!(recip_2_bal_before, U256::ZERO);
 
-    let delegate_calldata = token
-        .transfer(recipient, bob_bal_before)
+    // Create batch transfer calldata
+    let transfer_0_calldata = token
+        .transfer(recipient_0, transfer_amount)
+        .calldata()
+        .to_owned();
+    let transfer_1_calldata = token
+        .transfer(recipient_1, transfer_amount)
+        .calldata()
+        .to_owned();
+    let transfer_2_calldata = token
+        .transfer(recipient_2, transfer_amount)
         .calldata()
         .to_owned();
 
-    let calls = vec![Call {
-        to: *token.address(),
-        value: U256::from(0),
-        data: delegate_calldata,
-    }];
+    let calls = vec![
+        Call {
+            to: *token.address(),
+            value: U256::from(0),
+            data: transfer_0_calldata,
+        },
+        Call {
+            to: *token.address(),
+            value: U256::from(0),
+            data: transfer_1_calldata,
+        },
+        Call {
+            to: *token.address(),
+            value: U256::from(0),
+            data: transfer_2_calldata,
+        },
+    ];
 
     let bob_provider = ProviderBuilder::new().wallet(bob).connect_http(http_url);
     let delegate_account = IthacaAccount::new(bob_addr, bob_provider.clone());
@@ -92,9 +124,16 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
 
     // Assert state changes
     let bob_bal_after = token.balanceOf(bob_addr).call().await?;
-    let recip_bal_after = token.balanceOf(recipient).call().await?;
-    assert_eq!(bob_bal_after, U256::ZERO);
-    assert_eq!(recip_bal_after, amount);
+    let recip_0_bal_after = token.balanceOf(recipient_0).call().await?;
+    let recip_1_bal_after = token.balanceOf(recipient_1).call().await?;
+    let recip_2_bal_after = token.balanceOf(recipient_2).call().await?;
+    
+    // Bob should have spent 3 * transfer_amount
+    assert_eq!(bob_bal_after, bob_bal_before - (transfer_amount * U256::from(3)));
+    // Each recipient should have received transfer_amount
+    assert_eq!(recip_0_bal_after, transfer_amount);
+    assert_eq!(recip_1_bal_after, transfer_amount);
+    assert_eq!(recip_2_bal_after, transfer_amount);
 
     Ok(())
 }
