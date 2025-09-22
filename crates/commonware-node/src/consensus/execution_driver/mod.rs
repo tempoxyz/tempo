@@ -2,8 +2,9 @@
 
 use std::{sync::Arc, time::SystemTime};
 
-use alloy_primitives::{B64, B256};
+use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
+use alloy_rpc_types_engine::PayloadId;
 use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 
@@ -439,7 +440,7 @@ impl RunPropose {
             mut syncer_mailbox,
         } = self;
         let Propose {
-            view,
+            view: _view,
             parent,
             mut response,
         } = request;
@@ -473,9 +474,14 @@ impl RunPropose {
             let payload_id = execution_node
                 .payload_builder_handle
                 .send_new_payload(EthPayloadBuilderAttributes {
-                    // XXX: payload builder attributes are caller defined, so the
-                    // consensus `view` is a good place for it.
-                    id: B64::from(view).into(),
+                    // XXX: derives the payload ID from the parent so that
+                    // overlong payload builds will eventually succeed on the
+                    // next iteration: if all other nodes take equally as long,
+                    // the consensus engine will kill the proposal task (see
+                    // also `response.cancellation` below). Then eventually
+                    // consensus will circle back to an earlier node, which then
+                    // has the chance of picking up the old payload.
+                    id: payload_id_from_block_hash(&parent.block_hash()),
                     parent: parent.block_hash(),
                     timestamp,
                     suggested_fee_recipient: fee_recipient,
@@ -793,4 +799,12 @@ impl From<Finalized> for Message {
     fn from(value: Finalized) -> Self {
         Self::Finalized(value.into())
     }
+}
+
+/// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
+fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
+    PayloadId::new(
+        <[u8; 8]>::try_from(&block_hash[0..8])
+            .expect("a 32 byte array always has more than 8 bytes"),
+    )
 }
