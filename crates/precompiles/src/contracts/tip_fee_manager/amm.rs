@@ -927,31 +927,30 @@ mod tests {
         Ok(())
     }
 
-    /// Test rebalance swap invalid new balance
+    /// Test rebalance swap with insufficient user funds
     #[test]
-    fn test_rebalance_swap_invalid_new_balance() {
+    fn test_rebalance_swap_insufficient_funds() {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup balanced pool
-        let balanced_amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
-        let pool_id = setup_pool_with_liquidity(
-            &mut amm,
-            user_token,
-            validator_token,
-            balanced_amount,
-            balanced_amount,
-        );
+        let amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
+        let pool_id =
+            setup_pool_with_liquidity(&mut amm, user_token, validator_token, amount, amount);
 
         let pool = amm.get_pool(&pool_id);
         assert_eq!(pool.reserve_user_token, pool.reserve_validator_token,);
 
-        // Try to rebalance where the user token balance < validator token balance
-        let swap_amount = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
-        let msg_sender = Address::random();
+        let msg_sender = Address::random(); // Random address with no token balance
         let to = Address::random();
+        let result = amm.rebalance_swap(
+            msg_sender,
+            user_token,
+            validator_token,
+            amount + U256::ONE,
+            to,
+        );
 
-        let result = amm.rebalance_swap(msg_sender, user_token, validator_token, swap_amount, to);
-        assert!(matches!(result, Err(TIPFeeAMMError::InvalidNewReserves(_))),);
+        assert!(matches!(result, Err(TIPFeeAMMError::InvalidAmount(_))),);
     }
 
     /// Test has_liquidity function
