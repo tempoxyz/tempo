@@ -14,6 +14,14 @@ use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 pub const TEMPO_BASE_FEE: u64 = 44;
 
+/// Classifier ID for payment transaction classification rules
+pub const PAYMENT_CLASSIFIER_ID: u8 = 1;
+
+/// TIP20 payment address prefix (14 bytes: 0x20c000000...)
+pub const TIP20_PAYMENT_PREFIX: [u8; 14] = [
+    0x20, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
 /// Tempo chain specification parser.
 #[derive(Debug, Clone, Default)]
 pub struct TempoChainSpecParser;

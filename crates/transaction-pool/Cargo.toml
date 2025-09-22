@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+tempo-chainspec.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 
