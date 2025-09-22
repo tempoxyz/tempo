@@ -4,7 +4,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::k256::pkcs8::der::asn1::UtcTime,
 };
-use eyre::{Context, OptionExt};
+use eyre::{Context, eyre};
 use futures::{StreamExt, stream};
 use parking_lot::Mutex;
 use reth::rpc::types::TransactionReceipt;
@@ -105,7 +105,7 @@ impl TxTracker {
         let blocks = stream::iter(start_block_number..end_block_number)
             .map(|block_number| {
                 let provider = provider.clone();
-                async move { provider.get_block(block_number.into()).await }
+                async move { (block_number, provider.get_block(block_number.into()).await) }
             })
             .buffer_unordered(10)
             .collect::<Vec<_>>()
@@ -113,7 +113,9 @@ impl TxTracker {
 
         let block_timestamps: HashMap<BlockNumber, u64> = blocks
             .into_iter()
-            .map(|r| r?.ok_or_eyre(""))
+            .map(|(block_number, r)| {
+                r?.ok_or_else(|| eyre!("failed to fetch block {}", block_number))
+            })
             .collect::<eyre::Result<Vec<_>>>()?
             .into_iter()
             .map(|block| (block.header.number, block.header.timestamp))
@@ -122,7 +124,12 @@ impl TxTracker {
         let receipts_by_block = stream::iter(start_block_number..end_block_number)
             .map(|block_number| {
                 let provider = provider.clone();
-                async move { provider.get_block_receipts(block_number.into()).await }
+                async move {
+                    (
+                        block_number,
+                        provider.get_block_receipts(block_number.into()).await,
+                    )
+                }
             })
             .buffer_unordered(10)
             .collect::<Vec<_>>()
@@ -130,7 +137,14 @@ impl TxTracker {
 
         let transaction_receipts: HashMap<TxHash, TransactionReceipt> = receipts_by_block
             .into_iter()
-            .map(|r| r?.ok_or_eyre(""))
+            .map(|(block_number, result)| {
+                result?.ok_or_else(|| {
+                    eyre!(
+                        "failed to fetch transaction receipts for block {}",
+                        block_number
+                    )
+                })
+            })
             .collect::<eyre::Result<Vec<_>>>()?
             .into_iter()
             .flatten()
@@ -149,7 +163,7 @@ impl TxTracker {
                                 .block_number
                                 .expect("receipt should have block number"),
                         )
-                        .expect("block does not exist in cache");
+                        .expect("block should exist in cache");
                     sent_tx = sent_tx.landed(*block_time, receipt.status(), receipt.gas_used);
                 }
 

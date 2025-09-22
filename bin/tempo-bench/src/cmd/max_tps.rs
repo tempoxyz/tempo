@@ -138,7 +138,10 @@ impl TPSArgs {
         .await?;
 
         println!("[*] All workers stopped, entering cool down period");
-        time::sleep(Duration::from_secs(config::get().benchmark.cool_down_duration)).await;
+        time::sleep(Duration::from_secs(
+            config::get().benchmark.cool_down_duration,
+        ))
+        .await;
 
         let report = TX_TRACKER
             .tally_sent_txs(0)
