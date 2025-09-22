@@ -2,9 +2,9 @@ pub mod amm;
 pub mod fee;
 
 use crate::{
-    DEFAULT_FEE_TOKEN, TIP20_TOKEN_PREFIX,
+    DEFAULT_FEE_TOKEN,
     contracts::{
-        TIP20Token, address_to_token_id_unchecked,
+        TIP20Token, address_to_token_id_unchecked, is_tip20,
         storage::{StorageOps, StorageProvider},
         tip_fee_manager::{
             amm::{PoolKey, TIPFeeAMM},
@@ -70,11 +70,6 @@ pub mod slots {
     pub fn token_in_fees_array_slot(token: &Address) -> U256 {
         mapping_slot(token, TOKEN_IN_FEES_ARRAY)
     }
-}
-
-fn is_tip20(token: &Address) -> bool {
-    let bytes = token.as_slice();
-    bytes[0..12] == TIP20_TOKEN_PREFIX
 }
 
 /// TipFeeManager implements the FeeManager contract which inherits from TIPFeeAMM.
