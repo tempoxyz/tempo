@@ -15,3 +15,19 @@ pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
     "apt-get update && apt-get install --assume-yes --no-install-recommends llvm-dev libclang-dev clang libssl-dev:$CROSS_DEB_ARCH",
 ]
+
+[build.env]
+passthrough = [
+    "SCCACHE_ERROR_LOG",
+    "SCCACHE_LOG",
+    "SCCACHE_AZURE_CONNECTION_STRING",
+    "SCCACHE_AZURE_BLOB_CONTAINER",
+    "SCCACHE_WEBDAV_ENDPOINT",
+    "SCCACHE_WEBDAV_TOKEN",
+    "SCCACHE_WEBDAV_USERNAME",
+    "SCCACHE_WEBDAV_PASSWORD",
+    "SCCACHE_DIR",
+]
+
+[target.x86_64-unknown-linux-gnu]
+dockerfile = "Dockerfile.x86_64-unknown-linux-gnu-sccache"
