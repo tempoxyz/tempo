@@ -149,8 +149,6 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
 }
 
 /// Length of the Tempo extra data suffix.
-///
-/// 0x4e504753 ASCII "NPGS" || uint8 version || uint64 nonPaymentGasLimit || uint64 nonPaymentGasUsed
 pub const TEMPO_EXTRA_DATA_SUFFIX_LENGTH: usize = 21;
 
 /// Divisor for calculating non-payment gas limit.
@@ -167,10 +165,13 @@ pub struct TempoExtraData {
 
 impl TempoExtraData {
     /// Decodes the extra data from the given bytes.
+    ///
+    /// Expected format:
+    /// 0x4e504753 ASCII "NPGS" || uint8 version || uint64 nonPaymentGasLimit || uint64 nonPaymentGasUsed
     pub fn decode(extra_data: &[u8]) -> Result<Self, ConsensusError> {
-        if extra_data.len() < 21 {
+        if extra_data.len() < TEMPO_EXTRA_DATA_SUFFIX_LENGTH {
             return Err(ConsensusError::Other(
-                "Extra data must be 32 bytes".to_string(),
+                "Extra data must be at least 21 bytes length".to_string(),
             ));
         }
 
