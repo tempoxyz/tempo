@@ -13681,9 +13681,11 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "clap",
+ "dashmap 6.1.0",
  "eyre",
  "foundry-wallets",
  "futures",
+ "itertools 0.14.0",
  "tempo-precompiles",
  "tokio",
  "tracing",
