@@ -15,8 +15,10 @@ pub struct Header {
     #[serde(flatten)]
     pub inner: alloy_rpc_types_eth::Header,
     /// Non-payment gas limit.
+    #[serde(with = "alloy::serde::quantity")]
     pub non_payment_gas_limit: u64,
     /// Non-payment gas used.
+    #[serde(with = "alloy::serde::quantity")]
     pub non_payment_gas_used: u64,
 }
 
