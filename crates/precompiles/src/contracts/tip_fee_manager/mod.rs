@@ -648,7 +648,7 @@ mod tests {
             .unwrap();
 
         // Call collect_fee_pre_tx directly
-        let result = fee_manager.collect_fee_pre_tx(user, validator, max_amount);
+        let result = fee_manager.collect_fee_pre_tx(user, token, validator, max_amount);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), token);
     }
