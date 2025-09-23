@@ -6,81 +6,58 @@ use std::{
 };
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
-/// State machine for managing transaction processing based on gas limits.
-///
-/// This handles the logic of skipping large non-payment transactions
-/// while continuing to search for smaller ones that fit.
+/// State for managing transaction processing based on gas limits.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum LaneState {
-    /// Processing non-payment transactions (may be skipping large ones)
-    NonPayment {
-        /// Gas remaining for non-payment transactions
-        gas_available: u64,
-        /// Whether we're currently skipping large non-payment transactions
-        skipping: bool,
-    },
-    /// Iterator exhausted, draining buffered payment transactions
-    DrainBuffer,
+struct LaneState {
+    /// Whether we're draining the buffer (iterator exhausted)
+    draining: bool,
+    /// Gas remaining for non-payment transactions
+    non_payment_gas: u64,
 }
 
 impl LaneState {
     /// Create a new lane state starting in non-payment lane
     fn new(non_payment_gas_limit: u64) -> Self {
-        Self::NonPayment {
-            gas_available: non_payment_gas_limit,
-            skipping: false,
+        Self {
+            draining: false,
+            non_payment_gas: non_payment_gas_limit,
         }
     }
 
     /// Process a transaction and determine what action to take
     fn process_transaction(&mut self, is_payment: bool, tx_gas: u64) -> TransactionAction {
-        match self {
-            Self::NonPayment {
-                gas_available,
-                skipping,
-            } => {
-                if is_payment {
-                    // Buffer payment transaction while in non-payment lane
-                    TransactionAction::Buffer
-                } else if tx_gas <= *gas_available {
-                    // Non-payment transaction fits
-                    // Reset skipping flag since we found a usable transaction
-                    *skipping = false;
-                    TransactionAction::Yield
-                } else {
-                    // Non-payment transaction doesn't fit
-                    // Set skipping flag to indicate we're looking for smaller transactions
-                    *skipping = true;
-                    TransactionAction::Skip
-                }
-            }
-            Self::DrainBuffer => {
-                // Should not be called in this state
-                unreachable!("process_transaction should not be called when draining buffer")
-            }
+        if self.draining {
+            // Should not be called in this state
+            unreachable!("process_transaction should not be called when draining buffer")
+        }
+
+        if is_payment {
+            // Buffer payment transaction while in non-payment lane
+            TransactionAction::Buffer
+        } else if tx_gas <= self.non_payment_gas {
+            // Non-payment transaction fits
+            TransactionAction::Yield
+        } else {
+            // Non-payment transaction doesn't fit
+            TransactionAction::Skip
         }
     }
 
     /// Update gas after a non-payment transaction was executed
     fn update_gas(&mut self, gas_used: u64) {
-        match self {
-            Self::NonPayment { gas_available, .. } => {
-                *gas_available = gas_available.saturating_sub(gas_used);
-            }
-            Self::DrainBuffer => {
-                // No gas tracking when draining buffer
-            }
+        if !self.draining {
+            self.non_payment_gas = self.non_payment_gas.saturating_sub(gas_used);
         }
     }
 
     /// Check if we're draining the buffer (iterator exhausted)
     fn is_draining_buffer(&self) -> bool {
-        matches!(self, Self::DrainBuffer)
+        self.draining
     }
 
     /// Mark that iterator is exhausted and we should drain buffer
     fn mark_exhausted(&mut self) {
-        *self = Self::DrainBuffer;
+        self.draining = true;
     }
 }
 
@@ -265,17 +242,11 @@ where
                 }
                 TransactionAction::Skip => {
                     // Skip this non-payment transaction that doesn't fit
-                    // Get the current gas available for error reporting
-                    let gas_available = match &self.lane_state {
-                        LaneState::NonPayment { gas_available, .. } => *gas_available,
-                        _ => 0,
-                    };
-
                     self.inner.mark_invalid(
                         &tx,
                         reth_transaction_pool::error::InvalidPoolTransactionError::ExceedsGasLimit(
                             tx_gas,
-                            gas_available,
+                            self.lane_state.non_payment_gas,
                         ),
                     );
                 }
@@ -328,8 +299,8 @@ mod tests {
         laned.update_non_payment_gas_used(20000);
         assert_eq!(laned.non_payment_gas_used(), 40000);
 
-        // Force switch to draining buffer state
-        laned.lane_state = LaneState::DrainBuffer;
+        // Force switch to draining state
+        laned.lane_state.draining = true;
         assert!(laned.is_in_payment_lane());
 
         // Further updates shouldn't affect gas tracking when draining
@@ -346,9 +317,9 @@ mod tests {
             let state = LaneState::new(100000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 100000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 100000,
                 }
             );
             assert!(!state.is_draining_buffer());
@@ -359,12 +330,12 @@ mod tests {
             let mut state = LaneState::new(100000);
             let action = state.process_transaction(false, 50000);
             assert_eq!(action, TransactionAction::Yield);
-            // Should remain in NonPayment state
+            // Gas should remain unchanged until update_gas is called
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 100000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 100000,
                 }
             );
         }
@@ -374,12 +345,12 @@ mod tests {
             let mut state = LaneState::new(50000);
             let action = state.process_transaction(false, 60000);
             assert_eq!(action, TransactionAction::Skip);
-            // Should set skipping flag
+            // State remains unchanged
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 50000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 50000,
                 }
             );
         }
@@ -389,52 +360,52 @@ mod tests {
             let mut state = LaneState::new(100000);
             let action = state.process_transaction(true, 50000);
             assert_eq!(action, TransactionAction::Buffer);
-            // Should remain in NonPayment state
+            // State should remain unchanged
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 100000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 100000,
                 }
             );
         }
 
         #[test]
         fn test_skipping_finds_smaller_non_payment() {
-            let mut state = LaneState::NonPayment {
-                gas_available: 50000,
-                skipping: true,
+            let mut state = LaneState {
+                draining: false,
+                non_payment_gas: 50000,
             };
 
             // Found a smaller non-payment that fits
             let action = state.process_transaction(false, 30000);
             assert_eq!(action, TransactionAction::Yield);
-            // Should clear skipping flag
+            // State should remain unchanged (gas not updated yet)
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 50000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 50000,
                 }
             );
         }
 
         #[test]
         fn test_skipping_with_payment() {
-            let mut state = LaneState::NonPayment {
-                gas_available: 50000,
-                skipping: true,
+            let mut state = LaneState {
+                draining: false,
+                non_payment_gas: 50000,
             };
 
-            // Payment while skipping should buffer
+            // Payment transaction should always buffer
             let action = state.process_transaction(true, 30000);
             assert_eq!(action, TransactionAction::Buffer);
-            // Should remain with skipping flag
+            // State should remain unchanged
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 50000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 50000,
                 }
             );
         }
@@ -455,9 +426,9 @@ mod tests {
             state.update_gas(21000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 29000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 29000,
                 }
             );
 
@@ -466,31 +437,31 @@ mod tests {
             assert_eq!(action, TransactionAction::Skip);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 29000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 29000,
                 }
             );
 
-            // Payment transaction while skipping - should buffer
+            // Payment transaction - should buffer
             let action = state.process_transaction(true, 30000);
             assert_eq!(action, TransactionAction::Buffer);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 29000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 29000,
                 }
             );
 
-            // Another small non-payment that fits - should yield and clear skipping flag
+            // Another small non-payment that fits - should yield
             let action = state.process_transaction(false, 21000);
             assert_eq!(action, TransactionAction::Yield);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 29000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 29000,
                 }
             );
         }
@@ -499,34 +470,31 @@ mod tests {
         fn test_gas_updates() {
             let mut state = LaneState::new(100000);
 
-            // Update gas in NonPayment state
+            // Update gas
             state.update_gas(30000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 70000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 70000,
                 }
             );
 
-            // Force to skipping state and update gas
-            state = LaneState::NonPayment {
-                gas_available: 70000,
-                skipping: true,
-            };
+            // Update gas again
             state.update_gas(20000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 50000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 50000,
                 }
             );
 
-            // Switch to DrainBuffer - gas updates should have no effect
-            state = LaneState::DrainBuffer;
+            // Switch to draining - gas updates should have no effect
+            state.draining = true;
+            let before_gas = state.non_payment_gas;
             state.update_gas(10000);
-            assert_eq!(state, LaneState::DrainBuffer);
+            assert_eq!(state.non_payment_gas, before_gas);
         }
 
         #[test]
@@ -540,9 +508,9 @@ mod tests {
             state.update_gas(30000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 170000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 170000,
                 }
             );
 
@@ -551,9 +519,9 @@ mod tests {
             state.update_gas(40000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 130000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 130000,
                 }
             );
 
@@ -562,9 +530,9 @@ mod tests {
             state.update_gas(50000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 80000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 80000,
                 }
             );
 
@@ -581,9 +549,9 @@ mod tests {
             state.update_gas(60000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 20000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 20000,
                 }
             );
 
@@ -592,18 +560,18 @@ mod tests {
             state.update_gas(15000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 5000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 5000,
                 }
             );
 
             // State should still be NonPayment since all transactions fit
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 5000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 5000,
                 }
             );
         }
@@ -618,9 +586,9 @@ mod tests {
             assert_eq!(action, TransactionAction::Skip);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 10000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 10000,
                 }
             );
 
@@ -645,9 +613,9 @@ mod tests {
             // State remains with skipping flag since no tx fits
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 10000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 10000,
                 }
             );
         }
@@ -665,9 +633,9 @@ mod tests {
             state.update_gas(25000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 75000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 75000,
                 }
             );
 
@@ -676,9 +644,9 @@ mod tests {
             assert_eq!(action, TransactionAction::Skip);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 75000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 75000,
                 }
             );
 
@@ -696,9 +664,9 @@ mod tests {
             // Still skipping
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 75000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 75000,
                 }
             );
 
@@ -710,19 +678,19 @@ mod tests {
             let action = state.process_transaction(false, 20000);
             assert_eq!(action, TransactionAction::Yield);
             // Should reset to NonPayment state
-            assert!(matches!(
+            assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 75000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 75000,
                 }
-            ));
+            );
             state.update_gas(20000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 55000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 55000,
                 }
             );
 
@@ -736,9 +704,9 @@ mod tests {
             state.update_gas(30000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 25000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 25000,
                 }
             );
 
@@ -747,28 +715,28 @@ mod tests {
             assert_eq!(action, TransactionAction::Skip);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 25000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 25000,
                 }
             );
 
             // Eleventh: Small non-payment that fits
             let action = state.process_transaction(false, 10000);
             assert_eq!(action, TransactionAction::Yield);
-            assert!(matches!(
+            assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 25000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 25000,
                 }
-            ));
+            );
             state.update_gas(10000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 15000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 15000,
                 }
             );
         }
@@ -787,9 +755,9 @@ mod tests {
             state.update_gas(21000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 29000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 29000,
                 }
             );
 
@@ -799,9 +767,9 @@ mod tests {
             // State should now have skipping flag set
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 29000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 29000,
                 }
             );
 
@@ -811,9 +779,9 @@ mod tests {
             // Should still be skipping
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 29000,
-                    skipping: true
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 29000,
                 }
             );
 
@@ -821,19 +789,19 @@ mod tests {
             let action = state.process_transaction(false, 21000);
             assert_eq!(action, TransactionAction::Yield);
             // Should reset back to NonPayment state
-            assert!(matches!(
+            assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 29000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 29000,
                 }
-            ));
+            );
             state.update_gas(21000);
             assert_eq!(
                 state,
-                LaneState::NonPayment {
-                    gas_available: 8000,
-                    skipping: false
+                LaneState {
+                    draining: false,
+                    non_payment_gas: 8000,
                 }
             );
 
