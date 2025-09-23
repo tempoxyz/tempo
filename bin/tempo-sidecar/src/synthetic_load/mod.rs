@@ -67,7 +67,14 @@ impl SyntheticLoadGenerator {
                 .from(*address)
                 .send()
                 .await
-                .map_err(|e| eyre::eyre!("failed to set fee token ({}) for address {}: {}", address, fee_token_address, e))?;
+                .map_err(|e| {
+                    eyre::eyre!(
+                        "failed to set fee token ({}) for address {}: {}",
+                        address,
+                        fee_token_address,
+                        e
+                    )
+                })?;
         }
 
         let exp = Exp::new(self.average_tps as f64)?;
@@ -108,7 +115,9 @@ impl SyntheticLoadGenerator {
     }
 }
 
-fn zipf_vec_sample<T>(zipf: Zipf<f64>, items: &Vec<T>) -> eyre::Result<&T> {
+fn zipf_vec_sample<T>(zipf: Zipf<f64>, items: &[T]) -> eyre::Result<&T> {
     let index = zipf.sample(&mut rand::rng()) as u32 - 1;
-    items.get(index as usize).ok_or_else(|| eyre::eyre!("zipf out of bounds"))
+    items
+        .get(index as usize)
+        .ok_or_else(|| eyre::eyre!("zipf out of bounds"))
 }
