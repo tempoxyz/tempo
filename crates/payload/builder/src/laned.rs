@@ -174,81 +174,64 @@ where
     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // If we're draining the buffer (iterator exhausted), check for new transactions first
-        if self.lane_state.is_draining_buffer() {
-            // Try the inner iterator for new transactions that may have been loaded
-            loop {
-                match self.inner.next() {
-                    Some(tx) => {
-                        // New transaction found while draining buffer
-                        // We've already exhausted our non-payment gas allocation,
-                        // so only payment transactions can be processed
-                        if tx.transaction.is_payment() {
-                            // Payment transaction - check if sender is valid before yielding
-                            if !self.invalidated_senders.contains(&tx.sender()) {
-                                return Some(tx);
-                            }
-                            // Sender is invalidated, skip this transaction
-                        }
-                        // Non-payment transaction or invalidated payment - continue checking
-                    }
-                    None => {
-                        // No new transactions, drain buffered payment transactions
-                        while let Some(tx) = self.payment_buffer.pop_front() {
-                            if !self.invalidated_senders.contains(&tx.sender()) {
-                                return Some(tx);
-                            }
-                        }
-                        // Buffer is empty
-                        return None;
-                    }
-                }
-            }
-        }
-
-        // We're still processing the inner iterator
         loop {
-            // Check if inner iterator is exhausted
-            let tx = match self.inner.next() {
-                Some(tx) => tx,
-                None => {
-                    // Iterator exhausted, start draining the buffer
-                    self.lane_state.mark_exhausted();
-                    // Return first buffered transaction (if any)
-                    while let Some(buffered_tx) = self.payment_buffer.pop_front() {
-                        if !self.invalidated_senders.contains(&buffered_tx.sender()) {
-                            return Some(buffered_tx);
+            if self.lane_state.is_draining_buffer() {
+                // In payment lane - drain buffer first, then check pool for new payment txs
+
+                // First, drain any buffered payment transactions
+                while let Some(tx) = self.payment_buffer.pop_front() {
+                    if !self.invalidated_senders.contains(&tx.sender()) {
+                        return Some(tx);
+                    }
+                }
+
+                // Buffer is empty, check pool for new transactions
+                for tx in self.inner.by_ref() {
+                    // We've exhausted non-payment gas, only process payment transactions
+                    if tx.transaction.is_payment()
+                        && !self.invalidated_senders.contains(&tx.sender())
+                    {
+                        return Some(tx);
+                    }
+                    // Skip non-payment transactions since we're out of non-payment gas
+                }
+
+                // No more transactions available
+                return None;
+            }
+
+            // In non-payment lane - process transactions and fill buffer
+            match self.inner.next() {
+                Some(tx) => {
+                    let is_payment = tx.transaction.is_payment();
+                    let tx_gas = tx.gas_limit();
+
+                    let action = self.lane_state.process_transaction(is_payment, tx_gas);
+
+                    match action {
+                        TransactionAction::Yield => {
+                            return Some(tx);
+                        }
+                        TransactionAction::Buffer => {
+                            if !self.invalidated_senders.contains(&tx.sender()) {
+                                self.payment_buffer.push_back(tx);
+                            }
+                        }
+                        TransactionAction::Skip => {
+                            self.inner.mark_invalid(
+                                &tx,
+                                reth_transaction_pool::error::InvalidPoolTransactionError::ExceedsGasLimit(
+                                    tx_gas,
+                                    self.lane_state.non_payment_gas,
+                                ),
+                            );
                         }
                     }
-                    return None;
                 }
-            };
-
-            let is_payment = tx.transaction.is_payment();
-            let tx_gas = tx.gas_limit();
-
-            let action = self.lane_state.process_transaction(is_payment, tx_gas);
-
-            match action {
-                TransactionAction::Yield => {
-                    // Yield this transaction
-                    return Some(tx);
-                }
-                TransactionAction::Buffer => {
-                    // Buffer payment transaction for later, unless from invalidated sender
-                    if !self.invalidated_senders.contains(&tx.sender()) {
-                        self.payment_buffer.push_back(tx);
-                    }
-                }
-                TransactionAction::Skip => {
-                    // Skip this non-payment transaction that doesn't fit
-                    self.inner.mark_invalid(
-                        &tx,
-                        reth_transaction_pool::error::InvalidPoolTransactionError::ExceedsGasLimit(
-                            tx_gas,
-                            self.lane_state.non_payment_gas,
-                        ),
-                    );
+                None => {
+                    // Iterator exhausted, switch to payment lane
+                    self.lane_state.mark_exhausted();
+                    // Continue loop to drain buffer
                 }
             }
         }
