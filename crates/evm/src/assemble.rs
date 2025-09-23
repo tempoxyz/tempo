@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_EXTRA_DATA_SUFFIX_LENGTH, TempoExtraData};
 
-/// Assember for Tempo blocks.
+/// Assembler for Tempo blocks.
 #[derive(Debug, Clone)]
 pub struct TempoBlockAssembler {
     pub(crate) inner: EthBlockAssembler<TempoChainSpec>,
