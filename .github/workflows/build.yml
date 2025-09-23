@@ -24,6 +24,7 @@ jobs:
           ~/.cargo/git
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - uses: taiki-e/install-action@just
     - uses: taiki-e/cache-cargo-install-action@v2
       with:
         tool: cross
