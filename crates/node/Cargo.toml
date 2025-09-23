@@ -9,7 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["rpc"] }
 tempo-revm.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-faucet.workspace = true

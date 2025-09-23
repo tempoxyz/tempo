@@ -31,4 +31,4 @@ alloy-sol-types.workspace = true
 derive_more.workspace = true
 
 [features]
-rpc = []
+rpc = ["dep:reth-rpc-eth-api"]
