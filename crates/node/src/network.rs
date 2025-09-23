@@ -132,21 +132,13 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
-        if TempoTxType::FeeToken == ty {
-            let fields = self.missing_fields_of_fee_tx();
-
-            return if fields.is_empty() {
-                Ok(())
-            } else {
-                Err(fields)
-            };
+        match ty {
+            TempoTxType::FeeToken => self.complete_fee_token(),
+            ty => self.inner.complete_type(
+                ty.try_into()
+                    .expect("should not be reachable with fee token tx"),
+            ),
         }
-
-        TransactionBuilder::complete_type(
-            &self.inner,
-            ty.try_into()
-                .expect("should not be reachable with fee token tx"),
-        )
     }
 
     fn can_submit(&self) -> bool {
@@ -172,7 +164,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
-        if self.can_build_fee_tx() {
+        if self.can_build_fee_token() {
             return Some(TempoTxType::FeeToken);
         }
 
@@ -184,7 +176,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
-        if self.can_build_fee_tx() {
+        if self.can_build_fee_token() {
             Ok(self
                 .build_fee_token()
                 .expect("checked by above condition")
@@ -227,7 +219,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
-    fn can_build_fee_tx(&self) -> bool {
+    fn can_build_fee_token(&self) -> bool {
         self.fee_token.is_some()
             && matches!(
                 self.inner.buildable_type(),
@@ -235,13 +227,13 @@ impl TempoTransactionRequest {
             )
     }
 
-    fn missing_fields_of_fee_tx(&self) -> Vec<&'static str> {
-        let mut fields = Vec::new();
+    fn complete_fee_token(&self) -> Result<(), Vec<&'static str>> {
+        self.inner.complete_1559().map_err(|mut fields| {
+            if self.fee_token.is_none() {
+                fields.push("fee_token");
+            }
 
-        if self.fee_token.is_none() {
-            fields.push("fee_token");
-        }
-
-        fields
+            fields
+        })
     }
 }
