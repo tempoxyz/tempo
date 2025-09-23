@@ -1,5 +1,7 @@
+mod header;
 mod request;
 
+pub use header::Header;
 pub use request::TempoTransactionRequest;
 use tempo_revm::TempoTxEnv;
 
@@ -46,7 +48,7 @@ use tokio::sync::Mutex;
 pub struct TempoRpcTypes;
 
 impl RpcTypes for TempoRpcTypes {
-    type Header = alloy_rpc_types_eth::Header;
+    type Header = crate::rpc::Header;
     type Receipt = alloy_rpc_types_eth::TransactionReceipt<
         ReceiptWithBloom<TempoReceipt<alloy_rpc_types_eth::Log>>,
     >;
