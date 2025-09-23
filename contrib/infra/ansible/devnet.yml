@@ -32,7 +32,7 @@
           }
           
           prometheus.scrape "default" {
-            targets = [{"__address__" = "localhost:9000"}]
+            targets = [{"__address__" = "localhost:9000"}, {"__address__" = "localhost:8001"}]
             forward_to = [prometheus.relabel.instance.receiver]
           }
 

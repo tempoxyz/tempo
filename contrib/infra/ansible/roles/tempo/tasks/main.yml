@@ -33,6 +33,9 @@
   include_tasks: install_sidecar.yml
   when: tempo_proposer is defined and tempo_proposer == 'false' and tempo_commonware is not defined
 
+- name: Include monitor installation tasks
+  include_tasks: install_monitor.yml
+
 - name: Check if genesis file exists
   stat:
     path: "{{ ansible_env.HOME }}/malachite/config/genesis.json"

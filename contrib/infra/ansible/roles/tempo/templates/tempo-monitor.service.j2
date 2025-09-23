@@ -1,0 +1,25 @@
+[Unit]
+Description=Tempo Monitor
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+Group={{ ansible_user }}
+WorkingDirectory={{ ansible_env.HOME }}/malachite
+Environment=RUST_LOG=info
+ExecStart=/usr/local/bin/tempo-monitor \
+    --rpc-url http://localhost:8545 \
+    --chain-id {{ tempo_chain_id }} \
+    --port 8001 \
+
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tempo-monitor
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
