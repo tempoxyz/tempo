@@ -1,5 +1,5 @@
 [package]
-name = "tempo-monitor"
+name = "tempo-sidecar"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +16,5 @@ metrics-exporter-prometheus = { version = "0.17.2", default-features = false }
 metrics = "0.24.2"
 poem = "3.1.12"
 tracing-subscriber = {workspace = true, features = ["env-filter"]}
-tracing-log = "0.2.0"
 tokio.workspace = true
-log = "0.4.28"
 tracing.workspace = true

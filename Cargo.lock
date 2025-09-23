@@ -13758,26 +13758,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-monitor"
-version = "0.1.0"
-dependencies = [
- "alloy",
- "clap",
- "eyre",
- "itertools 0.14.0",
- "log",
- "metrics",
- "metrics-exporter-prometheus 0.17.2",
- "poem",
- "reqwest",
- "tempo-precompiles",
- "tokio",
- "tracing",
- "tracing-log",
- "tracing-subscriber 0.3.20",
-]
-
-[[package]]
 name = "tempo-node"
 version = "0.1.0"
 dependencies = [
@@ -13922,6 +13902,24 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tracing",
+]
+
+[[package]]
+name = "tempo-sidecar"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "clap",
+ "eyre",
+ "itertools 0.14.0",
+ "metrics",
+ "metrics-exporter-prometheus 0.17.2",
+ "poem",
+ "reqwest",
+ "tempo-precompiles",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.20",
 ]
 
 [[package]]
