@@ -54,7 +54,9 @@ where
             );
         }
 
-        let balance = match state_provider.get_fee_token_balance(transaction.sender()) {
+        let balance = match state_provider
+            .get_fee_token_balance(transaction.sender(), transaction.inner().fee_token())
+        {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
@@ -106,7 +108,9 @@ where
                     );
                 }
 
-                let balance = match state_provider.get_fee_token_balance(tx.sender()) {
+                let balance = match state_provider
+                    .get_fee_token_balance(tx.sender(), tx.inner().fee_token())
+                {
                     Ok(balance) => balance,
                     Err(err) => {
                         return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
@@ -161,7 +165,9 @@ where
                     );
                 }
 
-                let balance = match state_provider.get_fee_token_balance(tx.sender()) {
+                let balance = match state_provider
+                    .get_fee_token_balance(tx.sender(), tx.inner().fee_token())
+                {
                     Ok(balance) => balance,
                     Err(err) => {
                         return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));

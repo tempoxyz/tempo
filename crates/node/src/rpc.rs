@@ -1,6 +1,7 @@
 mod request;
 
 pub use request::TempoTransactionRequest;
+use tempo_revm::TempoTxEnv;
 
 use crate::node::TempoNode;
 use alloy::{consensus::TxReceipt, primitives::U256};
@@ -34,7 +35,7 @@ use reth_rpc_eth_types::{
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_evm::TempoEvmConfig;
-use tempo_precompiles::contracts::{provider::TIPFeeDatabaseExt, tip_fee_manager::fee::FeeToken};
+use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
@@ -78,17 +79,16 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     }
 
     /// Returns the feeToken balance of the tx caller in the token's native decimals
-    pub fn caller_fee_token_allowance<DB, T>(
+    pub fn caller_fee_token_allowance<DB>(
         &self,
         db: &mut DB,
-        env: &T,
+        env: &TempoTxEnv,
         validator: Address,
-    ) -> Result<FeeToken, DB::Error>
+    ) -> Result<U256, DB::Error>
     where
         DB: Database,
-        T: reth_evm::revm::context_interface::Transaction,
     {
-        db.get_fee_token_balance(env.caller(), validator)
+        db.get_fee_token_balance(env.caller, validator, env.fee_token)
     }
 }
 
@@ -231,14 +231,13 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        let fee_token = self
+        let fee_token_balance = self
             .caller_fee_token_allowance(&mut db, tx_env, evm_env.block_env.beneficiary)
             .map_err(Into::into)?;
 
         // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
         // 10**9 so we must adjust by USD_DECIMAL_FACTOR
-        let adjusted_balance = fee_token
-            .balance()
+        let adjusted_balance = fee_token_balance
             .saturating_mul(USD_DECIMAL_FACTOR)
             .saturating_to::<u64>();
 
