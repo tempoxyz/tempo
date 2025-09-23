@@ -1,5 +1,9 @@
+use alloy_primitives::Address;
 use reth_transaction_pool::{BestTransactions, ValidPoolTransaction};
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+};
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
 /// A wrapper around `BestTransactions` that enforces lane ordering for payment transactions.
@@ -22,6 +26,8 @@ where
     non_payment_gas_available: u64,
     /// Total gas used by non-payment transactions
     non_payment_gas_used: u64,
+    /// Track senders of invalidated transactions to filter buffered descendants
+    invalidated_senders: HashSet<Address>,
 }
 
 impl<I> LanedTransactions<I>
@@ -36,6 +42,7 @@ where
             in_payment_lane: false,
             non_payment_gas_available: non_payment_gas_limit,
             non_payment_gas_used: 0,
+            invalidated_senders: HashSet::new(),
         }
     }
 
@@ -80,6 +87,16 @@ where
         tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
         error: reth_transaction_pool::error::InvalidPoolTransactionError,
     ) {
+        // Track the sender to filter out buffered transactions from the same sender
+        let sender = tx.sender();
+        self.invalidated_senders.insert(sender);
+
+        // Remove any buffered payment transactions from the same sender
+        // This prevents emitting invalid transactions that depend on the invalidated one
+        self.payment_buffer
+            .retain(|buffered_tx| buffered_tx.sender() != sender);
+
+        // Forward to inner iterator
         self.inner.mark_invalid(tx, error);
     }
 
@@ -105,9 +122,12 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         // If we're in the payment lane, drain the buffer first, then continue with remaining txs
         if self.in_payment_lane {
-            // First drain any buffered payment transactions
-            if let Some(tx) = self.payment_buffer.pop_front() {
-                return Some(tx);
+            // First drain any buffered payment transactions, skipping those from invalidated senders
+            while let Some(tx) = self.payment_buffer.pop_front() {
+                // Skip transactions from invalidated senders
+                if !self.invalidated_senders.contains(&tx.sender()) {
+                    return Some(tx);
+                }
             }
 
             // Then yield any remaining transactions (which should all be payment txs)
@@ -121,8 +141,10 @@ where
             let is_payment = tx.transaction.is_payment();
 
             if is_payment {
-                // Buffer payment transactions for later
-                self.payment_buffer.push_back(tx);
+                // Buffer payment transactions for later, unless from invalidated sender
+                if !self.invalidated_senders.contains(&tx.sender()) {
+                    self.payment_buffer.push_back(tx);
+                }
             } else {
                 // Check if this non-payment transaction fits within the gas limit
                 let tx_gas = tx.gas_limit();
