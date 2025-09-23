@@ -4,6 +4,7 @@ use clap::Parser;
 mod cmd;
 pub mod monitor;
 mod opts;
+mod synthetic_load;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -11,5 +12,6 @@ async fn main() -> eyre::Result<()> {
 
     match args.cmd {
         TempoSidecarSubcommand::FeeAMMMonitor(cmd) => cmd.run().await,
+        TempoSidecarSubcommand::SyntheticLoad(cmd) => cmd.run().await,
     }
 }

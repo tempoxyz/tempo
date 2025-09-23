@@ -2660,7 +2660,7 @@ dependencies = [
  "governor",
  "prometheus-client 0.22.3",
  "rand 0.8.5",
- "rand_distr",
+ "rand_distr 0.4.3",
  "thiserror 2.0.16",
  "tracing",
 ]
@@ -2718,7 +2718,7 @@ dependencies = [
  "governor",
  "prometheus-client 0.22.3",
  "rand 0.8.5",
- "rand_distr",
+ "rand_distr 0.4.3",
  "thiserror 2.0.16",
  "tracing",
 ]
@@ -3387,7 +3387,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d162beedaa69905488a8da94f5ac3edb4dd4788b732fadb7bd120b2625c1976"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.106",
 ]
 
 [[package]]
@@ -4145,7 +4145,7 @@ dependencies = [
  "dyn-clone",
  "foundry-compilers-artifacts",
  "foundry-compilers-core",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "path-slash",
  "rayon",
  "semver 1.0.27",
@@ -8809,6 +8809,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_distr"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
+dependencies = [
+ "num-traits",
+ "rand 0.9.2",
+]
+
+[[package]]
 name = "rand_xorshift"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13069,7 +13079,7 @@ dependencies = [
  "derive_more",
  "dunce",
  "inturn",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "itoa",
  "normalize-path",
  "once_map",
@@ -13080,7 +13090,7 @@ dependencies = [
  "solar-config",
  "solar-data-structures",
  "solar-macros",
- "thiserror 1.0.69",
+ "thiserror 2.0.16",
  "tracing",
  "unicode-width 0.2.0",
 ]
@@ -13105,7 +13115,7 @@ dependencies = [
  "alloy-primitives",
  "bitflags 2.9.4",
  "bumpalo",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "memchr",
  "num-bigint",
  "num-rational",
@@ -13911,10 +13921,12 @@ dependencies = [
  "alloy",
  "clap",
  "eyre",
+ "foundry-wallets",
  "itertools 0.14.0",
  "metrics",
  "metrics-exporter-prometheus 0.17.2",
  "poem",
+ "rand_distr 0.5.1",
  "reqwest",
  "tempo-precompiles",
  "tokio",
