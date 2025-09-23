@@ -33,7 +33,8 @@ use reth_transaction_pool::{
 };
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
-use tempo_evm::TempoEvmConfig;
+use tempo_consensus::TEMPO_NON_PAYMENT_GAS_DIVISOR;
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::IFeeManager::executeBlockCall};
 use tempo_primitives::{
     TempoPrimitives, TempoTxEnvelope,
@@ -163,18 +164,23 @@ where
             .with_bundle_update()
             .build();
 
+        let non_payment_gas_limit = parent_header.gas_limit / TEMPO_NON_PAYMENT_GAS_DIVISOR;
+
         let mut builder = self
             .evm_config
             .builder_for_next_block(
                 &mut db,
                 &parent_header,
-                NextBlockEnvAttributes {
-                    timestamp: attributes.timestamp,
-                    suggested_fee_recipient: attributes.suggested_fee_recipient,
-                    prev_randao: attributes.prev_randao,
-                    gas_limit: parent_header.gas_limit,
-                    parent_beacon_block_root: attributes.parent_beacon_block_root,
-                    withdrawals: Some(attributes.withdrawals.clone()),
+                TempoNextBlockEnvAttributes {
+                    inner: NextBlockEnvAttributes {
+                        timestamp: attributes.timestamp,
+                        suggested_fee_recipient: attributes.suggested_fee_recipient,
+                        prev_randao: attributes.prev_randao,
+                        gas_limit: parent_header.gas_limit,
+                        parent_beacon_block_root: attributes.parent_beacon_block_root,
+                        withdrawals: Some(attributes.withdrawals.clone()),
+                    },
+                    non_payment_gas_limit,
                 },
             )
             .map_err(PayloadBuilderError::other)?;

@@ -264,6 +264,10 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
         EthTransactions::signers(&self.inner)
     }
 
+    fn send_raw_transaction_sync_timeout(&self) -> std::time::Duration {
+        self.inner.send_raw_transaction_sync_timeout()
+    }
+
     fn send_raw_transaction(
         &self,
         tx: alloy::primitives::Bytes,

@@ -165,11 +165,7 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
     }
 }
 
-impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {
-    fn tx_hash(&self) -> &B256 {
-        alloy_consensus::transaction::TxHashRef::tx_hash(self)
-    }
-}
+impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
 
 impl InMemorySize for TempoTxType {
     fn size(&self) -> usize {
