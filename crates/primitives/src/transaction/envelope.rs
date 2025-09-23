@@ -4,6 +4,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Signature, U256};
 use reth_primitives_traits::InMemorySize;
+use tempo_precompiles::TIP20_PAYMENT_PREFIX;
 
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
@@ -79,6 +80,18 @@ impl TempoTxEnvelope {
     /// Returns true if this is a Tempo system transaction
     pub fn is_system_tx(&self) -> bool {
         matches!(self, Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE)
+    }
+
+    /// Classify a transaction as payment or non-payment.
+    ///
+    /// Currently uses classifier v1: transaction is a payment if the `to` address has the TIP20 prefix.
+    pub fn is_payment(&self) -> bool {
+        use alloy_consensus::Transaction;
+
+        if let Some(to) = self.to() {
+            return to.as_slice().starts_with(&TIP20_PAYMENT_PREFIX);
+        }
+        false
     }
 }
 
@@ -379,7 +392,7 @@ mod codec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Signature;
+    use alloy_primitives::{Signature, TxKind, address};
 
     #[test]
     fn test_fee_token_access() {
@@ -412,5 +425,95 @@ mod tests {
 
         assert!(!envelope.is_fee_token());
         assert_eq!(envelope.fee_token(), None);
+    }
+
+    #[test]
+    fn test_payment_classification_with_tip20_prefix() {
+        // Create an address with TIP20 prefix
+        let payment_addr = address!("20c0000000000000000000000000000000000001");
+        let tx = TxFeeToken {
+            to: TxKind::Call(payment_addr),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::FeeToken(signed);
+
+        assert!(envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_without_tip20_prefix() {
+        // Create an address without TIP20 prefix
+        let non_payment_addr = address!("1234567890123456789012345678901234567890");
+        let tx = TxFeeToken {
+            to: TxKind::Call(non_payment_addr),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::FeeToken(signed);
+
+        assert!(!envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_no_to_address() {
+        // Create a transaction with no `to` address (contract creation)
+        let tx = TxFeeToken {
+            to: TxKind::Create,
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::FeeToken(signed);
+
+        assert!(!envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_partial_match() {
+        // Create an address that partially matches but not completely
+        let partial_match_addr = address!("20c0000000000000000000000000000100000000");
+        let tx = TxFeeToken {
+            to: TxKind::Call(partial_match_addr),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::FeeToken(signed);
+
+        // This should still be classified as payment since first 14 bytes match
+        assert!(envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_different_prefix() {
+        // Create an address with a different prefix
+        let different_prefix_addr = address!("30c0000000000000000000000000000000000001");
+        let tx = TxFeeToken {
+            to: TxKind::Call(different_prefix_addr),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::FeeToken(signed);
+
+        assert!(!envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_legacy_tx() {
+        // Test with legacy transaction type
+        let payment_addr = address!("20c0000000000000000000000000000000000001");
+        let tx = TxLegacy {
+            to: TxKind::Call(payment_addr),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::Legacy(signed);
+
+        assert!(envelope.is_payment());
     }
 }

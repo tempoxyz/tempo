@@ -9,6 +9,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+tempo-precompiles.workspace = true
+
 # Alloy
 alloy-consensus.workspace = true
 alloy-eips.workspace = true

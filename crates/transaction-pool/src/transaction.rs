@@ -21,16 +21,26 @@ use tempo_primitives::TempoTxEnvelope;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
+    /// Cached payment classification for efficient block building
+    is_payment: bool,
 }
 
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>, encoded_length: usize) -> Self {
-        Self::from_eth(EthPooledTransaction::new(transaction, encoded_length))
+        let is_payment = transaction.is_payment();
+        Self {
+            inner: EthPooledTransaction::new(transaction, encoded_length),
+            is_payment,
+        }
     }
 
     pub fn from_eth(eth_pooled: EthPooledTransaction<TempoTxEnvelope>) -> Self {
-        Self { inner: eth_pooled }
+        let is_payment = eth_pooled.transaction.is_payment();
+        Self {
+            inner: eth_pooled,
+            is_payment,
+        }
     }
 
     /// Get the cost of the transaction in the fee token.
@@ -41,6 +51,13 @@ impl TempoPooledTransaction {
     /// Returns a reference to inner [`TempoTxEnvelope`].
     pub fn inner(&self) -> &TempoTxEnvelope {
         &self.inner.transaction
+    }
+
+    /// Returns whether this is a payment transaction.
+    ///
+    /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
+    pub fn is_payment(&self) -> bool {
+        self.is_payment
     }
 }
 
@@ -206,5 +223,43 @@ impl EthPoolTransaction for TempoPooledTransaction {
         Err(BlobTransactionValidationError::NotBlobTransaction(
             self.ty(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::address;
+    use tempo_primitives::TxFeeToken;
+
+    #[test]
+    fn test_payment_classification_caching() {
+        // Test that payment classification is properly cached in TempoPooledTransaction
+        let payment_addr = address!("20c0000000000000000000000000000000000001");
+        let tx = TxFeeToken {
+            to: TxKind::Call(payment_addr),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+
+        let envelope = TempoTxEnvelope::FeeToken(alloy_consensus::Signed::new_unchecked(
+            tx,
+            alloy_primitives::Signature::test_signature(),
+            alloy_primitives::B256::ZERO,
+        ));
+
+        let recovered = Recovered::new_unchecked(
+            envelope,
+            address!("0000000000000000000000000000000000000001"),
+        );
+
+        // Create via new() and verify caching
+        let pooled_tx = TempoPooledTransaction::new(recovered.clone(), 100);
+        assert!(pooled_tx.is_payment());
+
+        // Create via from_eth() and verify caching
+        let eth_pooled = EthPooledTransaction::new(recovered, 100);
+        let pooled_tx_from_eth = TempoPooledTransaction::from_eth(eth_pooled);
+        assert!(pooled_tx_from_eth.is_payment());
     }
 }
