@@ -1,12 +1,11 @@
+use crate::monitor::{Monitor, prometheus_metrics};
 use clap::Parser;
 use eyre::Context;
 use metrics::{describe_counter, describe_gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
-use poem::{get, EndpointExt, Route, Server};
-use poem::listener::TcpListener;
+use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
 use tracing_subscriber::EnvFilter;
-use crate::monitor::{prometheus_metrics, Monitor};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

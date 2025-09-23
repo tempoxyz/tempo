@@ -2,7 +2,7 @@ use alloy::{primitives::Address, providers::ProviderBuilder};
 use eyre::{Result, eyre};
 use itertools::Itertools;
 use metrics::{counter, gauge};
-use metrics_exporter_prometheus::{PrometheusHandle};
+use metrics_exporter_prometheus::PrometheusHandle;
 use poem::{Response, handler};
 use reqwest::Url;
 use std::collections::HashMap;

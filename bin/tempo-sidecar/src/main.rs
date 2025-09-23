@@ -1,9 +1,9 @@
-use clap::Parser;
 use crate::opts::{TempoSidecar, TempoSidecarSubcommand};
+use clap::Parser;
 
+mod cmd;
 pub mod monitor;
 mod opts;
-mod cmd;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {

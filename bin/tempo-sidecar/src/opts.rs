@@ -1,5 +1,5 @@
-use clap::{Parser, Subcommand};
 use crate::cmd::monitor::MonitorArgs;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
