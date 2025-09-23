@@ -6,12 +6,116 @@ use std::{
 };
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
+/// State machine for managing transaction processing based on gas limits.
+///
+/// This handles the logic of skipping large non-payment transactions
+/// while continuing to search for smaller ones that fit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LaneState {
+    /// Processing non-payment transactions normally
+    NonPayment {
+        /// Gas remaining for non-payment transactions
+        gas_available: u64,
+    },
+    /// Skipping large non-payment txs, looking for smaller ones
+    SkippingNonPayment {
+        /// Gas remaining for non-payment transactions
+        gas_available: u64,
+    },
+    /// Iterator exhausted, draining buffered payment transactions
+    DrainBuffer,
+}
+
+impl LaneState {
+    /// Create a new lane state starting in non-payment lane
+    fn new(non_payment_gas_limit: u64) -> Self {
+        Self::NonPayment {
+            gas_available: non_payment_gas_limit,
+        }
+    }
+
+    /// Process a transaction and determine what action to take
+    fn process_transaction(&mut self, is_payment: bool, tx_gas: u64) -> TransactionAction {
+        match self {
+            Self::NonPayment { gas_available } => {
+                if is_payment {
+                    // Buffer payment transaction while in non-payment lane
+                    TransactionAction::Buffer
+                } else if tx_gas <= *gas_available {
+                    // Non-payment transaction fits
+                    TransactionAction::Yield
+                } else {
+                    // Non-payment transaction doesn't fit, start skipping
+                    *self = Self::SkippingNonPayment {
+                        gas_available: *gas_available,
+                    };
+                    TransactionAction::Skip
+                }
+            }
+            Self::SkippingNonPayment { gas_available } => {
+                if is_payment {
+                    // Payment transaction while skipping - buffer it and continue looking
+                    // We don't switch yet because there might be smaller non-payment txs
+                    TransactionAction::Buffer
+                } else if tx_gas <= *gas_available {
+                    // Found a non-payment transaction that fits!
+                    // Reset to normal non-payment processing
+                    *self = Self::NonPayment {
+                        gas_available: *gas_available,
+                    };
+                    TransactionAction::Yield
+                } else {
+                    // Another large non-payment transaction, keep skipping
+                    TransactionAction::Skip
+                }
+            }
+            Self::DrainBuffer => {
+                // Should not be called in this state
+                unreachable!("process_transaction should not be called when draining buffer")
+            }
+        }
+    }
+
+    /// Update gas after a non-payment transaction was executed
+    fn update_gas(&mut self, gas_used: u64) {
+        match self {
+            Self::NonPayment { gas_available } | Self::SkippingNonPayment { gas_available } => {
+                *gas_available = gas_available.saturating_sub(gas_used);
+            }
+            Self::DrainBuffer => {
+                // No gas tracking when draining buffer
+            }
+        }
+    }
+
+    /// Check if we're draining the buffer (iterator exhausted)
+    fn is_draining_buffer(&self) -> bool {
+        matches!(self, Self::DrainBuffer)
+    }
+
+    /// Mark that iterator is exhausted and we should drain buffer
+    fn mark_exhausted(&mut self) {
+        *self = Self::DrainBuffer;
+    }
+}
+
+/// Action to take for a transaction based on lane state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransactionAction {
+    /// Yield this transaction to the builder
+    Yield,
+    /// Buffer this transaction for later (payment tx in non-payment lane)
+    Buffer,
+    /// Skip this transaction (doesn't fit in gas limit)
+    Skip,
+}
+
 /// A wrapper around `BestTransactions` that enforces lane ordering for payment transactions.
 ///
 /// This type ensures that all non-payment transactions are yielded before any payment transactions,
-/// as required by the Payment Lane specification. It buffers payment transactions while non-payment
-/// gas limit allows, and switches to payment lane when non-payment gas is exhausted or a signal
-/// is received from the builder.
+/// as required by the Payment Lane specification. It buffers payment transactions while searching
+/// for non-payment transactions that fit within the gas limit, then drains the buffer when the
+/// inner iterator is exhausted.
 pub(crate) struct LanedTransactions<I>
 where
     I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -20,17 +124,12 @@ where
     inner: I,
     /// Buffer for payment transactions that arrived while processing non-payment transactions
     payment_buffer: VecDeque<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    /// Whether we've switched to the payment lane
-    in_payment_lane: bool,
-    /// Available gas for non-payment transactions
-    non_payment_gas_available: u64,
+    /// Lane state machine managing transitions
+    lane_state: LaneState,
     /// Total gas used by non-payment transactions
     non_payment_gas_used: u64,
     /// Track senders of invalidated transactions to filter buffered descendants
     invalidated_senders: HashSet<Address>,
-    /// Flag to track if we've started skipping non-payment transactions due to gas limits
-    /// Once set, we'll switch to payment lane if we only find payment txs or exhaust the iterator
-    skipping_non_payment: bool,
 }
 
 impl<I> LanedTransactions<I>
@@ -42,11 +141,9 @@ where
         Self {
             inner,
             payment_buffer: VecDeque::new(),
-            in_payment_lane: false,
-            non_payment_gas_available: non_payment_gas_limit,
+            lane_state: LaneState::new(non_payment_gas_limit),
             non_payment_gas_used: 0,
             invalidated_senders: HashSet::new(),
-            skipping_non_payment: false,
         }
     }
 
@@ -61,16 +158,15 @@ where
     /// This should be called by the builder after successfully executing a non-payment transaction
     /// to update the gas accounting.
     pub(crate) fn update_non_payment_gas_used(&mut self, gas_used: u64) {
-        if !self.in_payment_lane {
+        if !self.lane_state.is_draining_buffer() {
             self.non_payment_gas_used += gas_used;
-            self.non_payment_gas_available =
-                self.non_payment_gas_available.saturating_sub(gas_used);
+            self.lane_state.update_gas(gas_used);
         }
     }
 
-    /// Checks if we're currently in the payment lane.
+    /// Checks if we're currently draining the payment buffer.
     pub(crate) fn is_in_payment_lane(&self) -> bool {
-        self.in_payment_lane
+        self.lane_state.is_draining_buffer()
     }
 }
 
@@ -116,71 +212,68 @@ where
     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // If we're in the payment lane, drain the buffer first, then continue with remaining txs
-        if self.in_payment_lane {
-            // First drain any buffered payment transactions, skipping those from invalidated senders
+        // If we're draining the buffer (iterator exhausted), return buffered payments
+        if self.lane_state.is_draining_buffer() {
+            // Drain buffered payment transactions, skipping those from invalidated senders
             while let Some(tx) = self.payment_buffer.pop_front() {
-                // Skip transactions from invalidated senders
                 if !self.invalidated_senders.contains(&tx.sender()) {
                     return Some(tx);
                 }
             }
-
-            // Then yield any remaining transactions (which should all be payment txs)
-            // Note: We don't check if they're payment txs here since validation happens elsewhere
-            return self.inner.next();
+            // Buffer is empty
+            return None;
         }
 
-        // We're in the non-payment lane
+        // We're still processing the inner iterator
         loop {
-            // If the inner iterator is exhausted, switch to payment lane
+            // Check if inner iterator is exhausted
             let tx = match self.inner.next() {
                 Some(tx) => tx,
                 None => {
-                    // No more transactions from the pool, switch to payment lane
-                    self.in_payment_lane = true;
-                    return self.payment_buffer.pop_front();
+                    // Iterator exhausted, start draining the buffer
+                    self.lane_state.mark_exhausted();
+                    // Return first buffered transaction (if any)
+                    while let Some(buffered_tx) = self.payment_buffer.pop_front() {
+                        if !self.invalidated_senders.contains(&buffered_tx.sender()) {
+                            return Some(buffered_tx);
+                        }
+                    }
+                    return None;
                 }
             };
 
             let is_payment = tx.transaction.is_payment();
+            let tx_gas = tx.gas_limit();
 
-            if is_payment {
-                // Buffer payment transactions for later, unless from invalidated sender
-                if !self.invalidated_senders.contains(&tx.sender()) {
-                    self.payment_buffer.push_back(tx);
-                }
+            let action = self.lane_state.process_transaction(is_payment, tx_gas);
 
-                // If we've been skipping non-payment txs and now only see payment txs,
-                // it's time to switch to the payment lane
-                if self.skipping_non_payment {
-                    self.in_payment_lane = true;
-                    return self.payment_buffer.pop_front();
-                }
-            } else {
-                // Check if this non-payment transaction fits within the gas limit
-                let tx_gas = tx.gas_limit();
-                if tx_gas <= self.non_payment_gas_available {
-                    // We have room for this non-payment transaction
-                    // Reset the skipping flag since we found a usable non-payment tx
-                    self.skipping_non_payment = false;
-                    // Note: The actual gas update happens via update_non_payment_gas_used()
-                    // after successful execution
+            match action {
+                TransactionAction::Yield => {
+                    // Yield this transaction
                     return Some(tx);
-                } else {
-                    // This non-payment transaction doesn't fit
-                    // Mark that we've started skipping non-payment transactions
-                    self.skipping_non_payment = true;
+                }
+                TransactionAction::Buffer => {
+                    // Buffer payment transaction for later, unless from invalidated sender
+                    if !self.invalidated_senders.contains(&tx.sender()) {
+                        self.payment_buffer.push_back(tx);
+                    }
+                }
+                TransactionAction::Skip => {
+                    // Skip this non-payment transaction that doesn't fit
+                    // Get the current gas available for error reporting
+                    let gas_available = match &self.lane_state {
+                        LaneState::NonPayment { gas_available }
+                        | LaneState::SkippingNonPayment { gas_available } => *gas_available,
+                        _ => 0,
+                    };
 
-                    // Mark it as invalid so the pool knows to skip it
                     self.inner.mark_invalid(
                         &tx,
                         reth_transaction_pool::error::InvalidPoolTransactionError::ExceedsGasLimit(
                             tx_gas,
-                            self.non_payment_gas_available,
+                            gas_available,
                         ),
                     );
-                    // Continue searching for smaller non-payment transactions
                 }
             }
         }
@@ -216,30 +309,495 @@ mod tests {
     }
 
     #[test]
-    fn test_lane_state_management() {
+    fn test_laned_transactions_basic() {
         let mock_inner = EmptyBestTransactions {};
         let mut laned = LanedTransactions::new(mock_inner, 50000);
 
         // Test initial state
         assert!(!laned.is_in_payment_lane());
-        assert_eq!(laned.non_payment_gas_available, 50000);
+        assert_eq!(laned.non_payment_gas_used(), 0);
 
-        // Test state transitions
+        // Test gas tracking
         laned.update_non_payment_gas_used(20000);
-        assert_eq!(laned.non_payment_gas_available, 30000);
-        assert_eq!(laned.non_payment_gas_used, 20000);
+        assert_eq!(laned.non_payment_gas_used(), 20000);
 
         laned.update_non_payment_gas_used(20000);
-        assert_eq!(laned.non_payment_gas_available, 10000);
-        assert_eq!(laned.non_payment_gas_used, 40000);
+        assert_eq!(laned.non_payment_gas_used(), 40000);
 
-        // Manually set the lane to test gas tracking behavior after switch
-        laned.in_payment_lane = true;
+        // Force switch to draining buffer state
+        laned.lane_state = LaneState::DrainBuffer;
         assert!(laned.is_in_payment_lane());
 
-        // Further updates shouldn't affect gas tracking after switch
-        let before_used = laned.non_payment_gas_used;
+        // Further updates shouldn't affect gas tracking when draining
+        let before_used = laned.non_payment_gas_used();
         laned.update_non_payment_gas_used(10000);
-        assert_eq!(laned.non_payment_gas_used, before_used);
+        assert_eq!(laned.non_payment_gas_used(), before_used);
+    }
+
+    mod lane_state {
+        use super::*;
+
+        #[test]
+        fn test_initial_state() {
+            let state = LaneState::new(100000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 100000
+                }
+            );
+            assert!(!state.is_draining_buffer());
+        }
+
+        #[test]
+        fn test_non_payment_fits() {
+            let mut state = LaneState::new(100000);
+            let action = state.process_transaction(false, 50000);
+            assert_eq!(action, TransactionAction::Yield);
+            // Should remain in NonPayment state
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 100000
+                }
+            );
+        }
+
+        #[test]
+        fn test_non_payment_too_large() {
+            let mut state = LaneState::new(50000);
+            let action = state.process_transaction(false, 60000);
+            assert_eq!(action, TransactionAction::Skip);
+            // Should transition to SkippingNonPayment
+            assert_eq!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 50000
+                }
+            );
+        }
+
+        #[test]
+        fn test_payment_in_non_payment_lane() {
+            let mut state = LaneState::new(100000);
+            let action = state.process_transaction(true, 50000);
+            assert_eq!(action, TransactionAction::Buffer);
+            // Should remain in NonPayment state
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 100000
+                }
+            );
+        }
+
+        #[test]
+        fn test_skipping_finds_smaller_non_payment() {
+            let mut state = LaneState::SkippingNonPayment {
+                gas_available: 50000,
+            };
+
+            // Found a smaller non-payment that fits
+            let action = state.process_transaction(false, 30000);
+            assert_eq!(action, TransactionAction::Yield);
+            // Should return to NonPayment state
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 50000
+                }
+            );
+        }
+
+        #[test]
+        fn test_skipping_with_payment() {
+            let mut state = LaneState::SkippingNonPayment {
+                gas_available: 50000,
+            };
+
+            // Payment while skipping should buffer
+            let action = state.process_transaction(true, 30000);
+            assert_eq!(action, TransactionAction::Buffer);
+            // Should remain in SkippingNonPayment
+            assert_eq!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 50000
+                }
+            );
+        }
+
+        #[test]
+        fn test_mixed_ordering_scenario() {
+            // This tests the exact scenario from the reviewer's feedback:
+            // - non-payment with gas limit 21000 (fits)
+            // - non-payment with gas limit > available (doesn't fit)
+            // - payment tx
+            // - non-payment with gas limit 21000 (should still be processed)
+
+            let mut state = LaneState::new(50000);
+
+            // First small non-payment - should yield
+            let action = state.process_transaction(false, 21000);
+            assert_eq!(action, TransactionAction::Yield);
+            state.update_gas(21000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 29000
+                }
+            );
+
+            // Large non-payment that doesn't fit - should skip
+            let action = state.process_transaction(false, 60000);
+            assert_eq!(action, TransactionAction::Skip);
+            assert_eq!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 29000
+                }
+            );
+
+            // Payment transaction while skipping - should buffer
+            let action = state.process_transaction(true, 30000);
+            assert_eq!(action, TransactionAction::Buffer);
+            assert_eq!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 29000
+                }
+            );
+
+            // Another small non-payment that fits - should yield and reset to NonPayment
+            let action = state.process_transaction(false, 21000);
+            assert_eq!(action, TransactionAction::Yield);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 29000
+                }
+            );
+        }
+
+        #[test]
+        fn test_gas_updates() {
+            let mut state = LaneState::new(100000);
+
+            // Update gas in NonPayment state
+            state.update_gas(30000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 70000
+                }
+            );
+
+            // Force to SkippingNonPayment and update gas
+            state = LaneState::SkippingNonPayment {
+                gas_available: 70000,
+            };
+            state.update_gas(20000);
+            assert_eq!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 50000
+                }
+            );
+
+            // Switch to DrainBuffer - gas updates should have no effect
+            state = LaneState::DrainBuffer;
+            state.update_gas(10000);
+            assert_eq!(state, LaneState::DrainBuffer);
+        }
+
+        #[test]
+        fn test_all_non_payment_txs_fit() {
+            // Test scenario where all non-payment transactions fit within gas limit
+            let mut state = LaneState::new(200000);
+
+            // Multiple non-payment transactions that all fit
+            let action = state.process_transaction(false, 30000);
+            assert_eq!(action, TransactionAction::Yield);
+            state.update_gas(30000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 170000
+                }
+            );
+
+            let action = state.process_transaction(false, 40000);
+            assert_eq!(action, TransactionAction::Yield);
+            state.update_gas(40000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 130000
+                }
+            );
+
+            let action = state.process_transaction(false, 50000);
+            assert_eq!(action, TransactionAction::Yield);
+            state.update_gas(50000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 80000
+                }
+            );
+
+            // Payment transactions should be buffered
+            let action = state.process_transaction(true, 25000);
+            assert_eq!(action, TransactionAction::Buffer);
+
+            let action = state.process_transaction(true, 35000);
+            assert_eq!(action, TransactionAction::Buffer);
+
+            // More non-payment transactions that fit
+            let action = state.process_transaction(false, 60000);
+            assert_eq!(action, TransactionAction::Yield);
+            state.update_gas(60000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 20000
+                }
+            );
+
+            let action = state.process_transaction(false, 15000);
+            assert_eq!(action, TransactionAction::Yield);
+            state.update_gas(15000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 5000
+                }
+            );
+
+            // State should still be NonPayment since all transactions fit
+            assert!(matches!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 5000
+                }
+            ));
+        }
+
+        #[test]
+        fn test_no_non_payment_txs_fit() {
+            // Test scenario where no non-payment transactions fit
+            let mut state = LaneState::new(10000);
+
+            // Large non-payment that doesn't fit
+            let action = state.process_transaction(false, 50000);
+            assert_eq!(action, TransactionAction::Skip);
+            assert!(matches!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 10000
+                }
+            ));
+
+            // Another large non-payment
+            let action = state.process_transaction(false, 30000);
+            assert_eq!(action, TransactionAction::Skip);
+
+            // Payment transactions get buffered
+            let action = state.process_transaction(true, 20000);
+            assert_eq!(action, TransactionAction::Buffer);
+
+            let action = state.process_transaction(true, 25000);
+            assert_eq!(action, TransactionAction::Buffer);
+
+            // More large non-payments
+            let action = state.process_transaction(false, 40000);
+            assert_eq!(action, TransactionAction::Skip);
+
+            let action = state.process_transaction(false, 15000);
+            assert_eq!(action, TransactionAction::Skip);
+
+            // State remains SkippingNonPayment since no tx fits
+            assert!(matches!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 10000
+                }
+            ));
+        }
+
+        #[test]
+        fn test_consecutive_payments_with_mixed_non_payments() {
+            // Test scenario with multiple consecutive payment transactions
+            // and non-payment transactions before and after them.
+
+            let mut state = LaneState::new(100000);
+
+            // First: Small non-payment that fits
+            let action = state.process_transaction(false, 25000);
+            assert_eq!(action, TransactionAction::Yield);
+            state.update_gas(25000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 75000
+                }
+            );
+
+            // Second: Large non-payment that doesn't fit
+            let action = state.process_transaction(false, 80000);
+            assert_eq!(action, TransactionAction::Skip);
+            assert!(matches!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 75000
+                }
+            ));
+
+            // Third: First payment transaction (buffer it)
+            let action = state.process_transaction(true, 30000);
+            assert_eq!(action, TransactionAction::Buffer);
+
+            // Fourth: Second payment transaction (buffer it)
+            let action = state.process_transaction(true, 25000);
+            assert_eq!(action, TransactionAction::Buffer);
+
+            // Fifth: Third payment transaction (buffer it)
+            let action = state.process_transaction(true, 35000);
+            assert_eq!(action, TransactionAction::Buffer);
+            // Still in SkippingNonPayment state
+            assert!(matches!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 75000
+                }
+            ));
+
+            // Sixth: Another large non-payment that doesn't fit
+            let action = state.process_transaction(false, 100000);
+            assert_eq!(action, TransactionAction::Skip);
+
+            // Seventh: Small non-payment that DOES fit - should yield and reset!
+            let action = state.process_transaction(false, 20000);
+            assert_eq!(action, TransactionAction::Yield);
+            // Should reset to NonPayment state
+            assert!(matches!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 75000
+                }
+            ));
+            state.update_gas(20000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 55000
+                }
+            );
+
+            // Eighth: Another payment (buffer it)
+            let action = state.process_transaction(true, 40000);
+            assert_eq!(action, TransactionAction::Buffer);
+
+            // Ninth: Medium non-payment that fits
+            let action = state.process_transaction(false, 30000);
+            assert_eq!(action, TransactionAction::Yield);
+            state.update_gas(30000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 25000
+                }
+            );
+
+            // Tenth: Large non-payment that doesn't fit
+            let action = state.process_transaction(false, 50000);
+            assert_eq!(action, TransactionAction::Skip);
+            assert!(matches!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 25000
+                }
+            ));
+
+            // Eleventh: Small non-payment that fits
+            let action = state.process_transaction(false, 10000);
+            assert_eq!(action, TransactionAction::Yield);
+            assert!(matches!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 25000
+                }
+            ));
+            state.update_gas(10000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 15000
+                }
+            );
+        }
+
+        #[test]
+        fn test_skipping_large_tx_with_interspersed_payments() {
+            // This test covers the scenario where we skip a large non-payment transaction,
+            // encounter a payment transaction (which gets buffered), and then find
+            // another smaller non-payment transaction that fits.
+
+            let mut state = LaneState::new(50000);
+
+            // First: non-payment with 21000 gas (fits)
+            let action = state.process_transaction(false, 21000);
+            assert_eq!(action, TransactionAction::Yield);
+            state.update_gas(21000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 29000
+                }
+            );
+
+            // Second: non-payment with 60000 gas (doesn't fit, skip)
+            let action = state.process_transaction(false, 60000);
+            assert_eq!(action, TransactionAction::Skip);
+            // State should now be SkippingNonPayment
+            assert!(matches!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 29000
+                }
+            ));
+
+            // Third: payment tx (buffer it)
+            let action = state.process_transaction(true, 30000);
+            assert_eq!(action, TransactionAction::Buffer);
+            // Should still be skipping
+            assert!(matches!(
+                state,
+                LaneState::SkippingNonPayment {
+                    gas_available: 29000
+                }
+            ));
+
+            // Fourth: non-payment with 21000 gas (fits! should yield and reset)
+            let action = state.process_transaction(false, 21000);
+            assert_eq!(action, TransactionAction::Yield);
+            // Should reset back to NonPayment state
+            assert!(matches!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 29000
+                }
+            ));
+            state.update_gas(21000);
+            assert_eq!(
+                state,
+                LaneState::NonPayment {
+                    gas_available: 8000
+                }
+            );
+
+            let action = state.process_transaction(true, 25000);
+            assert_eq!(action, TransactionAction::Buffer);
+        }
     }
 }
