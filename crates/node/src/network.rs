@@ -237,3 +237,109 @@ impl TempoTransactionRequest {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::consensus::TxEip1559;
+    use alloy_rpc_types_eth::TransactionRequest;
+    use tempo_primitives::TxFeeToken;
+
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_fee_per_gas: Some(1234),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                ..Default::default()
+            },
+            fee_token: Some(Address::repeat_byte(0xFA)),
+        },
+        TempoTypedTransaction::FeeToken(TxFeeToken {
+            to: TxKind::Call(Address::repeat_byte(0xDE)),
+            max_fee_per_gas: 1234,
+            max_priority_fee_per_gas: 987,
+            nonce: 57,
+            gas_limit: 123456,
+            fee_token: Some(Address::repeat_byte(0xFA)),
+            chain_id: 1,
+            ..Default::default()
+        });
+        "Fee token request"
+    )]
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_fee_per_gas: Some(1234),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                ..Default::default()
+            },
+            fee_token: None,
+        },
+        TempoTypedTransaction::Eip1559(TxEip1559 {
+            to: TxKind::Call(Address::repeat_byte(0xDE)),
+            max_fee_per_gas: 1234,
+            max_priority_fee_per_gas: 987,
+            nonce: 57,
+            gas_limit: 123456,
+            chain_id: 1,
+            ..Default::default()
+        });
+        "EIP-1559 request"
+    )]
+    fn test_transaction_builds_successfully(
+        request: TempoTransactionRequest,
+        expected_transaction: TempoTypedTransaction,
+    ) {
+        let actual_transaction = request
+            .build_unsigned()
+            .expect("required fields should be filled out");
+
+        assert_eq!(actual_transaction, expected_transaction);
+    }
+
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                ..Default::default()
+            },
+            fee_token: None,
+        },
+        "Failed to build transaction: EIP-1559 transaction can't be built due to missing keys: [\"max_fee_per_gas\"]";
+        "EIP-1559 request missing max fee"
+    )]
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                ..Default::default()
+            },
+            fee_token: Some(Address::repeat_byte(0xFA)),
+        },
+        "Failed to build transaction: EIP-1559 transaction can't be built due to missing keys: [\"max_fee_per_gas\"]";
+        "fee token request missing max fee"
+    )]
+    fn test_transaction_fails_to_build_with_missing_field(
+        request: TempoTransactionRequest,
+        expected_error: &str,
+    ) {
+        let actual_error = request
+            .build_unsigned()
+            .expect_err("some required fields should be missing")
+            .to_string();
+
+        assert_eq!(actual_error, expected_error);
+    }
+}

@@ -6,30 +6,30 @@ license = ""
 
 [workspace]
 members = [
-  "bin/tempo",
-  "bin/tempo-bench",
-  "bin/tempo-commonware",
-  "bin/tempo-sidecar",
-  "bin/tempo-arber",
-  "crates/chainspec",
-  "crates/commonware-node",
-  "crates/commonware-node-config",
-  "crates/commonware-node-cryptography",
-  "crates/consensus",
-  "crates/eyre",
-  "crates/evm",
-  "crates/faucet",
-  "crates/node",
-  "crates/payload/builder",
-  "crates/payload/types",
-  "crates/precompiles",
-  "crates/primitives",
-  "crates/contracts",
-  "crates/reth-malachite",
-  "crates/telemetry-util",
-  "crates/transaction-pool",
-  "crates/revm",
-  "xtask",
+    "bin/tempo",
+    "bin/tempo-bench",
+    "bin/tempo-commonware",
+    "bin/tempo-sidecar",
+    "bin/tempo-arber",
+    "crates/chainspec",
+    "crates/commonware-node",
+    "crates/commonware-node-config",
+    "crates/commonware-node-cryptography",
+    "crates/consensus",
+    "crates/eyre",
+    "crates/evm",
+    "crates/faucet",
+    "crates/node",
+    "crates/payload/builder",
+    "crates/payload/types",
+    "crates/precompiles",
+    "crates/primitives",
+    "crates/contracts",
+    "crates/reth-malachite",
+    "crates/telemetry-util",
+    "crates/transaction-pool",
+    "crates/revm",
+    "xtask",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -165,8 +165,8 @@ reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "96c1
 alloy-network = { version = "1.0.35" }
 alloy-rpc-types-eth = { version = "1.0.35" }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "96c1566", features = [
-  "std",
-  "optional-checks",
+    "std",
+    "optional-checks",
 ] }
 
 alloy = { version = "1.0.35", default-features = false }
@@ -198,11 +198,11 @@ malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite
 malachitebft-codec = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-codec" }
 malachitebft-core-consensus = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-core-consensus" }
 malachitebft-core-types = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-core-types", features = [
-  "serde",
+    "serde",
 ] }
 malachitebft-signing-ed25519 = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-signing-ed25519", features = [
-  "serde",
-  "rand",
+    "serde",
+    "rand",
 ] }
 malachitebft-sync = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-sync" }
 malachitebft-proto = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-proto" }
@@ -245,6 +245,7 @@ toml = "0.8"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 criterion = "0.7.0"
+test-case = "3"
 
 # build deps
 vergen = "9"
