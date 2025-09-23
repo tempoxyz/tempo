@@ -221,29 +221,13 @@ where
         while let Some(pool_tx) = best_txs.next() {
             // ensure we still have capacity for this transaction
             if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
-                // If we're in non-payment lane and hit block gas limit, switch to payment lane
-                // to ensure we can still include payment transactions
-                if !best_txs.is_in_payment_lane() && !pool_tx.transaction.is_payment() {
-                    best_txs.switch_to_payment_lane();
-                    // Mark this transaction as invalid to skip it
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        InvalidPoolTransactionError::ExceedsGasLimit(
-                            pool_tx.gas_limit(),
-                            block_gas_limit - cumulative_gas_used,
-                        ),
-                    );
-                    continue;
-                }
-
-                // we can't fit this transaction into the block, so we need to mark it as invalid
-                // which also removes all dependent transaction from the iterator before we can
-                // continue
+                // Mark this transaction as invalid since it doesn't fit
+                // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
-                        block_gas_limit,
+                        block_gas_limit - cumulative_gas_used,
                     ),
                 );
                 continue;

@@ -68,14 +68,6 @@ where
         }
     }
 
-    /// Forces a switch to the payment lane.
-    ///
-    /// This should be called when the builder determines that no more non-payment transactions
-    /// should be included (e.g., when approaching block gas limit).
-    pub(crate) fn switch_to_payment_lane(&mut self) {
-        self.in_payment_lane = true;
-    }
-
     /// Checks if we're currently in the payment lane.
     pub(crate) fn is_in_payment_lane(&self) -> bool {
         self.in_payment_lane
@@ -241,8 +233,8 @@ mod tests {
         assert_eq!(laned.non_payment_gas_available, 10000);
         assert_eq!(laned.non_payment_gas_used, 40000);
 
-        // Switch to payment lane
-        laned.switch_to_payment_lane();
+        // Manually set the lane to test gas tracking behavior after switch
+        laned.in_payment_lane = true;
         assert!(laned.is_in_payment_lane());
 
         // Further updates shouldn't affect gas tracking after switch
