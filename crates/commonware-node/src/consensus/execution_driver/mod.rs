@@ -29,6 +29,7 @@ use tokio::sync::RwLock;
 use tracing::{Level, info, instrument};
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
+use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 mod executor;
 
@@ -417,27 +418,29 @@ impl Inner<Init> {
         let payload_id = self
             .execution_node
             .payload_builder_handle
-            .send_new_payload(EthPayloadBuilderAttributes {
-                // XXX: derives the payload ID from the parent so that
-                // overlong payload builds will eventually succeed on the
-                // next iteration: if all other nodes take equally as long,
-                // the consensus engine will kill the proposal task (see
-                // also `response.cancellation` below). Then eventually
-                // consensus will circle back to an earlier node, which then
-                // has the chance of picking up the old payload.
-                id: payload_id_from_block_hash(&parent.block_hash()),
-                parent: parent.block_hash(),
-                timestamp,
-                suggested_fee_recipient: self.fee_recipient,
-                // XXX(tempo-malachite): for PoS compatibility
-                prev_randao: B256::ZERO,
-                // XXX(tempo-malachite): empty withdrawals post-shanghai
-                withdrawals: Withdrawals::default(),
-                // TODO: tempo-malachite does this (why?); but maybe we can
-                // use the consensus block' digest for this? alternatively somehow
-                // tie this to the threshold simplex view / round / height?;
-                parent_beacon_block_root: Some(B256::ZERO),
-            })
+            .send_new_payload(TempoPayloadBuilderAttributes::new(
+                EthPayloadBuilderAttributes {
+                    // XXX: derives the payload ID from the parent so that
+                    // overlong payload builds will eventually succeed on the
+                    // next iteration: if all other nodes take equally as long,
+                    // the consensus engine will kill the proposal task (see
+                    // also `response.cancellation` below). Then eventually
+                    // consensus will circle back to an earlier node, which then
+                    // has the chance of picking up the old payload.
+                    id: payload_id_from_block_hash(&parent.block_hash()),
+                    parent: parent.block_hash(),
+                    timestamp,
+                    suggested_fee_recipient: self.fee_recipient,
+                    // XXX(tempo-malachite): for PoS compatibility
+                    prev_randao: B256::ZERO,
+                    // XXX(tempo-malachite): empty withdrawals post-shanghai
+                    withdrawals: Withdrawals::default(),
+                    // TODO: tempo-malachite does this (why?); but maybe we can
+                    // use the consensus block' digest for this? alternatively somehow
+                    // tie this to the threshold simplex view / round / height?;
+                    parent_beacon_block_root: Some(B256::ZERO),
+                },
+            ))
             .await
             .map_err(|_| eyre!("channel was closed before a response was returned"))
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
