@@ -28,6 +28,9 @@ where
     non_payment_gas_used: u64,
     /// Track senders of invalidated transactions to filter buffered descendants
     invalidated_senders: HashSet<Address>,
+    /// Flag to track if we've started skipping non-payment transactions due to gas limits
+    /// Once set, we'll switch to payment lane if we only find payment txs or exhaust the iterator
+    skipping_non_payment: bool,
 }
 
 impl<I> LanedTransactions<I>
@@ -43,6 +46,7 @@ where
             non_payment_gas_available: non_payment_gas_limit,
             non_payment_gas_used: 0,
             invalidated_senders: HashSet::new(),
+            skipping_non_payment: false,
         }
     }
 
@@ -137,7 +141,16 @@ where
 
         // We're in the non-payment lane
         loop {
-            let tx = self.inner.next()?;
+            // If the inner iterator is exhausted, switch to payment lane
+            let tx = match self.inner.next() {
+                Some(tx) => tx,
+                None => {
+                    // No more transactions from the pool, switch to payment lane
+                    self.in_payment_lane = true;
+                    return self.payment_buffer.pop_front();
+                }
+            };
+
             let is_payment = tx.transaction.is_payment();
 
             if is_payment {
@@ -145,20 +158,29 @@ where
                 if !self.invalidated_senders.contains(&tx.sender()) {
                     self.payment_buffer.push_back(tx);
                 }
+
+                // If we've been skipping non-payment txs and now only see payment txs,
+                // it's time to switch to the payment lane
+                if self.skipping_non_payment {
+                    self.in_payment_lane = true;
+                    return self.payment_buffer.pop_front();
+                }
             } else {
                 // Check if this non-payment transaction fits within the gas limit
                 let tx_gas = tx.gas_limit();
                 if tx_gas <= self.non_payment_gas_available {
                     // We have room for this non-payment transaction
+                    // Reset the skipping flag since we found a usable non-payment tx
+                    self.skipping_non_payment = false;
                     // Note: The actual gas update happens via update_non_payment_gas_used()
                     // after successful execution
                     return Some(tx);
                 } else {
-                    // No more room for non-payment transactions, switch to payment lane
-                    self.in_payment_lane = true;
+                    // This non-payment transaction doesn't fit
+                    // Mark that we've started skipping non-payment transactions
+                    self.skipping_non_payment = true;
 
-                    // Put this transaction back by marking it invalid with a special error
-                    // This will make it available again when we switch lanes
+                    // Mark it as invalid so the pool knows to skip it
                     self.inner.mark_invalid(
                         &tx,
                         reth_transaction_pool::error::InvalidPoolTransactionError::ExceedsGasLimit(
@@ -166,9 +188,7 @@ where
                             self.non_payment_gas_available,
                         ),
                     );
-
-                    // Start draining payment buffer
-                    return self.payment_buffer.pop_front();
+                    // Continue searching for smaller non-payment transactions
                 }
             }
         }
