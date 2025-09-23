@@ -82,5 +82,6 @@ allow-git = [
     "https://github.com/commonwarexyz/monorepo",
     "https://github.com/foundry-rs/foundry",
     "https://github.com/paradigmxyz/reth",
+    "https://github.com/paradigmxyz/solar",
     "https://github.com/informalsystems/malachite"
 ]
