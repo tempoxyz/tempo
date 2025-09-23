@@ -36,6 +36,7 @@ struct MonitorArgs {
 
 pub struct TIP20Token {
     decimals: u8,
+    name: String,
 }
 
 pub struct Monitor {
@@ -72,10 +73,20 @@ impl Monitor {
             let token = ITIP20::new(token_address, provider.clone());
             let decimals = token.decimals().call().await.map_err(|e| {
                 counter!("tempo_fee_amm_errors", "request" => "decimals").increment(1);
-                eyre!("failed to fetch token info for {}: {}", token_address, e)
+                eyre!(
+                    "failed to fetch token decimals for {}: {}",
+                    token_address,
+                    e
+                )
             })?;
 
-            self.tokens.insert(token_address, TIP20Token { decimals });
+            let name = token.name().call().await.map_err(|e| {
+                counter!("tempo_fee_amm_errors", "request" => "decimals").increment(1);
+                eyre!("failed to fetch token name for {}: {}", token_address, e)
+            })?;
+
+            self.tokens
+                .insert(token_address, TIP20Token { decimals, name });
         }
 
         Ok(())
@@ -122,22 +133,37 @@ impl Monitor {
 
     #[instrument(name = "monitor::update_metrics", skip(self))]
     async fn update_metrics(&self) {
-        for ((token_a, token_b), pool) in self.pools.iter() {
+        for ((token_a_address, token_b_address), pool) in self.pools.iter() {
             let (token_a_balance, token_b_balance) =
                 (pool.reserveUserToken, pool.reserveValidatorToken);
 
-            let token_a_decimals: u32 = match self.tokens.get(token_a) {
-                Some(token) => token.decimals.into(),
+            let token_a = match self.tokens.get(token_a_address) {
+                Some(token) => token,
                 None => continue,
             };
 
-            let token_b_decimals: u32 = match self.tokens.get(token_b) {
-                Some(token) => token.decimals.into(),
+            let token_b = match self.tokens.get(token_b_address) {
+                Some(token) => token,
                 None => continue,
             };
 
-            gauge!("tempo_fee_amm_user_token_reserves", "token_a" => token_a.to_string(), "token_b" => token_b.to_string()).set((token_a_balance / 10u128.pow(token_a_decimals)) as f64);
-            gauge!("tempo_fee_amm_validator_token_reserves", "token_a" => token_a.to_string(), "token_b" => token_b.to_string()).set((token_b_balance / 10u128.pow(token_b_decimals)) as f64);
+            gauge!(
+                "tempo_fee_amm_user_token_reserves",
+                "token_a" => token_a_address.to_string(),
+                "token_b" => token_b_address.to_string(),
+                "token_a_name" => token_a.name.to_string(),
+                "token_b_name" => token_b.name.to_string()
+            )
+            .set((token_a_balance / 10u128.pow(token_a.decimals as u32)) as f64);
+
+            gauge!(
+                "tempo_fee_amm_validator_token_reserves",
+                "token_a" => token_a_address.to_string(),
+                "token_b" => token_b_address.to_string(),
+                "token_a_name" => token_a.name.to_string(),
+                "token_b_name" => token_b.name.to_string()
+            )
+            .set((token_b_balance / 10u128.pow(token_b.decimals as u32)) as f64);
         }
     }
 
