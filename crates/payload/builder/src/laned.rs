@@ -197,16 +197,36 @@ where
     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // If we're draining the buffer (iterator exhausted), return buffered payments
+        // If we're draining the buffer (iterator exhausted), check for new transactions first
         if self.lane_state.is_draining_buffer() {
-            // Drain buffered payment transactions, skipping those from invalidated senders
-            while let Some(tx) = self.payment_buffer.pop_front() {
-                if !self.invalidated_senders.contains(&tx.sender()) {
-                    return Some(tx);
+            // Try the inner iterator for new transactions that may have been loaded
+            loop {
+                match self.inner.next() {
+                    Some(tx) => {
+                        // New transaction found while draining buffer
+                        // We've already exhausted our non-payment gas allocation,
+                        // so only payment transactions can be processed
+                        if tx.transaction.is_payment() {
+                            // Payment transaction - check if sender is valid before yielding
+                            if !self.invalidated_senders.contains(&tx.sender()) {
+                                return Some(tx);
+                            }
+                            // Sender is invalidated, skip this transaction
+                        }
+                        // Non-payment transaction or invalidated payment - continue checking
+                    }
+                    None => {
+                        // No new transactions, drain buffered payment transactions
+                        while let Some(tx) = self.payment_buffer.pop_front() {
+                            if !self.invalidated_senders.contains(&tx.sender()) {
+                                return Some(tx);
+                            }
+                        }
+                        // Buffer is empty
+                        return None;
+                    }
                 }
             }
-            // Buffer is empty
-            return None;
         }
 
         // We're still processing the inner iterator
