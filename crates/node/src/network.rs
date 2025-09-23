@@ -132,7 +132,21 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
-        TransactionBuilder::complete_type(&self.inner, ty.try_into().unwrap_or(TxType::Eip7702))
+        if TempoTxType::FeeToken == ty {
+            let fields = self.missing_fields_of_fee_tx();
+
+            return if fields.is_empty() {
+                Ok(())
+            } else {
+                Err(fields)
+            };
+        }
+
+        TransactionBuilder::complete_type(
+            &self.inner,
+            ty.try_into()
+                .expect("should not be reachable with fee token tx"),
+        )
     }
 
     fn can_submit(&self) -> bool {
@@ -144,12 +158,21 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn output_tx_type(&self) -> TempoTxType {
-        self.output_tx_type_checked()
-            .unwrap_or(TempoTxType::Eip1559)
+        if self.fee_token.is_some() {
+            TempoTxType::FeeToken
+        } else if self.inner.authorization_list.is_some() {
+            TempoTxType::Eip7702
+        } else if self.inner.access_list.is_some() && self.inner.gas_price.is_some() {
+            TempoTxType::Eip2930
+        } else if self.inner.gas_price.is_some() {
+            TempoTxType::Legacy
+        } else {
+            TempoTxType::Eip1559
+        }
     }
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
-        if self.fee_token.is_some() {
+        if self.can_build_fee_tx() {
             return Some(TempoTxType::FeeToken);
         }
 
@@ -161,20 +184,22 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
-        if let Err((tx_type, missing)) = self.inner.missing_keys() {
-            return Err(match tx_type.try_into() {
-                Ok(tx_type) => TransactionBuilderError::InvalidTransactionRequest(tx_type, missing),
-                Err(err) => TransactionBuilderError::from(err),
-            }
-            .into_unbuilt(self));
-        }
-
-        if self.fee_token.is_some() {
+        if self.can_build_fee_tx() {
             Ok(self
                 .build_fee_token()
-                .expect("checked by missing_keys and above condition")
+                .expect("checked by above condition")
                 .into())
         } else {
+            if let Err((tx_type, missing)) = self.inner.missing_keys() {
+                return Err(match tx_type.try_into() {
+                    Ok(tx_type) => {
+                        TransactionBuilderError::InvalidTransactionRequest(tx_type, missing)
+                    }
+                    Err(err) => TransactionBuilderError::from(err),
+                }
+                .into_unbuilt(self));
+            }
+
             if let Some(TxType::Eip4844) = self.inner.buildable_type() {
                 return Err(UnbuiltTransactionError {
                     request: self,
@@ -198,5 +223,25 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
         wallet: &W,
     ) -> Result<TempoTxEnvelope, TransactionBuilderError<TempoNetwork>> {
         Ok(wallet.sign_request(self).await?)
+    }
+}
+
+impl TempoTransactionRequest {
+    fn can_build_fee_tx(&self) -> bool {
+        self.fee_token.is_some()
+            && matches!(
+                self.inner.buildable_type(),
+                Some(TxType::Eip1559) | Some(TxType::Eip7702)
+            )
+    }
+
+    fn missing_fields_of_fee_tx(&self) -> Vec<&'static str> {
+        let mut fields = Vec::new();
+
+        if self.fee_token.is_none() {
+            fields.push("fee_token");
+        }
+
+        fields
     }
 }
