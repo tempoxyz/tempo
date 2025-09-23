@@ -13,8 +13,7 @@ tempo-precompiles = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
 tracing.workspace = true
-foundry-evm = { git = "https://github.com/foundry-rs/foundry", tag = "v1.3.6" }
-foundry-wallets = { git = "https://github.com/foundry-rs/foundry", tag = "v1.3.6" }
+foundry-wallets = { git = "https://github.com/foundry-rs/foundry", rev = "a8dc5ae" }
 tracing-subscriber = "0.3"
 
 [lints]

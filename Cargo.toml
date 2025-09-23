@@ -260,7 +260,3 @@ commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "4af
 commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
 commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
 commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "4afebae1534acd3f2787d1f9471cc78e8f0e4752" }
-solar-data-structures = { git = "https://github.com/paradigmxyz/solar", tag = "v0.1.5" } # needed until foundry v1.4
-solar-config = { git = "https://github.com/paradigmxyz/solar", tag = "v0.1.5" }
-solar-macros = { git = "https://github.com/paradigmxyz/solar", tag = "v0.1.5" }
-
