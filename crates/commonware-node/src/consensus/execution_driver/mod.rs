@@ -28,32 +28,35 @@ use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 
 mod executor;
 
+use crate::consensus::execution_driver::executor::ExecutorMailbox;
+
 use super::{View, block::Block};
 
-pub struct Builder<TContext> {
+pub(super) struct Builder<TContext> {
     /// The execution context of the commonwarexyz application (tokio runtime, etc).
-    pub context: TContext,
+    pub(super) context: TContext,
 
     /// Used as PayloadAttributes.suggested_fee_recipient
-    pub fee_recipient: alloy_primitives::Address,
+    pub(super) fee_recipient: alloy_primitives::Address,
 
     /// Number of messages from consensus to hold in our backlog
     /// before blocking.
-    pub mailbox_size: usize,
+    pub(super) mailbox_size: usize,
 
     /// The syncer for subscribing to blocks distributed via the consensus
     /// p2p network.
-    pub syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
+    pub(super) syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
 
     /// A handle to the execution node to verify and create new payloads.
-    pub execution_node: TempoFullNode,
+    pub(super) execution_node: TempoFullNode,
 }
 
 impl<TContext> Builder<TContext>
 where
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    pub(super) fn try_init(self) -> eyre::Result<ExecutionDriver<TContext>> {
+    /// Builds the uninitialized execution driver.
+    pub(super) fn build(self) -> eyre::Result<ExecutionDriver<TContext, Uninit>> {
         let (tx, rx) = mpsc::channel(self.mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
 
@@ -76,16 +79,14 @@ where
 
             genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
 
-            latest_proposed_block: Arc::new(RwLock::new(None)),
-
             execution_node: self.execution_node,
 
-            executor_mailbox: None,
+            state: Uninit(()),
         })
     }
 }
 
-pub struct ExecutionDriver<TContext> {
+pub(super) struct ExecutionDriver<TContext, TState = Uninit> {
     context: TContext,
 
     fee_recipient: alloy_primitives::Address,
@@ -96,61 +97,52 @@ pub struct ExecutionDriver<TContext> {
     syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
 
     genesis_block: Arc<Block>,
-    latest_proposed_block: Arc<RwLock<Option<Block>>>,
-
     execution_node: TempoFullNode,
 
-    executor_mailbox: Option<executor::ExecutorMailbox>,
+    /// The runtime initialized state of the execution driver. Some of the
+    /// agent's state only becomes available when its running (for example,
+    /// commonware's marshaller only responds with its latest finalized block
+    /// after it's spawned). And so `state` encodes if the driver was fully
+    /// runtime initialized.
+    state: TState,
 }
 
-impl<TContext> ExecutionDriver<TContext>
-where
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
-{
+impl<TContext, TState> ExecutionDriver<TContext, TState> {
     pub(super) fn mailbox(&self) -> &Mailbox {
         &self.my_mailbox
     }
+}
 
-    async fn run(mut self) {
+impl<TContext> ExecutionDriver<TContext, Uninit>
+where
+    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+{
+    /// Runs the execution driver until it is externally stopped.
+    async fn run_until_stopped(self) {
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
-        // XXX: relies on runtime_init generating an error event before exit.
-        if self.runtime_init().await.is_err() {
+        let Ok(initialized) = self.into_initialized().await else {
+            // XXX: relies on runtime_init generating an error event before exit.
             return;
         };
 
-        loop {
-            tokio::select!(
-                // NOTE: biased because we prefer running finalizations above all else.
-                biased;
-
-                Some(msg) = self.from_consensus.next() => {
-                    if let Err(error) =  self.handle_message(msg) {
-                        tracing::error_span!("handle message").in_scope(|| tracing::error!(
-                            %error,
-                            "critical error occurred while handling message; exiting"
-                        ));
-                        break;
-                    }
-                }
-
-                else => break,
-            )
-        }
+        initialized.run_until_stopped().await
     }
 
     pub(super) fn start(mut self) -> Handle<()> {
-        self.context.spawn_ref()(self.run())
+        self.context.spawn_ref()(self.run_until_stopped())
     }
 
-    /// Initializes the execution driver's constituent task with information only available at runtime.
+    /// Returns a fully initialized execution driver using runtime information.
     ///
     /// This includes:
     ///
     /// 1. reading the last finalized digest from the consensus marshaller.
     /// 2. starting the canonical chain engine and storing its handle.
+    /// 3. starting a backfill task to catch the execution layer up to the
+    ///    consensus finalize block (if necessary).
     #[instrument(skip_all, err)]
-    async fn runtime_init(&mut self) -> eyre::Result<()> {
+    async fn into_initialized(mut self) -> eyre::Result<ExecutionDriver<TContext, Init>> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
         let (finalized_consensus_height, finalized_consensus_digest) = self
@@ -179,28 +171,75 @@ where
             latest_finalized_digest: finalized_consensus_digest,
         }
         .build();
-        claims::assert_none!(self.executor_mailbox.replace(executor.mailbox().clone()));
 
-        self.context.with_label("replay missing finalized").spawn({
-            let executor = executor.mailbox().clone();
-            let syncer = self.syncer_mailbox.clone();
-            let current_span = tracing::Span::current();
-            move |_| {
-                replay_missing_finalized(
-                    current_span,
-                    executor,
-                    syncer,
-                    finalized_consensus_height,
-                    latest_execution_block_number,
-                )
-            }
-        });
+        let initialized = ExecutionDriver {
+            context: self.context,
+            fee_recipient: self.fee_recipient,
+            from_consensus: self.from_consensus,
+            my_mailbox: self.my_mailbox,
+            syncer_mailbox: self.syncer_mailbox,
+            genesis_block: self.genesis_block,
+            execution_node: self.execution_node,
+            state: Init {
+                latest_proposed_block: Arc::new(RwLock::new(None)),
+                executor_mailbox: executor.mailbox().clone(),
+            },
+        };
 
-        self.context
+        initialized
+            .context
+            .with_label("replay missing finalized")
+            .spawn({
+                let executor = executor.mailbox().clone();
+                let syncer = initialized.syncer_mailbox.clone();
+                let current_span = tracing::Span::current();
+                move |_| {
+                    replay_missing_finalized(
+                        current_span,
+                        executor,
+                        syncer,
+                        finalized_consensus_height,
+                        latest_execution_block_number,
+                    )
+                }
+            });
+
+        initialized
+            .context
             .with_label("executor")
             .spawn(move |_| executor.run());
 
-        Ok(())
+        Ok(initialized)
+    }
+}
+
+impl<TContext> ExecutionDriver<TContext, Init>
+where
+    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+{
+    /// Runs the initialized execution driver.
+    async fn run_until_stopped(mut self) {
+        loop {
+            tokio::select!(
+                // NOTE: biased because we prefer running finalizations above
+                // all else.
+                // TODO(janis): listen to a shutdown message here so that having
+                // biased and this note here make sense.
+                biased;
+
+                Some(msg) = self.from_consensus.next() => {
+                    if let Err(error) =  self.handle_message(msg) {
+                        tracing::error_span!("handle message").in_scope(|| tracing::error!(
+                            %error,
+                            "critical error occurred while handling message; exiting"
+                        ));
+                        break;
+                    }
+                }
+
+                else => break,
+            )
+        }
     }
 
     fn handle_message(&mut self, msg: Message) -> eyre::Result<()> {
@@ -221,9 +260,9 @@ where
 
     fn handle_broadcast(&mut self, broadcast: Broadcast) {
         self.context.with_label("broadcast").spawn({
-            let latest_proposed_block = self.latest_proposed_block.clone();
+            let state = self.state.clone();
             let syncer = self.syncer_mailbox.clone();
-            move |_| handle_broadcast(broadcast, latest_proposed_block, syncer)
+            move |_| handle_broadcast(broadcast, state, syncer)
         });
 
         #[instrument(
@@ -232,10 +271,10 @@ where
             err(level = Level::ERROR))]
         async fn handle_broadcast(
             broadcast: Broadcast,
-            latest_proposed: Arc<RwLock<Option<Block>>>,
+            state: Init,
             mut syncer: marshal::Mailbox<BlsScheme, Block>,
         ) -> eyre::Result<()> {
-            let Some(latest_proposed) = latest_proposed.read().await.clone() else {
+            let Some(latest_proposed) = state.latest_proposed_block.read().await.clone() else {
                 return Err(eyre!("there was no latest block to broadcast"));
             };
             ensure!(
@@ -252,10 +291,7 @@ where
 
     /// Pushes a `finalized` request to the back of the finalization queue.
     fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
-        self.executor_mailbox
-            .as_ref()
-            .expect("handle_finalized must only be called from ExecutionDriver's event loop and only after the finalizer task was initialized")
-            .forward_finalized(finalized)
+        self.state.executor_mailbox.forward_finalized(finalized)
     }
 
     #[instrument(
@@ -298,13 +334,9 @@ where
             request: propose,
             fee_recipient: self.fee_recipient,
             genesis_block: self.genesis_block.clone(),
-            latest_proposed_block: self.latest_proposed_block.clone(),
             execution_node: self.execution_node.clone(),
             syncer_mailbox: self.syncer_mailbox.clone(),
-            executor_mailbox: self.executor_mailbox.clone()
-                .expect(
-                    "propose must only be called from within the ExecutionDriver's event loop and only after the executor task was initialized"
-                ),
+            state: self.state.clone(),
         }
     }
 
@@ -331,9 +363,7 @@ where
         let execution_node = self.execution_node.clone();
         let genesis_block = self.genesis_block.clone();
         let mut syncer_mailbox = self.syncer_mailbox.clone();
-        let executor_mailbox = self.executor_mailbox
-            .clone()
-            .expect("verify must only be called from within the ExecutionDriver's event loop and only after executor agent was initialized");
+        let executor_mailbox = self.state.executor_mailbox.clone();
 
         // XXX: this async block MUST remain the last expression. This code
         // makes use of how tracing evaluates function bodies to determine
@@ -426,15 +456,25 @@ where
     }
 }
 
+/// Marker type to signal that the execution driver is not fully initialized.
+#[derive(Clone, Debug)]
+pub(super) struct Uninit(());
+
+/// Carries the runtime initialized state of the execution driver.
+#[derive(Clone, Debug)]
+struct Init {
+    latest_proposed_block: Arc<RwLock<Option<Block>>>,
+    executor_mailbox: ExecutorMailbox,
+}
+
 /// Holds all objects to run a proposal via [`Self::given_timestamp`].
 struct RunPropose {
     request: Propose,
     fee_recipient: alloy_primitives::Address,
     genesis_block: Arc<Block>,
-    latest_proposed_block: Arc<RwLock<Option<Block>>>,
     execution_node: TempoFullNode,
     syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
-    executor_mailbox: executor::ExecutorMailbox,
+    state: Init,
 }
 
 impl RunPropose {
@@ -453,10 +493,9 @@ impl RunPropose {
             request,
             fee_recipient,
             genesis_block,
-            latest_proposed_block,
             execution_node,
             mut syncer_mailbox,
-            executor_mailbox,
+            state,
         } = self;
         let Propose {
             view: _view,
@@ -464,7 +503,7 @@ impl RunPropose {
             mut response,
         } = request;
 
-        let executor_mailbox_clone = executor_mailbox.clone();
+        let executor_mailbox_clone = state.executor_mailbox.clone();
         let proposal_fut = async move {
             if let Err(error) = executor_mailbox_clone.canonicalize(parent.1) {
                 tracing::warn!(
@@ -573,11 +612,11 @@ impl RunPropose {
         })?;
 
         {
-            let mut lock = latest_proposed_block.write().await;
+            let mut lock = state.latest_proposed_block.write().await;
             *lock = Some(consensus_block);
         }
 
-        if let Err(error) = executor_mailbox.canonicalize(proposed_block_digest) {
+        if let Err(error) = state.executor_mailbox.canonicalize(proposed_block_digest) {
             tracing::warn!(
                 %error,
                 "failed updating canonical chain to proposed block",
@@ -755,7 +794,7 @@ impl Reporter for Mailbox {
 }
 
 #[derive(Clone)]
-pub struct Mailbox {
+pub(super) struct Mailbox {
     to_execution_driver: mpsc::Sender<Message>,
 }
 
@@ -852,7 +891,7 @@ impl From<Finalized> for Message {
 )]
 async fn replay_missing_finalized(
     cause: tracing::Span,
-    executor: executor::ExecutorMailbox,
+    executor: ExecutorMailbox,
     mut syncer: marshal::Mailbox<BlsScheme, Block>,
     latest_consensus_finalized_height: u64,
     latest_execution_block_number: u64,

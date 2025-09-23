@@ -19,7 +19,6 @@ alloy-rlp.workspace = true
 
 axum.workspace = true
 bytes.workspace = true
-claims.workspace = true
 
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true

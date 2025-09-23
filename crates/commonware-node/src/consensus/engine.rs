@@ -155,7 +155,7 @@ where
             // engine_handle: self.execution_engine,
             // payload_builder: self.execution_payload_builder,
         }
-        .try_init()
+        .build()
         .wrap_err("failed initializing execution driver")?;
 
         let execution_driver_mailbox = execution_driver.mailbox().clone();
