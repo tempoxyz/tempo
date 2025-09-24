@@ -1,6 +1,6 @@
 //! Drives the execution engine by forwarding consensus messages.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadId;
@@ -53,6 +53,9 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
 
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: TempoFullNode,
+
+    /// The minimum amount of time to wait before resolving a new payload from the builder
+    pub(super) new_payload_wait_time: Duration,
 }
 
 impl<TContext> ExecutionDriverBuilder<TContext>
@@ -78,6 +81,7 @@ where
 
             inner: Inner {
                 fee_recipient: self.fee_recipient,
+                new_payload_wait_time: self.new_payload_wait_time,
 
                 my_mailbox,
                 syncer: self.syncer,
@@ -202,6 +206,7 @@ where
 #[derive(Clone)]
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
+    new_payload_wait_time: Duration,
 
     my_mailbox: ExecutionDriverMailbox,
 
@@ -438,6 +443,12 @@ impl Inner<Init> {
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
             .wrap_err("failed requesting new payload from the execution layer")?;
 
+        tracing::debug!(
+            timeout_ms = self.new_payload_wait_time.as_millis(),
+            "sleeping for payload builder timeout"
+        );
+        context.sleep(self.new_payload_wait_time).await;
+
         // XXX: resolves to a payload with at least one transactions included.
         //
         // FIXME: Figure out if WaitForPending really is ok. Using
@@ -613,6 +624,7 @@ impl Inner<Uninit> {
 
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
+            new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
             syncer: self.syncer,
             genesis_block: self.genesis_block,
