@@ -18,8 +18,8 @@ type Consensus<TContext, TBlocker> = commonware_consensus::threshold_simplex::En
     TBlocker,
     BlsScheme,
     Digest,
-    crate::consensus::execution_driver::Mailbox,
-    crate::consensus::execution_driver::Mailbox,
+    crate::consensus::execution_driver::ExecutionDriverMailbox,
+    crate::consensus::execution_driver::ExecutionDriverMailbox,
     Reporter,
     Supervisor,
 >;

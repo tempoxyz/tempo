@@ -144,7 +144,7 @@ where
             )
             .await;
 
-        let execution_driver = super::execution_driver::Builder {
+        let execution_driver = super::execution_driver::ExecutionDriverBuilder {
             context: self.context.with_label("execution_driver"),
             // TODO: pass in from the outside,
             fee_recipient: self.fee_recipient,
@@ -222,7 +222,7 @@ where
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
     execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
-    execution_driver_mailbox: crate::consensus::execution_driver::Mailbox,
+    execution_driver_mailbox: crate::consensus::execution_driver::ExecutionDriverMailbox,
 
     /// Responsible for syncing(?) messages from/to other nodes.
     // FIXME: This is a complex beast, interacting with very many parts of the system. At

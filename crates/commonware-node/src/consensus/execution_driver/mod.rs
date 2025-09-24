@@ -32,7 +32,7 @@ use crate::consensus::execution_driver::executor::ExecutorMailbox;
 
 use super::{View, block::Block};
 
-pub(super) struct Builder<TContext> {
+pub(super) struct ExecutionDriverBuilder<TContext> {
     /// The execution context of the commonwarexyz application (tokio runtime, etc).
     pub(super) context: TContext,
 
@@ -51,14 +51,14 @@ pub(super) struct Builder<TContext> {
     pub(super) execution_node: TempoFullNode,
 }
 
-impl<TContext> Builder<TContext>
+impl<TContext> ExecutionDriverBuilder<TContext>
 where
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Builds the uninitialized execution driver.
     pub(super) fn build(self) -> eyre::Result<ExecutionDriver<TContext, Uninit>> {
         let (tx, rx) = mpsc::channel(self.mailbox_size);
-        let my_mailbox = Mailbox::from_sender(tx);
+        let my_mailbox = ExecutionDriverMailbox::from_sender(tx);
 
         let block = self
             .execution_node
@@ -73,7 +73,7 @@ where
 
             fee_recipient: self.fee_recipient,
 
-            from_consensus: rx,
+            mailbox: rx,
             my_mailbox,
             syncer_mailbox: self.syncer_mailbox,
 
@@ -91,8 +91,8 @@ pub(super) struct ExecutionDriver<TContext, TState = Uninit> {
 
     fee_recipient: alloy_primitives::Address,
 
-    from_consensus: mpsc::Receiver<Message>,
-    my_mailbox: Mailbox,
+    mailbox: mpsc::Receiver<Message>,
+    my_mailbox: ExecutionDriverMailbox,
 
     syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
 
@@ -108,7 +108,7 @@ pub(super) struct ExecutionDriver<TContext, TState = Uninit> {
 }
 
 impl<TContext, TState> ExecutionDriver<TContext, TState> {
-    pub(super) fn mailbox(&self) -> &Mailbox {
+    pub(super) fn mailbox(&self) -> &ExecutionDriverMailbox {
         &self.my_mailbox
     }
 }
@@ -175,7 +175,7 @@ where
         let initialized = ExecutionDriver {
             context: self.context,
             fee_recipient: self.fee_recipient,
-            from_consensus: self.from_consensus,
+            mailbox: self.mailbox,
             my_mailbox: self.my_mailbox,
             syncer_mailbox: self.syncer_mailbox,
             genesis_block: self.genesis_block,
@@ -227,7 +227,7 @@ where
                 // biased and this note here make sense.
                 biased;
 
-                Some(msg) = self.from_consensus.next() => {
+                Some(msg) = self.mailbox.next() => {
                     if let Err(error) =  self.handle_message(msg) {
                         tracing::error_span!("handle message").in_scope(|| tracing::error!(
                             %error,
@@ -694,7 +694,7 @@ async fn verify_block(
     }
 }
 
-impl Automaton for Mailbox {
+impl Automaton for ExecutionDriverMailbox {
     type Context = super::Context;
 
     type Digest = Digest;
@@ -761,7 +761,7 @@ impl Automaton for Mailbox {
     }
 }
 
-impl Relay for Mailbox {
+impl Relay for ExecutionDriverMailbox {
     type Digest = Digest;
 
     async fn broadcast(&mut self, digest: Self::Digest) {
@@ -773,7 +773,7 @@ impl Relay for Mailbox {
     }
 }
 
-impl Reporter for Mailbox {
+impl Reporter for ExecutionDriverMailbox {
     type Activity = Block;
 
     async fn report(&mut self, block: Self::Activity) {
@@ -794,11 +794,11 @@ impl Reporter for Mailbox {
 }
 
 #[derive(Clone)]
-pub(super) struct Mailbox {
+pub(super) struct ExecutionDriverMailbox {
     to_execution_driver: mpsc::Sender<Message>,
 }
 
-impl Mailbox {
+impl ExecutionDriverMailbox {
     fn from_sender(to_execution_driver: mpsc::Sender<Message>) -> Self {
         Self {
             to_execution_driver,
