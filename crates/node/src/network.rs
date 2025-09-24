@@ -29,9 +29,11 @@ impl Network for TempoNetwork {
     type ReceiptResponse = alloy_rpc_types_eth::TransactionReceipt<
         ReceiptWithBloom<TempoReceipt<alloy_rpc_types_eth::Log>>,
     >;
-    type HeaderResponse = alloy_rpc_types_eth::Header;
-    type BlockResponse =
-        alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>>;
+    type HeaderResponse = crate::rpc::Header;
+    type BlockResponse = alloy_rpc_types_eth::Block<
+        alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
+        Self::HeaderResponse,
+    >;
 }
 
 impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
