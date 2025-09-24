@@ -57,7 +57,7 @@ pub(super) struct Engine {
 
     /// The channel over which the agent will receive new commands from the
     /// execution driver.
-    from_execution_driver: UnboundedReceiver<Message>,
+    mailbox: UnboundedReceiver<Message>,
 
     /// The latest finalized digest of the block that the agent has sent to the
     /// execution layer. When advancing the canonical chain by sending a
