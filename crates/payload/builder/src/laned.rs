@@ -110,7 +110,7 @@ where
 
                 // First, drain any buffered payment transactions
                 while let Some(tx) = self.payment_buffer.pop_front() {
-                    if !self.invalidated_senders.contains(&tx.sender()) {
+                    if !self.invalidated_senders.contains(tx.sender_ref()) {
                         return Some(tx);
                     }
                 }
@@ -119,7 +119,7 @@ where
                 for tx in self.inner.by_ref() {
                     // Only process payment transactions when skipping non-payments
                     if tx.transaction.is_payment()
-                        && !self.invalidated_senders.contains(&tx.sender())
+                        && !self.invalidated_senders.contains(tx.sender_ref())
                     {
                         return Some(tx);
                     }
@@ -136,7 +136,7 @@ where
 
                 if is_payment {
                     // Buffer payment transaction for later
-                    if !self.invalidated_senders.contains(&tx.sender()) {
+                    if !self.invalidated_senders.contains(tx.sender_ref()) {
                         self.payment_buffer.push_back(tx);
                     }
                 } else {
