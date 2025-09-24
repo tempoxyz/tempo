@@ -22,10 +22,8 @@ where
     payment_buffer: VecDeque<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     /// Gas remaining for non-payment transactions
     non_payment_gas_left: u64,
-    /// Whether non-payment gas has been exhausted
-    non_payment_gas_exhausted: bool,
-    /// Total gas used by non-payment transactions
-    non_payment_gas_used: u64,
+    /// Whether to skip non-payment transactions (payment-only mode)
+    skip_non_payments: bool,
     /// Track senders of invalidated transactions to filter buffered descendants
     invalidated_senders: HashSet<Address>,
 }
@@ -40,32 +38,27 @@ where
             inner,
             payment_buffer: VecDeque::new(),
             non_payment_gas_left: non_payment_gas_limit,
-            non_payment_gas_exhausted: false,
-            non_payment_gas_used: 0,
+            skip_non_payments: false,
             invalidated_senders: HashSet::new(),
         }
     }
 
-    /// Returns the total gas used by non-payment transactions.
-    #[allow(dead_code)]
-    pub(crate) fn non_payment_gas_used(&self) -> u64 {
-        self.non_payment_gas_used
+    /// Switch to payment-only mode, skipping non-payment transactions.
+    /// This should be called by the builder when non-payment gas is exhausted.
+    pub(crate) fn skip_non_payments(&mut self) {
+        self.skip_non_payments = true;
     }
 
-    /// Updates the available gas after a transaction has been executed.
-    ///
-    /// This should be called by the builder after successfully executing a non-payment transaction
-    /// to update the gas accounting.
+    /// Check if we're in payment-only mode (non-payment transactions exhausted).
+    pub(crate) fn non_payment_exhausted(&self) -> bool {
+        self.skip_non_payments
+    }
+
+    /// Update gas after a non-payment transaction was executed
     pub(crate) fn update_non_payment_gas_used(&mut self, gas_used: u64) {
-        if !self.non_payment_gas_exhausted {
-            self.non_payment_gas_used += gas_used;
+        if !self.skip_non_payments {
             self.non_payment_gas_left = self.non_payment_gas_left.saturating_sub(gas_used);
         }
-    }
-
-    /// Checks if we're currently in payment-only mode.
-    pub(crate) fn is_in_payment_lane(&self) -> bool {
-        self.non_payment_gas_exhausted
     }
 }
 
@@ -112,7 +105,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if self.non_payment_gas_exhausted {
+            if self.skip_non_payments {
                 // In payment-only mode - drain buffer first, then check pool for new payment txs
 
                 // First, drain any buffered payment transactions
@@ -124,25 +117,25 @@ where
 
                 // Buffer is empty, check pool for new transactions
                 for tx in self.inner.by_ref() {
-                    // We've exhausted non-payment gas, only process payment transactions
+                    // Only process payment transactions when skipping non-payments
                     if tx.transaction.is_payment()
                         && !self.invalidated_senders.contains(&tx.sender())
                     {
                         return Some(tx);
                     }
-                    // Skip non-payment transactions since we're out of non-payment gas
+                    // Skip non-payment transactions
                 }
 
                 // No more transactions available
                 return None;
             }
 
-            // Still have non-payment gas - process transactions and fill buffer
+            // Still processing non-payment transactions - process transactions and fill buffer
             while let Some(tx) = self.inner.next() {
                 let is_payment = tx.transaction.is_payment();
 
                 if is_payment {
-                    // Buffer payment transaction
+                    // Buffer payment transaction for later
                     if !self.invalidated_senders.contains(&tx.sender()) {
                         self.payment_buffer.push_back(tx);
                     }
@@ -165,7 +158,7 @@ where
             }
 
             // Iterator exhausted, switch to payment-only mode
-            self.non_payment_gas_exhausted = true;
+            self.skip_non_payments = true;
         }
     }
 }
@@ -204,29 +197,21 @@ mod tests {
         let mut laned = LanedTransactions::new(mock_inner, 50000);
 
         // Test initial state
-        assert!(!laned.is_in_payment_lane());
-        assert_eq!(laned.non_payment_gas_used(), 0);
+        assert!(!laned.non_payment_exhausted());
+        assert!(!laned.skip_non_payments);
         assert_eq!(laned.non_payment_gas_left, 50000);
-        assert!(!laned.non_payment_gas_exhausted);
 
         // Test gas tracking
         laned.update_non_payment_gas_used(20000);
-        assert_eq!(laned.non_payment_gas_used(), 20000);
         assert_eq!(laned.non_payment_gas_left, 30000);
 
-        laned.update_non_payment_gas_used(20000);
-        assert_eq!(laned.non_payment_gas_used(), 40000);
-        assert_eq!(laned.non_payment_gas_left, 10000);
+        // Test external control: builder can trigger switch to payment-only mode
+        laned.skip_non_payments();
+        assert!(laned.non_payment_exhausted());
+        assert!(laned.skip_non_payments);
 
-        // Force switch to payment-only mode
-        laned.non_payment_gas_exhausted = true;
-        assert!(laned.is_in_payment_lane());
-
-        // Further updates shouldn't affect gas tracking when exhausted
-        let before_used = laned.non_payment_gas_used();
-        let before_left = laned.non_payment_gas_left;
+        // Gas updates should be ignored when in payment-only mode
         laned.update_non_payment_gas_used(10000);
-        assert_eq!(laned.non_payment_gas_used(), before_used);
-        assert_eq!(laned.non_payment_gas_left, before_left);
+        assert_eq!(laned.non_payment_gas_left, 30000); // Should remain unchanged
     }
 }

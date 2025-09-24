@@ -209,6 +209,7 @@ where
         ));
         let mut best_txs = LanedTransactions::new(best_txs_inner, non_payment_gas_limit);
         let mut total_fees = U256::ZERO;
+        let mut non_payment_gas_used = 0u64;
 
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(target: "payload_builder", %err, "failed to apply pre-execution changes");
@@ -260,8 +261,14 @@ where
             let gas_used = match builder.execute_transaction(tx.clone()) {
                 Ok(gas_used) => {
                     // Update non-payment gas tracking if we're still in non-payment lane
-                    if !best_txs.is_in_payment_lane() && !pool_tx.transaction.is_payment() {
+                    if !best_txs.non_payment_exhausted() && !pool_tx.transaction.is_payment() {
+                        non_payment_gas_used += gas_used;
                         best_txs.update_non_payment_gas_used(gas_used);
+
+                        // Check if we've exhausted non-payment gas and trigger the switch
+                        if non_payment_gas_used >= non_payment_gas_limit {
+                            best_txs.skip_non_payments();
+                        }
                     }
                     gas_used
                 }
