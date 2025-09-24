@@ -29,6 +29,7 @@ alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 
 derive_more.workspace = true
+tracing.workspace = true
 
 [features]
 rpc = ["dep:reth-rpc-eth-api"]

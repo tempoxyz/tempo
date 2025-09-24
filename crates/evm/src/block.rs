@@ -18,6 +18,7 @@ use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::IFeeManager::executeBlockCall};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_revm::evm::TempoContext;
+use tracing::{debug, trace};
 
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -129,25 +130,50 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<ResultAndState, BlockExecutionError> {
-        if tx.tx().is_system_tx() {
+        let is_payment = tx.tx().is_payment();
+        let is_system = tx.tx().is_system_tx();
+        let gas_limit = tx.tx().gas_limit();
+
+        debug!(
+            target: "tempo::block",
+            is_payment = is_payment,
+            is_system = is_system,
+            gas_limit = gas_limit,
+            non_payment_gas_left = self.non_payment_gas_left,
+            seen_payment = self.seen_payment_tx,
+            seen_system = self.seen_system_tx,
+            tx_to = ?tx.tx().to(),
+            "Executing transaction"
+        );
+
+        if is_system {
             self.validate_system_tx(tx.tx())?;
         } else if self.seen_system_tx {
+            debug!(target: "tempo::block", "Rejecting: regular transaction after system transaction");
             return Err(BlockValidationError::msg(
                 "regular transaction can't follow system transaction",
             )
             .into());
-        } else if self.seen_payment_tx && !tx.tx().is_payment() {
+        } else if self.seen_payment_tx && !is_payment {
+            debug!(target: "tempo::block", "Rejecting: non-payment transaction after payment transaction");
             return Err(BlockValidationError::msg(
                 "non-payment transaction can't follow payment transaction",
             )
             .into());
-        } else if !tx.tx().is_payment() && tx.tx().gas_limit() > self.non_payment_gas_left {
+        } else if !is_payment && gas_limit > self.non_payment_gas_left {
+            debug!(
+                target: "tempo::block",
+                gas_limit = gas_limit,
+                non_payment_gas_left = self.non_payment_gas_left,
+                "Rejecting: non-payment gas limit exceeded"
+            );
             return Err(BlockValidationError::msg(
                 "transaction gas limit exceeds non-payment gas limit",
             )
             .into());
         }
 
+        trace!(target: "tempo::block", "Transaction validation passed, executing");
         self.inner.execute_transaction_without_commit(tx)
     }
 
@@ -158,12 +184,31 @@ where
     ) -> Result<u64, BlockExecutionError> {
         let gas_used = self.inner.commit_transaction(output, &tx)?;
 
-        if tx.tx().is_system_tx() {
+        let is_payment = tx.tx().is_payment();
+        let is_system = tx.tx().is_system_tx();
+
+        debug!(
+            target: "tempo::block",
+            is_payment = is_payment,
+            is_system = is_system,
+            gas_used = gas_used,
+            non_payment_gas_left_before = self.non_payment_gas_left,
+            "Committing transaction"
+        );
+
+        if is_system {
             self.seen_system_tx = true;
-        } else if tx.tx().is_payment() {
+            debug!(target: "tempo::block", "Marked system transaction as seen");
+        } else if is_payment {
             self.seen_payment_tx = true;
+            debug!(target: "tempo::block", "Marked payment transaction as seen");
         } else {
-            self.non_payment_gas_left -= gas_used;
+            self.non_payment_gas_left = self.non_payment_gas_left.saturating_sub(gas_used);
+            debug!(
+                target: "tempo::block",
+                non_payment_gas_left_after = self.non_payment_gas_left,
+                "Updated non-payment gas left"
+            );
         }
 
         Ok(gas_used)

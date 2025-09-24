@@ -13790,6 +13790,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
+ "tracing",
 ]
 
 [[package]]
