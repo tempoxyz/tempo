@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn test_non_payment_continues_after_skipping_large_tx() {
-        // Test the reviewer's scenario:
+        // Test the following scenario:
         // 1. non-payment with gas limit 21000 - included
         // 2. non-payment with very high gas limit - discarded (exceeds remaining)
         // 3. payment tx - buffered
@@ -627,6 +627,135 @@ mod tests {
 
         // Verify that the large non-payment transaction (nonce 1) was marked invalid
         assert!(laned.inner.was_marked_invalid(*transactions[1].hash()));
+    }
+
+    #[test]
+    fn test_payment_transactions_after_exhaustion() {
+        // Test that new payment transactions are correctly yielded even after
+        // the inner iterator was initially exhausted and we switched to payment-only mode
+
+        // mock iterator that can be updated with new transactions
+        struct DynamicMockBestTransactions {
+            transactions: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+            index: usize,
+            phase: usize, // 0 = initial, 1 = after first exhaustion
+        }
+
+        impl DynamicMockBestTransactions {
+            fn new(initial: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>) -> Self {
+                Self {
+                    transactions: initial,
+                    index: 0,
+                    phase: 0,
+                }
+            }
+
+            fn add_transactions(
+                &mut self,
+                new_txs: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+            ) {
+                self.transactions.extend(new_txs);
+            }
+        }
+
+        impl BestTransactions for DynamicMockBestTransactions {
+            fn mark_invalid(
+                &mut self,
+                _tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+                _error: reth_transaction_pool::error::InvalidPoolTransactionError,
+            ) {
+            }
+
+            fn no_updates(&mut self) {}
+            fn skip_blobs(&mut self) {}
+            fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
+        }
+
+        impl Iterator for DynamicMockBestTransactions {
+            type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                // First phase: return initial transactions
+                if self.phase == 0 && self.index < self.transactions.len() {
+                    let tx = self.transactions[self.index].clone();
+                    self.index += 1;
+
+                    // When we've exhausted initial transactions, switch to phase 1
+                    if self.index >= self.transactions.len() {
+                        self.phase = 1;
+                        // Simulate new transactions arriving
+                        let sender = address!("0000000000000000000000000000000000000002");
+                        self.add_transactions(vec![
+                            create_mock_tx(Some(payment_address()), 21000, 0, sender), // new payment
+                            create_mock_tx(Some(non_payment_address()), 21000, 1, sender), // new non-payment (should be skipped)
+                            create_mock_tx(Some(payment_address()), 21000, 2, sender), // another new payment
+                        ]);
+                    }
+
+                    return Some(tx);
+                }
+
+                // Second phase: return newly added transactions
+                if self.phase == 1 && self.index < self.transactions.len() {
+                    let tx = self.transactions[self.index].clone();
+                    self.index += 1;
+                    return Some(tx);
+                }
+
+                None
+            }
+        }
+
+        let sender1 = address!("0000000000000000000000000000000000000001");
+
+        // Initial transactions: some non-payments and a payment
+        let initial_transactions = vec![
+            create_mock_tx(Some(non_payment_address()), 21000, 0, sender1),
+            create_mock_tx(Some(non_payment_address()), 21000, 1, sender1),
+            create_mock_tx(Some(payment_address()), 21000, 2, sender1),
+        ];
+
+        let mock_inner = DynamicMockBestTransactions::new(initial_transactions);
+        let mut laned = LanedTransactions::new(mock_inner, 50000);
+
+        // Process initial non-payment transactions
+        let tx1 = laned.next().unwrap();
+        assert_eq!(tx1.transaction.nonce(), 0);
+        assert_eq!(tx1.sender(), sender1);
+        laned.update_non_payment_gas_used(21000);
+
+        let tx2 = laned.next().unwrap();
+        assert_eq!(tx2.transaction.nonce(), 1);
+        assert_eq!(tx2.sender(), sender1);
+        laned.update_non_payment_gas_used(21000);
+
+        // Get the buffered payment transaction (this exhausts the initial iterator)
+        let tx3 = laned.next().unwrap();
+        assert_eq!(tx3.transaction.nonce(), 2);
+        assert_eq!(tx3.sender(), sender1);
+        assert!(laned.non_payment_exhausted());
+
+        // Now the iterator should continue checking for new payment transactions
+        // The mock iterator has simulated new transactions arriving
+
+        // Should get the first new payment transaction (sender2, nonce 0)
+        let tx4 = laned.next().unwrap();
+        assert_eq!(tx4.transaction.nonce(), 0);
+        assert_eq!(
+            tx4.sender(),
+            address!("0000000000000000000000000000000000000002")
+        );
+
+        // Should skip the non-payment and get the second new payment (sender2, nonce 2)
+        let tx5 = laned.next().unwrap();
+        assert_eq!(tx5.transaction.nonce(), 2);
+        assert_eq!(
+            tx5.sender(),
+            address!("0000000000000000000000000000000000000002")
+        );
+
+        // No more transactions
+        assert!(laned.next().is_none());
     }
 
     #[test]
