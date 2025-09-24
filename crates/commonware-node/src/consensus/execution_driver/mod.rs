@@ -54,7 +54,7 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: TempoFullNode,
 
-    /// The amount of time to wait for payload builder before resolving payload.
+    /// The minimum amount of time to wait before resolving a new payload from the builder
     pub(super) new_payload_wait_time: Duration,
 }
 
