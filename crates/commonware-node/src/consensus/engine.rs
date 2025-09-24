@@ -149,7 +149,7 @@ where
             // TODO: pass in from the outside,
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
-            syncer_mailbox: syncer_mailbox.clone(),
+            syncer: syncer_mailbox.clone(),
             execution_node: self.execution_node,
             // chainspec: self.chainspec,
             // engine_handle: self.execution_engine,
