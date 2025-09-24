@@ -207,6 +207,8 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     // Continue sending non-payment transactions from multiple accounts
     // while also sending payment transactions - simulating real mixed load
     let mixed_batches = 2; // Continue for 2 more batches
+    let payments_per_batch = 5;
+    let expected_total_payments = mixed_batches * payments_per_batch;
 
     for batch in 0..mixed_batches {
         println!(
@@ -214,46 +216,48 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
             batch + 1
         );
 
-        // Prepare non-payment transactions from the same accounts as before
-        let mut batch_futures = vec![];
+        // Create interleaved transactions - mix them together
+        let mut all_futures = vec![];
 
-        // Non-payment transactions from original accounts (continue the load)
-        for (i, provider) in providers.iter().enumerate() {
-            for _ in 0..txs_per_account {
+        // Interleave non-payment and payment transactions
+        for i in 0..txs_per_account {
+            // Add non-payment transactions from all accounts
+            for (j, provider) in providers.iter().enumerate() {
                 let tx = TransactionRequest::default()
-                    .from(accounts[i])
-                    .to(accounts[i]) // Send to self
+                    .from(accounts[j])
+                    .to(accounts[j]) // Send to self
                     .gas_price(TEMPO_BASE_FEE as u128)
                     .gas_limit(100000)
                     .value(U256::ZERO);
 
-                batch_futures.push((provider.send_transaction(tx), "non-payment"));
+                all_futures.push((provider.send_transaction(tx), "non-payment"));
+            }
+
+            // Interleave payment transactions (spread them throughout)
+            if i < payments_per_batch {
+                let transfer_tx =
+                    token2.transfer(caller2, U256::from(batch * payments_per_batch + i + 1));
+                let tx = transfer_tx
+                    .into_transaction_request()
+                    .from(caller2)
+                    .gas_price(TEMPO_BASE_FEE as u128)
+                    .gas_limit(80000);
+
+                all_futures.push((provider2.send_transaction(tx), "payment"));
             }
         }
 
-        // Add payment transactions to the same batch
-        for i in 0..5 {
-            // Send payment transactions from caller2
-            let transfer_tx = token2.transfer(caller2, U256::from(i + 1));
-            let tx = transfer_tx
-                .into_transaction_request()
-                .from(caller2)
-                .gas_price(TEMPO_BASE_FEE as u128)
-                .gas_limit(80000);
-
-            batch_futures.push((provider2.send_transaction(tx), "payment"));
-        }
-
         println!(
-            "  Sending {} non-payment + 5 payment transactions concurrently...",
-            txs_per_account * num_accounts
+            "  Sending {} non-payment + {} payment transactions interleaved...",
+            txs_per_account * num_accounts,
+            payments_per_batch
         );
 
-        // Execute all transactions concurrently
+        // Execute ALL transactions concurrently
         let mut payment_futures = vec![];
         let mut non_payment_futures = vec![];
 
-        for (fut, tx_type) in batch_futures {
+        for (fut, tx_type) in all_futures {
             if tx_type == "payment" {
                 payment_futures.push(fut);
             } else {
@@ -261,18 +265,23 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
             }
         }
 
-        // Send all transactions
-        let non_payment_pending = futures::future::try_join_all(non_payment_futures).await?;
-        let payment_pending = futures::future::try_join_all(payment_futures).await?;
+        // Send all transactions concurrently
+        let (non_payment_pending, payment_pending) = futures::future::try_join(
+            futures::future::try_join_all(non_payment_futures),
+            futures::future::try_join_all(payment_futures),
+        )
+        .await?;
 
         // Collect receipts
         let non_payment_receipt_futures =
             non_payment_pending.into_iter().map(|tx| tx.get_receipt());
         let payment_receipt_futures = payment_pending.into_iter().map(|tx| tx.get_receipt());
 
-        let batch_non_payment_receipts =
-            futures::future::try_join_all(non_payment_receipt_futures).await?;
-        let batch_payment_receipts = futures::future::try_join_all(payment_receipt_futures).await?;
+        let (batch_non_payment_receipts, batch_payment_receipts) = futures::future::try_join(
+            futures::future::try_join_all(non_payment_receipt_futures),
+            futures::future::try_join_all(payment_receipt_futures),
+        )
+        .await?;
 
         // Verify all succeeded and collect
         for receipt in batch_non_payment_receipts {
@@ -295,6 +304,15 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
             payment_receipts.len()
         );
     }
+
+    // Verify we sent the expected number of payment transactions
+    assert_eq!(
+        payment_receipts.len(),
+        expected_total_payments,
+        "Expected {} payment transactions, got {}",
+        expected_total_payments,
+        payment_receipts.len()
+    );
 
     // Step 3: Verify expectations
     println!("\n=== Test Results ===");
@@ -325,6 +343,12 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     // Expectation 3: Both types of transactions coexist in blocks
     let total_non_payment = non_payment_receipts.len() + continued_non_payment_receipts.len();
     let total_payment = payment_receipts.len();
+
+    assert_eq!(
+        total_payment, expected_total_payments,
+        "Expected {expected_total_payments} payment transactions, got {total_payment}"
+    );
+
     println!(
         "Successfully processed {total_non_payment} non-payment and {total_payment} payment transactions"
     );
@@ -335,6 +359,38 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     println!(
         "  Continued non-payment load (during payment phase): {} transactions",
         continued_non_payment_receipts.len()
+    );
+
+    // Verify that both payment and non-payment transactions exist in the same blocks
+    let mut non_payment_blocks = std::collections::HashSet::new();
+    let mut payment_blocks = std::collections::HashSet::new();
+
+    for receipt in &continued_non_payment_receipts {
+        if let Some(block_num) = receipt.block_number() {
+            non_payment_blocks.insert(block_num);
+        }
+    }
+
+    for receipt in &payment_receipts {
+        if let Some(block_num) = receipt.block_number() {
+            payment_blocks.insert(block_num);
+        }
+    }
+
+    // Find blocks that have both types
+    let mixed_blocks: std::collections::HashSet<_> = non_payment_blocks
+        .intersection(&payment_blocks)
+        .cloned()
+        .collect();
+
+    assert!(
+        !mixed_blocks.is_empty(),
+        "Expected at least some blocks with both payment and non-payment transactions"
+    );
+
+    println!(
+        "Verified: {} blocks contain both payment and non-payment transactions",
+        mixed_blocks.len()
     );
 
     // Check fee token balances were properly deducted
