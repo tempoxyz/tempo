@@ -26,7 +26,7 @@ use tracing::{Level, info, instrument};
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 
-mod canonical_chain;
+mod executor;
 
 use super::{View, block::Block};
 
@@ -80,7 +80,7 @@ where
 
             execution_node: self.execution_node,
 
-            canonical_chain: None,
+            executor_mailbox: None,
         })
     }
 }
@@ -100,7 +100,7 @@ pub struct ExecutionDriver<TContext> {
 
     execution_node: TempoFullNode,
 
-    canonical_chain: Option<canonical_chain::Mailbox>,
+    executor_mailbox: Option<executor::ExecutorMailbox>,
 }
 
 impl<TContext> ExecutionDriver<TContext>
@@ -167,12 +167,12 @@ where
             "consensus returned last finalized block, sending to execution layer",
         );
 
-        let finalizer = canonical_chain::Builder {
+        let finalizer = executor::Builder {
             execution_node: self.execution_node.clone(),
             latest_finalized_digest: finalized_digest,
         }
         .build();
-        claims::assert_none!(self.canonical_chain.replace(finalizer.mailbox().clone()));
+        claims::assert_none!(self.executor_mailbox.replace(finalizer.mailbox().clone()));
 
         self.context
             .with_label("finalizer")
@@ -230,10 +230,10 @@ where
 
     /// Pushes a `finalized` request to the back of the finalization queue.
     fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
-        self.canonical_chain
+        self.executor_mailbox
             .as_ref()
             .expect("handle_finalized must only be called from ExecutionDriver's event loop and only after the finalizer task was initialized")
-            .finalize(finalized)
+            .forward_finalized(finalized)
     }
 
     #[instrument(
@@ -279,9 +279,9 @@ where
             latest_proposed_block: self.latest_proposed_block.clone(),
             execution_node: self.execution_node.clone(),
             syncer_mailbox: self.syncer_mailbox.clone(),
-            canonical_chain: self.canonical_chain.clone()
+            executor_mailbox: self.executor_mailbox.clone()
                 .expect(
-                    "propose must only be called from within the ExecutionDriver's event loop and only after the canonical chain engine was initialized"
+                    "propose must only be called from within the ExecutionDriver's event loop and only after the executor task was initialized"
                 ),
         }
     }
@@ -309,9 +309,9 @@ where
         let execution_node = self.execution_node.clone();
         let genesis_block = self.genesis_block.clone();
         let mut syncer_mailbox = self.syncer_mailbox.clone();
-        let canonical_chain = self.canonical_chain
+        let executor_mailbox = self.executor_mailbox
             .clone()
-            .expect("verify must only be called from within the ExecutionDriver's event loop and only after canonical chain engine was initialized");
+            .expect("verify must only be called from within the ExecutionDriver's event loop and only after executor agent was initialized");
 
         // XXX: this async block MUST remain the last expression. This code
         // makes use of how tracing evaluates function bodies to determine
@@ -332,7 +332,7 @@ where
             } = verify;
 
             let verification_fut = async {
-                if let Err(error) = canonical_chain.update(parent.1) {
+                if let Err(error) = executor_mailbox.canonicalize(parent.1) {
                     tracing::warn!(
                         %error,
                         "failed updating canonical chain to proposal parent",
@@ -392,7 +392,7 @@ where
 
             // 2. make the forkchoice state available && cache the block
             if let Ok((block, true)) = result {
-                if let Err(error) = canonical_chain.update(payload) {
+                if let Err(error) = executor_mailbox.canonicalize(payload) {
                     tracing::warn!(
                         %error,
                         "failed updating canonical chain to proposal",
@@ -412,7 +412,7 @@ struct RunPropose {
     latest_proposed_block: Arc<RwLock<Option<Block>>>,
     execution_node: TempoFullNode,
     syncer_mailbox: marshal::Mailbox<BlsScheme, Block>,
-    canonical_chain: canonical_chain::Mailbox,
+    executor_mailbox: executor::ExecutorMailbox,
 }
 
 impl RunPropose {
@@ -434,7 +434,7 @@ impl RunPropose {
             latest_proposed_block,
             execution_node,
             mut syncer_mailbox,
-            canonical_chain,
+            executor_mailbox,
         } = self;
         let Propose {
             view: _view,
@@ -442,9 +442,9 @@ impl RunPropose {
             mut response,
         } = request;
 
-        let canonical_chain_clone = canonical_chain.clone();
+        let executor_mailbox_clone = executor_mailbox.clone();
         let proposal_fut = async move {
-            if let Err(error) = canonical_chain_clone.update(parent.1) {
+            if let Err(error) = executor_mailbox_clone.canonicalize(parent.1) {
                 tracing::warn!(
                     %error,
                     "failed updating canonical chain to proposal parent",
@@ -555,7 +555,7 @@ impl RunPropose {
             *lock = Some(consensus_block);
         }
 
-        if let Err(error) = canonical_chain.update(proposed_block_digest) {
+        if let Err(error) = executor_mailbox.canonicalize(proposed_block_digest) {
             tracing::warn!(
                 %error,
                 "failed updating canonical chain to proposed block",

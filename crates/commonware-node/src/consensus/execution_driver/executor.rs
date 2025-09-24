@@ -1,4 +1,4 @@
-//! Responsible for updating the canonical chain of the execution layer.
+//! Drives the actual execution by sending finalized blocks and forkchoice updates.
 //!
 //! This agent forwards finalized blocks from the consensus layer to the
 //! execution layer and tracks the digest of the latest finalized block.
@@ -23,8 +23,8 @@ pub(super) struct Builder {
 }
 
 impl Builder {
-    /// Constructs the `Finalizer` by sending the a
-    pub(super) fn build(self) -> Engine {
+    /// Constructs the [`Executor`].
+    pub(super) fn build(self) -> Executor {
         let Self {
             execution_node,
             latest_finalized_digest,
@@ -32,32 +32,32 @@ impl Builder {
 
         let (to_me, from_execution_driver) = futures_channel::mpsc::unbounded();
 
-        let my_mailbox = Mailbox { inner: to_me };
+        let my_mailbox = ExecutorMailbox { inner: to_me };
 
         // XXX: this ensures that the initial forkchoice-state with
         // head = safe = finalized = latest_finalized is the first thing that
         // the agent sends to the execution layer.
         my_mailbox
-            .update(latest_finalized_digest)
+            .canonicalize(latest_finalized_digest)
             .expect("our mailbox must work right after construction");
 
-        Engine {
+        Executor {
             execution_node,
-            from_execution_driver,
+            mailbox: from_execution_driver,
             latest_finalized_digest,
             my_mailbox,
         }
     }
 }
 
-pub(super) struct Engine {
+pub(super) struct Executor {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: TempoFullNode,
 
     /// The channel over which the agent will receive new commands from the
     /// execution driver.
-    from_execution_driver: UnboundedReceiver<Message>,
+    mailbox: UnboundedReceiver<Message>,
 
     /// The latest finalized digest of the block that the agent has sent to the
     /// execution layer. When advancing the canonical chain by sending a
@@ -67,16 +67,16 @@ pub(super) struct Engine {
 
     /// The mailbox passed to other parts of the system to forward messages to
     /// the agent.
-    my_mailbox: Mailbox,
+    my_mailbox: ExecutorMailbox,
 }
 
-impl Engine {
-    pub(super) fn mailbox(&self) -> &Mailbox {
+impl Executor {
+    pub(super) fn mailbox(&self) -> &ExecutorMailbox {
         &self.my_mailbox
     }
 
     pub(super) async fn run(mut self) {
-        while let Some(msg) = self.from_execution_driver.next().await {
+        while let Some(msg) = self.mailbox.next().await {
             // XXX: finalizations must happen strictly sequentially, so blocking
             // the event loop is desired.
             // TODO: also listen to shutdown signals from the runtime here.
@@ -179,13 +179,13 @@ impl Engine {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Mailbox {
+pub(super) struct ExecutorMailbox {
     inner: UnboundedSender<Message>,
 }
 
-impl Mailbox {
+impl ExecutorMailbox {
     /// Instructs the agent to forward a finalized block to the execution layer.
-    pub(super) fn finalize(&self, finalized: super::Finalized) -> eyre::Result<()> {
+    pub(super) fn forward_finalized(&self, finalized: super::Finalized) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
                 cause: tracing::Span::current(),
@@ -195,7 +195,7 @@ impl Mailbox {
     }
 
     /// Instructs the agent to update the canonical chain to `head_digest`.
-    pub(super) fn update(&self, head_digest: Digest) -> eyre::Result<()> {
+    pub(super) fn canonicalize(&self, head_digest: Digest) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
                 cause: tracing::Span::current(),
