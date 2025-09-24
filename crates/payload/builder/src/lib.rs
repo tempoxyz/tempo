@@ -195,10 +195,6 @@ where
         let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
         let base_fee = builder.evm_mut().block().basefee;
 
-        // Calculate non-payment gas limit (50% of block gas limit by default)
-        // TODO: Make this configurable via chain spec or attributes
-        let non_payment_gas_limit = block_gas_limit / 2;
-
         let best_txs_inner = best_txs(BestTransactionsAttributes::new(
             base_fee,
             builder
