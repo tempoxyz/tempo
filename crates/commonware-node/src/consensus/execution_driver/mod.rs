@@ -55,7 +55,7 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
     pub(super) execution_node: TempoFullNode,
 
     /// The amount of time to wait for payload builder before resolving payload.
-    pub(super) payload_builder_timeout: Duration,
+    pub(super) new_payload_wait_time: Duration,
 }
 
 impl<TContext> ExecutionDriverBuilder<TContext>
@@ -81,7 +81,7 @@ where
 
             inner: Inner {
                 fee_recipient: self.fee_recipient,
-                payload_builder_timeout: self.payload_builder_timeout,
+                new_payload_wait_time: self.new_payload_wait_time,
 
                 my_mailbox,
                 syncer: self.syncer,
@@ -206,7 +206,7 @@ where
 #[derive(Clone)]
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
-    payload_builder_timeout: Duration,
+    new_payload_wait_time: Duration,
 
     my_mailbox: ExecutionDriverMailbox,
 
@@ -444,7 +444,7 @@ impl Inner<Init> {
             .wrap_err("failed requesting new payload from the execution layer")?;
 
         // Sleep for the configured payload builder timeout
-        context.sleep(self.payload_builder_timeout).await;
+        context.sleep(self.new_payload_wait_time).await;
 
         // XXX: resolves to a payload with at least one transactions included.
         //
@@ -621,7 +621,7 @@ impl Inner<Uninit> {
 
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
-            payload_builder_timeout: self.payload_builder_timeout,
+            new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
             syncer: self.syncer,
             genesis_block: self.genesis_block,

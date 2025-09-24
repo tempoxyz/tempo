@@ -83,7 +83,7 @@ pub async fn run_consensus_stack(
         fetch_timeout: config.timeouts.time_for_peer_response,
         activity_timeout: config.timeouts.views_to_track,
         skip_timeout: config.timeouts.views_until_leader_skip,
-        payload_builder_timeout: config.timeouts.payload_builder_timeout,
+        new_payload_wait_time: config.timeouts.new_payload_wait_time,
         max_fetch_count: NUMBER_MAX_FETCHES,
         max_fetch_size: MAX_FETCH_SIZE_BYTES,
         fetch_concurrent: NUMBER_CONCURRENT_FETCHES,

@@ -26,7 +26,7 @@ time_to_propose = "2s"
 time_to_retry_nullify_broadcast = "10s"
 views_to_track = 256
 views_until_leader_skip = 32
-payload_builder_timeout = "500ms"
+new_payload_wait_time = "500ms"
     
 [peers]
 0x945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7 = "127.0.0.1:8000"
