@@ -166,8 +166,12 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
-        if self.can_build_fee_token() {
-            return Some(TempoTxType::FeeToken);
+        if self.fee_token.is_some() {
+            return if self.can_build_fee_token() {
+                Some(TempoTxType::FeeToken)
+            } else {
+                None
+            };
         }
 
         self.inner.output_tx_type_checked()?.try_into().ok()
@@ -178,37 +182,45 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
-        if self.can_build_fee_token() {
-            Ok(self
-                .build_fee_token()
-                .expect("checked by above condition")
-                .into())
-        } else {
-            if let Err((tx_type, missing)) = self.inner.missing_keys() {
-                return Err(match tx_type.try_into() {
-                    Ok(tx_type) => {
-                        TransactionBuilderError::InvalidTransactionRequest(tx_type, missing)
+        match self.output_tx_type() {
+            TempoTxType::FeeToken => match self.complete_fee_token() {
+                Ok(..) => Ok(self
+                    .build_fee_token()
+                    .expect("checked by above condition")
+                    .into()),
+                Err(missing) => Err(TransactionBuilderError::InvalidTransactionRequest(
+                    TempoTxType::FeeToken,
+                    missing,
+                )
+                .into_unbuilt(self)),
+            },
+            _ => {
+                if let Err((tx_type, missing)) = self.inner.missing_keys() {
+                    return Err(match tx_type.try_into() {
+                        Ok(tx_type) => {
+                            TransactionBuilderError::InvalidTransactionRequest(tx_type, missing)
+                        }
+                        Err(err) => TransactionBuilderError::from(err),
                     }
-                    Err(err) => TransactionBuilderError::from(err),
+                    .into_unbuilt(self));
                 }
-                .into_unbuilt(self));
+
+                if let Some(TxType::Eip4844) = self.inner.buildable_type() {
+                    return Err(UnbuiltTransactionError {
+                        request: self,
+                        error: TransactionBuilderError::Custom(Box::new(
+                            UnsupportedTransactionTypeEip4844,
+                        )),
+                    });
+                }
+
+                let inner = self
+                    .inner
+                    .build_typed_tx()
+                    .expect("checked by missing_keys");
+
+                Ok(inner.try_into().expect("checked by above condition"))
             }
-
-            if let Some(TxType::Eip4844) = self.inner.buildable_type() {
-                return Err(UnbuiltTransactionError {
-                    request: self,
-                    error: TransactionBuilderError::Custom(Box::new(
-                        UnsupportedTransactionTypeEip4844,
-                    )),
-                });
-            }
-
-            let inner = self
-                .inner
-                .build_typed_tx()
-                .expect("checked by missing_keys");
-
-            Ok(inner.try_into().expect("checked by above condition"))
         }
     }
 
@@ -223,30 +235,79 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 impl TempoTransactionRequest {
     fn can_build_fee_token(&self) -> bool {
         self.fee_token.is_some()
-            && matches!(
-                self.inner.buildable_type(),
-                Some(TxType::Eip1559) | Some(TxType::Eip7702)
-            )
+            && self.inner.max_fee_per_gas.is_some()
+            && self.inner.max_priority_fee_per_gas.is_some()
+            && (self
+                .inner
+                .authorization_list
+                .as_ref()
+                .map(Vec::is_empty)
+                .unwrap_or(true)
+                || matches!(self.inner.to, Some(TxKind::Call(..))))
     }
 
     fn complete_fee_token(&self) -> Result<(), Vec<&'static str>> {
-        self.inner.complete_1559().map_err(|mut fields| {
-            if self.fee_token.is_none() {
-                fields.push("fee_token");
-            }
+        let mut fields = Vec::new();
 
-            fields
-        })
+        if self.fee_token.is_none() {
+            fields.push("fee_token");
+        }
+        if self.inner.max_fee_per_gas.is_none() {
+            fields.push("max_fee_per_gas");
+        }
+        if self.inner.max_priority_fee_per_gas.is_none() {
+            fields.push("max_priority_fee_per_gas");
+        }
+        if !self
+            .inner
+            .authorization_list
+            .as_ref()
+            .map(Vec::is_empty)
+            .unwrap_or(true)
+            && !matches!(self.inner.to, Some(TxKind::Call(..)))
+        {
+            fields.push("to");
+        }
+
+        if fields.is_empty() {
+            Ok(())
+        } else {
+            Err(fields)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::consensus::TxEip1559;
+    use alloy::{consensus::TxEip1559, rpc::types::Authorization};
+    use alloy_eips::eip7702::SignedAuthorization;
     use alloy_rpc_types_eth::TransactionRequest;
     use tempo_primitives::TxFeeToken;
 
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_fee_per_gas: Some(1234),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                ..Default::default()
+            },
+            fee_token: None,
+        },
+        TempoTypedTransaction::Eip1559(TxEip1559 {
+            to: TxKind::Call(Address::repeat_byte(0xDE)),
+            max_fee_per_gas: 1234,
+            max_priority_fee_per_gas: 987,
+            nonce: 57,
+            gas_limit: 123456,
+            chain_id: 1,
+            ..Default::default()
+        });
+        "EIP-1559"
+    )]
     #[test_case::test_case(
         TempoTransactionRequest {
             inner: TransactionRequest {
@@ -269,30 +330,75 @@ mod tests {
             chain_id: 1,
             ..Default::default()
         });
-        "Fee token request"
+        "Fee token of call kind"
     )]
     #[test_case::test_case(
         TempoTransactionRequest {
             inner: TransactionRequest {
-                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
-                max_fee_per_gas: Some(1234),
+                to: Some(TxKind::Create),
+                max_fee_per_gas: Some(987),
                 max_priority_fee_per_gas: Some(987),
                 nonce: Some(57),
                 gas: Some(123456),
                 ..Default::default()
             },
-            fee_token: None,
+            fee_token: Some(Address::repeat_byte(0xFA)),
         },
-        TempoTypedTransaction::Eip1559(TxEip1559 {
-            to: TxKind::Call(Address::repeat_byte(0xDE)),
-            max_fee_per_gas: 1234,
+        TempoTypedTransaction::FeeToken(TxFeeToken {
+            to: TxKind::Create,
+            max_fee_per_gas: 987,
             max_priority_fee_per_gas: 987,
             nonce: 57,
             gas_limit: 123456,
             chain_id: 1,
+            fee_token: Some(Address::repeat_byte(0xFA)),
             ..Default::default()
         });
-        "EIP-1559 request"
+        "Fee token of create kind"
+    )]
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_fee_per_gas: Some(987),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                authorization_list: Some(vec![SignedAuthorization::new_unchecked(
+                    Authorization {
+                        chain_id: U256::from(1337),
+                        address: Address::ZERO,
+                        nonce: 0
+                    },
+                    0,
+                    U256::ZERO,
+                    U256::ZERO,
+                )]),
+                ..Default::default()
+            },
+            fee_token: Some(Address::repeat_byte(0xFA)),
+        },
+        TempoTypedTransaction::FeeToken(TxFeeToken {
+            to: TxKind::Call(Address::repeat_byte(0xDE)),
+            max_fee_per_gas: 987,
+            max_priority_fee_per_gas: 987,
+            nonce: 57,
+            gas_limit: 123456,
+            chain_id: 1,
+            fee_token: Some(Address::repeat_byte(0xFA)),
+            authorization_list: vec![SignedAuthorization::new_unchecked(
+                Authorization {
+                    chain_id: U256::from(1337),
+                    address: Address::ZERO,
+                    nonce: 0
+                },
+                0,
+                U256::ZERO,
+                U256::ZERO,
+            )],
+            ..Default::default()
+        });
+        "Fee token of call kind with authorization list"
     )]
     fn test_transaction_builds_successfully(
         request: TempoTransactionRequest,
@@ -317,7 +423,7 @@ mod tests {
             fee_token: None,
         },
         "Failed to build transaction: EIP-1559 transaction can't be built due to missing keys: [\"max_fee_per_gas\"]";
-        "EIP-1559 request missing max fee"
+        "EIP-1559 missing max fee"
     )]
     #[test_case::test_case(
         TempoTransactionRequest {
@@ -330,13 +436,35 @@ mod tests {
             },
             fee_token: Some(Address::repeat_byte(0xFA)),
         },
-        "Failed to build transaction: EIP-1559 transaction can't be built due to missing keys: [\"max_fee_per_gas\"]";
-        "fee token request missing max fee"
+        "Failed to build transaction: FeeToken transaction can't be built due to missing keys: [\"max_fee_per_gas\"]";
+        "Fee token missing max fee"
     )]
-    fn test_transaction_fails_to_build_with_missing_field(
-        request: TempoTransactionRequest,
-        expected_error: &str,
-    ) {
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Create),
+                max_fee_per_gas: Some(987),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                authorization_list: Some(vec![SignedAuthorization::new_unchecked(
+                    Authorization {
+                        chain_id: U256::from(1337),
+                        address: Address::ZERO,
+                        nonce: 0
+                    },
+                    0,
+                    U256::ZERO,
+                    U256::ZERO,
+                )]),
+                ..Default::default()
+            },
+            fee_token: Some(Address::repeat_byte(0xFA)),
+        },
+        "Failed to build transaction: FeeToken transaction can't be built due to missing keys: [\"to\"]";
+        "Fee token of create kind with authorization list"
+    )]
+    fn test_transaction_fails_to_build(request: TempoTransactionRequest, expected_error: &str) {
         let actual_error = request
             .build_unsigned()
             .expect_err("some required fields should be missing")
