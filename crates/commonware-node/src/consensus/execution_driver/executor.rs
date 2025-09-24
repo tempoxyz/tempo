@@ -92,8 +92,8 @@ impl Executor {
     async fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
-            Command::Finalize { block, response } => {
-                let _ = self.finalize(*block, response, cause).await;
+            Command::ForwardFinalized { block, response } => {
+                let _ = self.forward_finalized(*block, response, cause).await;
             }
             Command::Update(digest) => {
                 let _ = self.update(digest, cause).await;
@@ -111,11 +111,14 @@ impl Executor {
     #[instrument(
         skip_all,
         follows_from = [cause],
-        fields(block.digest = %block.digest()),
+        fields(
+            block.digest = %block.digest(),
+            is_backfill = response.is_none(),
+        ),
         err(level = Level::WARN),
         ret,
     )]
-    async fn finalize(
+    async fn forward_finalized(
         &mut self,
         block: Block,
         response: Option<oneshot::Sender<()>>,
@@ -205,7 +208,7 @@ impl ExecutorMailbox {
         self.inner
             .unbounded_send(Message {
                 cause: tracing::Span::current(),
-                command: Command::Finalize {
+                command: Command::ForwardFinalized {
                     block: Box::new(block),
                     response: None,
                 },
@@ -218,7 +221,7 @@ impl ExecutorMailbox {
         self.inner
             .unbounded_send(Message {
                 cause: tracing::Span::current(),
-                command: Command::Finalize {
+                command: Command::ForwardFinalized {
                     block: Box::new(finalized.block),
                     response: Some(finalized.response),
                 },
@@ -250,7 +253,7 @@ enum Command {
     ///
     /// The response channel is set if the finalized block is new (i.e. at the
     /// tip of the finalized chain).
-    Finalize {
+    ForwardFinalized {
         block: Box<Block>,
         response: Option<oneshot::Sender<()>>,
     },
