@@ -280,11 +280,35 @@ impl TempoTransactionRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::{consensus::TxEip1559, rpc::types::Authorization};
+    use alloy::{
+        consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy},
+        rpc::types::{AccessListItem, Authorization},
+    };
     use alloy_eips::eip7702::SignedAuthorization;
+    use alloy_primitives::B256;
     use alloy_rpc_types_eth::TransactionRequest;
     use tempo_primitives::TxFeeToken;
 
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                gas_price: Some(1234),
+                nonce: Some(57),
+                gas: Some(123456),
+                ..Default::default()
+            },
+            fee_token: None,
+        },
+        TempoTypedTransaction::Legacy(TxLegacy {
+            to: TxKind::Call(Address::repeat_byte(0xDE)),
+            gas_price: 1234,
+            nonce: 57,
+            gas_limit: 123456,
+            ..Default::default()
+        });
+        "Legacy"
+    )]
     #[test_case::test_case(
         TempoTransactionRequest {
             inner: TransactionRequest {
@@ -307,6 +331,78 @@ mod tests {
             ..Default::default()
         });
         "EIP-1559"
+    )]
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                gas_price: Some(1234),
+                nonce: Some(57),
+                gas: Some(123456),
+                access_list: Some(AccessList(vec![AccessListItem {
+                    address: Address::from([3u8; 20]),
+                    storage_keys: vec![B256::from([4u8; 32])],
+                }])),
+                ..Default::default()
+            },
+            fee_token: None,
+        },
+        TempoTypedTransaction::Eip2930(TxEip2930 {
+            to: TxKind::Call(Address::repeat_byte(0xDE)),
+            gas_price: 1234,
+            nonce: 57,
+            gas_limit: 123456,
+            chain_id: 1,
+            access_list: AccessList(vec![AccessListItem {
+                address: Address::from([3u8; 20]),
+                storage_keys: vec![B256::from([4u8; 32])],
+            }]),
+            ..Default::default()
+        });
+        "EIP-2930"
+    )]
+    #[test_case::test_case(
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::repeat_byte(0xDE))),
+                max_fee_per_gas: Some(1234),
+                max_priority_fee_per_gas: Some(987),
+                nonce: Some(57),
+                gas: Some(123456),
+                authorization_list: Some(vec![SignedAuthorization::new_unchecked(
+                    Authorization {
+                        chain_id: U256::from(1337),
+                        address: Address::ZERO,
+                        nonce: 0
+                    },
+                    0,
+                    U256::ZERO,
+                    U256::ZERO,
+                )]),
+                ..Default::default()
+            },
+            fee_token: None,
+        },
+        TempoTypedTransaction::Eip7702(TxEip7702 {
+            to: Address::repeat_byte(0xDE),
+            max_fee_per_gas: 1234,
+            max_priority_fee_per_gas: 987,
+            nonce: 57,
+            gas_limit: 123456,
+            chain_id: 1,
+            authorization_list: vec![SignedAuthorization::new_unchecked(
+                Authorization {
+                    chain_id: U256::from(1337),
+                    address: Address::ZERO,
+                    nonce: 0
+                },
+                0,
+                U256::ZERO,
+                U256::ZERO,
+            )],
+            ..Default::default()
+        });
+        "EIP-7702"
     )]
     #[test_case::test_case(
         TempoTransactionRequest {
