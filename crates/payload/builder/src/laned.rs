@@ -138,38 +138,34 @@ where
             }
 
             // Still have non-payment gas - process transactions and fill buffer
-            match self.inner.next() {
-                Some(tx) => {
-                    let is_payment = tx.transaction.is_payment();
+            while let Some(tx) = self.inner.next() {
+                let is_payment = tx.transaction.is_payment();
 
-                    if is_payment {
-                        // Buffer payment transaction
-                        if !self.invalidated_senders.contains(&tx.sender()) {
-                            self.payment_buffer.push_back(tx);
-                        }
+                if is_payment {
+                    // Buffer payment transaction
+                    if !self.invalidated_senders.contains(&tx.sender()) {
+                        self.payment_buffer.push_back(tx);
+                    }
+                } else {
+                    let tx_gas = tx.gas_limit();
+                    if tx_gas <= self.non_payment_gas_left {
+                        // Non-payment transaction fits
+                        return Some(tx);
                     } else {
-                        let tx_gas = tx.gas_limit();
-                        if tx_gas <= self.non_payment_gas_left {
-                            // Non-payment transaction fits
-                            return Some(tx);
-                        } else {
-                            // Non-payment transaction doesn't fit, skip it
-                            self.inner.mark_invalid(
-                                &tx,
-                                reth_transaction_pool::error::InvalidPoolTransactionError::ExceedsGasLimit(
-                                    tx_gas,
-                                    self.non_payment_gas_left,
-                                ),
-                            );
-                        }
+                        // Non-payment transaction doesn't fit, skip it
+                        self.inner.mark_invalid(
+                            &tx,
+                            reth_transaction_pool::error::InvalidPoolTransactionError::ExceedsGasLimit(
+                                tx_gas,
+                                self.non_payment_gas_left,
+                            ),
+                        );
                     }
                 }
-                None => {
-                    // Iterator exhausted, switch to payment-only mode
-                    self.non_payment_gas_exhausted = true;
-                    // Continue loop to drain buffer
-                }
             }
+
+            // Iterator exhausted, switch to payment-only mode
+            self.non_payment_gas_exhausted = true;
         }
     }
 }
