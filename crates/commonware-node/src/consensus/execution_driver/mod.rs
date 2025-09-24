@@ -443,7 +443,10 @@ impl Inner<Init> {
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
             .wrap_err("failed requesting new payload from the execution layer")?;
 
-        // Sleep for the configured payload builder timeout
+        tracing::debug!(
+            timeout_ms = self.new_payload_wait_time.as_millis(),
+            "sleeping for payload builder timeout"
+        );
         context.sleep(self.new_payload_wait_time).await;
 
         // XXX: resolves to a payload with at least one transactions included.
