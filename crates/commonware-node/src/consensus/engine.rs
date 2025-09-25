@@ -5,7 +5,7 @@
 use super::{block::Block, supervisor::Supervisor};
 use crate::consensus::{
     ConsensusEngine,
-    execution_driver::{ExecutionDriver, ExecutionDriverMailbox},
+    execution_driver::{ExecutionDriver, ExecutionDriverBuilder, ExecutionDriverMailbox},
 };
 use alloy_primitives::Address;
 use commonware_broadcast::buffered;
@@ -133,7 +133,7 @@ where
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
-        let (marshal, syncer_mailbox): (_, marshal::Mailbox<BlsScheme, Block>) =
+        let (marshal, marshal_mailbox): (_, marshal::Mailbox<BlsScheme, Block>) =
             marshal::Actor::init(
                 self.context.with_label("sync"),
                 marshal::Config {
@@ -164,12 +164,12 @@ where
             )
             .await;
 
-        let execution_driver = super::execution_driver::ExecutionDriverBuilder {
+        let execution_driver = ExecutionDriverBuilder {
             context: self.context.with_label("execution_driver"),
             // TODO: pass in from the outside,
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
-            syncer: syncer_mailbox.clone(),
+            marshal: marshal_mailbox.clone(),
             execution_node: self.execution_node,
             new_payload_wait_time: self.new_payload_wait_time,
             // chainspec: self.chainspec,
@@ -190,7 +190,7 @@ where
                 automaton: execution_driver.mailbox().clone(),
                 relay: execution_driver.mailbox().clone(),
                 // XXX: this is where the `indexer` would usually go (in alto)
-                reporter: syncer_mailbox,
+                reporter: marshal_mailbox,
                 supervisor,
                 partition: format!("{}-consensus", self.partition_prefix),
                 mailbox_size: self.mailbox_size,

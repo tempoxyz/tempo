@@ -49,7 +49,7 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
 
     /// The syncer for subscribing to blocks distributed via the consensus
     /// p2p network.
-    pub(super) syncer: marshal::Mailbox<BlsScheme, Block>,
+    pub(super) marshal: marshal::Mailbox<BlsScheme, Block>,
 
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: TempoFullNode,
@@ -82,14 +82,10 @@ where
             inner: Inner {
                 fee_recipient: self.fee_recipient,
                 new_payload_wait_time: self.new_payload_wait_time,
-
                 my_mailbox,
-                syncer: self.syncer,
-
+                marshal: self.marshal,
                 genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
-
                 execution_node: self.execution_node,
-
                 state: Uninit(()),
             },
         })
@@ -207,14 +203,10 @@ where
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
     new_payload_wait_time: Duration,
-
     my_mailbox: ExecutionDriverMailbox,
-
-    syncer: marshal::Mailbox<BlsScheme, Block>,
-
+    marshal: marshal::Mailbox<BlsScheme, Block>,
     genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
-
     state: TState,
 }
 
@@ -235,7 +227,7 @@ impl Inner<Init> {
             latest_proposed.digest(),
         );
 
-        self.syncer.broadcast(latest_proposed).await;
+        self.marshal.broadcast(latest_proposed).await;
         Ok(())
     }
 
@@ -370,7 +362,7 @@ impl Inner<Init> {
                     "failed making the verified proposal the head of the canonical chain",
                 );
             }
-            self.syncer.verified(view, block).await;
+            self.marshal.verified(view, block).await;
         }
     }
 
@@ -394,7 +386,7 @@ impl Inner<Init> {
                 move || Ok((*genesis_block).clone())
             }))
         } else {
-            Either::Right(self.syncer.subscribe(Some(parent.0), parent.1).await)
+            Either::Right(self.marshal.subscribe(Some(parent.0), parent.1).await)
         };
         let parent = parent_request
                 .await
@@ -503,7 +495,7 @@ impl Inner<Init> {
         // likely really doesn't matter.
         while next_height > latest_execution_block_number {
             let block = self
-                .syncer
+                .marshal
                 .get_block_by_height(next_height)
                 .await
                 .await
@@ -548,14 +540,14 @@ impl Inner<Init> {
             }))
         } else {
             Either::Right(
-                self.syncer
+                self.marshal
                     .subscribe(Some(parent.0), parent.1)
                     .await
                     .map_err(|_| eyre!("syncer dropped channel before the parent block was sent")),
             )
         };
         let block_request = self
-            .syncer
+            .marshal
             .subscribe(None, payload)
             .await
             .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
@@ -596,7 +588,7 @@ impl Inner<Uninit> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
         let (finalized_consensus_height, finalized_consensus_digest) = self
-            .syncer
+            .marshal
             .get_finalized()
             .await
             .await
@@ -626,7 +618,7 @@ impl Inner<Uninit> {
             fee_recipient: self.fee_recipient,
             new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
-            syncer: self.syncer,
+            marshal: self.marshal,
             genesis_block: self.genesis_block,
             execution_node: self.execution_node,
             state: Init {
