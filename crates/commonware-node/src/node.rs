@@ -1,5 +1,5 @@
 use commonware_p2p::authenticated::discovery;
-use commonware_runtime::{Handle, Metrics as _};
+use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, eyre};
 use tempo_node::TempoFullNode;
 

@@ -15,7 +15,6 @@ use commonware_p2p::{Blocker, Receiver, Sender};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage, buffer::PoolRef};
 use eyre::WrapErr as _;
 use futures_util::future::try_join_all;
-use governor::Quota;
 use rand::{CryptoRng, Rng};
 use tempo_commonware_node_cryptography::{
     BlsScheme, GroupShare, PrivateKey, PublicKey, PublicPolynomial,

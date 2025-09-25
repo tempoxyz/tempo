@@ -1,8 +1,8 @@
-use commonware_cryptography::{Signer, bls12381::primitives::poly::Public};
+use commonware_cryptography::Signer;
 use commonware_p2p::authenticated::discovery::{
     self, Receiver as CommonwareP2PRx, Sender as CommonwareP2PTx,
 };
-use commonware_runtime::{Handle, Metrics as _};
+use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, bail, eyre};
 use futures_util::stream::{FuturesOrdered, TryStreamExt as _};
 use indexmap::IndexMap;
