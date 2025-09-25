@@ -15,17 +15,17 @@ use std::net::{Ipv4Addr, SocketAddr};
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 use tracing::info;
 
-pub struct CommonwareNetworkHandle {
-    pub network: discovery::Network<commonware_runtime::tokio::Context, PrivateKey>,
-    pub pending: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
-    pub recovered: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
-    pub resolver: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
-    pub broadcaster: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
-    pub backfill: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+pub(crate) struct CommonwareNetwork {
+    pub(crate) network: discovery::Network<commonware_runtime::tokio::Context, PrivateKey>,
+    pub(crate) pending: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+    pub(crate) recovered: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+    pub(crate) resolver: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+    pub(crate) broadcaster: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+    pub(crate) backfill: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
 }
 
-impl CommonwareNetworkHandle {
-    pub async fn new(
+impl CommonwareNetwork {
+    pub(crate) async fn new(
         context: &commonware_runtime::tokio::Context,
         config: &tempo_commonware_node_config::Config,
     ) -> eyre::Result<(
@@ -66,15 +66,6 @@ impl CommonwareNetworkHandle {
             },
             oracle,
         ))
-    }
-
-    pub async fn run(self) -> eyre::Result<()> {
-        self.network
-            .start()
-            .await
-            .map_err(eyre::Report::from)
-            .and_then(|()| Err(eyre!("exited unexpectedly")))
-            .wrap_err("network task failed")
     }
 }
 

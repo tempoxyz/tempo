@@ -124,7 +124,7 @@ fn main() -> eyre::Result<()> {
                     None => Either::Right(pending()),
                 }.fuse();
 
-                let consensus_handle = CommonwareNode::new(&ctx, &consensus_config, node).await?.run();
+                let consensus_handle = CommonwareNode::run(&ctx, &consensus_config, node);
                 tokio::pin!(consensus_handle);
 
                 loop {

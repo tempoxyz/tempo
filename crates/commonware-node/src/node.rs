@@ -1,27 +1,17 @@
-use crate::{consensus::engine::ConsensusEngineBuilder, network::CommonwareNetworkHandle};
-use commonware_p2p::authenticated::discovery;
+use crate::{consensus::engine::ConsensusEngineBuilder, network::CommonwareNetwork};
 use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, eyre};
 use tempo_node::TempoFullNode;
 
-pub struct CommonwareNode {
-    network_handle: CommonwareNetworkHandle,
-    consensus_engine: crate::consensus::engine::Engine<
-        discovery::Oracle<
-            commonware_runtime::tokio::Context,
-            tempo_commonware_node_cryptography::PublicKey,
-        >,
-        commonware_runtime::tokio::Context,
-    >,
-}
+pub struct CommonwareNode;
 
 impl CommonwareNode {
-    pub async fn new(
+    pub async fn run(
         context: &commonware_runtime::tokio::Context,
         config: &tempo_commonware_node_config::Config,
         execution_node: TempoFullNode,
-    ) -> eyre::Result<Self> {
-        let (network_handle, oracle) = CommonwareNetworkHandle::new(context, config).await?;
+    ) -> eyre::Result<()> {
+        let (commonware_network, oracle) = CommonwareNetwork::new(context, config).await?;
         let consensus_engine = ConsensusEngineBuilder::new(
             config,
             execution_node,
@@ -32,26 +22,18 @@ impl CommonwareNode {
         .await
         .wrap_err("failed initializing consensus engine")?;
 
-        Ok(Self {
-            network_handle,
-            consensus_engine,
-        })
-    }
-
-    pub async fn run(self) -> eyre::Result<()> {
-        let CommonwareNetworkHandle {
+        let CommonwareNetwork {
             network,
             pending,
             recovered,
             resolver,
             broadcaster,
             backfill,
-        } = self.network_handle;
+        } = commonware_network;
 
         let (network_task, consensus_task) = (
             network.start(),
-            self.consensus_engine
-                .start(pending, recovered, resolver, broadcaster, backfill),
+            consensus_engine.start(pending, recovered, resolver, broadcaster, backfill),
         );
 
         tokio::select! {

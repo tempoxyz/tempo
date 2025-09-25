@@ -9,6 +9,4 @@ pub mod metrics;
 pub mod network;
 pub mod node;
 
-// Re-export main types for convenience
-pub use network::CommonwareNetworkHandle;
 pub use node::CommonwareNode;
