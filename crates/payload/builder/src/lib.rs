@@ -149,11 +149,15 @@ impl<Provider> TempoPayloadBuilder<Provider>
 where
     Provider: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec>,
 {
-    #[instrument(skip_all, fields(
-        id = %args.config.attributes.payload_id(),
-        parent_number = %args.config.parent_header.number,
-        parent_hash = %args.config.parent_header.hash()
-    ))]
+    #[instrument(
+        target = "payload_builder",
+        skip_all,
+        fields(
+            id = %args.config.attributes.payload_id(),
+            parent_number = %args.config.parent_header.number,
+            parent_hash = %args.config.parent_header.hash()
+        )
+    )]
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadBuilderAttributes, EthBuiltPayload<TempoPrimitives>>,
@@ -172,6 +176,8 @@ where
             parent_header,
             attributes,
         } = config;
+
+        let start = Instant::now();
 
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
         let state = StateProviderDatabase::new(&state_provider);
@@ -203,7 +209,7 @@ where
 
         let chain_spec = self.provider.chain_spec();
 
-        debug!(target: "payload_builder", "building new payload");
+        debug!("building new payload");
         let mut cumulative_gas_used = 0;
         let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
         let base_fee = builder.evm_mut().block().basefee;
@@ -221,7 +227,7 @@ where
         let mut non_payment_gas_used = 0u64;
 
         builder.apply_pre_execution_changes().map_err(|err| {
-            warn!(target: "payload_builder", %err, "failed to apply pre-execution changes");
+            warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
 
@@ -276,11 +282,11 @@ where
             let tx_rlp_length = tx.inner().length();
             let effective_tip_per_gas = tx.effective_tip_per_gas(base_fee);
 
-            let tx_debug_repr = tracing::enabled!(target: "payload_builder", Level::TRACE)
+            let tx_debug_repr = tracing::enabled!(Level::TRACE)
                 .then(|| format!("{tx:?}"))
                 .unwrap_or_default();
 
-            let start = Instant::now();
+            let execution_start = Instant::now();
             let gas_used = match builder.execute_transaction(tx) {
                 Ok(gas_used) => {
                     // Update non-payment gas tracking if we're still in non-payment lane
@@ -301,11 +307,11 @@ where
                 })) => {
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
-                        trace!(target: "payload_builder", %error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                        trace!(, %error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
-                        trace!(target: "payload_builder", %error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
                             InvalidPoolTransactionError::Consensus(
@@ -318,11 +324,11 @@ where
                 // this is an error that we should treat as fatal for this attempt
                 Err(err) => return Err(PayloadBuilderError::evm(err)),
             };
-            let elapsed = start.elapsed();
+            let elapsed = execution_start.elapsed();
             self.metrics
                 .transaction_execution_duration_seconds
                 .record(elapsed);
-            trace!(target: "payload_builder", ?elapsed, "Transaction executed");
+            trace!(?elapsed, "Transaction executed");
 
             block_transactions_rlp_length += tx_rlp_length;
 
@@ -357,13 +363,13 @@ where
             .execute_transaction(self.build_seal_block_tx(builder.evm().block()))
             .map_err(PayloadBuilderError::evm)?;
 
-        let start = Instant::now();
+        let builder_finish_start = Instant::now();
         let BlockBuilderOutcome {
             execution_result,
             block,
             ..
         } = builder.finish(&state_provider)?;
-        let builder_finish_elapsed = start.elapsed();
+        let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
             .payload_finalization_duration_seconds
             .record(builder_finish_elapsed);
@@ -395,6 +401,9 @@ where
 
         let payload =
             EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
+
+        let elapsed = start.elapsed();
+        self.metrics.payload_build_duration_seconds.record(elapsed);
 
         Ok(BuildOutcome::Better {
             payload,
