@@ -39,7 +39,6 @@ mod tests;
 // + resolver_limit
 // + broadcaster_limit
 // + backfill_quota
-// + max_message_size
 // + namespace
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(try_from = "DeserConfig")]
