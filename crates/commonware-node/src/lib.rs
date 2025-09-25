@@ -9,11 +9,12 @@ pub mod metrics;
 
 use std::net::SocketAddr;
 
-use commonware_cryptography::Signer;
-use commonware_p2p::authenticated::discovery;
+use commonware_cryptography::{Signer, bls12381::primitives::poly::Public};
+use commonware_p2p::authenticated::discovery::{self, Oracle};
 use commonware_runtime::{Handle, Metrics as _};
 use eyre::{WrapErr as _, bail, eyre};
 use indexmap::IndexMap;
+use std::net::Ipv4Addr;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -25,91 +26,86 @@ use crate::{
     },
     consensus::engine::ConsensusEngineBuilder,
 };
+use commonware_p2p::authenticated::discovery::{
+    Receiver as CommonwareP2PRx, Sender as CommonwareP2PTx,
+};
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
-pub struct ConsensusStack {
-    pub network: Handle<()>,
-    pub consensus_engine: Handle<eyre::Result<()>>,
+pub struct CommonwareNetworkHandle {
+    network: discovery::Network<commonware_runtime::tokio::Context, PrivateKey>,
+    pending: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+    recovered: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+    resolver: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+    broadcaster: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+    backfill: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
 }
 
-pub async fn run_consensus_stack(
-    context: &commonware_runtime::tokio::Context,
-    config: &tempo_commonware_node_config::Config,
-    execution_node: TempoFullNode,
-) -> eyre::Result<()> {
-    let (mut network, mut oracle) = instantiate_network(context, config)
-        .await
-        .wrap_err("failed to start network")?;
-
-    oracle
-        .register(0, config.peers.keys().cloned().collect())
-        .await;
-    let message_backlog = config.message_backlog;
-    let pending = network.register(PENDING_CHANNEL_IDENT, PENDING_LIMIT, message_backlog);
-    let recovered = network.register(RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, message_backlog);
-    let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, message_backlog);
-    let broadcaster = network.register(
-        BROADCASTER_CHANNEL_IDENT,
-        BROADCASTER_LIMIT,
-        message_backlog,
-    );
-    let backfill = network.register(
-        BACKFILL_BY_DIGEST_CHANNE_IDENTL,
-        BACKFILL_QUOTA,
-        message_backlog,
-    );
-
-    let consensus_engine =
-        ConsensusEngineBuilder::new(config, execution_node, oracle, context.with_label("engine"))
-            .build()
+impl CommonwareNetworkHandle {
+    pub async fn new(
+        context: &commonware_runtime::tokio::Context,
+        config: &tempo_commonware_node_config::Config,
+    ) -> eyre::Result<(
+        Self,
+        discovery::Oracle<commonware_runtime::tokio::Context, PublicKey>,
+    )> {
+        let (mut network, mut oracle) = Self::init_network(context, config)
             .await
-            .wrap_err("failed initializing consensus engine")?;
+            .wrap_err("failed to start network")?;
 
-    let (network, consensus_engine) = (
-        network.start(),
-        consensus_engine.start(pending, recovered, resolver, broadcaster, backfill),
-    );
+        oracle
+            .register(0, config.peers.keys().cloned().collect())
+            .await;
 
-    tokio::select! {
-        ret = network => {
-            ret.map_err(eyre::Report::from)
-                .and_then(|()| Err(eyre!("exited unexpectedly")))
-                .wrap_err("network task failed")
-        }
+        let message_backlog = config.message_backlog;
+        let pending = network.register(PENDING_CHANNEL_IDENT, PENDING_LIMIT, message_backlog);
+        let recovered = network.register(RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, message_backlog);
+        let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, message_backlog);
+        let broadcaster = network.register(
+            BROADCASTER_CHANNEL_IDENT,
+            BROADCASTER_LIMIT,
+            message_backlog,
+        );
+        let backfill = network.register(
+            BACKFILL_BY_DIGEST_CHANNE_IDENTL,
+            BACKFILL_QUOTA,
+            message_backlog,
+        );
 
-        ret = consensus_engine => {
-            ret.map_err(eyre::Report::from)
-                .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
-                .wrap_err("consensus engine task failed")
-        }
+        Ok((
+            Self {
+                network,
+                pending,
+                recovered,
+                resolver,
+                broadcaster,
+                backfill,
+            },
+            oracle,
+        ))
     }
-}
 
-async fn instantiate_network(
-    context: &commonware_runtime::tokio::Context,
-    config: &tempo_commonware_node_config::Config,
-) -> eyre::Result<(
-    discovery::Network<commonware_runtime::tokio::Context, PrivateKey>,
-    discovery::Oracle<commonware_runtime::tokio::Context, PublicKey>,
-)> {
-    use commonware_p2p::authenticated::discovery;
-    use std::net::Ipv4Addr;
+    async fn init_network(
+        context: &commonware_runtime::tokio::Context,
+        config: &tempo_commonware_node_config::Config,
+    ) -> eyre::Result<(
+        discovery::Network<commonware_runtime::tokio::Context, PrivateKey>,
+        discovery::Oracle<commonware_runtime::tokio::Context, PublicKey>,
+    )> {
+        let my_public_key = config.signer.public_key();
+        let all_resolved_peers = resolve_all_peers(&config.peers)
+            .await
+            .wrap_err("failed resolving peers")?;
 
-    let my_public_key = config.signer.public_key();
-    let all_resolved_peers = resolve_all_peers(&config.peers)
-        .await
-        .wrap_err("failed resolving peers")?;
+        let Some((_, my_addr)) = all_resolved_peers.get(&config.signer.public_key()) else {
+            bail!(
+                "peers entry does not contain an entry for this node's public key (generated from the signer key): `{my_public_key}`"
+            )
+        };
 
-    let Some((_, my_addr)) = all_resolved_peers.get(&config.signer.public_key()) else {
-        bail!(
-            "peers entry does not contain an entry for this node's public key (generated from the signer key): `{my_public_key}`"
-        )
-    };
-
-    // TODO: rework this entire peer and bootstrapper resolution so that it
-    // becomes clear that bootstrappers fall out of the peers && get their
-    // addresses that way.
-    let bootstrappers = config
+        // TODO: rework this entire peer and bootstrapper resolution so that it
+        // becomes clear that bootstrappers fall out of the peers && get their
+        // addresses that way.
+        let bootstrappers = config
         .bootstrappers()
         .map(|(key, _dns_name)| {
             let addr = all_resolved_peers
@@ -119,26 +115,90 @@ async fn instantiate_network(
             (key, addr)
         }).collect();
 
-    // TODO: Find out why `union_unique` should be used at all. This is the only place
-    // where `NAMESPACE` is used at all. We follow alto's example for now.
-    let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
-    let p2p_cfg = discovery::Config {
-        mailbox_size: config.mailbox_size,
-        ..discovery::Config::aggressive(
-            config.signer.clone(),
-            &p2p_namespace,
-            // TODO: should the listen addr be restricted to ipv4?
-            SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), config.listen_port),
-            SocketAddr::new(my_addr.ip(), config.listen_port),
-            bootstrappers,
-            crate::config::MAX_MESSAGE_SIZE_BYTES,
-        )
-    };
+        // TODO: Find out why `union_unique` should be used at all. This is the only place
+        // where `NAMESPACE` is used at all. We follow alto's example for now.
+        let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
+        let p2p_cfg = discovery::Config {
+            mailbox_size: config.mailbox_size,
+            ..discovery::Config::aggressive(
+                config.signer.clone(),
+                &p2p_namespace,
+                // TODO: should the listen addr be restricted to ipv4?
+                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), config.listen_port),
+                SocketAddr::new(my_addr.ip(), config.listen_port),
+                bootstrappers,
+                crate::config::MAX_MESSAGE_SIZE_BYTES,
+            )
+        };
 
-    Ok(discovery::Network::new(
-        context.with_label("network"),
-        p2p_cfg,
-    ))
+        Ok(discovery::Network::new(
+            context.with_label("network"),
+            p2p_cfg,
+        ))
+    }
+}
+
+pub struct CommonwareNode {
+    network_handle: CommonwareNetworkHandle,
+    consensus_engine: crate::consensus::engine::Engine<
+        discovery::Oracle<commonware_runtime::tokio::Context, PublicKey>,
+        commonware_runtime::tokio::Context,
+    >,
+}
+
+impl CommonwareNode {
+    pub async fn new(
+        context: &commonware_runtime::tokio::Context,
+        config: &tempo_commonware_node_config::Config,
+        execution_node: TempoFullNode,
+    ) -> eyre::Result<Self> {
+        let (network_handle, oracle) = CommonwareNetworkHandle::new(context, config).await?;
+        let consensus_engine = ConsensusEngineBuilder::new(
+            config,
+            execution_node,
+            oracle,
+            context.with_label("engine"),
+        )
+        .build()
+        .await
+        .wrap_err("failed initializing consensus engine")?;
+
+        Ok(Self {
+            network_handle,
+            consensus_engine,
+        })
+    }
+
+    pub async fn run(self) -> eyre::Result<()> {
+        let CommonwareNetworkHandle {
+            network,
+            pending,
+            recovered,
+            resolver,
+            broadcaster,
+            backfill,
+        } = self.network_handle;
+
+        let (network_task, consensus_task) = (
+            network.start(),
+            self.consensus_engine
+                .start(pending, recovered, resolver, broadcaster, backfill),
+        );
+
+        tokio::select! {
+            ret = network_task => {
+                ret.map_err(eyre::Report::from)
+                    .and_then(|()| Err(eyre!("exited unexpectedly")))
+                    .wrap_err("network task failed")
+            }
+
+            ret = consensus_task => {
+                ret.map_err(eyre::Report::from)
+                    .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
+                    .wrap_err("consensus engine task failed")
+            }
+        }
+    }
 }
 
 async fn resolve_all_peers(
