@@ -11,7 +11,7 @@ use reth_transaction_pool::{
 };
 
 use crate::{
-    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    transaction::TempoPooledTransaction,
     validator::TempoTransactionValidator,
 };
 
