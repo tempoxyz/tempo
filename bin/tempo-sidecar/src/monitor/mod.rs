@@ -1,12 +1,11 @@
 use alloy::{primitives::Address, providers::ProviderBuilder};
-use clap::Parser;
-use eyre::{Context, Result, eyre};
+use eyre::{Result, eyre};
 use itertools::Itertools;
-use metrics::{counter, describe_counter, describe_gauge, gauge};
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use poem::{EndpointExt, Response, Route, Server, get, handler, listener::TcpListener};
+use metrics::{counter, gauge};
+use metrics_exporter_prometheus::PrometheusHandle;
+use poem::{Response, handler};
 use reqwest::Url;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     contracts::{
@@ -16,23 +15,6 @@ use tempo_precompiles::{
     },
 };
 use tracing::{debug, error, info, instrument};
-use tracing_subscriber::EnvFilter;
-
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct MonitorArgs {
-    #[arg(short, long, required = true)]
-    rpc_url: Url,
-
-    #[arg(long, default_value_t = 5)]
-    poll_interval: u64,
-
-    #[arg(short, long, required = true)]
-    chain_id: String,
-
-    #[arg(short, long, required = true)]
-    port: u16,
-}
 
 pub struct TIP20Token {
     decimals: u8,
@@ -40,17 +22,26 @@ pub struct TIP20Token {
 }
 
 pub struct Monitor {
-    args: Arc<MonitorArgs>,
+    rpc_url: Url,
+    poll_interval: u64,
     tokens: HashMap<Address, TIP20Token>,
     pools: HashMap<(Address, Address), Pool>,
 }
 
 impl Monitor {
+    pub fn new(rpc_url: Url, poll_interval: u64) -> Self {
+        Self {
+            rpc_url,
+            poll_interval,
+            tokens: HashMap::new(),
+            pools: HashMap::new(),
+        }
+    }
+
     #[instrument(name = "monitor::update_tip20_tokens", skip(self))]
     async fn update_tip20_tokens(&mut self) -> Result<()> {
-        let args = self.args.clone();
         let provider = ProviderBuilder::new()
-            .connect(args.rpc_url.as_str())
+            .connect(self.rpc_url.as_str())
             .await?;
         let tip20_factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
 
@@ -94,9 +85,8 @@ impl Monitor {
 
     #[instrument(name = "monitor::update_tip20_pools", skip(self))]
     async fn update_tip20_pools(&mut self) -> Result<()> {
-        let args = self.args.clone();
         let provider = ProviderBuilder::new()
-            .connect(args.rpc_url.as_str())
+            .connect(self.rpc_url.as_str())
             .await?;
 
         let fee_amm: ITIPFeeAMMInstance<_, _> = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
@@ -168,7 +158,7 @@ impl Monitor {
     }
 
     #[instrument(name = "monitor::worker", skip(self))]
-    async fn worker(&mut self) {
+    pub async fn worker(&mut self) {
         loop {
             info!("updating pools and tokens");
             if let Err(e) = self.update_tip20_tokens().await {
@@ -178,65 +168,15 @@ impl Monitor {
                 error!("failed to update pools: {}", e);
             };
             self.update_metrics().await;
-            tokio::time::sleep(std::time::Duration::from_secs(self.args.poll_interval)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(self.poll_interval)).await;
         }
     }
 }
 
 #[handler]
-async fn prometheus_metrics(handle: poem::web::Data<&PrometheusHandle>) -> Response {
+pub async fn prometheus_metrics(handle: poem::web::Data<&PrometheusHandle>) -> Response {
     let metrics = handle.render();
     Response::builder()
         .header("content-type", "text/plain")
         .body(metrics)
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::FmtSubscriber::builder()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
-    let args = Arc::new(MonitorArgs::parse());
-
-    let builder = PrometheusBuilder::new().add_global_label("chain_id", args.chain_id.clone());
-    let metrics_handle = builder
-        .install_recorder()
-        .context("failed to install recorder")?;
-
-    let mut monitor = Monitor {
-        args,
-        tokens: HashMap::new(),
-        pools: HashMap::new(),
-    };
-
-    describe_gauge!(
-        "tempo_fee_amm_user_reserves",
-        "User token reserves in the FeeAMM pool"
-    );
-    describe_gauge!(
-        "tempo_fee_amm_validator_reserves",
-        "Validator token reserves in the FeeAMM pool"
-    );
-
-    describe_counter!(
-        "tempo_fee_amm_errors",
-        "Number of errors encountered while fetching FeeAMM data"
-    );
-
-    let app = Route::new().at(
-        "/metrics",
-        get(prometheus_metrics).data(metrics_handle.clone()),
-    );
-
-    let addr = format!("0.0.0.0:{}", monitor.args.port);
-
-    tokio::spawn(async move {
-        monitor.worker().await;
-    });
-
-    Server::new(TcpListener::bind(addr))
-        .run(app)
-        .await
-        .context("failed to run poem server")
 }

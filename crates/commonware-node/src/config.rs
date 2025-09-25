@@ -27,9 +27,6 @@ pub const BACKFILL_BY_DIGEST_CHANNE_IDENTL: commonware_p2p::Channel = 4;
 pub const NUMBER_CONCURRENT_FETCHES: usize = 4;
 pub const NUMBER_MAX_FETCHES: usize = 16;
 
-pub const MAX_MESSAGE_SIZE_BYTES: usize = 1024 * 1024;
-pub const MAX_FETCH_SIZE_BYTES: usize = 512 * 1024;
-
 pub const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
 pub const FINALIZED_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
 

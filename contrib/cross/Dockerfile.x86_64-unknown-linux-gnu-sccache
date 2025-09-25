@@ -1,0 +1,8 @@
+FROM ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main
+ARG DEBIAN_FRONTEND=noninteractive
+
+# note you can also use sccache-source.sh
+COPY ./contrib/cross/sccache-prebuilt.sh /sccache.sh
+RUN /sccache.sh x86_64-unknown-linux-musl
+
+ENV RUSTC_WRAPPER="/usr/bin/sccache"

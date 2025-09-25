@@ -78,25 +78,33 @@ engine cancels the proposal task, once consensus cycles back to the original
 node it can pick up the payload that was kicked off before. This is assuming
 that all other consensus nodes would equally struggle building a block in time.
 
+`last_finalized` mentioned here refers to `last_finalized` set during the
+*Finalize* step.
+
 ```mermaid
 sequenceDiagram
   participant CL as Commonware Consensus Engine
   participant ED as Execution Driver
   participant SY as Commonware Syncer
-  participant EE as Reth Consensus Engine
   participant EB as Reth Payload Builder
+  participant EE as Reth Consensus Engine
 
   CL->>ED: Automaton::propose(view, parent.digest)
+  ED->>EE: fork_choice_updated(head = parent, finalized = last_finalized)
   ED->>SY: Subscribe(parent.digest)
   SY->>ED: parent
   ED->>EB: send_new_payload(id(parent), parent_hash)
   ED->>EB: proposal := resolve_id(payload_id)
   ED->>CL: proposal.digest
+  ED->>EE: fork_choice_updated(head = proposal, finalized = last_finalized)
   CL->>ED: Relay::broadcast(proposal.digest)
   ED->>SY: broadcast(proposal)
 ```
 
 ### Verify
+
+`last_finalized` mentioned here refers to `last_finalized` set during the
+*Finalize* step.
 
 ```mermaid
 sequenceDiagram
@@ -106,6 +114,7 @@ sequenceDiagram
   participant EE as Reth Consensus Engine
 
   CL->>ED: Automaton::verify(parent, payload.digest)
+  ED->>EE: fork_choice_updated(head = parent, finalized = last_finalized)
   ED->>SY: Subscribe(parent.digest)
   SY->>ED: parent
   ED->>SY: Subscribe(payload.digest)
@@ -114,7 +123,8 @@ sequenceDiagram
   ED->>EE: new_payload(payload)
   EE->>ED: payload_status
   ED->>CL: is_valid(static_checks, payload_status)
-  ED->>SY: verified(block) // cache block
+  ED->>EE: if valid: fork_choice_updated(head = proposal, finalized = last_finalized)
+  ED->>SY: if valid: verified(block) // cache block
 ```
 
 ### Finalize
@@ -129,8 +139,7 @@ sequenceDiagram
   CL->>ED: Reporter::finalize(block)
   ED->>EE: new_payload(block)
   EE->>ED: payload_status
-  ED->>EE: fork_choice_updated(head == safe == finalized == block.hash)
-  EE->>ED: fcu_response
+  ED->>ED: last_finalized := block.digest
 ```
 
 ## Implementation details

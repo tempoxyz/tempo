@@ -19,6 +19,9 @@ mailbox_size = 16384
 deque_size = 10
 fee_recipient = "0x0000000000000000000000000000000000000000"
 
+[p2p]
+max_message_size_bytes = 1_048_576
+
 [timeouts]
 time_for_peer_response = "2s"
 time_to_collect_notarizations = "2s"
@@ -26,6 +29,7 @@ time_to_propose = "2s"
 time_to_retry_nullify_broadcast = "10s"
 views_to_track = 256
 views_until_leader_skip = 32
+new_payload_wait_time = "500ms"
     
 [peers]
 0x945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7 = "127.0.0.1:8000"

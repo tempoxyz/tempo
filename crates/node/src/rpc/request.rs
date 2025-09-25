@@ -1,4 +1,10 @@
-use alloy::consensus::{EthereumTxEnvelope, Transaction, TxEip4844, TxEip7702, error::ValueError};
+use alloy::{
+    consensus::{
+        EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip4844, TxEip7702, TxLegacy,
+        error::ValueError,
+    },
+    rpc::types::TransactionTrait,
+};
 use alloy_network::TxSigner;
 use alloy_primitives::{Address, Signature};
 use alloy_rpc_types_eth::TransactionRequest;
@@ -7,7 +13,7 @@ use reth_rpc_convert::{
     EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv,
 };
 use serde::{Deserialize, Serialize};
-use tempo_primitives::{TempoTxEnvelope, TxFeeToken};
+use tempo_primitives::{TempoTxEnvelope, TxFeeToken, transaction::TempoTypedTransaction};
 use tempo_revm::TempoTxEnv;
 
 /// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
@@ -21,34 +27,49 @@ pub struct TempoTransactionRequest {
 
 impl TempoTransactionRequest {
     pub fn build_fee_token(self) -> Result<TxFeeToken, ValueError<Self>> {
-        let tx: TxEip7702 =
-            self.inner
-                .build_7702()
-                .map_err(|inner: ValueError<TransactionRequest>| {
-                    ValueError::new(
-                        Self {
-                            inner: inner.into_value(),
-                            fee_token: self.fee_token,
-                        },
-                        "Missing transaction fields",
-                    )
-                })?;
+        let Some(to) = self.inner.to else {
+            return Err(ValueError::new(
+                self,
+                "Missing 'to' field for FeeToken transaction.",
+            ));
+        };
+        let Some(nonce) = self.inner.nonce else {
+            return Err(ValueError::new(
+                self,
+                "Missing 'nonce' field for FeeToken transaction.",
+            ));
+        };
+        let Some(gas_limit) = self.inner.gas else {
+            return Err(ValueError::new(
+                self,
+                "Missing 'gas_limit' field for FeeToken transaction.",
+            ));
+        };
+        let Some(max_fee_per_gas) = self.inner.max_fee_per_gas else {
+            return Err(ValueError::new(
+                self,
+                "Missing 'max_fee_per_gas' field for FeeToken transaction.",
+            ));
+        };
+        let Some(max_priority_fee_per_gas) = self.inner.max_priority_fee_per_gas else {
+            return Err(ValueError::new(
+                self,
+                "Missing 'max_priority_fee_per_gas' field for FeeToken transaction.",
+            ));
+        };
 
         Ok(TxFeeToken {
-            chain_id: tx.chain_id().unwrap_or(1),
-            nonce: tx.nonce(),
-            gas_limit: tx.gas_limit(),
-            max_fee_per_gas: tx.max_fee_per_gas(),
-            max_priority_fee_per_gas: tx.max_priority_fee_per_gas,
-            to: tx.kind(),
-            value: tx.value(),
-            input: tx.input().clone(),
+            chain_id: self.inner.chain_id.unwrap_or(1),
+            nonce,
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            to,
             fee_token: self.fee_token,
-            access_list: tx.access_list().cloned().unwrap_or_default(),
-            authorization_list: tx
-                .authorization_list()
-                .map(|v| v.to_vec())
-                .unwrap_or_default(),
+            value: self.inner.value.unwrap_or_default(),
+            input: self.inner.input.into_input().unwrap_or_default(),
+            access_list: self.inner.access_list.unwrap_or_default(),
+            authorization_list: self.inner.authorization_list.unwrap_or_default(),
         })
     }
 }
@@ -127,5 +148,87 @@ impl From<TransactionRequest> for TempoTransactionRequest {
 impl From<TempoTransactionRequest> for TransactionRequest {
     fn from(value: TempoTransactionRequest) -> Self {
         value.inner
+    }
+}
+
+impl From<TempoTxEnvelope> for TempoTransactionRequest {
+    fn from(value: TempoTxEnvelope) -> Self {
+        match value {
+            TempoTxEnvelope::Legacy(tx) => tx.into(),
+            TempoTxEnvelope::Eip2930(tx) => tx.into(),
+            TempoTxEnvelope::Eip1559(tx) => tx.into(),
+            TempoTxEnvelope::Eip7702(tx) => tx.into(),
+            TempoTxEnvelope::FeeToken(tx) => tx.into(),
+        }
+    }
+}
+
+trait FeeToken {
+    fn fee_token(&self) -> Option<Address>;
+}
+
+impl FeeToken for TxFeeToken {
+    fn fee_token(&self) -> Option<Address> {
+        self.fee_token
+    }
+}
+
+impl FeeToken for TxEip7702 {
+    fn fee_token(&self) -> Option<Address> {
+        None
+    }
+}
+
+impl FeeToken for TxEip1559 {
+    fn fee_token(&self) -> Option<Address> {
+        None
+    }
+}
+
+impl FeeToken for TxEip2930 {
+    fn fee_token(&self) -> Option<Address> {
+        None
+    }
+}
+
+impl FeeToken for TxLegacy {
+    fn fee_token(&self) -> Option<Address> {
+        None
+    }
+}
+
+impl<T: TransactionTrait + FeeToken> From<Signed<T>> for TempoTransactionRequest {
+    fn from(value: Signed<T>) -> Self {
+        Self {
+            fee_token: value.tx().fee_token(),
+            inner: TransactionRequest::from_transaction(value),
+        }
+    }
+}
+
+impl From<TempoTypedTransaction> for TempoTransactionRequest {
+    fn from(value: TempoTypedTransaction) -> Self {
+        match value {
+            TempoTypedTransaction::Legacy(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+            },
+            TempoTypedTransaction::Eip2930(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+            },
+            TempoTypedTransaction::Eip1559(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+            },
+            TempoTypedTransaction::Eip7702(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+            },
+            TempoTypedTransaction::FeeToken(tx) => Self {
+                fee_token: tx.fee_token,
+                inner: TransactionRequest::from_transaction(tx),
+            },
+        }
     }
 }

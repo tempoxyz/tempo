@@ -11,6 +11,7 @@ tempo-commonware-node-config.workspace = true
 tempo-commonware-node-cryptography.workspace = true
 tempo-node.workspace = true
 tempo-primitives.workspace = true
+tempo-payload-types.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true

@@ -31,7 +31,7 @@ use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
 use tempo_payload_builder::TempoPayloadBuilder;
-use tempo_primitives::{TempoPrimitives, TempoTxEnvelope};
+use tempo_primitives::{TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
 
 /// Type configuration for a regular Ethereum node.
@@ -332,6 +332,7 @@ where
             .disable_balance_check()
             .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
             .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
+            .with_custom_tx_type(TempoTxType::FeeToken as u8)
             .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
 
         if validator.validator().eip4844() {

@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy_consensus::Header;
+pub use alloy_consensus::Header;
 use alloy_primitives::Log;
 use reth_ethereum_primitives::EthereumReceipt;
 use reth_primitives_traits::NodePrimitives;

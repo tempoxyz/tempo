@@ -1,5 +1,4 @@
 pub mod amm;
-pub mod fee;
 
 use crate::{
     DEFAULT_FEE_TOKEN,
@@ -195,6 +194,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     pub fn collect_fee_pre_tx(
         &mut self,
         user: Address,
+        user_token: Address,
         _to: Address,
         max_amount: U256,
     ) -> Result<Address, IFeeManager::IFeeManagerErrors> {
@@ -205,21 +205,6 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         if validator_token.is_zero() {
             validator_token = DEFAULT_FEE_TOKEN;
         }
-
-        // Determine user token based on preference hierarchy
-        let user_slot = user_token_slot(&user);
-        let user_token_preference = self.sload(user_slot).into_address();
-        let user_token = if user_token_preference.is_zero() {
-            // TODO: If a user mints a token before setting their fee token, the tx
-            // incorrectly charges the `to` address as the fee. Disabling this path
-            // for now until we finalize the fee token UX.
-            // // NOTE: this is a special case on Tempo where we check if the user has a fee token preference.
-            // // Fee token preferences follow the following hierarchy: transaction > account > to_address > validator
-            // if is_tip20(&to) { to } else { validator_token }
-            validator_token
-        } else {
-            user_token_preference
-        };
 
         // Verify pool liquidity if user token differs from validator token
         if user_token != validator_token {
@@ -663,7 +648,7 @@ mod tests {
             .unwrap();
 
         // Call collect_fee_pre_tx directly
-        let result = fee_manager.collect_fee_pre_tx(user, validator, max_amount);
+        let result = fee_manager.collect_fee_pre_tx(user, token, validator, max_amount);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), token);
     }

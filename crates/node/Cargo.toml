@@ -9,7 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["rpc"] }
 tempo-revm.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-faucet.workspace = true
@@ -47,6 +47,7 @@ alloy-network.workspace = true
 alloy-primitives.workspace = true
 
 clap.workspace = true
+derive_more.workspace = true
 eyre.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -66,6 +67,7 @@ alloy = { workspace = true, features = [
 ] }
 rand = "0.9.2"
 futures = "0.3"
+test-case.workspace = true
 
 [build-dependencies]
 vergen.workspace = true
