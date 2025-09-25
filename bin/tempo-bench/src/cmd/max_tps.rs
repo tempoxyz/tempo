@@ -28,7 +28,7 @@ impl TPSArgs {
         {
             println!("[!] Failed to increase file descriptor limit: {err}.");
         }
-        
+
         let mut core_ids =
             core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
         println!("[*] Detected {} effective cores.", core_ids.len());

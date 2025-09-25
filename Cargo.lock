@@ -13588,7 +13588,7 @@ dependencies = [
  "thousands",
  "tokio",
  "tokio-util",
- "toml",
+ "toml 0.8.23",
 ]
 
 [[package]]
