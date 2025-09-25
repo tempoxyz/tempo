@@ -15,6 +15,7 @@ tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 tempo-transaction-pool.workspace = true
+tempo-payload-types.workspace = true
 
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
@@ -27,6 +28,7 @@ reth-primitives-traits.workspace = true
 reth-revm.workspace = true
 reth-storage-api.workspace = true
 reth-transaction-pool.workspace = true
+reth-payload-primitives.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true

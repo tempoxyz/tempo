@@ -21,7 +21,8 @@ use reth_evm::{
     block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
-use reth_payload_builder::{EthBuiltPayload, EthPayloadBuilderAttributes, PayloadBuilderError};
+use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
+use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State,
@@ -46,6 +47,10 @@ use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTrans
 use tracing::{Level, debug, trace, warn};
 
 use crate::metrics::TempoPayloadBuilderMetrics;
+
+mod laned;
+use laned::LanedTransactions;
+use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -103,12 +108,12 @@ where
     Provider:
         StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
-    type Attributes = EthPayloadBuilderAttributes;
+    type Attributes = TempoPayloadBuilderAttributes;
     type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
 
     fn try_build(
         &self,
-        args: BuildArguments<EthPayloadBuilderAttributes, Self::BuiltPayload>,
+        args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
         self.build_payload(args, |attributes| {
             self.pool.best_transactions_with_attributes(attributes)
@@ -146,7 +151,7 @@ where
 {
     fn build_payload<Txs>(
         &self,
-        args: BuildArguments<EthPayloadBuilderAttributes, EthBuiltPayload<TempoPrimitives>>,
+        args: BuildArguments<TempoPayloadBuilderAttributes, EthBuiltPayload<TempoPrimitives>>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<EthBuiltPayload<TempoPrimitives>>, PayloadBuilderError>
     where
@@ -179,12 +184,12 @@ where
                 &parent_header,
                 TempoNextBlockEnvAttributes {
                     inner: NextBlockEnvAttributes {
-                        timestamp: attributes.timestamp,
-                        suggested_fee_recipient: attributes.suggested_fee_recipient,
-                        prev_randao: attributes.prev_randao,
+                        timestamp: attributes.timestamp(),
+                        suggested_fee_recipient: attributes.suggested_fee_recipient(),
+                        prev_randao: attributes.prev_randao(),
                         gas_limit: parent_header.gas_limit,
-                        parent_beacon_block_root: attributes.parent_beacon_block_root,
-                        withdrawals: Some(attributes.withdrawals.clone()),
+                        parent_beacon_block_root: attributes.parent_beacon_block_root(),
+                        withdrawals: Some(attributes.withdrawals().clone()),
                     },
                     non_payment_gas_limit,
                 },
@@ -193,12 +198,12 @@ where
 
         let chain_spec = self.provider.chain_spec();
 
-        debug!(target: "payload_builder", id=%attributes.id, parent_header = ?parent_header.hash(), parent_number = parent_header.number, "building new payload");
+        debug!(target: "payload_builder", id=%attributes.payload_id(), parent_header = ?parent_header.hash(), parent_number = parent_header.number, "building new payload");
         let mut cumulative_gas_used = 0;
         let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
         let base_fee = builder.evm_mut().block().basefee;
 
-        let mut best_txs = best_txs(BestTransactionsAttributes::new(
+        let best_txs_inner = best_txs(BestTransactionsAttributes::new(
             base_fee,
             builder
                 .evm_mut()
@@ -206,7 +211,9 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let mut best_txs = LanedTransactions::new(best_txs_inner, non_payment_gas_limit);
         let mut total_fees = U256::ZERO;
+        let mut non_payment_gas_used = 0u64;
 
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(target: "payload_builder", %err, "failed to apply pre-execution changes");
@@ -214,21 +221,20 @@ where
         })?;
 
         let mut block_transactions_rlp_length = 0;
-        let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp);
+        let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp());
 
         let execution_start = Instant::now();
         let mut payment_transactions = 0;
         while let Some(pool_tx) = best_txs.next() {
             // ensure we still have capacity for this transaction
             if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
-                // we can't fit this transaction into the block, so we need to mark it as invalid
-                // which also removes all dependent transaction from the iterator before we can
-                // continue
+                // Mark this transaction as invalid since it doesn't fit
+                // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
-                        block_gas_limit,
+                        block_gas_limit - cumulative_gas_used,
                     ),
                 );
                 continue;
@@ -248,7 +254,7 @@ where
 
             let estimated_block_size_with_tx = block_transactions_rlp_length
                 + tx.inner().length()
-                + attributes.withdrawals.length()
+                + attributes.withdrawals().length()
                 + 1024; // 1Kb of overhead for the block header
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -270,7 +276,19 @@ where
 
             let start = Instant::now();
             let gas_used = match builder.execute_transaction(tx) {
-                Ok(gas_used) => gas_used,
+                Ok(gas_used) => {
+                    // Update non-payment gas tracking if we're still in non-payment lane
+                    if !best_txs.non_payment_exhausted() && !pool_tx.transaction.is_payment() {
+                        non_payment_gas_used += gas_used;
+                        best_txs.update_non_payment_gas_used(gas_used);
+
+                        // Check if we've exhausted non-payment gas and trigger the switch
+                        if non_payment_gas_used >= non_payment_gas_limit {
+                            best_txs.skip_non_payments();
+                        }
+                    }
+                    gas_used
+                }
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
                     ..
@@ -346,11 +364,11 @@ where
             .record(block.transaction_count() as f64);
 
         let requests = chain_spec
-            .is_prague_active_at_timestamp(attributes.timestamp)
+            .is_prague_active_at_timestamp(attributes.timestamp())
             .then_some(execution_result.requests);
 
         let sealed_block = Arc::new(block.sealed_block().clone());
-        debug!(target: "payload_builder", id=%attributes.id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
+        debug!(target: "payload_builder", id=%attributes.payload_id(), sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
 
         if is_osaka && sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -359,7 +377,8 @@ where
             }));
         }
 
-        let payload = EthBuiltPayload::new(attributes.id, sealed_block, total_fees, requests);
+        let payload =
+            EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
 
         Ok(BuildOutcome::Better {
             payload,

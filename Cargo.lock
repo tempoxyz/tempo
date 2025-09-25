@@ -13663,6 +13663,7 @@ dependencies = [
  "tempo-commonware-node-config",
  "tempo-commonware-node-cryptography",
  "tempo-node",
+ "tempo-payload-types",
  "tempo-primitives",
  "tokio",
  "tracing",
@@ -13811,6 +13812,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-revm",
  "tempo-transaction-pool",
+ "test-case",
  "tokio",
  "vergen",
  "vergen-git2",
@@ -13832,6 +13834,7 @@ dependencies = [
  "reth-evm",
  "reth-metrics",
  "reth-payload-builder",
+ "reth-payload-primitives",
  "reth-primitives-traits",
  "reth-revm",
  "reth-storage-api",
@@ -13839,6 +13842,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-evm",
+ "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-transaction-pool",
@@ -13850,12 +13854,14 @@ name = "tempo-payload-types"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "reth-ethereum-engine-primitives",
  "reth-node-api",
  "reth-primitives-traits",
  "serde",
  "tempo-primitives",
+ "tokio",
 ]
 
 [[package]]
@@ -13986,6 +13992,39 @@ checksum = "60b8cb979cb11c32ce1603f8137b22262a9d131aaa5c37b5678025f22b8becd0"
 dependencies = [
  "rustix 1.1.2",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "test-case"
+version = "3.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb2550dd13afcd286853192af8601920d959b14c401fcece38071d53bf0768a8"
+dependencies = [
+ "test-case-macros",
+]
+
+[[package]]
+name = "test-case-core"
+version = "3.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adcb7fd841cd518e279be3d5a3eb0636409487998a4aff22f3de87b81e88384f"
+dependencies = [
+ "cfg-if",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
+name = "test-case-macros"
+version = "3.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c89e72a01ed4c579669add59014b9a524d609c0c88c6a585ce37485879f6ffb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+ "test-case-core",
 ]
 
 [[package]]

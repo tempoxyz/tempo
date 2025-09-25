@@ -138,3 +138,9 @@ impl HeaderResponse for Header {
         self.inner.hash()
     }
 }
+
+impl AsRef<alloy::consensus::Header> for Header {
+    fn as_ref(&self) -> &tempo_primitives::Header {
+        self.inner.as_ref()
+    }
+}

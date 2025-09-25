@@ -1,8 +1,11 @@
 use super::fee_token::TxFeeToken;
+use crate::transaction::UnsupportedTransactionTypeEip4844;
 use alloy_consensus::{
-    EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError,
+    EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
+    error::ValueError,
 };
 use alloy_primitives::{Address, B256, Signature, U256};
+use core::fmt;
 use reth_primitives_traits::InMemorySize;
 use tempo_precompiles::TIP20_PAYMENT_PREFIX;
 
@@ -42,6 +45,34 @@ pub enum TempoTxEnvelope {
     /// Tempo fee token transaction (type 0x77)
     #[envelope(ty = 0x77)]
     FeeToken(Signed<TxFeeToken>),
+}
+
+impl TryFrom<TxType> for TempoTxType {
+    type Error = UnsupportedTransactionTypeEip4844;
+
+    fn try_from(value: TxType) -> Result<Self, Self::Error> {
+        Ok(match value {
+            TxType::Legacy => Self::Legacy,
+            TxType::Eip2930 => Self::Eip2930,
+            TxType::Eip1559 => Self::Eip1559,
+            TxType::Eip4844 => return Err(UnsupportedTransactionTypeEip4844),
+            TxType::Eip7702 => Self::Eip7702,
+        })
+    }
+}
+
+impl TryFrom<TempoTxType> for TxType {
+    type Error = UnsupportedTransactionTypeEip4844;
+
+    fn try_from(value: TempoTxType) -> Result<Self, Self::Error> {
+        Ok(match value {
+            TempoTxType::Legacy => Self::Legacy,
+            TempoTxType::Eip2930 => Self::Eip2930,
+            TempoTxType::Eip1559 => Self::Eip1559,
+            TempoTxType::Eip7702 => Self::Eip7702,
+            TempoTxType::FeeToken => return Err(UnsupportedTransactionTypeEip4844),
+        })
+    }
 }
 
 impl TempoTxEnvelope {
@@ -170,6 +201,18 @@ impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
 impl InMemorySize for TempoTxType {
     fn size(&self) -> usize {
         core::mem::size_of::<Self>()
+    }
+}
+
+impl fmt::Display for TempoTxType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Legacy => write!(f, "Legacy"),
+            Self::Eip2930 => write!(f, "EIP-2930"),
+            Self::Eip1559 => write!(f, "EIP-1559"),
+            Self::Eip7702 => write!(f, "EIP-7702"),
+            Self::FeeToken => write!(f, "FeeToken"),
+        }
     }
 }
 
