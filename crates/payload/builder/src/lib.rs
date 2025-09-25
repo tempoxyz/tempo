@@ -240,7 +240,7 @@ where
             let tx = pool_tx.to_consensus();
 
             // If the tx is not a payment and the non payment block space is exhausted
-            // mark the tx as invlaid and continue
+            // mark the tx as invalid and continue
             if !tx.is_payment()
                 && pool_tx.gas_limit() + non_payment_gas_used > non_payment_gas_limit
             {
