@@ -497,6 +497,7 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
     println!("\nWaiting for all transactions to be mined...");
 
     // Collect receipts and check they all succeeded
+    let mut receipts = Vec::new();
     for (pending_tx, tx_type) in all_txs {
         let receipt = pending_tx.get_receipt().await?;
 
@@ -514,7 +515,61 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
             "  {} transaction succeeded (gas used: {})",
             tx_type, receipt.gas_used
         );
+
+        receipts.push((receipt, tx_type));
     }
+
+    // Group transactions by block number
+    let mut txs_by_block: std::collections::BTreeMap<u64, Vec<(u64, &str)>> = std::collections::BTreeMap::new();
+
+    for (receipt, tx_type) in &receipts {
+        let block_number = receipt
+            .block_number()
+            .expect("Block number should be present");
+        let tx_index = receipt
+            .transaction_index()
+            .expect("Transaction index should be present");
+
+        txs_by_block
+            .entry(block_number)
+            .or_insert_with(Vec::new)
+            .push((tx_index, tx_type));
+    }
+
+    // Sort transactions within each block by index
+    for txs in txs_by_block.values_mut() {
+        txs.sort_by_key(|(index, _)| *index);
+    }
+
+    println!("\nTransaction execution order by block:");
+    for (block_num, txs) in &txs_by_block {
+        println!("  Block {block_num}:");
+        for (index, tx_type) in txs {
+            println!("    Index {index}: {tx_type}");
+        }
+    }
+
+    // Verify lane ordering within each block
+    // Within each block: non-payment transactions must come before payment transactions
+    for (block_num, txs) in &txs_by_block {
+        let mut found_payment = false;
+        for (tx_index, tx_type) in txs {
+            if tx_type.starts_with("payment") {
+                found_payment = true;
+            } else if tx_type.starts_with("non-payment") && found_payment {
+                panic!(
+                    "Block {block_num}: Non-payment transaction at index {tx_index} found after payment transaction! \
+                     Block order: {:?}",
+                    txs.iter()
+                        .map(|(idx, t)| format!("{idx}:{t}"))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        println!("  Block {block_num}: Lane ordering verified");
+    }
+
+    println!("\nLane ordering verified: within each block, non-payment transactions come before payment transactions");
 
     Ok(())
 }
