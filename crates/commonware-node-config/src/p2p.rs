@@ -9,7 +9,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config {
+        Self {
             max_message_size_bytes: 1024 * 1024,
         }
     }
