@@ -44,7 +44,7 @@ use tempo_primitives::{
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTransaction};
-use tracing::{Level, debug, trace, warn};
+use tracing::{Level, debug, instrument, trace, warn};
 
 use crate::metrics::TempoPayloadBuilderMetrics;
 
@@ -149,6 +149,11 @@ impl<Provider> TempoPayloadBuilder<Provider>
 where
     Provider: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec>,
 {
+    #[instrument(skip_all, fields(
+        id = %args.config.attributes.payload_id(),
+        parent_number = %args.config.parent_header.number,
+        parent_hash = %args.config.parent_header.hash()
+    ))]
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadBuilderAttributes, EthBuiltPayload<TempoPrimitives>>,
@@ -198,7 +203,7 @@ where
 
         let chain_spec = self.provider.chain_spec();
 
-        debug!(target: "payload_builder", id=%attributes.payload_id(), parent_header = ?parent_header.hash(), parent_number = parent_header.number, "building new payload");
+        debug!(target: "payload_builder", "building new payload");
         let mut cumulative_gas_used = 0;
         let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
         let base_fee = builder.evm_mut().block().basefee;
@@ -372,7 +377,6 @@ where
         let sealed_block = Arc::new(block.sealed_block().clone());
         debug!(
             target: "payload_builder",
-            id = %attributes.payload_id(),
             sealed_block_header = ?sealed_block.sealed_header(),
             total_transactions = block.transaction_count(),
             ?payment_transactions,
