@@ -13962,6 +13962,7 @@ dependencies = [
  "reth-transaction-pool",
  "tempo-precompiles",
  "tempo-primitives",
+ "thiserror 2.0.16",
  "tokio",
 ]
 

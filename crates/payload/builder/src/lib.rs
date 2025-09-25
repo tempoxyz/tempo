@@ -36,17 +36,17 @@ use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::TEMPO_NON_PAYMENT_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::IFeeManager::executeBlockCall};
 use tempo_primitives::{
     TempoPrimitives, TempoTxEnvelope,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
-use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTransaction};
+use tempo_transaction_pool::{
+    TempoTransactionPool,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+};
 use tracing::{debug, trace, warn};
-
-mod laned;
-use laned::LanedTransactions;
-use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -197,7 +197,7 @@ where
         let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
         let base_fee = builder.evm_mut().block().basefee;
 
-        let best_txs_inner = best_txs(BestTransactionsAttributes::new(
+        let mut best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
             builder
                 .evm_mut()
@@ -205,7 +205,6 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
-        let mut best_txs = LanedTransactions::new(best_txs_inner, non_payment_gas_limit);
         let mut total_fees = U256::ZERO;
         let mut non_payment_gas_used = 0u64;
 
@@ -240,6 +239,20 @@ where
             // convert tx to a signed transaction
             let tx = pool_tx.to_consensus();
 
+            // If the tx is not a payment and the non payment block space is exhausted
+            // mark the tx as invlaid and continue
+            if !tx.is_payment()
+                && pool_tx.gas_limit() + non_payment_gas_used > non_payment_gas_limit
+            {
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                    )),
+                );
+                continue;
+            }
+
             let estimated_block_size_with_tx = block_transactions_rlp_length
                 + tx.inner().length()
                 + attributes.withdrawals().length()
@@ -258,15 +271,8 @@ where
 
             let gas_used = match builder.execute_transaction(tx.clone()) {
                 Ok(gas_used) => {
-                    // Update non-payment gas tracking if we're still in non-payment lane
-                    if !best_txs.non_payment_exhausted() && !pool_tx.transaction.is_payment() {
+                    if !tx.is_payment() {
                         non_payment_gas_used += gas_used;
-                        best_txs.update_non_payment_gas_used(gas_used);
-
-                        // Check if we've exhausted non-payment gas and trigger the switch
-                        if non_payment_gas_used >= non_payment_gas_limit {
-                            best_txs.skip_non_payments();
-                        }
                     }
                     gas_used
                 }

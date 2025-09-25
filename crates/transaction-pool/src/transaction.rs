@@ -1,5 +1,3 @@
-use std::{convert::Infallible, fmt::Debug, sync::Arc};
-
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -12,8 +10,11 @@ use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
+    error::PoolTransactionError,
 };
+use std::{convert::Infallible, fmt::Debug, sync::Arc};
 use tempo_primitives::TempoTxEnvelope;
+use thiserror::Error;
 
 /// Tempo pooled transaction representation.
 ///
@@ -58,6 +59,24 @@ impl TempoPooledTransaction {
     /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
     pub fn is_payment(&self) -> bool {
         self.is_payment
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum TempoPoolTransactionError {
+    #[error("Transaction exceeds non payment gas limit")]
+    ExceedsNonPaymentLimit,
+}
+
+impl PoolTransactionError for TempoPoolTransactionError {
+    fn is_bad_transaction(&self) -> bool {
+        match self {
+            Self::ExceedsNonPaymentLimit => false,
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

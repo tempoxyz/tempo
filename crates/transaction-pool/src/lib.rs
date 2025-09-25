@@ -10,7 +10,10 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore,
 };
 
-use crate::{transaction::TempoPooledTransaction, validator::TempoTransactionValidator};
+use crate::{
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    validator::TempoTransactionValidator,
+};
 
 pub mod transaction;
 pub mod validator;
