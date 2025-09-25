@@ -134,18 +134,6 @@ where
         let is_system = tx.tx().is_system_tx();
         let gas_limit = tx.tx().gas_limit();
 
-        debug!(
-            target: "tempo::block",
-            is_payment = is_payment,
-            is_system = is_system,
-            gas_limit = gas_limit,
-            non_payment_gas_left = self.non_payment_gas_left,
-            seen_payment = self.seen_payment_tx,
-            seen_system = self.seen_system_tx,
-            tx_to = ?tx.tx().to(),
-            "Executing transaction"
-        );
-
         if is_system {
             self.validate_system_tx(tx.tx())?;
         } else if self.seen_system_tx {
