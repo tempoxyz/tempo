@@ -65,12 +65,12 @@ mod test {
     #[test]
     fn test_non_payment_priority() {
         let payment = TempoPriority {
-            non_payment: true,
+            non_payment: false,
             effective_tip_per_gas: Some(U256::from(100u64)),
         };
 
         let non_payment = TempoPriority {
-            non_payment: false,
+            non_payment: true,
             effective_tip_per_gas: Some(U256::from(10000u64)),
         };
 
