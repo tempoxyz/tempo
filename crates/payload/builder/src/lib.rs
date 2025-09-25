@@ -3,6 +3,8 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+mod metrics;
+
 use alloy_consensus::{Signed, Transaction, TxLegacy};
 use alloy_primitives::U256;
 use alloy_rlp::Encodable;
@@ -31,7 +33,7 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::TEMPO_NON_PAYMENT_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
@@ -41,17 +43,20 @@ use tempo_primitives::{
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTransaction};
-use tracing::{debug, trace, warn};
+use tracing::{Level, debug, trace, warn};
+
+use crate::metrics::TempoPayloadBuilderMetrics;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
     provider: Provider,
     evm_config: TempoEvmConfig,
+    metrics: TempoPayloadBuilderMetrics,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
-    pub const fn new(
+    pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         evm_config: TempoEvmConfig,
@@ -60,6 +65,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             pool,
             provider,
             evm_config,
+            metrics: TempoPayloadBuilderMetrics::default(),
         }
     }
 }
@@ -210,6 +216,8 @@ where
         let mut block_transactions_rlp_length = 0;
         let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp);
 
+        let execution_start = Instant::now();
+        let mut payment_transactions = 0;
         while let Some(pool_tx) = best_txs.next() {
             // ensure we still have capacity for this transaction
             if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
@@ -234,6 +242,10 @@ where
             // convert tx to a signed transaction
             let tx = pool_tx.to_consensus();
 
+            if tx.is_payment() {
+                payment_transactions += 1;
+            }
+
             let estimated_block_size_with_tx = block_transactions_rlp_length
                 + tx.inner().length()
                 + attributes.withdrawals.length()
@@ -250,7 +262,14 @@ where
                 continue;
             }
 
-            let gas_used = match builder.execute_transaction(tx.clone()) {
+            let tx_rlp_length = tx.inner().length();
+            let effective_tip_per_gas = tx.effective_tip_per_gas(base_fee);
+
+            let tx_debug_repr = tracing::enabled!(target: "payload_builder", Level::TRACE)
+                .then(|| format!("{tx:?}"));
+
+            let start = Instant::now();
+            let gas_used = match builder.execute_transaction(tx) {
                 Ok(gas_used) => gas_used,
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
@@ -258,11 +277,11 @@ where
                 })) => {
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
-                        trace!(target: "payload_builder", %error, ?tx, "skipping nonce too low transaction");
+                        trace!(target: "payload_builder", %error, tx = %tx_debug_repr.unwrap(), "skipping nonce too low transaction");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
-                        trace!(target: "payload_builder", %error, ?tx, "skipping invalid transaction and its descendants");
+                        trace!(target: "payload_builder", %error, tx = %tx_debug_repr.unwrap(), "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
                             InvalidPoolTransactionError::Consensus(
@@ -275,16 +294,26 @@ where
                 // this is an error that we should treat as fatal for this attempt
                 Err(err) => return Err(PayloadBuilderError::evm(err)),
             };
+            let elapsed = start.elapsed();
+            self.metrics
+                .transaction_execution_duration_seconds
+                .record(elapsed);
 
-            block_transactions_rlp_length += tx.inner().length();
+            block_transactions_rlp_length += tx_rlp_length;
 
             // update and add to total fees
-            let miner_fee = tx
-                .effective_tip_per_gas(base_fee)
-                .expect("fee is always valid; execution succeeded");
+            let miner_fee =
+                effective_tip_per_gas.expect("fee is always valid; execution succeeded");
             total_fees += U256::from(miner_fee) * U256::from(gas_used);
             cumulative_gas_used += gas_used;
         }
+
+        self.metrics
+            .total_transaction_execution_duration_seconds
+            .record(execution_start.elapsed());
+        self.metrics
+            .payment_transactions
+            .record(payment_transactions);
 
         // check if we have a better block
         if !is_better_payload(best_payload.as_ref(), total_fees) {
@@ -302,11 +331,19 @@ where
             .execute_transaction(self.build_seal_block_tx(builder.evm().block()))
             .map_err(PayloadBuilderError::evm)?;
 
+        let start = Instant::now();
         let BlockBuilderOutcome {
             execution_result,
             block,
             ..
         } = builder.finish(&state_provider)?;
+        let elapsed = start.elapsed();
+        self.metrics
+            .payload_finalization_duration_seconds
+            .record(elapsed);
+        self.metrics
+            .total_transactions
+            .record(block.transaction_count() as f64);
 
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp)
