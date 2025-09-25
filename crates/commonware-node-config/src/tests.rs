@@ -19,6 +19,9 @@ mailbox_size = 16384
 deque_size = 10
 fee_recipient = "0x0000000000000000000000000000000000000000"
 
+[p2p]
+max_message_size_bytes = 1_048_576
+
 [timeouts]
 time_for_peer_response = "2s"
 time_to_collect_notarizations = "2s"

@@ -10,6 +10,7 @@ use commonware_utils::quorum;
 use indexmap::IndexMap;
 use tempo_commonware_node_cryptography::{GroupShare, PrivateKey, PublicKey, PublicPolynomial};
 
+pub mod p2p;
 pub mod timeouts;
 
 #[cfg(test)]
@@ -31,7 +32,6 @@ mod tests;
 // + skip_timeout
 // + fetch_timeout
 // + max_fetch_count
-// + max_fetch_size
 // + fetch_concurrent
 // + fetch_rate_per_peer
 // + pending_limit
@@ -53,6 +53,8 @@ pub struct Config {
 
     pub listen_port: u16,
     pub metrics_port: Option<u16>,
+
+    pub p2p: p2p::Config,
 
     pub storage_directory: camino::Utf8PathBuf,
     pub worker_threads: usize,
@@ -159,8 +161,9 @@ struct DeserConfig {
     polynomial: Vec<u8>,
 
     listen_port: u16,
-
     metrics_port: Option<u16>,
+
+    p2p: p2p::Config,
 
     storage_directory: camino::Utf8PathBuf,
     worker_threads: usize,
@@ -198,6 +201,7 @@ impl TryFrom<DeserConfig> for Config {
             polynomial,
             listen_port,
             metrics_port,
+            p2p,
             storage_directory,
             worker_threads,
             peers,
@@ -224,6 +228,7 @@ impl TryFrom<DeserConfig> for Config {
                 .map_err(Error::Polynomial)?,
             listen_port,
             metrics_port,
+            p2p,
             storage_directory,
             worker_threads,
             peers,

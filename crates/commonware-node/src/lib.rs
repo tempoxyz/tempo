@@ -20,9 +20,8 @@ use tracing::info;
 use crate::config::{
     BACKFILL_BY_DIGEST_CHANNE_IDENTL, BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, FINALIZED_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-    MAX_FETCH_SIZE_BYTES, NUMBER_CONCURRENT_FETCHES, NUMBER_MAX_FETCHES, PENDING_CHANNEL_IDENT,
-    PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT,
+    NUMBER_CONCURRENT_FETCHES, NUMBER_MAX_FETCHES, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
+    RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
 };
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
@@ -85,7 +84,6 @@ pub async fn run_consensus_stack(
         skip_timeout: config.timeouts.views_until_leader_skip,
         new_payload_wait_time: config.timeouts.new_payload_wait_time,
         max_fetch_count: NUMBER_MAX_FETCHES,
-        max_fetch_size: MAX_FETCH_SIZE_BYTES,
         fetch_concurrent: NUMBER_CONCURRENT_FETCHES,
         fetch_rate_per_peer: RESOLVER_LIMIT,
         // indexer: Option<TIndexer>,
@@ -160,7 +158,7 @@ async fn instantiate_network(
             SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), config.listen_port),
             SocketAddr::new(my_addr.ip(), config.listen_port),
             bootstrappers,
-            crate::config::MAX_MESSAGE_SIZE_BYTES,
+            config.p2p.max_message_size_bytes,
         )
     };
 

@@ -83,7 +83,6 @@ pub struct Builder<
     pub skip_timeout: u64,
     pub new_payload_wait_time: Duration,
     pub max_fetch_count: usize,
-    pub max_fetch_size: usize,
     pub fetch_concurrent: usize,
     pub fetch_rate_per_peer: Quota,
     // pub indexer: Option<TIndexer>,
