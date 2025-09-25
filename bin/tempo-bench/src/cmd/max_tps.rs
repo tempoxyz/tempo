@@ -23,12 +23,12 @@ impl TPSArgs {
         println!("[~] Loading config from {}...", self.config.display());
         config::init(Config::from_file(&self.config)?);
 
-        // if let Err(err) =
-        //     utils::increase_nofile_limit(config::get().network_worker.total_connections * 10)
-        // {
-        //     println!("[!] Failed to increase file descriptor limit: {err}.");
-        // }
-        //
+        if let Err(err) =
+            utils::increase_nofile_limit(config::get().network_worker.total_connections * 10)
+        {
+            println!("[!] Failed to increase file descriptor limit: {err}.");
+        }
+        
         let mut core_ids =
             core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
         println!("[*] Detected {} effective cores.", core_ids.len());
