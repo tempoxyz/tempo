@@ -1,35 +1,27 @@
 use alloy::{
     network::EthereumWallet,
-    primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
 };
 use alloy_eips::BlockNumberOrTag;
-use alloy_rpc_types_engine::ForkchoiceState;
-use futures::future::join_all;
-use rand::{Rng, SeedableRng, rngs::StdRng};
-use reth_ethereum::{network::NetworkInfo, tasks::TaskManager};
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes};
+use reth_e2e_test_utils::{setup, transaction::TransactionTestContext, wallet::Wallet};
+use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
 use reth_node_api::EngineApiMessageVersion;
-use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle};
-use reth_node_core::args::RpcServerArgs;
-use reth_rpc_builder::RpcModuleSelection;
 use std::sync::Arc;
-use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
+use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
-use tempo_precompiles::contracts::{token_id_to_address, types::ITIP20};
+use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 /// Test that verifies backfill sync works correctly.
 ///
-/// 1. Sets up a node and advances it with random transactions
-/// 2. Sets up a second node
-/// 3. Connects the two nodes via p2p
+/// 1. Sets up two connected nodes
+/// 2. Advances the first node with random transactions
+/// 3. Sends FCU to second node to trigger backfill
 /// 4. Verifies the second node can sync to the first node's tip
 #[tokio::test(flavor = "multi_thread")]
 async fn test_backfill_sync() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-
-    // Use seeded random for reproducibility
-    let mut rng = StdRng::seed_from_u64(42);
 
     let genesis_content = include_str!("../assets/test-genesis.json").to_string();
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(&genesis_content)?);
@@ -40,89 +32,88 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         .build()?;
     let eth_wallet = EthereumWallet::from(wallet.clone());
 
-    // Setup first node
-    println!("Setting up first node...");
-    let tasks1 = TaskManager::current();
-    let mut node_config1 = NodeConfig::new(Arc::new(chain_spec.clone()))
-        .with_unused_ports()
-        .dev()
-        .with_rpc(
-            RpcServerArgs::default()
-                .with_unused_ports()
-                .with_http()
-                .with_http_api(RpcModuleSelection::All),
-        );
-    node_config1.txpool.max_account_slots = usize::MAX;
+    // Setup two connected nodes using e2e test utilities
+    println!("Setting up two connected nodes...");
 
-    let NodeHandle {
-        node: node1,
-        node_exit_future: _,
-    } = NodeBuilder::new(node_config1.clone())
-        .testing_node(tasks1.executor())
-        .node(TempoNode::default())
-        .launch_with_debug_capabilities()
-        .await?;
+    // Create attributes generator function
+    let attributes_generator = |timestamp| {
+        // Create PayloadAttributes directly
+        let attributes = PayloadAttributes {
+            timestamp,
+            prev_randao: alloy::primitives::B256::ZERO,
+            suggested_fee_recipient: alloy::primitives::Address::ZERO,
+            withdrawals: Some(vec![]),
+            parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+        };
 
-    let http_url1 = node1.rpc_server_handle().http_url().unwrap().parse()?;
+        // Wrap in TempoPayloadBuilderAttributes
+        TempoPayloadBuilderAttributes::new(EthPayloadBuilderAttributes::new(
+            alloy::primitives::B256::ZERO,
+            attributes,
+        ))
+    };
 
-    // Connect provider to first node
+    let (mut nodes, _tasks, _wallet) = setup::<TempoNode>(
+        2,
+        Arc::new(chain_spec),
+        true, // is_dev
+        attributes_generator,
+    )
+    .await?;
+
+    let mut node1 = nodes.remove(0);
+    let node2 = nodes.remove(0);
+
+    // Get provider for node1
+    let http_url1 = node1.rpc_url();
     let provider1 = ProviderBuilder::new()
         .wallet(eth_wallet.clone())
         .connect_http(http_url1);
 
-    // Wait for node to be ready
+    // Wait for nodes to be ready
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    // Get the test token
-    let token_addr = token_id_to_address(0);
-    let token = ITIP20::new(token_addr, provider1.clone());
+    // Get the chain ID from the provider
+    let chain_id = provider1.get_chain_id().await?;
 
-    // Advance first node with random transactions
-    println!("Advancing first node with random transactions...");
-    let target_blocks = 20;
+    // Advance first node with blocks containing transactions
+    println!("Advancing first node...");
+    let target_blocks = 10;
 
-    // Send batches of transactions
-    for batch in 0..5 {
-        let mut pending_txs = vec![];
+    // Create multiple wallets for different transactions to avoid nonce issues
+    let wallets = Wallet::new(target_blocks as usize)
+        .with_chain_id(chain_id)
+        .wallet_gen();
 
-        // Send 10 transactions per batch
-        for _ in 0..10 {
-            let recipient = Address::from(rng.random::<[u8; 20]>());
-            let amount = U256::from(rng.random_range(1..100));
+    // For simplicity, let's just send one transaction per block using the simple approach
+    for i in 0..target_blocks {
+        // Use a different wallet for each transaction to avoid nonce conflicts
+        let wallet_signer = wallets[i as usize].clone();
 
-            let pending_tx = token
-                .transfer(recipient, amount)
-                .gas_price(TEMPO_BASE_FEE as u128)
-                .gas(50000)
-                .send()
-                .await?;
-            pending_txs.push(pending_tx);
-        }
+        // Create a new transaction for this block
+        let raw_tx = TransactionTestContext::transfer_tx_bytes(chain_id, wallet_signer).await;
 
-        // Wait for transactions to be mined
-        let receipts = join_all(pending_txs.into_iter().map(|tx| tx.get_receipt()))
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
+        // Send the transaction
+        let tx_hash = node1.rpc.inject_tx(raw_tx).await?;
 
-        // Check all receipts succeeded
-        for receipt in &receipts {
-            assert!(receipt.status(), "Transaction failed");
-        }
+        // Advance the block to include the transaction
+        let payload = node1.advance_block().await?;
 
-        // Get latest block
-        let block = provider1
-            .get_block_by_number(BlockNumberOrTag::Latest)
-            .await?
-            .expect("Could not get latest block");
+        // Verify the transaction was included
+        let block_hash = payload.block().hash();
+        let block_number = payload.block().number;
+        node1
+            .assert_new_block(tx_hash, block_hash, block_number)
+            .await?;
 
-        let block_num = block.header.number;
-        println!("Batch {}: Advanced to block {}", batch + 1, block_num);
+        println!("Advanced to block {block_number}");
 
-        if block_num >= target_blocks {
+        if block_number >= target_blocks {
             break;
         }
     }
+
+    println!("Advanced {target_blocks} blocks");
 
     // Get the final state from node1
     let final_block = provider1
@@ -135,38 +126,11 @@ async fn test_backfill_sync() -> eyre::Result<()> {
 
     println!("First node advanced to block {final_block_number} (hash: {final_block_hash:?})");
 
-    // Setup second node with same genesis
-    println!("Setting up second node...");
-    let tasks2 = TaskManager::current();
-    let mut node_config2 = NodeConfig::new(Arc::new(chain_spec))
-        .with_unused_ports()
-        .dev()
-        .with_rpc(
-            RpcServerArgs::default()
-                .with_unused_ports()
-                .with_http()
-                .with_http_api(RpcModuleSelection::All),
-        );
-    node_config2.txpool.max_account_slots = usize::MAX;
-
-    let NodeHandle {
-        node: node2,
-        node_exit_future: _,
-    } = NodeBuilder::new(node_config2.clone())
-        .testing_node(tasks2.executor())
-        .node(TempoNode::default())
-        .launch_with_debug_capabilities()
-        .await?;
-
-    let http_url2 = node2.rpc_server_handle().http_url().unwrap().parse()?;
-
-    // Connect provider to second node
+    // Get provider for node2
+    let http_url2 = node2.rpc_url();
     let provider2 = ProviderBuilder::new()
         .wallet(eth_wallet)
         .connect_http(http_url2);
-
-    // Wait for node to be ready
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     // Get initial block from node2 (should be genesis)
     let initial_block2 = provider2
@@ -179,36 +143,6 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         initial_block2.header.number
     );
 
-    // Connect node2 to node1 as peer
-    println!("Connecting node2 to node1...");
-
-    let node1_peer_id = *node1.network.peer_id();
-    let mut node1_addr = node1.network.local_addr();
-
-    // Fix the address if it's 0.0.0.0 (use localhost instead)
-    if node1_addr.ip().is_unspecified() {
-        node1_addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
-    }
-
-    println!("Node1 peer_id: {node1_peer_id:?}, addr: {node1_addr}");
-
-    // Add node1 as a peer to node2
-    use reth_ethereum::network::Peers;
-    node2.network.add_peer(node1_peer_id, node1_addr);
-
-    // Also add node2 as a peer to node1 for bidirectional connection
-    let node2_peer_id = *node2.network.peer_id();
-    let mut node2_addr = node2.network.local_addr();
-    if node2_addr.ip().is_unspecified() {
-        node2_addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
-    }
-    node1.network.add_peer(node2_peer_id, node2_addr);
-
-    // Wait for connections to establish
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-    println!("Peer connections established");
-
     // Send Fork Choice Update to trigger backfill sync
     println!("Sending FCU to node2 with finalized block: {final_block_hash:?}");
 
@@ -219,6 +153,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     };
 
     let result = node2
+        .inner
         .add_ons_handle
         .beacon_engine_handle
         .fork_choice_updated(forkchoice_state, None, EngineApiMessageVersion::default())
