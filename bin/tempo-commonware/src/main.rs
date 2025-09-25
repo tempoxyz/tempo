@@ -30,6 +30,7 @@ use std::{
     thread,
 };
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
+use tempo_commonware_node::CommonwareNode;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::{
@@ -37,7 +38,6 @@ use tempo_faucet::{
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
 use tempo_node::{TempoFullNode, node::TempoNode};
-use tempo_commonware_node::CommonwareNode;
 use tokio::sync::oneshot;
 use tokio_util::either::Either;
 

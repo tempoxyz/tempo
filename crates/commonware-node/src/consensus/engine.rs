@@ -2,11 +2,11 @@
 //!
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
-use std::{
-    num::{NonZeroU64, NonZeroUsize},
-    time::Duration,
+use super::{block::Block, supervisor::Supervisor};
+use crate::consensus::{
+    ConsensusEngine,
+    execution_driver::{ExecutionDriver, ExecutionDriverMailbox},
 };
-
 use alloy_primitives::Address;
 use commonware_broadcast::buffered;
 use commonware_consensus::{marshal, threshold_simplex};
@@ -16,17 +16,14 @@ use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage, buffer::PoolR
 use eyre::WrapErr as _;
 use futures_util::future::try_join_all;
 use rand::{CryptoRng, Rng};
+use std::{
+    num::{NonZeroU64, NonZeroUsize},
+    time::Duration,
+};
 use tempo_commonware_node_cryptography::{
     BlsScheme, GroupShare, PrivateKey, PublicKey, PublicPolynomial,
 };
 use tempo_node::TempoFullNode;
-
-use crate::consensus::{
-    ConsensusEngine,
-    execution_driver::{ExecutionDriver, ExecutionDriverMailbox},
-};
-
-use super::{block::Block, supervisor::Supervisor};
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 

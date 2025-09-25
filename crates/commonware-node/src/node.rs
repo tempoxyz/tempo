@@ -1,9 +1,8 @@
+use crate::{consensus::engine::ConsensusEngineBuilder, network::CommonwareNetworkHandle};
 use commonware_p2p::authenticated::discovery;
 use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, eyre};
 use tempo_node::TempoFullNode;
-
-use crate::{consensus::engine::ConsensusEngineBuilder, network::CommonwareNetworkHandle};
 
 pub struct CommonwareNode {
     network_handle: CommonwareNetworkHandle,

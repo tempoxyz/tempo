@@ -1,3 +1,8 @@
+use crate::config::{
+    BACKFILL_BY_DIGEST_CHANNE_IDENTL, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
+    PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT,
+    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+};
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated::discovery::{
     self, Receiver as CommonwareP2PRx, Sender as CommonwareP2PTx,
@@ -7,14 +12,8 @@ use eyre::{WrapErr as _, bail, eyre};
 use futures_util::stream::{FuturesOrdered, TryStreamExt as _};
 use indexmap::IndexMap;
 use std::net::{Ipv4Addr, SocketAddr};
-use tracing::info;
-
-use crate::config::{
-    BACKFILL_BY_DIGEST_CHANNE_IDENTL, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
-    PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT,
-    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
-};
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
+use tracing::info;
 
 pub struct CommonwareNetworkHandle {
     pub network: discovery::Network<commonware_runtime::tokio::Context, PrivateKey>,
