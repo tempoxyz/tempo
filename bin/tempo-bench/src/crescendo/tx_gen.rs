@@ -1,12 +1,12 @@
 use crate::crescendo::{config, tx_queue::TX_QUEUE};
 use alloy::{
     network::TxSignerSync,
-    primitives::{Address, TxKind, U128, U256},
+    primitives::{Address, TxHash, TxKind, U128, U256},
     rpc::client::ClientBuilder,
     sol,
     sol_types::SolCall,
 };
-use alloy_consensus::{SignableTransaction, TxLegacy};
+use alloy_consensus::{SignableTransaction, TxLegacy, transaction::RlpEcdsaEncodableTx};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use dashmap::DashMap;
 use eyre::Context;
@@ -15,6 +15,7 @@ use rayon::prelude::*;
 use std::{sync::Arc, time::Instant};
 use tempo_precompiles::contracts::ITIP20;
 use thousands::Separable;
+use tokio_util::sync::CancellationToken;
 
 type Nonces = DashMap<Address, u64>;
 type Signers = Vec<PrivateKeySigner>;
@@ -109,7 +110,12 @@ impl TxGenerator {
         Ok(nonces)
     }
 
-    pub fn tx_gen_worker(self: Arc<Self>, worker_id: u32, worker_count: usize) {
+    pub fn tx_gen_worker(
+        self: Arc<Self>,
+        worker_id: u32,
+        worker_count: usize,
+        cancellation_token: CancellationToken,
+    ) {
         let config = &config::get().tx_gen_worker;
 
         let mut tx_batch = Vec::with_capacity(config.batch_size as usize);
@@ -118,7 +124,7 @@ impl TxGenerator {
             .chunks(self.signers.len() / worker_count)
             .collect::<Vec<_>>()[worker_id as usize];
 
-        loop {
+        while !cancellation_token.is_cancelled() {
             // Account we'll be sending from.
             let sender_index = fastrand::usize(..worker_signers.len());
             // Send to 1/Nth of the accounts.
@@ -166,11 +172,12 @@ impl TxGenerator {
     }
 }
 
-pub fn sign_and_encode_tx(signer: &PrivateKeySigner, mut tx: TxLegacy) -> Vec<u8> {
+pub fn sign_and_encode_tx(signer: &PrivateKeySigner, mut tx: TxLegacy) -> (TxHash, Vec<u8>) {
     // TODO: Upstream to alloy the ability to use the secp256k1
     // crate instead of k256 for this which is like 5x+ faster.
     let signature = signer.sign_transaction_sync(&mut tx).unwrap();
     let mut payload = Vec::new();
+    let tx_hash = tx.tx_hash(&signature);
     tx.into_signed(signature).eip2718_encode(&mut payload);
-    payload
+    (tx_hash, payload)
 }

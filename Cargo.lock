@@ -13584,8 +13584,10 @@ dependencies = [
  "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles",
+ "thiserror 2.0.16",
  "thousands",
  "tokio",
+ "tokio-util",
  "toml 0.8.23",
 ]
 

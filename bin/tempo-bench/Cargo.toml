@@ -24,9 +24,11 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 toml.workspace = true
 reth.workspace = true
 reth-evm.workspace = true
+thiserror.workspace = true
 
 
 # Bespoke dependencies

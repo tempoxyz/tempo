@@ -1,12 +1,14 @@
 use crate::crescendo::{
-    DesireType, NETWORK_STATS, TX_QUEUE, WorkerType,
+    DesireType, NETWORK_STATS, TX_QUEUE, TX_TRACKER, WorkerType,
     config::{self, Config},
     tx_gen::TxGenerator,
     utils, workers,
 };
 use clap::Parser;
 use eyre::WrapErr;
-use std::{future::pending, path::PathBuf, sync::Arc, thread, time::Duration};
+use std::{path::PathBuf, sync::Arc, thread, time::Duration};
+use tokio::time;
+use tokio_util::sync::CancellationToken;
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -68,6 +70,7 @@ impl TPSArgs {
         println!("[*] Connections per network worker: {connections_per_network_worker}");
 
         // TODO: Having the assign_workers function do this would be cleaner.
+        let cancellation_token = CancellationToken::new();
         let tx_gen_worker_count = worker_counts[&WorkerType::TxGen] as usize;
         let mut tx_gen_worker_id = 0;
         let mut network_worker_id = 0;
@@ -79,13 +82,19 @@ impl TPSArgs {
             match worker_type {
                 WorkerType::TxGen => {
                     let tx_gen_clone: Arc<TxGenerator> = Arc::clone(&tx_generator);
+                    let cloned_token = cancellation_token.clone();
                     thread::spawn(move || {
                         utils::maybe_pin_thread(core_id);
-                        tx_gen_clone.tx_gen_worker(tx_gen_worker_id, tx_gen_worker_count);
+                        tx_gen_clone.tx_gen_worker(
+                            tx_gen_worker_id,
+                            tx_gen_worker_count,
+                            cloned_token,
+                        );
                     });
                     tx_gen_worker_id += 1;
                 }
                 WorkerType::Network => {
+                    let cloned_token = cancellation_token.clone();
                     thread::spawn(move || {
                         utils::maybe_pin_thread(core_id);
                         let rt = tokio::runtime::Builder::new_current_thread()
@@ -98,9 +107,10 @@ impl TPSArgs {
                                 tokio::spawn(workers::network_worker(
                                     (network_worker_id * connections_per_network_worker + i)
                                         as usize,
+                                    cloned_token.clone(),
                                 ));
                             }
-                            pending::<()>().await; // Keep the runtime alive forever.
+                            cloned_token.cancelled().await;
                         });
                     });
                     network_worker_id += 1;
@@ -111,13 +121,34 @@ impl TPSArgs {
         println!("[*] Starting reporters...");
 
         // Start reporters.
-        tokio::spawn(TX_QUEUE.start_reporter(Duration::from_secs(
-            config::get().reporters.tx_queue_report_interval_secs,
-        )));
-        tokio::spawn(NETWORK_STATS.start_reporter(Duration::from_secs(
-            config::get().reporters.network_stats_report_interval_secs,
-        )))
+        tokio::spawn(TX_QUEUE.start_reporter(
+            Duration::from_secs(config::get().reporters.tx_queue_report_interval_secs),
+            cancellation_token.clone(),
+        ));
+        tokio::spawn(NETWORK_STATS.start_reporter(
+            Duration::from_secs(config::get().reporters.network_stats_report_interval_secs),
+            cancellation_token.clone(),
+        ));
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(config::get().benchmark.run_duration)).await;
+            println!("[*] Stopping reporters...");
+            cancellation_token.cancel();
+        })
         .await?;
+
+        println!("[*] All workers stopped, entering cool down period");
+        time::sleep(Duration::from_secs(
+            config::get().benchmark.cool_down_duration,
+        ))
+        .await;
+
+        let report = TX_TRACKER
+            .tally_sent_txs(0)
+            .await
+            .expect("Failed to generate tx report");
+
+        println!("Final report: {:?}", report);
 
         Ok(())
     }
