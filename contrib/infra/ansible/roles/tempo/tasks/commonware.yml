@@ -72,5 +72,19 @@
     path: "{{ ansible_env.HOME }}/malachite/config/commonware.toml"
     section: "peers"
     option: "0x{{ hostvars[item]['node_id'] }}"
-    value: "\"{{ hostvars[item]['ansible_tailscale0']['ipv4']['address'] }}:8000\""
+    value: "\"{{ hostvars[item]['tempo_ovh_private_address'] | default(hostvars[item]['ansible_tailscale0']['ipv4']['address']) }}:8000\""
   loop: "{{ play_hosts }}"
+
+- name: Modify peers in configuration files
+  ini_file:
+    path: "{{ ansible_env.HOME }}/malachite/config/commonware.toml"
+    section: "timeouts"
+    option: "new_payload_wait_time"
+    value: "\"500ms\""
+
+- name: Modify peers in configuration files
+  ini_file:
+    path: "{{ ansible_env.HOME }}/malachite/config/commonware.toml"
+    section: ""
+    option: "storage_directory"
+    value: "\"{{ ansible_env.HOME }}/malachite/commonware\""

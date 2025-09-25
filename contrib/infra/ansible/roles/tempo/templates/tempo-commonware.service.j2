@@ -18,6 +18,7 @@ ExecStart=/usr/local/bin/tempo-commonware node --datadir {{ ansible_env.HOME }}/
   --chain {{ ansible_env.HOME }}/malachite/config/reth_genesis.json \
   --consensus-config {{ ansible_env.HOME }}/malachite/config/commonware.toml \
   --port 30303 \
+  --discovery.addr 0.0.0.0 \
   --discovery.port 30303 \
   --http \
   --http.addr 0.0.0.0 \
@@ -29,7 +30,7 @@ ExecStart=/usr/local/bin/tempo-commonware node --datadir {{ ansible_env.HOME }}/
   --builder.gaslimit 3000000000 \
   --builder.max-tasks 16 \
   --builder.deadline 3 \
-  --builder.interval 100ms \
+  --builder.interval 1000ms \
   --txpool.pending-max-count 10000000000000 \
   --txpool.basefee-max-count 10000000000000 \
   --txpool.queued-max-count 10000000000000 \

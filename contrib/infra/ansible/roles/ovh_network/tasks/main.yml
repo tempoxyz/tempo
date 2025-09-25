@@ -1,0 +1,34 @@
+---
+- name: Find down eth/enp interfaces using ansible facts
+  ansible.builtin.set_fact:
+    down_interfaces: "{{ down_interfaces | default([]) + [item] }}"
+  loop: "{{ ansible_interfaces | select('match', '^(eth|enp)[\\w]+$') | list }}"
+  when: not hostvars[inventory_hostname]['ansible_' + item].active | default(false)
+
+- name: End play if no interfaces are down
+  ansible.builtin.meta: end_play
+  when: down_interfaces | length == 0
+
+- name: Set target interface
+  ansible.builtin.set_fact:
+    target_interface: "{{ down_interfaces[0] }}"
+
+- name: Configure netplan
+  ansible.builtin.include_role:
+    name: mrlesmithjr.netplan
+  vars:
+    netplan_config_file: /etc/netplan/60-vrack.yaml
+    netplan_configuration:
+      network:
+        version: 2
+        renderer: networkd
+        ethernets: "{{ {target_interface: {'dhcp4': false, 'addresses': [tempo_ovh_private_address + '/16']}} }}"
+
+- name: Allow all traffic on private interface
+  community.general.ufw:
+    rule: allow
+    interface: "{{ target_interface }}"
+    direction: in
+    from_ip: any
+    to_ip: any
+  become: yes

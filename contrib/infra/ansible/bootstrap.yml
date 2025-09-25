@@ -3,6 +3,8 @@
   tags: bootstrap
   roles:
   - role: bootstrap
+  - role: ovh_network
+    when: tempo_ovh_private_address is defined
   - role: hurricanehrndz.rustup
     vars:
       rustup_user: "{{ ansible_user }}"
