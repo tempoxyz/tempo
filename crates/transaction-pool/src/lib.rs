@@ -4,7 +4,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 use alloy_consensus::Transaction;
-use alloy_primitives::U256;
 use reth_transaction_pool::{
     Pool, Priority, TransactionOrdering, TransactionValidationTaskExecutor,
     blobstore::DiskFileBlobStore,
@@ -34,7 +33,7 @@ pub struct TempoPriorityOrdering;
 #[derive(Debug, Default, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct TempoPriority {
     non_payment: bool,
-    effective_tip_per_gas: U256,
+    effective_tip_per_gas: u128,
 }
 
 impl TransactionOrdering for TempoPriorityOrdering {
@@ -46,9 +45,7 @@ impl TransactionOrdering for TempoPriorityOrdering {
         transaction: &Self::Transaction,
         base_fee: u64,
     ) -> Priority<Self::PriorityValue> {
-        if let Some(effective_tip_per_gas) =
-            transaction.effective_tip_per_gas(base_fee).map(U256::from)
-        {
+        if let Some(effective_tip_per_gas) = transaction.effective_tip_per_gas(base_fee) {
             Some(TempoPriority {
                 non_payment: !transaction.is_payment(),
                 effective_tip_per_gas,
@@ -62,20 +59,18 @@ impl TransactionOrdering for TempoPriorityOrdering {
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::uint;
-
     use super::*;
 
     #[test]
     fn test_non_payment_priority() {
         let payment = TempoPriority {
             non_payment: false,
-            effective_tip_per_gas: U256::from(100u64),
+            effective_tip_per_gas: 100,
         };
 
         let non_payment = TempoPriority {
             non_payment: true,
-            effective_tip_per_gas: U256::from(10000u64),
+            effective_tip_per_gas: 10000,
         };
 
         assert!(non_payment > payment);
@@ -83,8 +78,8 @@ mod test {
 
     #[test]
     fn test_priority_fee() {
-        let high_fee = uint!(1000_U256);
-        let low_fee = uint!(10_U256);
+        let high_fee = 10000;
+        let low_fee = 10;
 
         let payment_high_fee = TempoPriority {
             non_payment: false,
