@@ -6,7 +6,7 @@
 use alloy_consensus::Transaction;
 use alloy_primitives::U256;
 use reth_transaction_pool::{
-    CoinbaseTipOrdering, Pool, Priority, TransactionOrdering, TransactionValidationTaskExecutor,
+    Pool, Priority, TransactionOrdering, TransactionValidationTaskExecutor,
     blobstore::DiskFileBlobStore,
 };
 
