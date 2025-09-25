@@ -1,12 +1,13 @@
 //! Drives the execution engine by forwarding consensus messages.
 
-use std::{sync::Arc, time::Duration};
+mod executor;
 
+use super::{View, block::Block};
+use crate::consensus::execution_driver::executor::ExecutorMailbox;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadId;
 use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
-
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
 use futures_channel::{mpsc, oneshot};
@@ -21,20 +22,13 @@ use reth::{
 };
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
-use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
-
 use reth_provider::{BlockNumReader as _, BlockReader as _};
+use std::{sync::Arc, time::Duration};
+use tempo_commonware_node_cryptography::{BlsScheme, Digest};
+use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_primitives::TempoPrimitives;
 use tokio::sync::RwLock;
 use tracing::{Level, info, instrument};
-
-use tempo_commonware_node_cryptography::{BlsScheme, Digest};
-
-mod executor;
-
-use crate::consensus::execution_driver::executor::ExecutorMailbox;
-
-use super::{View, block::Block};
 
 pub(super) struct ExecutionDriverBuilder<TContext> {
     /// The execution context of the commonwarexyz application (tokio runtime, etc).
