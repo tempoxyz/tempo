@@ -316,6 +316,7 @@ where
             self.metrics
                 .transaction_execution_duration_seconds
                 .record(elapsed);
+            trace!(target: "payload_builder", ?elapsed, "Transaction executed");
 
             block_transactions_rlp_length += tx_rlp_length;
 
@@ -326,9 +327,10 @@ where
             cumulative_gas_used += gas_used;
         }
 
+        let execution_elapsed = execution_start.elapsed();
         self.metrics
             .total_transaction_execution_duration_seconds
-            .record(execution_start.elapsed());
+            .record(execution_elapsed);
         self.metrics
             .payment_transactions
             .record(payment_transactions);
@@ -355,10 +357,10 @@ where
             block,
             ..
         } = builder.finish(&state_provider)?;
-        let elapsed = start.elapsed();
+        let builder_finish_elapsed = start.elapsed();
         self.metrics
             .payload_finalization_duration_seconds
-            .record(elapsed);
+            .record(builder_finish_elapsed);
         self.metrics
             .total_transactions
             .record(block.transaction_count() as f64);
@@ -368,7 +370,16 @@ where
             .then_some(execution_result.requests);
 
         let sealed_block = Arc::new(block.sealed_block().clone());
-        debug!(target: "payload_builder", id=%attributes.payload_id(), sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
+        debug!(
+            target: "payload_builder",
+            id = %attributes.payload_id(),
+            sealed_block_header = ?sealed_block.sealed_header(),
+            total_transactions = block.transaction_count(),
+            ?payment_transactions,
+            ?execution_elapsed,
+            ?builder_finish_elapsed,
+            "Sealed built block"
+        );
 
         if is_osaka && sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
