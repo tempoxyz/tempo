@@ -3,8 +3,12 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+mod attrs;
+
+pub use crate::attrs::TempoPayloadBuilderAttributes;
+
 use alloy_rpc_types_eth::Withdrawal;
-use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadBuilderAttributes};
+use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{ExecutionPayload, PayloadBuilderAttributes, PayloadTypes};
 use reth_primitives_traits::SealedBlock;
 use serde::{Deserialize, Serialize};
@@ -56,7 +60,7 @@ impl ExecutionPayload for TempoExecutionData {
 impl PayloadTypes for TempoPayloadTypes {
     type PayloadAttributes =
         <Self::PayloadBuilderAttributes as PayloadBuilderAttributes>::RpcPayloadAttributes;
-    type PayloadBuilderAttributes = EthPayloadBuilderAttributes;
+    type PayloadBuilderAttributes = TempoPayloadBuilderAttributes;
     type ExecutionData = TempoExecutionData;
     type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
 

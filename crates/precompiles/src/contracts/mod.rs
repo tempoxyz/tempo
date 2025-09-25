@@ -23,8 +23,7 @@ pub use types::{
 };
 
 pub fn is_tip20(token: &Address) -> bool {
-    let bytes = token.as_slice();
-    bytes[0..12] == TIP20_TOKEN_PREFIX
+    token.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
 }
 
 /// Converts a token ID to its corresponding contract address

@@ -1,11 +1,13 @@
+mod header;
 mod request;
 
+pub use header::Header;
 pub use request::TempoTransactionRequest;
+use tempo_revm::TempoTxEnv;
 
-use crate::node::TempoNode;
+use crate::{TempoNetwork, node::TempoNode};
 use alloy::{consensus::TxReceipt, primitives::U256};
 use alloy_primitives::Address;
-use alloy_rpc_types_eth::ReceiptWithBloom;
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -17,7 +19,7 @@ use reth_node_builder::{
     rpc::{EthApiBuilder, EthApiCtx},
 };
 use reth_provider::ChainSpecProvider;
-use reth_rpc::{DynRpcConverter, RpcTypes, eth::EthApi};
+use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
@@ -34,24 +36,10 @@ use reth_rpc_eth_types::{
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_evm::TempoEvmConfig;
-use tempo_precompiles::contracts::{provider::TIPFeeDatabaseExt, tip_fee_manager::fee::FeeToken};
-use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
+use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
+use tempo_primitives::TempoReceipt;
 use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
-
-/// Tempo RPC types.
-#[derive(Debug, Clone, Copy, Default)]
-#[non_exhaustive]
-pub struct TempoRpcTypes;
-
-impl RpcTypes for TempoRpcTypes {
-    type Header = alloy_rpc_types_eth::Header;
-    type Receipt = alloy_rpc_types_eth::TransactionReceipt<
-        ReceiptWithBloom<TempoReceipt<alloy_rpc_types_eth::Log>>,
-    >;
-    type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
-    type TransactionRequest = TempoTransactionRequest;
-}
 
 /// Tempo `Eth` API implementation.
 ///
@@ -66,36 +54,35 @@ impl RpcTypes for TempoRpcTypes {
 #[derive(Clone)]
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
-    inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoRpcTypes>>,
+    inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     /// Creates a new `TempoEthApi`.
     pub fn new(
-        eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoRpcTypes>>,
+        eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
     ) -> Self {
         Self { inner: eth_api }
     }
 
     /// Returns the feeToken balance of the tx caller in the token's native decimals
-    pub fn caller_fee_token_allowance<DB, T>(
+    pub fn caller_fee_token_allowance<DB>(
         &self,
         db: &mut DB,
-        env: &T,
+        env: &TempoTxEnv,
         validator: Address,
-    ) -> Result<FeeToken, DB::Error>
+    ) -> Result<U256, DB::Error>
     where
         DB: Database,
-        T: reth_evm::revm::context_interface::Transaction,
     {
-        db.get_fee_token_balance(env.caller(), validator)
+        db.get_fee_token_balance(env.caller, validator, env.fee_token)
     }
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiTypes for TempoEthApi<N> {
     type Error = EthApiError;
-    type NetworkTypes = TempoRpcTypes;
-    type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoRpcTypes>;
+    type NetworkTypes = TempoNetwork;
+    type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoNetwork>;
 
     fn tx_resp_builder(&self) -> &Self::RpcConvert {
         self.inner.tx_resp_builder()
@@ -139,7 +126,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> RpcNodeCoreExt for TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiSpec for TempoEthApi<N> {
     type Transaction = TxTy<N::Types>;
-    type Rpc = TempoRpcTypes;
+    type Rpc = TempoNetwork;
 
     #[inline]
     fn starting_block(&self) -> U256 {
@@ -231,14 +218,13 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        let fee_token = self
+        let fee_token_balance = self
             .caller_fee_token_allowance(&mut db, tx_env, evm_env.block_env.beneficiary)
             .map_err(Into::into)?;
 
         // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
         // 10**9 so we must adjust by USD_DECIMAL_FACTOR
-        let adjusted_balance = fee_token
-            .balance()
+        let adjusted_balance = fee_token_balance
             .saturating_mul(USD_DECIMAL_FACTOR)
             .saturating_to::<u64>();
 
@@ -264,6 +250,10 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
         EthTransactions::signers(&self.inner)
     }
 
+    fn send_raw_transaction_sync_timeout(&self) -> std::time::Duration {
+        self.inner.send_raw_transaction_sync_timeout()
+    }
+
     fn send_raw_transaction(
         &self,
         tx: alloy::primitives::Bytes,
@@ -287,7 +277,7 @@ where
             .eth_api_builder()
             .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
             .map_converter(|_| {
-                RpcConverter::<TempoRpcTypes, TempoEvmConfig, _>::new(
+                RpcConverter::<TempoNetwork, TempoEvmConfig, _>::new(
                     EthReceiptConverter::new(chain_spec).with_builder(
                         |receipt: TempoReceipt, next_log_index, meta| {
                             receipt.into_rpc(next_log_index, meta).into_with_bloom()

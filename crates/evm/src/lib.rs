@@ -3,7 +3,12 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+mod assemble;
+pub use assemble::TempoBlockAssembler;
 mod block;
+mod context;
+pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+use tempo_consensus::TempoExtraData;
 pub mod evm;
 use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
@@ -11,7 +16,7 @@ use alloy_primitives::Bytes;
 pub use evm::TempoEvmFactory;
 use reth_evm::{
     self, ConfigureEngineEvm, ConfigureEvm, Database, EvmEnv, EvmEnvFor, ExecutableTxIterator,
-    ExecutionCtxFor, NextBlockEnvAttributes,
+    ExecutionCtxFor,
     block::{BlockExecutorFactory, BlockExecutorFor},
     eth::EthBlockExecutionCtx,
     revm::{Inspector, database::State},
@@ -21,7 +26,7 @@ use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
-use reth_evm_ethereum::{EthBlockAssembler, EthEvmConfig};
+use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::TempoChainSpec;
 use tempo_revm::evm::TempoContext;
 
@@ -30,13 +35,19 @@ use tempo_revm::evm::TempoContext;
 pub struct TempoEvmConfig {
     /// Inner evm config
     pub inner: EthEvmConfig<TempoChainSpec, TempoEvmFactory>,
+
+    /// Block assembler
+    pub block_assembler: TempoBlockAssembler,
 }
 
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>, evm_factory: TempoEvmFactory) -> Self {
-        let inner = EthEvmConfig::new_with_evm_factory(chain_spec, evm_factory);
-        Self { inner }
+        let inner = EthEvmConfig::new_with_evm_factory(chain_spec.clone(), evm_factory);
+        Self {
+            inner,
+            block_assembler: TempoBlockAssembler::new(chain_spec),
+        }
     }
 
     /// Create a new [`TempoEvmConfig`] with the given chain spec and default EVM factory.
@@ -56,15 +67,14 @@ impl TempoEvmConfig {
 
     /// Sets the extra data for the block assembler.
     pub fn with_extra_data(mut self, extra_data: Bytes) -> Self {
-        self.inner = self.inner.with_extra_data(extra_data.clone());
-        self.inner.block_assembler.extra_data = extra_data;
+        self.block_assembler.inner.extra_data = extra_data;
         self
     }
 }
 
 impl BlockExecutorFactory for TempoEvmConfig {
     type EvmFactory = TempoEvmFactory;
-    type ExecutionCtx<'a> = EthBlockExecutionCtx<'a>;
+    type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
 
@@ -88,16 +98,16 @@ impl BlockExecutorFactory for TempoEvmConfig {
 impl ConfigureEvm for TempoEvmConfig {
     type Primitives = TempoPrimitives;
     type Error = Infallible;
-    type NextBlockEnvCtx = NextBlockEnvAttributes;
+    type NextBlockEnvCtx = TempoNextBlockEnvAttributes;
     type BlockExecutorFactory = Self;
-    type BlockAssembler = EthBlockAssembler<TempoChainSpec>;
+    type BlockAssembler = TempoBlockAssembler;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
         self
     }
 
     fn block_assembler(&self) -> &Self::BlockAssembler {
-        self.inner.block_assembler()
+        &self.block_assembler
     }
 
     fn evm_env(&self, header: &Header) -> EvmEnv {
@@ -107,17 +117,23 @@ impl ConfigureEvm for TempoEvmConfig {
     fn next_evm_env(
         &self,
         parent: &Header,
-        attributes: &NextBlockEnvAttributes,
+        attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnv, Self::Error> {
-        self.inner.next_evm_env(parent, attributes)
+        self.inner.next_evm_env(parent, &attributes.inner)
     }
 
-    fn context_for_block<'a>(&self, block: &'a SealedBlock<Block>) -> EthBlockExecutionCtx<'a> {
-        EthBlockExecutionCtx {
-            parent_hash: block.header().parent_hash,
-            parent_beacon_block_root: block.header().parent_beacon_block_root,
-            ommers: &block.body().ommers,
-            withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+    fn context_for_block<'a>(&self, block: &'a SealedBlock<Block>) -> TempoBlockExecutionCtx<'a> {
+        let non_payment_gas_limit = TempoExtraData::decode(&block.header().extra_data)
+            .map(|data| data.non_payment_gas_limit)
+            .unwrap_or(0);
+        TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash: block.header().parent_hash,
+                parent_beacon_block_root: block.header().parent_beacon_block_root,
+                ommers: &block.body().ommers,
+                withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+            },
+            non_payment_gas_limit,
         }
     }
 
@@ -125,12 +141,15 @@ impl ConfigureEvm for TempoEvmConfig {
         &self,
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
-    ) -> EthBlockExecutionCtx<'_> {
-        EthBlockExecutionCtx {
-            parent_hash: parent.hash(),
-            parent_beacon_block_root: attributes.parent_beacon_block_root,
-            ommers: &[],
-            withdrawals: attributes.withdrawals.map(Cow::Owned),
+    ) -> TempoBlockExecutionCtx<'_> {
+        TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash: parent.hash(),
+                parent_beacon_block_root: attributes.parent_beacon_block_root,
+                ommers: &[],
+                withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
+            },
+            non_payment_gas_limit: attributes.non_payment_gas_limit,
         }
     }
 }

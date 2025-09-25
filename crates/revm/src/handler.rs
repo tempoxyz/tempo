@@ -166,7 +166,7 @@ where
             // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
             let to_addr = tx.kind().into_to().unwrap_or_default();
             fee_manager
-                .collect_fee_pre_tx(tx.caller(), to_addr, gas_balance_spending)
+                .collect_fee_pre_tx(tx.caller(), self.fee_token, to_addr, gas_balance_spending)
                 .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }
 

@@ -13,7 +13,6 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - uses: rui314/setup-mold@v1
-    - uses: taiki-e/install-action@just
     - uses: dtolnay/rust-toolchain@stable
       with:
         target: x86_64-unknown-linux-gnu
@@ -25,9 +24,12 @@ jobs:
           ~/.cargo/git
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    - name: Install cross main
-      run: |
-        just install-cross
+    - uses: taiki-e/install-action@just
+    - uses: taiki-e/cache-cargo-install-action@v2
+      with:
+        tool: cross
+        git: https://github.com/cross-rs/cross
+        tag: v0.2.5
     - run: |
         just build-release ${{ matrix.binary }}
     - uses: actions/upload-artifact@v4

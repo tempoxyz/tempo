@@ -1,18 +1,18 @@
+use crate::crescendo::config;
+use alloy::primitives::TxHash;
+use parking_lot::Mutex;
+use ratelimit::Ratelimiter;
 use std::{
     collections::VecDeque,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
-
-use parking_lot::Mutex;
-use ratelimit::Ratelimiter;
 use thousands::Separable;
-
-use crate::crescendo::config;
+use tokio_util::sync::CancellationToken;
 
 pub struct TxQueue {
     // TODO: RwLock? Natively concurrent deque?
-    queue: Mutex<VecDeque<Vec<u8>>>,
+    queue: Mutex<VecDeque<(TxHash, Vec<u8>)>>,
     total_added: AtomicU64,
     total_popped: AtomicU64,
     rate_limiter: Ratelimiter,
@@ -20,7 +20,7 @@ pub struct TxQueue {
 
 impl TxQueue {
     fn new() -> Self {
-        let initial_ratelimit = config::get().rate_limiting.initial_ratelimit;
+        let initial_ratelimit = config::get().benchmark.initial_ratelimit;
 
         let rate_limiter = Ratelimiter::builder(initial_ratelimit, Duration::from_secs(1))
             .max_tokens(initial_ratelimit)
@@ -39,7 +39,7 @@ impl TxQueue {
 pub static TX_QUEUE: std::sync::LazyLock<TxQueue> = std::sync::LazyLock::new(TxQueue::new);
 
 impl TxQueue {
-    pub fn push_txs(&self, txs: Vec<Vec<u8>>) {
+    pub fn push_txs(&self, txs: Vec<(TxHash, Vec<u8>)>) {
         self.total_added
             .fetch_add(txs.len() as u64, Ordering::Relaxed);
         self.queue.lock().extend(txs);
@@ -49,7 +49,7 @@ impl TxQueue {
         self.queue.lock().len()
     }
 
-    pub async fn pop_at_most(&self, max_count: usize) -> Option<Vec<Vec<u8>>> {
+    pub async fn pop_at_most(&self, max_count: usize) -> Option<Vec<(TxHash, Vec<u8>)>> {
         // Assume the queue has sufficient items for now.
         let allowed = (0..max_count)
             .take_while(|_| self.rate_limiter.try_wait().is_ok())
@@ -74,13 +74,18 @@ impl TxQueue {
         Some(drained)
     }
 
-    pub async fn start_reporter(&self, measurement_interval: std::time::Duration) {
+    pub async fn start_reporter(
+        &self,
+        measurement_interval: Duration,
+        cancellation_token: CancellationToken,
+    ) {
         let mut last_total_added = 0u64;
         let mut last_total_popped = 0u64;
         let mut last_queue_len = 0usize;
         let mut interval = tokio::time::interval(measurement_interval);
         interval.tick().await;
-        loop {
+
+        while !cancellation_token.is_cancelled() {
             interval.tick().await;
             let total_added = self.total_added.load(Ordering::Relaxed);
             let total_popped = self.total_popped.load(Ordering::Relaxed);
@@ -93,7 +98,7 @@ impl TxQueue {
                 / measurement_interval.as_secs_f64()) as i64;
 
             // Adjust rate limit based on total popped transactions and thresholds.
-            let rate_config = &config::get().rate_limiting;
+            let rate_config = &config::get().benchmark;
             let new_rate_limit = rate_config
                 .ratelimit_thresholds
                 .iter()
