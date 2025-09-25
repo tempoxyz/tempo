@@ -1,0 +1,16 @@
+use reth_metrics::{Metrics, metrics::Histogram};
+
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_payload_builder")]
+pub(crate) struct TempoPayloadBuilderMetrics {
+    /// Number of transactions in the payload.
+    pub(crate) total_transactions: Histogram,
+    /// Number of payment transactions in the payload.
+    pub(crate) payment_transactions: Histogram,
+    /// The time it took to execute one transaction in seconds.
+    pub(crate) transaction_execution_duration_seconds: Histogram,
+    /// The time it took to execute all transactions in seconds.
+    pub(crate) total_transaction_execution_duration_seconds: Histogram,
+    /// The time it took to finalize the payload in seconds. Includes merging transitions and calculating the state root.
+    pub(crate) payload_finalization_duration_seconds: Histogram,
+}
