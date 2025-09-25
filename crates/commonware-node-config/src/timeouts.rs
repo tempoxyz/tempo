@@ -27,6 +27,10 @@ pub struct Config {
 
     /// The number of views until a new leader is elected. Also called a skip timeout.
     pub views_until_leader_skip: u64,
+
+    /// The amount of time to wait for payload builder before resolving payload.
+    #[serde(with = "humantime_serde")]
+    pub new_payload_wait_time: Duration,
 }
 
 impl Default for Config {
@@ -38,6 +42,7 @@ impl Default for Config {
             time_to_retry_nullify_broadcast: Duration::from_secs(10),
             views_to_track: 256,
             views_until_leader_skip: 32,
+            new_payload_wait_time: Duration::from_millis(500),
         }
     }
 }

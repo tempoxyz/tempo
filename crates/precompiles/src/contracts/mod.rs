@@ -22,6 +22,10 @@ pub use types::{
     ITipAccountRegistrar,
 };
 
+pub fn is_tip20(token: &Address) -> bool {
+    token.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
+}
+
 /// Converts a token ID to its corresponding contract address
 /// Uses the pattern: TIP20_TOKEN_PREFIX ++ token_id
 pub fn token_id_to_address(token_id: u64) -> Address {

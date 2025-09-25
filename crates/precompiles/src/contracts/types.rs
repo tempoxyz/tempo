@@ -189,7 +189,7 @@ sol! {
         // TODO: has liquidity
 
         // Swapping
-        function rebalanceSwap(address userToken, address validatorToken, uint256 amountIn, address to) external returns (uint256 amountOut);
+        function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to) external returns (uint256 amountIn);
         function calculateLiquidity(uint256 x, uint256 y) external pure returns (uint256);
 
         // Events

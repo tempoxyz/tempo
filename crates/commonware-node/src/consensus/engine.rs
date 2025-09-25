@@ -81,8 +81,8 @@ pub struct Builder<
     pub fetch_timeout: Duration,
     pub activity_timeout: u64,
     pub skip_timeout: u64,
+    pub new_payload_wait_time: Duration,
     pub max_fetch_count: usize,
-    pub max_fetch_size: usize,
     pub fetch_concurrent: usize,
     pub fetch_rate_per_peer: Quota,
     // pub indexer: Option<TIndexer>,
@@ -144,18 +144,19 @@ where
             )
             .await;
 
-        let execution_driver = super::execution_driver::Builder {
+        let execution_driver = super::execution_driver::ExecutionDriverBuilder {
             context: self.context.with_label("execution_driver"),
             // TODO: pass in from the outside,
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
-            syncer_mailbox: syncer_mailbox.clone(),
+            syncer: syncer_mailbox.clone(),
             execution_node: self.execution_node,
+            new_payload_wait_time: self.new_payload_wait_time,
             // chainspec: self.chainspec,
             // engine_handle: self.execution_engine,
             // payload_builder: self.execution_payload_builder,
         }
-        .try_init()
+        .build()
         .wrap_err("failed initializing execution driver")?;
 
         let execution_driver_mailbox = execution_driver.mailbox().clone();
@@ -222,7 +223,7 @@ where
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
     execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
-    execution_driver_mailbox: crate::consensus::execution_driver::Mailbox,
+    execution_driver_mailbox: crate::consensus::execution_driver::ExecutionDriverMailbox,
 
     /// Responsible for syncing(?) messages from/to other nodes.
     // FIXME: This is a complex beast, interacting with very many parts of the system. At

@@ -1,4 +1,4 @@
-use crate::evm::TempoEvm;
+use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::Transaction;
 use alloy_primitives::Bytes;
 use alloy_sol_types::SolCall;
@@ -9,7 +9,7 @@ use reth_evm::{
         ExecutableTx,
     },
     eth::{
-        EthBlockExecutionCtx, EthBlockExecutor,
+        EthBlockExecutor,
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
@@ -58,6 +58,9 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
         TempoReceiptBuilder,
     >,
 
+    non_payment_gas_left: u64,
+
+    seen_payment_tx: bool,
     seen_system_tx: bool,
 }
 
@@ -68,11 +71,18 @@ where
 {
     pub(crate) fn new(
         evm: TempoEvm<&'a mut State<DB>, I>,
-        ctx: EthBlockExecutionCtx<'a>,
+        ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         Self {
-            inner: EthBlockExecutor::new(evm, ctx, chain_spec, TempoReceiptBuilder::default()),
+            non_payment_gas_left: ctx.non_payment_gas_limit,
+            inner: EthBlockExecutor::new(
+                evm,
+                ctx.inner,
+                chain_spec,
+                TempoReceiptBuilder::default(),
+            ),
+            seen_payment_tx: false,
             seen_system_tx: false,
         }
     }
@@ -126,6 +136,16 @@ where
                 "regular transaction can't follow system transaction",
             )
             .into());
+        } else if self.seen_payment_tx && !tx.tx().is_payment() {
+            return Err(BlockValidationError::msg(
+                "non-payment transaction can't follow payment transaction",
+            )
+            .into());
+        } else if !tx.tx().is_payment() && tx.tx().gas_limit() > self.non_payment_gas_left {
+            return Err(BlockValidationError::msg(
+                "transaction gas limit exceeds non-payment gas limit",
+            )
+            .into());
         }
 
         self.inner.execute_transaction_without_commit(tx)
@@ -140,6 +160,10 @@ where
 
         if tx.tx().is_system_tx() {
             self.seen_system_tx = true;
+        } else if tx.tx().is_payment() {
+            self.seen_payment_tx = true;
+        } else {
+            self.non_payment_gas_left -= gas_used;
         }
 
         Ok(gas_used)
