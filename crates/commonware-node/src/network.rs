@@ -4,9 +4,7 @@ use crate::config::{
     RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
 };
 use commonware_cryptography::Signer;
-use commonware_p2p::authenticated::discovery::{
-    self, Receiver as CommonwareP2PRx, Sender as CommonwareP2PTx,
-};
+use commonware_p2p::authenticated::discovery::{self, Receiver, Sender};
 use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, bail, eyre};
 use futures_util::stream::{FuturesOrdered, TryStreamExt as _};
@@ -17,11 +15,11 @@ use tracing::info;
 
 pub(crate) struct CommonwareNetwork {
     pub(crate) network: discovery::Network<commonware_runtime::tokio::Context, PrivateKey>,
-    pub(crate) pending: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
-    pub(crate) recovered: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
-    pub(crate) resolver: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
-    pub(crate) broadcaster: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
-    pub(crate) backfill: (CommonwareP2PTx<PublicKey>, CommonwareP2PRx<PublicKey>),
+    pub(crate) pending: (Sender<PublicKey>, Receiver<PublicKey>),
+    pub(crate) recovered: (Sender<PublicKey>, Receiver<PublicKey>),
+    pub(crate) resolver: (Sender<PublicKey>, Receiver<PublicKey>),
+    pub(crate) broadcaster: (Sender<PublicKey>, Receiver<PublicKey>),
+    pub(crate) backfill: (Sender<PublicKey>, Receiver<PublicKey>),
 }
 
 impl CommonwareNetwork {
