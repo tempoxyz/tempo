@@ -30,7 +30,6 @@ use std::{
     thread,
 };
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::{
@@ -38,6 +37,7 @@ use tempo_faucet::{
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
 use tempo_node::{TempoFullNode, node::TempoNode};
+use tempo_commonware_node::CommonwareNode;
 use tokio::sync::oneshot;
 use tokio_util::either::Either;
 
@@ -123,8 +123,10 @@ fn main() -> eyre::Result<()> {
                     }
                     None => Either::Right(pending()),
                 }.fuse();
-                let consensus_stack = run_consensus_stack(&ctx, &consensus_config, node);
-                tokio::pin!(consensus_stack);
+
+                let consensus_handle = CommonwareNode::new(&ctx, &consensus_config, node).await?.run();
+                tokio::pin!(consensus_handle);
+
                 loop {
                     tokio::select!(
                         biased;
@@ -133,7 +135,7 @@ fn main() -> eyre::Result<()> {
                             break Ok(());
                         }
 
-                        ret = &mut consensus_stack => {
+                        ret = &mut consensus_handle => {
                             break ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
                             .wrap_err("consensus stack failed");
                         }
