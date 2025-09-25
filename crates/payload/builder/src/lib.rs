@@ -231,17 +231,9 @@ where
                 continue;
             }
 
-            // check if the job was cancelled, if so we can exit early
-            if cancel.is_cancelled() {
-                return Ok(BuildOutcome::Cancelled);
-            }
-
-            // convert tx to a signed transaction
-            let tx = pool_tx.to_consensus();
-
             // If the tx is not a payment and the non payment block space is exhausted
             // mark the tx as invalid and continue
-            if !tx.is_payment()
+            if !pool_tx.transaction.is_payment()
                 && pool_tx.gas_limit() + non_payment_gas_used > non_payment_gas_limit
             {
                 best_txs.mark_invalid(
@@ -252,6 +244,14 @@ where
                 );
                 continue;
             }
+
+            // check if the job was cancelled, if so we can exit early
+            if cancel.is_cancelled() {
+                return Ok(BuildOutcome::Cancelled);
+            }
+
+            // convert tx to a signed transaction
+            let tx = pool_tx.to_consensus();
 
             let estimated_block_size_with_tx = block_transactions_rlp_length
                 + tx.inner().length()
