@@ -415,84 +415,106 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    // Use two different accounts to avoid nonce ordering issues.
-    // We use one account for non-payment transactions and another for payment transactions.
-    // This allows us to send them in any order (mixed), since transactions from the same
-    // account must execute in nonce order which would prevent testing arbitrary reordering.
-    let wallet1 = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let caller1 = wallet1.address();
-    let provider1 = ProviderBuilder::new()
-        .wallet(wallet1)
-        .connect_http(http_url.clone());
+    // Create multiple accounts to avoid nonce ordering issues.
+    // We'll use different accounts for different transactions to allow arbitrary ordering.
+    let mut wallets = Vec::new();
+    let mut providers = Vec::new();
 
-    let wallet2 = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let caller2 = wallet2.address();
-    let provider2 = ProviderBuilder::new()
-        .wallet(wallet2)
-        .connect_http(http_url);
+    const NUM_ACCOUNTS: usize = 10;
 
-    // Setup TIP20 tokens for both accounts
-    let token1 = crate::utils::setup_test_token(provider1.clone(), caller1).await?;
-    token1
-        .mint(caller1, U256::from(1_000_000))
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    for i in 0..NUM_ACCOUNTS {
+        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+            .index(i as u32)?
+            .build()?;
+        let provider = ProviderBuilder::new()
+            .wallet(wallet.clone())
+            .connect_http(http_url.clone());
 
-    let token2 = crate::utils::setup_test_token(provider2.clone(), caller2).await?;
-    token2
-        .mint(caller2, U256::from(1_000_000))
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+        wallets.push(wallet);
+        providers.push(provider);
+    }
 
-    // Send transactions in mixed order from different accounts
-    // This avoids nonce ordering constraints within a single account
-    let mut all_txs = vec![];
+    // Setup a single shared TIP20 token to reduce setup transactions
+    let shared_token =
+        crate::utils::setup_test_token(providers[0].clone(), wallets[0].address()).await?;
 
-    // Send PAYMENT from account 1
-    let transfer_tx = token1.transfer(caller1, U256::from(1));
-    let tx = transfer_tx
-        .into_transaction_request()
-        .from(caller1)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas_limit(80000);
-    println!("Sending PAYMENT tx from account 1");
-    all_txs.push((provider1.send_transaction(tx).await?, "payment-1"));
+    // Mint tokens for all accounts in a single batch
+    for wallet in &wallets {
+        shared_token
+            .mint(wallet.address(), U256::from(1_000_000))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+    }
 
-    // Send NON-PAYMENT from account 2
-    let tx = TransactionRequest::default()
-        .from(caller2)
-        .to(caller2)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas_limit(80000)
-        .value(U256::ZERO);
-    println!("Sending NON-PAYMENT tx from account 2");
-    all_txs.push((provider2.send_transaction(tx).await?, "non-payment-2"));
+    // Create token instances for each provider
+    let mut tokens = Vec::new();
+    for provider in &providers {
+        let token = ITIP20::new(*shared_token.address(), provider.clone());
+        tokens.push(token);
+    }
 
-    // Send another PAYMENT from account 2
-    let transfer_tx = token2.transfer(caller2, U256::from(2));
-    let tx = transfer_tx
-        .into_transaction_request()
-        .from(caller2)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas_limit(80000);
-    println!("Sending PAYMENT tx from account 2");
-    all_txs.push((provider2.send_transaction(tx).await?, "payment-2"));
+    // Send transactions concurrently from different accounts
+    // This avoids nonce ordering constraints and speeds up the test
+    use futures::{FutureExt, future::join_all};
 
-    // Send another NON-PAYMENT from account 1
-    let tx = TransactionRequest::default()
-        .from(caller1)
-        .to(caller1)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas_limit(80000)
-        .value(U256::ZERO);
-    println!("Sending NON-PAYMENT tx from account 1");
-    all_txs.push((provider1.send_transaction(tx).await?, "non-payment-1"));
+    // Create transaction futures - use boxed futures to allow different async blocks
+    let mut tx_futures = vec![];
+
+    // We'll send transactions in an interleaved pattern to ensure they arrive mixed
+    let total_transactions = 12;
+    let mut account_idx = 0;
+
+    // Send transactions in a mixed pattern
+    for i in 0..total_transactions {
+        // Alternate between payment and non-payment
+        let is_payment = i % 2 == 0;
+
+        let provider = providers[account_idx].clone();
+        let wallet = wallets[account_idx].clone();
+        let caller = wallet.address();
+
+        if is_payment {
+            let token = tokens[account_idx].clone();
+            let tx_future = async move {
+                let transfer_tx = token.transfer(caller, U256::from(i + 1));
+                let tx = transfer_tx
+                    .into_transaction_request()
+                    .from(caller)
+                    .gas_price(TEMPO_BASE_FEE as u128)
+                    .gas_limit(80000);
+                println!("Sending PAYMENT tx {i} from account {account_idx}");
+                let pending = provider.send_transaction(tx).await?;
+                Ok::<_, eyre::Error>((pending, format!("payment-{i}")))
+            }
+            .boxed();
+            tx_futures.push(tx_future);
+        } else {
+            let tx_future = async move {
+                let tx = TransactionRequest::default()
+                    .from(caller)
+                    .to(caller)
+                    .gas_price(TEMPO_BASE_FEE as u128)
+                    .gas_limit(80000)
+                    .value(U256::ZERO);
+                println!("Sending NON-PAYMENT tx {i} from account {account_idx}");
+                let pending = provider.send_transaction(tx).await?;
+                Ok::<_, eyre::Error>((pending, format!("non-payment-{i}")))
+            }
+            .boxed();
+            tx_futures.push(tx_future);
+        }
+
+        // Move to next account to avoid nonce conflicts
+        account_idx = (account_idx + 1) % NUM_ACCOUNTS;
+    }
+
+    println!("\nSending all transactions concurrently...");
+    let all_txs = join_all(tx_futures)
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     println!("\nWaiting for all transactions to be mined...");
 
@@ -520,7 +542,8 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
     }
 
     // Group transactions by block number
-    let mut txs_by_block: std::collections::BTreeMap<u64, Vec<(u64, &str)>> = std::collections::BTreeMap::new();
+    let mut txs_by_block: std::collections::BTreeMap<u64, Vec<(u64, &str)>> =
+        std::collections::BTreeMap::new();
 
     for (receipt, tx_type) in &receipts {
         let block_number = receipt
@@ -532,7 +555,7 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
 
         txs_by_block
             .entry(block_number)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((tx_index, tx_type));
     }
 
@@ -566,10 +589,7 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
                 );
             }
         }
-        println!("  Block {block_num}: Lane ordering verified");
     }
-
-    println!("\nLane ordering verified: within each block, non-payment transactions come before payment transactions");
 
     Ok(())
 }
