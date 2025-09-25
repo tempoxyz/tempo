@@ -277,7 +277,8 @@ where
             let effective_tip_per_gas = tx.effective_tip_per_gas(base_fee);
 
             let tx_debug_repr = tracing::enabled!(target: "payload_builder", Level::TRACE)
-                .then(|| format!("{tx:?}"));
+                .then(|| format!("{tx:?}"))
+                .unwrap_or_default();
 
             let start = Instant::now();
             let gas_used = match builder.execute_transaction(tx) {
@@ -300,11 +301,11 @@ where
                 })) => {
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
-                        trace!(target: "payload_builder", %error, tx = %tx_debug_repr.unwrap(), "skipping nonce too low transaction");
+                        trace!(target: "payload_builder", %error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
-                        trace!(target: "payload_builder", %error, tx = %tx_debug_repr.unwrap(), "skipping invalid transaction and its descendants");
+                        trace!(target: "payload_builder", %error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
                             InvalidPoolTransactionError::Consensus(
