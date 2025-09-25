@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use alloy_primitives::Address;
 use commonware_broadcast::buffered;
 use commonware_consensus::{marshal, threshold_simplex};
 use commonware_cryptography::Signer as _;
@@ -20,6 +21,11 @@ use tempo_commonware_node_cryptography::{
     BlsScheme, GroupShare, PrivateKey, PublicKey, PublicPolynomial,
 };
 use tempo_node::TempoFullNode;
+
+use crate::consensus::{
+    ConsensusEngine,
+    execution_driver::{ExecutionDriver, ExecutionDriverMailbox},
+};
 
 use super::{block::Block, supervisor::Supervisor};
 
@@ -45,36 +51,28 @@ const MAX_REPAIR: u64 = 20;
 ///
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
-pub struct Builder<
+pub struct ConsensusEngineBuilder<
     TBlocker,
     TContext,
     // TODO: add the indexer. It's part of alto and we have skipped it, for now.
     // TIndexer,
 > {
-    /// The contextg
+    /// The context
     pub context: TContext,
-
-    pub fee_recipient: alloy_primitives::Address,
-
+    pub fee_recipient: Address,
     pub execution_node: TempoFullNode,
-
     // pub chainspec: Arc<TempoChainSpec>,
     // pub execution_engine: ConsensusEngineHandle<TNodeTypes::Payload>,
     // pub execution_payload_builder: PayloadBuilderHandle<TNodeTypes::Payload>,
     /// A handle to the reth execution node so that consensus can drive execution.
-    //
     pub blocker: TBlocker,
     pub partition_prefix: String,
-    pub blocks_freezer_table_initial_size: u32,
-    pub finalized_freezer_table_initial_size: u32,
     pub signer: PrivateKey,
     pub polynomial: PublicPolynomial,
     pub share: GroupShare,
     pub participants: Vec<PublicKey>,
     pub mailbox_size: usize,
-    pub backfill_quota: Quota,
     pub deque_size: usize,
-
     pub leader_timeout: Duration,
     pub notarization_timeout: Duration,
     pub nullify_retry: Duration,
@@ -82,26 +80,50 @@ pub struct Builder<
     pub activity_timeout: u64,
     pub skip_timeout: u64,
     pub new_payload_wait_time: Duration,
-    pub max_fetch_count: usize,
-    pub max_fetch_size: usize,
-    pub fetch_concurrent: usize,
-    pub fetch_rate_per_peer: Quota,
     // pub indexer: Option<TIndexer>,
 }
 
-impl<TBlocker, TContext> Builder<TBlocker, TContext>
+impl<TBlocker, TContext> ConsensusEngineBuilder<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
+    pub fn new(
+        config: &tempo_commonware_node_config::Config,
+        execution_node: TempoFullNode,
+        blocker: TBlocker,
+        context: TContext,
+    ) -> Self {
+        Self {
+            context,
+            fee_recipient: config.fee_recipient,
+            execution_node,
+            blocker,
+            partition_prefix: "engine".into(),
+            signer: config.signer.clone(),
+            polynomial: config.polynomial.clone(),
+            share: config.share.clone(),
+            participants: config.peers.keys().cloned().collect::<Vec<_>>(),
+            mailbox_size: config.mailbox_size,
+            deque_size: config.deque_size,
+            leader_timeout: config.timeouts.time_to_propose,
+            notarization_timeout: config.timeouts.time_to_collect_notarizations,
+            nullify_retry: config.timeouts.time_to_retry_nullify_broadcast,
+            fetch_timeout: config.timeouts.time_for_peer_response,
+            activity_timeout: config.timeouts.views_to_track,
+            skip_timeout: config.timeouts.views_until_leader_skip,
+            new_payload_wait_time: config.timeouts.new_payload_wait_time,
+        }
+    }
+
+    pub async fn build(self) -> eyre::Result<Engine<TBlocker, TContext>> {
         let supervisor = Supervisor::new(
             self.polynomial.clone(),
             self.participants.clone(),
             self.share,
         );
 
-        let (broadcast, broadcast_mailbox) = buffered::Engine::new(
+        let (broadcast_engine, broadcast_mailbox) = buffered::Engine::new(
             self.context.with_label("broadcast"),
             buffered::Config {
                 public_key: self.signer.public_key(),
@@ -115,7 +137,7 @@ where
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
-        let (syncer, syncer_mailbox): (_, marshal::Mailbox<BlsScheme, Block>) =
+        let (marshal, syncer_mailbox): (_, marshal::Mailbox<BlsScheme, Block>) =
             marshal::Actor::init(
                 self.context.with_label("sync"),
                 marshal::Config {
@@ -124,14 +146,15 @@ where
                     coordinator: supervisor.clone(),
                     partition_prefix: self.partition_prefix.clone(),
                     mailbox_size: self.mailbox_size,
-                    backfill_quota: self.backfill_quota,
+                    backfill_quota: crate::config::BACKFILL_QUOTA,
                     view_retention_timeout: self
                         .activity_timeout
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                     namespace: crate::config::NAMESPACE.to_vec(),
                     prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
                     immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                    freezer_table_initial_size: self.blocks_freezer_table_initial_size,
+                    freezer_table_initial_size:
+                        crate::config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
                     freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
                     freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
                     freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
@@ -163,7 +186,7 @@ where
         let execution_driver_mailbox = execution_driver.mailbox().clone();
 
         // Create the consensus engine
-        let consensus = threshold_simplex::Engine::new(
+        let consensus_engine = threshold_simplex::Engine::new(
             self.context.with_label("consensus"),
             threshold_simplex::Config {
                 namespace: crate::config::NAMESPACE.to_vec(),
@@ -181,9 +204,9 @@ where
                 fetch_timeout: self.fetch_timeout,
                 activity_timeout: self.activity_timeout,
                 skip_timeout: self.skip_timeout,
-                max_fetch_count: self.max_fetch_count,
-                fetch_concurrent: self.fetch_concurrent,
-                fetch_rate_per_peer: self.fetch_rate_per_peer,
+                max_fetch_count: crate::config::NUMBER_MAX_FETCHES,
+                fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
+                fetch_rate_per_peer: crate::config::RESOLVER_LIMIT,
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
                 blocker: self.blocker,
@@ -193,16 +216,12 @@ where
 
         Ok(Engine {
             context: self.context,
-
-            broadcast,
+            broadcast_engine,
             broadcast_mailbox,
-
             execution_driver,
             execution_driver_mailbox,
-
-            syncer,
-
-            consensus,
+            marshal,
+            consensus_engine,
         })
     }
 }
@@ -215,16 +234,14 @@ where
     // not define it for now.
     // TIndexer,
 {
-    context: TContext,
-
-    /// broadcasts messages to and caches messages from untrusted peers.
-    // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block>,
+    /// Broadcast engine responsible for broadcasting/receiving messages to the network, storing
+    /// messages in the cache and responding to requests from the application
+    broadcast_engine: buffered::Engine<TContext, PublicKey, Block>,
+    /// Ingress mailbox for the broadcast engine
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
-
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
-    execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
-    execution_driver_mailbox: crate::consensus::execution_driver::ExecutionDriverMailbox,
+    execution_driver: ExecutionDriver<TContext>,
+    execution_driver_mailbox: ExecutionDriverMailbox,
 
     /// Responsible for syncing(?) messages from/to other nodes.
     // FIXME: This is a complex beast, interacting with very many parts of the system. At
@@ -233,10 +250,13 @@ where
     // from consensus, writign finalized blocks to the filesystem, backfilling missing blocks from
     // its peers...
     //
-    // Alto calls this `marshal`, we opt to call it `syncer` which seems marginally more expressive.
-    syncer: marshal::Actor<Block, TContext, BlsScheme, PublicKey, Supervisor>,
-
-    consensus: crate::consensus::Consensus<TContext, TBlocker>,
+    /// Responsible for receiving uncertified blocks from the broadcast mechanism,
+    /// receiving notarizations and finalizations from consensus, and reconstructing a total order
+    /// of blocks.
+    marshal: marshal::Actor<Block, TContext, BlsScheme, PublicKey, Supervisor>,
+    // TODO:
+    consensus_engine: ConsensusEngine<TContext, TBlocker>,
+    context: TContext,
 }
 
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
@@ -244,6 +264,9 @@ where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
+    /// Start the `simplex` consensus engine.
+    ///
+    /// This will also rebuild the state of the engine from provided `Journal`.
     pub fn start(
         self,
         pending_network: (
@@ -267,60 +290,25 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<eyre::Result<()>> {
-        self.context.clone().spawn(|_| {
-            self.run(
-                pending_network,
-                recovered_network,
-                resolver_network,
-                broadcast_network,
+        self.context.clone().spawn(async move |_| {
+            let broadcast = self.broadcast_engine.start(broadcast_network);
+            let execution_driver = self.execution_driver.start();
+            let syncer = self.marshal.start(
+                self.execution_driver_mailbox,
+                self.broadcast_mailbox,
                 backfill_network,
-            )
+            );
+
+            let simplex =
+                self.consensus_engine
+                    .start(pending_network, recovered_network, resolver_network);
+
+            try_join_all(vec![broadcast, execution_driver, simplex, syncer])
+                .await
+                .map(|_| ())
+                // TODO: look into adding error context so that we know which
+                // component failed.
+                .wrap_err("one of the consensus engine's actors failed")
         })
-    }
-
-    /// Start the `simplex` consensus engine.
-    ///
-    /// This will also rebuild the state of the engine from provided `Journal`.
-    async fn run(
-        self,
-        pending_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        recovered_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        resolver_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        broadcast_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        backfill_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-    ) -> eyre::Result<()> {
-        let broadcast = self.broadcast.start(broadcast_network);
-        let execution_driver = self.execution_driver.start();
-        let syncer = self.syncer.start(
-            self.execution_driver_mailbox,
-            self.broadcast_mailbox,
-            backfill_network,
-        );
-
-        let simplex = self
-            .consensus
-            .start(pending_network, recovered_network, resolver_network);
-
-        try_join_all(vec![broadcast, execution_driver, simplex, syncer])
-            .await
-            .map(|_| ())
-            // TODO: look into adding error context so that we know which
-            // component failed.
-            .wrap_err("one of the consensus engine's actors failed")
     }
 }

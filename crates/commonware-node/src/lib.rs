@@ -17,12 +17,13 @@ use indexmap::IndexMap;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
-use crate::config::{
-    BACKFILL_BY_DIGEST_CHANNE_IDENTL, BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, FINALIZED_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-    MAX_FETCH_SIZE_BYTES, NUMBER_CONCURRENT_FETCHES, NUMBER_MAX_FETCHES, PENDING_CHANNEL_IDENT,
-    PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT,
+use crate::{
+    config::{
+        BACKFILL_BY_DIGEST_CHANNE_IDENTL, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT,
+        BROADCASTER_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT,
+        RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    },
+    consensus::engine::ConsensusEngineBuilder,
 };
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
@@ -58,41 +59,11 @@ pub async fn run_consensus_stack(
         message_backlog,
     );
 
-    let consensus_engine = crate::consensus::engine::Builder {
-        context: context.with_label("engine"),
-
-        fee_recipient: config.fee_recipient,
-
-        execution_node,
-        blocker: oracle,
-        // TODO: Set this through config?
-        partition_prefix: "engine".into(),
-        blocks_freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-        finalized_freezer_table_initial_size: FINALIZED_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-        signer: config.signer.clone(),
-        polynomial: config.polynomial.clone(),
-        share: config.share.clone(),
-        participants: config.peers.keys().cloned().collect::<Vec<_>>(),
-        mailbox_size: config.mailbox_size,
-        backfill_quota: BACKFILL_QUOTA,
-        deque_size: config.deque_size,
-
-        leader_timeout: config.timeouts.time_to_propose,
-        notarization_timeout: config.timeouts.time_to_collect_notarizations,
-        nullify_retry: config.timeouts.time_to_retry_nullify_broadcast,
-        fetch_timeout: config.timeouts.time_for_peer_response,
-        activity_timeout: config.timeouts.views_to_track,
-        skip_timeout: config.timeouts.views_until_leader_skip,
-        new_payload_wait_time: config.timeouts.new_payload_wait_time,
-        max_fetch_count: NUMBER_MAX_FETCHES,
-        max_fetch_size: MAX_FETCH_SIZE_BYTES,
-        fetch_concurrent: NUMBER_CONCURRENT_FETCHES,
-        fetch_rate_per_peer: RESOLVER_LIMIT,
-        // indexer: Option<TIndexer>,
-    }
-    .try_init()
-    .await
-    .wrap_err("failed initializing consensus engine")?;
+    let consensus_engine =
+        ConsensusEngineBuilder::new(config, execution_node, oracle, context.with_label("engine"))
+            .build()
+            .await
+            .wrap_err("failed initializing consensus engine")?;
 
     let (network, consensus_engine) = (
         network.start(),

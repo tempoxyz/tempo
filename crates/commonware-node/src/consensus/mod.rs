@@ -12,14 +12,16 @@ pub use supervisor::Supervisor;
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest, PrivateKey};
 
-type Consensus<TContext, TBlocker> = commonware_consensus::threshold_simplex::Engine<
+use crate::consensus::execution_driver::ExecutionDriverMailbox;
+
+type ConsensusEngine<TContext, TBlocker> = commonware_consensus::threshold_simplex::Engine<
     TContext,
     PrivateKey,
     TBlocker,
     BlsScheme,
     Digest,
-    crate::consensus::execution_driver::ExecutionDriverMailbox,
-    crate::consensus::execution_driver::ExecutionDriverMailbox,
+    ExecutionDriverMailbox,
+    ExecutionDriverMailbox,
     Reporter,
     Supervisor,
 >;
