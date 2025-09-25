@@ -44,7 +44,7 @@ use tempo_primitives::{
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use tempo_transaction_pool::{TempoTransactionPool, transaction::TempoPooledTransaction};
-use tracing::{Level, debug, instrument, trace, warn};
+use tracing::{Level, debug, info, instrument, trace, warn};
 
 use crate::metrics::TempoPayloadBuilderMetrics;
 
@@ -307,7 +307,7 @@ where
                 })) => {
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
-                        trace!(, %error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
@@ -382,15 +382,6 @@ where
             .then_some(execution_result.requests);
 
         let sealed_block = Arc::new(block.sealed_block().clone());
-        debug!(
-            target: "payload_builder",
-            sealed_block_header = ?sealed_block.sealed_header(),
-            total_transactions = block.transaction_count(),
-            ?payment_transactions,
-            ?execution_elapsed,
-            ?builder_finish_elapsed,
-            "Sealed built block"
-        );
 
         if is_osaka && sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -399,11 +390,21 @@ where
             }));
         }
 
-        let payload =
-            EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
-
         let elapsed = start.elapsed();
         self.metrics.payload_build_duration_seconds.record(elapsed);
+
+        info!(
+            sealed_block_header = ?sealed_block.sealed_header(),
+            total_transactions = block.transaction_count(),
+            ?payment_transactions,
+            ?elapsed,
+            ?execution_elapsed,
+            ?builder_finish_elapsed,
+            "Built payload"
+        );
+
+        let payload =
+            EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
 
         Ok(BuildOutcome::Better {
             payload,
