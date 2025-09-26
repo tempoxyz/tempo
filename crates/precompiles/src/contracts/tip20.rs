@@ -849,7 +849,17 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .ok_or(TIP20Error::supply_cap_exceeded())?;
         self.set_balance(to, new_to_balance);
 
-        // TODO: emit fee token transfer event
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::Transfer(ITIP20::Transfer {
+                    from: *to,
+                    to: TIP_FEE_MANAGER_ADDRESS,
+                    amount: actual_used,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
 
         Ok(())
     }
