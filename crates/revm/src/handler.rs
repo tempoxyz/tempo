@@ -3,21 +3,25 @@
 use std::fmt::Debug;
 
 use alloy_primitives::{Address, B256, U256, b256};
-use reth_evm::revm::{
-    Database,
-    context::{
-        Block, Cfg, ContextTr, Host, JournalTr, Transaction,
-        result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
+use reth_evm::{
+    EvmInternals,
+    revm::{
+        Database,
+        context::{
+            Block, Cfg, ContextTr, Host, JournalTr, Transaction,
+            result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
+        },
+        handler::{EvmTr, FrameTr, Handler, pre_execution::validate_account_nonce_and_code},
+        inspector::{Inspector, InspectorHandler},
+        interpreter::{instructions::utility::IntoAddress, interpreter::EthInterpreter},
+        state::Bytecode,
     },
-    handler::{EvmTr, FrameTr, Handler, pre_execution::validate_account_nonce_and_code},
-    inspector::{Inspector, InspectorHandler},
-    interpreter::{instructions::utility::IntoAddress, interpreter::EthInterpreter},
-    state::Bytecode,
 };
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
+        EvmStorageProvider,
         storage::slots::mapping_slot,
         tip_fee_manager::{self, TipFeeManager},
         tip20,
@@ -25,7 +29,7 @@ use tempo_precompiles::{
 };
 use tracing::trace;
 
-use crate::{TempoEvm, evm::TempoContext, journal_storage_provider::JournalStorageProvider};
+use crate::{TempoEvm, evm::TempoContext};
 
 /// Hashed account code of default 7702 delegate deployment
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
@@ -104,7 +108,7 @@ where
         let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
         let value = context.tx().value();
 
-        let (tx, journal) = context.tx_journal_mut();
+        let (tx, journal) = (&mut context.tx, &mut context.journaled_state);
 
         // Load the fee token balance
         let account_balance = get_token_balance(journal, self.fee_token, tx.caller())?;
@@ -156,7 +160,8 @@ where
             let gas_balance_spending = effective_balance_spending - value;
 
             // Create storage provider wrapper around journal
-            let mut storage_provider = JournalStorageProvider::new(journal, chain_id);
+            let internals = EvmInternals::new(journal, &context.block);
+            let mut storage_provider = EvmStorageProvider::new(internals, chain_id);
             let mut fee_manager =
                 TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
 
@@ -196,11 +201,14 @@ where
         );
 
         // Create storage provider and fee manager
-        let beneficiary = evm.ctx().beneficiary();
-        let journal = evm.ctx().journal_mut();
-        let mut storage_provider = JournalStorageProvider::new(journal, chain_id);
-        let mut fee_manager =
-            TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
+        let (journal, block) = (&mut context.journaled_state, &context.block);
+        let internals = EvmInternals::new(journal, block);
+        let mut storage_provider = EvmStorageProvider::new(internals, chain_id);
+        let mut fee_manager = TipFeeManager::new(
+            TIP_FEE_MANAGER_ADDRESS,
+            block.beneficiary,
+            &mut storage_provider,
+        );
 
         if !actual_used.is_zero() || !refund_amount.is_zero() {
             // Call collectFeePostTx (handles both refund and fee queuing)
