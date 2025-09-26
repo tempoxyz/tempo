@@ -804,7 +804,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    /// TODO:
+    /// Transfers fee tokens from user to fee manager before transaction execution
     pub fn transfer_fee_pre_tx(&mut self, from: &Address, amount: U256) -> Result<(), TIP20Error> {
         let from_balance = self.get_balance(from);
         if amount > from_balance {
@@ -826,6 +826,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// Refunds unused fee tokens to user and emits transfer event for gas amount used
     pub fn transfer_fee_post_tx(
         &mut self,
         to: &Address,
