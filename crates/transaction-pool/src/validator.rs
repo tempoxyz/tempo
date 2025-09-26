@@ -54,9 +54,18 @@ where
             );
         }
 
-        let balance = match state_provider
-            .get_fee_token_balance(transaction.sender(), transaction.inner().fee_token())
-        {
+        let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
+            Ok(fee_payer) => fee_payer,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
+
+        let balance = match state_provider.get_fee_token_balance(
+            transaction.sender(),
+            fee_payer,
+            transaction.inner().fee_token(),
+        ) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
@@ -108,9 +117,18 @@ where
                     );
                 }
 
-                let balance = match state_provider
-                    .get_fee_token_balance(tx.sender(), tx.inner().fee_token())
-                {
+                let fee_payer = match tx.inner().fee_payer(tx.sender()) {
+                    Ok(fee_payer) => fee_payer,
+                    Err(err) => {
+                        return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
+                    }
+                };
+
+                let balance = match state_provider.get_fee_token_balance(
+                    tx.sender(),
+                    fee_payer,
+                    tx.inner().fee_token(),
+                ) {
                     Ok(balance) => balance,
                     Err(err) => {
                         return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
@@ -165,9 +183,18 @@ where
                     );
                 }
 
-                let balance = match state_provider
-                    .get_fee_token_balance(tx.sender(), tx.inner().fee_token())
-                {
+                let fee_payer = match tx.inner().fee_payer(tx.sender()) {
+                    Ok(fee_payer) => fee_payer,
+                    Err(err) => {
+                        return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
+                    }
+                };
+
+                let balance = match state_provider.get_fee_token_balance(
+                    tx.sender(),
+                    fee_payer,
+                    tx.inner().fee_token(),
+                ) {
                     Ok(balance) => balance,
                     Err(err) => {
                         return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));

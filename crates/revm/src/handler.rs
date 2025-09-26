@@ -38,24 +38,28 @@ const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
 /// Fees are paid in fee tokens instead of account balance.
-#[derive(Debug, Clone)]
-pub struct TempoEvmHandler<DB, I> {
+#[derive(Debug)]
+pub struct TempoEvmHandler<DB: reth_evm::Database, I> {
+    /// Fee token used for the transaction.
     fee_token: Address,
+    /// Fee payer for the transaction.
+    fee_payer: Address,
     /// Phantom data to avoid type inference issues.
     _phantom: core::marker::PhantomData<(DB, I)>,
 }
 
-impl<DB, I> TempoEvmHandler<DB, I> {
+impl<DB: reth_evm::Database, I> TempoEvmHandler<DB, I> {
     /// Create a new [`TempoEvmHandler`] handler instance
     pub fn new() -> Self {
         Self {
             fee_token: Address::default(),
+            fee_payer: Address::default(),
             _phantom: core::marker::PhantomData,
         }
     }
 }
 
-impl<DB, I> Default for TempoEvmHandler<DB, I> {
+impl<DB: reth_evm::Database, I> Default for TempoEvmHandler<DB, I> {
     fn default() -> Self {
         Self::new()
     }
@@ -74,17 +78,16 @@ where
         &mut self,
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        let caller = evm.ctx().caller();
-        let beneficiary = evm.ctx().beneficiary();
-        let fee_token = get_fee_token(evm.ctx_mut(), caller, beneficiary)?;
-        trace!(%fee_token, %caller, %beneficiary, "loaded fee token");
-        self.fee_token = fee_token;
+        self.fee_token = get_fee_token(evm.ctx_mut())?;
+        trace!(fee_token=%self.fee_token, caller=%evm.ctx().caller(), beneficiary=%evm.ctx().beneficiary(), "loaded fee token");
+
+        self.fee_payer = evm.ctx().tx().fee_payer()?;
 
         // Run inner handler and catch all errors to handle cleanup.
         match self.run_without_catch_error(evm) {
             Ok(output) => Ok(output),
             Err(err) => {
-                trace!(?err, %caller,  "failed to transact");
+                trace!(?err, caller=%evm.ctx().caller(),  "failed to transact");
                 self.catch_error(evm, err)
             }
         }
@@ -110,8 +113,8 @@ where
 
         let (tx, journal) = (&mut context.tx, &mut context.journaled_state);
 
-        // Load the fee token balance
-        let account_balance = get_token_balance(journal, self.fee_token, tx.caller())?;
+        // Load the fee payer balance
+        let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
 
         // Load caller's account.
         let caller_account = journal.load_account_code(tx.caller())?.data;
@@ -171,7 +174,12 @@ where
             // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
             let to_addr = tx.kind().into_to().unwrap_or_default();
             fee_manager
-                .collect_fee_pre_tx(tx.caller(), self.fee_token, to_addr, gas_balance_spending)
+                .collect_fee_pre_tx(
+                    self.fee_payer,
+                    self.fee_token,
+                    to_addr,
+                    gas_balance_spending,
+                )
                 .map_err(|e| {
                     // Map fee collection errors to transaction validation errors since they
                     // indicate the transaction cannot be included (e.g., insufficient liquidity
@@ -209,7 +217,6 @@ where
         // Call collectFeePostTx on TipFeeManager precompile
         let context = evm.ctx();
         let tx = context.tx();
-        let caller = tx.caller();
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
@@ -235,7 +242,7 @@ where
         if !actual_used.is_zero() || !refund_amount.is_zero() {
             // Call collectFeePostTx (handles both refund and fee queuing)
             fee_manager
-                .collect_fee_post_tx(caller, actual_used, refund_amount, self.fee_token)
+                .collect_fee_post_tx(self.fee_payer, actual_used, refund_amount, self.fee_token)
                 .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }
         Ok(())
@@ -256,11 +263,7 @@ where
 /// Looks up the user's fee token in the `TIPFeemanager` contract.
 ///
 /// If no fee token is set for the user, or the fee token is the zero address, the returned fee token will be the validator's fee token.
-pub fn get_fee_token<DB>(
-    ctx: &mut TempoContext<DB>,
-    sender: Address,
-    validator: Address,
-) -> Result<Address, DB::Error>
+pub fn get_fee_token<DB>(ctx: &mut TempoContext<DB>) -> Result<Address, EVMError<DB::Error>>
 where
     DB: Database,
 {
@@ -268,7 +271,7 @@ where
         return Ok(fee_token);
     }
 
-    let user_slot = mapping_slot(sender, tip_fee_manager::slots::USER_TOKENS);
+    let user_slot = mapping_slot(ctx.tx().fee_payer()?, tip_fee_manager::slots::USER_TOKENS);
     // ensure TIP_FEE_MANAGER_ADDRESS is loaded
     ctx.journal_mut().load_account(TIP_FEE_MANAGER_ADDRESS)?;
     let user_fee_token = ctx
@@ -278,13 +281,14 @@ where
         .into_address();
 
     if user_fee_token.is_zero() {
-        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+        let validator_slot =
+            mapping_slot(ctx.beneficiary(), tip_fee_manager::slots::VALIDATOR_TOKENS);
         let validator_fee_token = ctx
             .journal_mut()
             .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
             .data
             .into_address();
-        trace!(%sender, %validator, %validator_fee_token, "loaded validator fee token");
+        trace!(sender=%ctx.caller(), validator=%ctx.beneficiary(), %validator_fee_token, "loaded validator fee token");
 
         Ok(validator_fee_token)
     } else {
@@ -445,7 +449,7 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = get_fee_token(&mut ctx, user, validator).unwrap();
+        let fee_token = get_fee_token(&mut ctx).unwrap();
         assert_eq!(validator_fee_token, fee_token);
 
         // Set user token
@@ -458,12 +462,12 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = get_fee_token(&mut ctx, user, validator).unwrap();
+        let fee_token = get_fee_token(&mut ctx).unwrap();
         assert_eq!(user_fee_token, fee_token);
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = get_fee_token(&mut ctx, user, validator).unwrap();
+        let fee_token = get_fee_token(&mut ctx).unwrap();
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())

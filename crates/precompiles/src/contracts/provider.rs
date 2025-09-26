@@ -20,6 +20,7 @@ pub trait TIPFeeStateProviderExt: StateProvider {
     fn get_fee_token_balance(
         &self,
         user: Address,
+        fee_payer: Address,
         tx_fee_token: Option<Address>,
     ) -> ProviderResult<U256> {
         let fee_token = if let Some(fee_token) = tx_fee_token {
@@ -40,7 +41,7 @@ pub trait TIPFeeStateProviderExt: StateProvider {
         };
 
         // Query the user's balance in the determined fee token's TIP20 contract
-        let balance_slot = mapping_slot(user, tip20::slots::BALANCES);
+        let balance_slot = mapping_slot(fee_payer, tip20::slots::BALANCES);
         let balance = self
             .storage(fee_token, balance_slot.into())?
             .unwrap_or_default();

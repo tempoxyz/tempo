@@ -197,7 +197,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     /// Unused gas is later returned via collect_fee_post_tx
     pub fn collect_fee_pre_tx(
         &mut self,
-        user: Address,
+        fee_payer: Address,
         user_token: Address,
         _to: Address,
         max_amount: U256,
@@ -223,11 +223,11 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token
-            .ensure_transfer_authorized(&user, &self.contract_address)
+            .ensure_transfer_authorized(&fee_payer, &self.contract_address)
             .map_err(|_| FeeManagerError::token_policy_forbids())?;
 
         tip20_token
-            .transfer_fee_pre_tx(&user, max_amount)
+            .transfer_fee_pre_tx(&fee_payer, max_amount)
             .map_err(|_| FeeManagerError::insufficient_fee_token_balance())?;
 
         // Return the user's token preference
@@ -240,7 +240,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     /// Called after transaction to settle the difference between max fee and actual usage.
     pub fn collect_fee_post_tx(
         &mut self,
-        user: Address,
+        fee_payer: Address,
         actual_used: U256,
         refund_amount: U256,
         user_token: Address,
@@ -251,7 +251,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
             tip20_token
-                .transfer_fee_post_tx(&user, refund_amount, actual_used)
+                .transfer_fee_post_tx(&fee_payer, refund_amount, actual_used)
                 .map_err(|_| {
                     IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
                         IFeeManager::InsufficientFeeTokenBalance {},
@@ -259,7 +259,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })?;
         }
 
-        // Execute fee swap and track collecte fees
+        // Execute fee swap and track collected fees
         if !actual_used.is_zero() {
             let validator_token = self.get_validator_token();
 

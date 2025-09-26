@@ -5,6 +5,7 @@ use reth_evm::{
     revm::context::{
         Transaction, TxEnv,
         either::Either,
+        result::InvalidTransaction,
         transaction::{
             AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization,
             SignedAuthorization,
@@ -26,6 +27,25 @@ pub struct TempoTxEnv {
 
     /// Whether the transaction is a system transaction.
     pub is_system_tx: bool,
+
+    /// Optional fee payer specified for the transaction.
+    ///
+    /// - Some(Some(address)) corresponds to a successfuly recovered fee payer
+    /// - Some(None) corresponds to a failed recovery and means that transaction is invalid
+    /// - None corresponds to a transaction without a fee payer
+    pub fee_payer: Option<Option<Address>>,
+}
+
+impl TempoTxEnv {
+    /// Resolves fee payer from the signature.
+    pub fn fee_payer(&self) -> Result<Address, InvalidTransaction> {
+        if let Some(fee_payer) = self.fee_payer {
+            // todo: introduce custom error type or Other variant upstream
+            fee_payer.ok_or(InvalidTransaction::OverflowPaymentInTransaction)
+        } else {
+            Ok(self.caller())
+        }
+    }
 }
 
 impl From<TxEnv> for TempoTxEnv {
@@ -34,6 +54,7 @@ impl From<TxEnv> for TempoTxEnv {
             inner,
             fee_token: None,
             is_system_tx: false,
+            fee_payer: None,
         }
     }
 }
@@ -133,12 +154,7 @@ impl IntoTxEnv<Self> for TempoTxEnv {
 
 impl FromRecoveredTx<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
     fn from_recovered_tx(tx: &EthereumTxEnvelope<TxEip4844>, sender: Address) -> Self {
-        let inner = TxEnv::from_recovered_tx(tx, sender);
-        Self {
-            inner,
-            fee_token: None,
-            is_system_tx: false,
-        }
+        TxEnv::from_recovered_tx(tx, sender).into()
     }
 }
 
@@ -156,6 +172,7 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
             access_list,
             authorization_list,
             fee_token,
+            fee_payer_signature,
         } = tx;
         Self {
             inner: TxEnv {
@@ -189,6 +206,10 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
             },
             fee_token: *fee_token,
             is_system_tx: false,
+            fee_payer: fee_payer_signature.map(|sig| {
+                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
+                    .ok()
+            }),
         }
     }
 }
@@ -200,6 +221,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
+                fee_payer: None,
             },
             TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
@@ -246,6 +268,7 @@ impl reth_rpc_convert::transaction::TryIntoTxEnv<TempoTxEnv>
             inner: self.try_into_tx_env(cfg_env, block_env)?,
             fee_token: None,
             is_system_tx: false,
+            fee_payer: None,
         })
     }
 }
