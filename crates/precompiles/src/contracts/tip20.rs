@@ -1355,4 +1355,74 @@ mod tests {
             .into_log_data()
         );
     }
+
+    #[test]
+    fn test_transfer_fee_pre_tx() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let amount = U256::from(100);
+        token
+            .mint(&admin, ITIP20::mintCall { to: user, amount })
+            .unwrap();
+
+        let fee_amount = U256::from(50);
+        token
+            .transfer_fee_pre_tx(&user, fee_amount)
+            .expect("transfer failed");
+
+        assert_eq!(token.get_balance(&user), U256::from(50));
+        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS), fee_amount);
+    }
+
+    #[test]
+    fn test_transfer_fee_pre_tx_insufficient_balance() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let fee_amount = U256::from(50);
+        let result = token.transfer_fee_pre_tx(&user, fee_amount);
+        assert_eq!(result, Err(TIP20Error::insufficient_balance()));
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let initial_fee = U256::from(100);
+        token.set_balance(&TIP_FEE_MANAGER_ADDRESS, initial_fee);
+
+        let refund_amount = U256::from(30);
+        let gas_used = U256::from(10);
+        token
+            .transfer_fee_post_tx(&user, refund_amount, gas_used)
+            .expect("transfer failed");
+
+        assert_eq!(token.get_balance(&user), refund_amount);
+        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS), U256::from(90));
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+        assert_eq!(
+            events.last().unwrap(),
+            &TIP20Event::Transfer(ITIP20::Transfer {
+                from: user,
+                to: TIP_FEE_MANAGER_ADDRESS,
+                amount: gas_used
+            })
+            .into_log_data()
+        );
+    }
 }
