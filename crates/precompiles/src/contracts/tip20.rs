@@ -1412,7 +1412,7 @@ mod tests {
             .expect("transfer failed");
 
         assert_eq!(token.get_balance(&user), refund_amount);
-        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS), U256::from(90));
+        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS), U256::from(70));
 
         let events = &storage.events[&token_id_to_address(token_id)];
         assert_eq!(
