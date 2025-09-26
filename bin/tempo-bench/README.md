@@ -164,7 +164,7 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
 ### 2. Start the Node
 
 ```bash
-    reth node \
+    cargo run --bin tempo node \
     --http \
     --http.addr 0.0.0.0 \
     --http.port 8545 \
@@ -176,7 +176,7 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
     --engine.disable-precompile-cache \
     --builder.gaslimit 3000000000 \
     --builder.max-tasks 8 \
-    --builder.deadline 1 \
+    --builder.deadline 4 \
     --txpool.pending-max-count 10000000000000 \
     --txpool.basefee-max-count 10000000000000 \
     --txpool.queued-max-count 10000000000000 \

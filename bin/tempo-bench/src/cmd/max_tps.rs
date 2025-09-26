@@ -24,6 +24,8 @@ use std::{
     time::Duration,
 };
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_precompiles::contracts::ITIP20;
+use tokio::time::timeout;
 
 sol! {
     interface ERC20 {
@@ -62,7 +64,7 @@ pub struct MaxTPSArgs {
     #[arg(long, default_value = "1337")]
     pub chain_id: u64,
 
-    /// Token address
+    /// Token address used when creating TIP20 transfer calldata
     #[arg(long, default_value = "0x20c0000000000000000000000000000000000000")]
     pub token_address: Address,
 
@@ -89,23 +91,25 @@ impl MaxTPSArgs {
             increase_nofile_limit(fd_limit)?;
         }
 
-        let target_urls = self
+        let target_urls: Vec<Url> = self
             .target_urls
             .iter()
             .map(|url| url.as_str().parse().expect("Could not parse Url"))
             .collect();
 
-        // TODO: check that contract is deployed
-
         // Generate all transactions
         let total_txs = self.tps * self.duration;
-        let transactions = Arc::new(generate_transactions(
-            total_txs,
-            self.accounts,
-            &self.mnemonic,
-            self.chain_id,
-            self.token_address,
-        ));
+        let transactions = Arc::new(
+            generate_transactions(
+                total_txs,
+                self.accounts,
+                &self.mnemonic,
+                self.chain_id,
+                self.token_address,
+                &target_urls[0],
+            )
+            .await?,
+        );
 
         // Create shared transaction counter and monitoring
         let tx_counter = Arc::new(AtomicU64::new(0));
@@ -184,19 +188,22 @@ fn send_transactions(
                     providers.push(provider);
                 }
 
-                let mut batch_count = 0;
                 for (i, tx_bytes) in transactions[start..end].iter().enumerate() {
                     rate_limiter.until_ready().await;
                     let provider = &providers[i % providers.len()];
-                    if let Err(e) = provider.send_raw_transaction(tx_bytes).await {
-                        eprintln!("Failed to send transaction: {}", e);
+
+                    match timeout(
+                        Duration::from_secs(1),
+                        provider.send_raw_transaction(tx_bytes),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => eprintln!("Failed to send transaction: {}", e),
+                        Err(_) => eprintln!("Tx send timed out"),
                     }
 
-                    batch_count += 1;
-                    if batch_count >= 1000 {
-                        tx_counter.fetch_add(batch_count, Ordering::Relaxed);
-                        batch_count = 0;
-                    }
+                    tx_counter.fetch_add(1, Ordering::Relaxed);
                 }
             });
         });
@@ -205,13 +212,14 @@ fn send_transactions(
     Ok(())
 }
 
-fn generate_transactions(
+async fn generate_transactions(
     total_txs: u64,
     num_accounts: u64,
     mnemonic: &str,
     chain_id: u64,
     token_address: Address,
-) -> Vec<Vec<u8>> {
+    rpc_url: &Url,
+) -> eyre::Result<Vec<Vec<u8>>> {
     println!("Generating {num_accounts} accounts...");
     let signers: Vec<PrivateKeySigner> = (0..num_accounts as u32)
         .into_par_iter()
@@ -226,14 +234,25 @@ fn generate_transactions(
         })
         .collect();
 
-    // TODO: fund all accounts
-    println!("Generating {total_txs} txs...");
-
     let txs_per_sender = total_txs / num_accounts;
-    let params: Vec<(LocalSigner<_>, u64)> = signers
-        .into_iter()
-        .flat_map(|signer| (0..txs_per_sender).map(move |nonce| (signer.clone(), nonce)))
-        .collect();
+    assert!(
+        txs_per_sender > 0,
+        "txs per sender is 0, increase tps or decrease senders"
+    );
+
+    // Fetch current nonces for all accounts
+    let provider = ProviderBuilder::new().connect_http(rpc_url.clone());
+    println!("Fetching nonces for {} accounts...", signers.len());
+
+    let mut params = Vec::new();
+    for signer in signers {
+        let address = signer.address();
+        let current_nonce = provider.get_transaction_count(address).await?;
+
+        for i in 0..txs_per_sender {
+            params.push((signer.clone(), current_nonce + i));
+        }
+    }
 
     let transactions: Vec<Vec<u8>> = params
         .into_par_iter()
@@ -262,7 +281,7 @@ fn generate_transactions(
         .collect();
 
     println!("Generated {} transactions", transactions.len());
-    transactions
+    Ok(transactions)
 }
 
 pub fn increase_nofile_limit(min_limit: u64) -> eyre::Result<u64> {

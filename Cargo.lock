@@ -2675,7 +2675,7 @@ dependencies = [
  "commonware-storage",
  "commonware-utils",
  "futures",
- "governor",
+ "governor 0.6.3",
  "prometheus-client 0.22.3",
  "rand 0.8.5",
  "rand_distr",
@@ -2733,7 +2733,7 @@ dependencies = [
  "commonware-utils",
  "either",
  "futures",
- "governor",
+ "governor 0.6.3",
  "prometheus-client 0.22.3",
  "rand 0.8.5",
  "rand_distr",
@@ -2756,7 +2756,7 @@ dependencies = [
  "commonware-stream",
  "commonware-utils",
  "futures",
- "governor",
+ "governor 0.6.3",
  "prometheus-client 0.22.3",
  "rand 0.8.5",
  "thiserror 2.0.16",
@@ -2777,7 +2777,7 @@ dependencies = [
  "criterion 0.5.1",
  "futures",
  "getrandom 0.2.16",
- "governor",
+ "governor 0.6.3",
  "libc",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -4648,6 +4648,29 @@ dependencies = [
  "rand 0.8.5",
  "smallvec",
  "spinning_top",
+]
+
+[[package]]
+name = "governor"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "444405bbb1a762387aa22dd569429533b54a1d8759d35d3b64cb39b0293eaa19"
+dependencies = [
+ "cfg-if",
+ "dashmap 6.1.0",
+ "futures-sink",
+ "futures-timer",
+ "futures-util",
+ "getrandom 0.3.3",
+ "hashbrown 0.15.5",
+ "nonzero_ext",
+ "parking_lot",
+ "portable-atomic",
+ "quanta",
+ "rand 0.9.2",
+ "smallvec",
+ "spinning_top",
+ "web-time",
 ]
 
 [[package]]
@@ -13555,6 +13578,7 @@ dependencies = [
  "eyre",
  "fastrand",
  "futures",
+ "governor 0.10.1",
  "hex",
  "http",
  "http-body-util",
@@ -13644,7 +13668,7 @@ dependencies = [
  "eyre",
  "futures-channel",
  "futures-util",
- "governor",
+ "governor 0.6.3",
  "indexmap 2.11.4",
  "rand 0.8.5",
  "reth",
