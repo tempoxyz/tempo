@@ -804,6 +804,56 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// TODO:
+    pub fn transfer_fee_pre_tx(&mut self, from: &Address, amount: U256) -> Result<(), TIP20Error> {
+        let from_balance = self.get_balance(from);
+        if amount > from_balance {
+            return Err(TIP20Error::insufficient_balance());
+        }
+
+        let new_from_balance = from_balance
+            .checked_sub(amount)
+            .ok_or(TIP20Error::insufficient_balance())?;
+
+        self.set_balance(from, new_from_balance);
+
+        let to_balance = self.get_balance(&TIP_FEE_MANAGER_ADDRESS);
+        let new_to_balance = to_balance
+            .checked_add(amount)
+            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        self.set_balance(&TIP_FEE_MANAGER_ADDRESS, new_to_balance);
+
+        Ok(())
+    }
+
+    pub fn transfer_fee_post_tx(
+        &mut self,
+        to: &Address,
+        refund: U256,
+        actual_used: U256,
+    ) -> Result<(), TIP20Error> {
+        let from_balance = self.get_balance(&TIP_FEE_MANAGER_ADDRESS);
+        if refund > from_balance {
+            return Err(TIP20Error::insufficient_balance());
+        }
+
+        let new_from_balance = from_balance
+            .checked_sub(refund)
+            .ok_or(TIP20Error::insufficient_balance())?;
+
+        self.set_balance(&TIP_FEE_MANAGER_ADDRESS, new_from_balance);
+
+        let to_balance = self.get_balance(to);
+        let new_to_balance = to_balance
+            .checked_add(refund)
+            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        self.set_balance(to, new_to_balance);
+
+        // TODO: emit fee token transfer event
+
+        Ok(())
+    }
+
     fn read_string(&mut self, slot: U256) -> String {
         let value = self
             .storage
