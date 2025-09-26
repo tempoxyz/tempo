@@ -13,7 +13,7 @@ use reth_ethereum::tasks::{
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
 use reth_evm::{EvmEnvFor, TxEnvFor, revm::Database};
-use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy, PrimitivesTy, TxTy};
+use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy, PrimitivesTy};
 use reth_node_builder::{
     NodeAdapter,
     rpc::{EthApiBuilder, EthApiCtx},
@@ -25,10 +25,8 @@ use reth_rpc_eth_api::{
     helpers::{
         AddDevSigners, Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions,
         LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
-        SpawnBlocking, Trace,
-        estimate::EstimateCall,
-        pending_block::PendingEnvBuilder,
-        spec::{SignersForApi, SignersForRpc},
+        SpawnBlocking, Trace, estimate::EstimateCall, pending_block::PendingEnvBuilder,
+        spec::SignersForRpc,
     },
 };
 use reth_rpc_eth_types::{
@@ -125,17 +123,9 @@ impl<N: FullNodeTypes<Types = TempoNode>> RpcNodeCoreExt for TempoEthApi<N> {
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiSpec for TempoEthApi<N> {
-    type Transaction = TxTy<N::Types>;
-    type Rpc = TempoNetwork;
-
     #[inline]
     fn starting_block(&self) -> U256 {
         self.inner.starting_block()
-    }
-
-    #[inline]
-    fn signers(&self) -> &SignersForApi<Self> {
-        EthApiSpec::signers(&self.inner)
     }
 }
 

@@ -17,13 +17,15 @@ num_accounts = 25_000 # Limited by the number in the genesis (see generate_genes
 gas_price = 100000000000 # 100 gwei
 gas_limit = 100_000
 
-token_contract_address = "0x2000000000000000000000000000000000000001"
+token_contract_address = "0x20c0000000000000000000000000000000000000"
 recipient_distribution_factor = 20 # 1/20 of accounts receive transfers.
 max_transfer_amount = 10
 
 batch_size = 1_000 # Number of transactions to generate before pushing to queue.
 
-[rate_limiting]
+[benchmark]
+run_duration = 60 # seconds
+cool_down_duration = 60 # seconds
 initial_ratelimit = 100 # txs/s
 
 # Rate limit thresholds: [(threshold, rate_limit)]
