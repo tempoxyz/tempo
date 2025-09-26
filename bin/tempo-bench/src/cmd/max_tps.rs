@@ -1,155 +1,155 @@
-use crate::crescendo::{
-    DesireType, NETWORK_STATS, TX_QUEUE, TX_TRACKER, WorkerType,
-    config::{self, Config},
-    tx_gen::TxGenerator,
-    utils, workers,
+use alloy::{
+    consensus::SignableTransaction,
+    network::TxSignerSync,
+    primitives::{Address, TxHash, TxKind, U128, U256, hex},
+    providers::{Provider, ProviderBuilder},
+    rpc::client::ClientBuilder,
+    sol_types::SolCall,
+    transports::http::reqwest::Url,
 };
+use alloy_consensus::TxLegacy;
+use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use clap::Parser;
 use eyre::WrapErr;
-use std::{path::PathBuf, sync::Arc, thread, time::Duration};
-use tokio::time;
-use tokio_util::sync::CancellationToken;
+// use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
+use http_body_util::{BodyExt, Full};
+use hyper::Request;
+use hyper_util::{
+    client::legacy::{Client, connect::HttpConnector},
+    rt::TokioExecutor,
+};
+use rayon::prelude::*;
+use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_precompiles::contracts::ITIP20;
+use tokio::time::{Instant, interval, sleep};
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
 pub struct TPSArgs {
-    /// Path to the configuration file
-    #[arg(short, long)]
-    pub config: PathBuf,
+    /// Target RPC URLs
+    #[arg(short, long, default_value = "http://127.0.0.1:8545")]
+    pub urls: Vec<Url>,
+
+    /// Target transactions per second
+    #[arg(long, default_value = "5000")]
+    pub tps: u64,
+
+    /// Duration to run benchmark in seconds
+    #[arg(long, default_value = "30")]
+    pub duration: u64,
+
+    /// Number of accounts to generate
+    #[arg(long, default_value = "1000")]
+    pub accounts: u32,
+
+    /// Mnemonic for account generation
+    #[arg(
+        long,
+        default_value = "test test test test test test test test test test test junk"
+    )]
+    pub mnemonic: String,
+
+    /// Contract address of token to be transferred
+    #[arg(long, default_value = "0x2000000000000000000000000000000000000001")]
+    pub token_address: Address,
+
+    /// Chain ID
+    #[arg(long, default_value = "1337")]
+    pub chain_id: u64,
+
+    /// Gas limit for each transaction
+    #[arg(long, default_value = "100000000000")]
+    pub gas_limit: u64,
+
+    /// Number of concurrent connections
+    #[arg(long, default_value = "100")]
+    pub connections: usize,
 }
 
 impl TPSArgs {
     pub async fn run(self) -> eyre::Result<()> {
-        println!("[~] Loading config from {}...", self.config.display());
-        config::init(Config::from_file(&self.config)?);
-
-        if let Err(err) =
-            utils::increase_nofile_limit(config::get().network_worker.total_connections * 10)
-        {
-            println!("[!] Failed to increase file descriptor limit: {err}.");
-        }
-
-        let mut core_ids =
+        let core_ids =
             core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
-        println!("[*] Detected {} effective cores.", core_ids.len());
+        println!("Detected {} cores for parallel processing", core_ids.len());
 
-        // Initialize Rayon with explicit thread count.
         rayon::ThreadPoolBuilder::new()
             .num_threads(core_ids.len())
             .build_global()?;
 
-        // Pin the tokio runtime to a core (if enabled).
-        utils::maybe_pin_thread(
-            core_ids
-                .pop()
-                .ok_or_else(|| eyre::eyre!("No core available for main runtime"))?,
+        let transactions = self.generate_transactions().await?;
+        println!("[*] Pre-generated {} transactions", transactions.len());
+
+        // // Send transactions at specified rate
+        // self.send_transactions(transactions).await?;
+
+        Ok(())
+    }
+
+    async fn generate_transactions(&self) -> eyre::Result<Vec<Vec<u8>>> {
+        println!("Generating {} accounts...", self.accounts);
+        let signers: Vec<PrivateKeySigner> = (0..self.accounts)
+            .into_par_iter()
+            .map(|i| {
+                MnemonicBuilder::<English>::default()
+                    .phrase(&self.mnemonic)
+                    .index(i)
+                    .unwrap()
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+
+        let provider = ProviderBuilder::new().connect_http(self.urls[0].clone());
+
+        let mut nonces = Vec::with_capacity(signers.len());
+        for signer in signers.iter() {
+            let address = signer.address();
+            let nonce = provider.get_transaction_count(address).await?;
+            nonces.push(nonce);
+        }
+        let signers_with_nonces: Vec<_> = signers.into_iter().zip(nonces).collect();
+        let num_txs = self.tps * self.duration;
+        let txs_per_signer = num_txs / self.accounts as u64;
+
+        println!(
+            "[*] Generating {} transactions per signer...",
+            txs_per_signer
         );
 
-        let tx_generator = TxGenerator::new()
-            .await
-            .wrap_err("failed to construct transaction generator")?;
+        // Generate transactions for each signer
+        let mut transactions = Vec::with_capacity(num_txs as usize);
 
-        // Given our desired breakdown of workers, translate this into actual numbers of workers to spawn.
-        let (workers, worker_counts) = workers::assign_workers(
-            core_ids, // Doesn't include the main runtime core.
-            vec![
-                (
-                    WorkerType::TxGen,
-                    DesireType::Percentage(config::get().workers.tx_gen_worker_percentage),
-                ),
-                (
-                    WorkerType::Network,
-                    DesireType::Percentage(config::get().workers.network_worker_percentage),
-                ),
-            ],
-            config::get().workers.thread_pinning, // Only log core ranges if thread pinning is actually enabled.
-        );
-
-        let connections_per_network_worker =
-            config::get().network_worker.total_connections / worker_counts[&WorkerType::Network];
-        println!("[*] Connections per network worker: {connections_per_network_worker}");
-
-        // TODO: Having the assign_workers function do this would be cleaner.
-        let cancellation_token = CancellationToken::new();
-        let tx_gen_worker_count = worker_counts[&WorkerType::TxGen] as usize;
-        let mut tx_gen_worker_id = 0;
-        let mut network_worker_id = 0;
-
-        println!("[*] Starting workers...");
-
-        // Spawn the workers, pinning them to the appropriate cores if enabled.
-        for (core_id, worker_type) in workers {
-            match worker_type {
-                WorkerType::TxGen => {
-                    let tx_gen_clone: Arc<TxGenerator> = Arc::clone(&tx_generator);
-                    let cloned_token = cancellation_token.clone();
-                    thread::spawn(move || {
-                        utils::maybe_pin_thread(core_id);
-                        tx_gen_clone.tx_gen_worker(
-                            tx_gen_worker_id,
-                            tx_gen_worker_count,
-                            cloned_token,
-                        );
-                    });
-                    tx_gen_worker_id += 1;
+        for (signer, nonce) in signers_with_nonces.iter() {
+            for tx_index in 0..txs_per_signer {
+                let transfer_call = ITIP20::transferCall {
+                    to: Address::random(),
+                    amount: U256::ONE,
                 }
-                WorkerType::Network => {
-                    let cloned_token = cancellation_token.clone();
-                    thread::spawn(move || {
-                        utils::maybe_pin_thread(core_id);
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .expect("Failed to build tokio runtime");
+                .abi_encode();
 
-                        rt.block_on(async {
-                            for i in 0..connections_per_network_worker {
-                                tokio::spawn(workers::network_worker(
-                                    (network_worker_id * connections_per_network_worker + i)
-                                        as usize,
-                                    cloned_token.clone(),
-                                ));
-                            }
-                            cloned_token.cancelled().await;
-                        });
-                    });
-                    network_worker_id += 1;
-                }
+                let tx = TxLegacy {
+                    chain_id: Some(self.chain_id),
+                    nonce: *nonce + tx_index,
+                    gas_price: TEMPO_BASE_FEE as u128,
+                    gas_limit: self.gas_limit,
+                    to: TxKind::Call(self.token_address),
+                    value: U256::ZERO,
+                    input: transfer_call.into(),
+                };
+
+                let encoded_tx = self.sign_and_encode_tx(signer, tx);
+                transactions.push(encoded_tx);
             }
         }
 
-        println!("[*] Starting reporters...");
+        Ok(transactions)
+    }
 
-        // Start reporters.
-        tokio::spawn(TX_QUEUE.start_reporter(
-            Duration::from_secs(config::get().reporters.tx_queue_report_interval_secs),
-            cancellation_token.clone(),
-        ));
-        tokio::spawn(NETWORK_STATS.start_reporter(
-            Duration::from_secs(config::get().reporters.network_stats_report_interval_secs),
-            cancellation_token.clone(),
-        ));
-
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(config::get().benchmark.run_duration)).await;
-            println!("[*] Stopping reporters...");
-            cancellation_token.cancel();
-        })
-        .await?;
-
-        println!("[*] All workers stopped, entering cool down period");
-        time::sleep(Duration::from_secs(
-            config::get().benchmark.cool_down_duration,
-        ))
-        .await;
-
-        let report = TX_TRACKER
-            .tally_sent_txs(0)
-            .await
-            .expect("Failed to generate tx report");
-
-        println!("Final report: {:?}", report);
-
-        Ok(())
+    fn sign_and_encode_tx(&self, signer: &PrivateKeySigner, mut tx: TxLegacy) -> Vec<u8> {
+        let signature = signer.sign_transaction_sync(&mut tx).unwrap();
+        let mut payload = Vec::new();
+        tx.into_signed(signature).eip2718_encode(&mut payload);
+        payload
     }
 }
