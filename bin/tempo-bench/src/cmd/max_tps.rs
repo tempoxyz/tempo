@@ -138,7 +138,7 @@ impl MaxTPSArgs {
 fn send_transactions(
     transactions: Arc<Vec<Vec<u8>>>,
     num_workers: usize,
-    num_connections: u64,
+    _num_connections: u64,
     target_urls: Vec<Url>,
     tps: u64,
     disable_thread_pinning: bool,
