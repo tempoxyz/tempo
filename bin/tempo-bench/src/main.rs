@@ -1,5 +1,4 @@
 mod cmd;
-mod crescendo;
 mod opts;
 
 use clap::Parser;
