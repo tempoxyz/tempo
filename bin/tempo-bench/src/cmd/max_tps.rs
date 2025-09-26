@@ -7,7 +7,7 @@ use alloy::{
     transports::http::reqwest::Url,
 };
 use alloy_consensus::{SignableTransaction, TxLegacy};
-use alloy_signer_local::{LocalSigner, MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
+use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use clap::Parser;
 use core_affinity::CoreId;
 use governor::{Quota, RateLimiter};
@@ -24,7 +24,6 @@ use std::{
     time::Duration,
 };
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_precompiles::contracts::ITIP20;
 use tokio::time::timeout;
 
 sol! {
@@ -180,17 +179,19 @@ fn send_transactions(
                 .expect("Failed to build tokio runtime");
 
             rt.block_on(async {
+                // TODO: Send txs from multiple senders
                 // Create multiple connections for this thread
-                let mut providers = Vec::new();
-                for i in 0..num_connections {
-                    let url = &target_urls[(i as usize) % target_urls.len()];
-                    let provider = ProviderBuilder::new().connect_http(url.clone());
-                    providers.push(provider);
-                }
+                // let mut providers = Vec::new();
+                // for i in 0..num_connections {
+                //     println!("{i:?}");
+                //     let url = &target_urls[(i as usize) % target_urls.len()];
+                //     let provider = ProviderBuilder::new().connect_http(url.clone());
+                //     providers.push(provider);
+                // }
 
-                for (i, tx_bytes) in transactions[start..end].iter().enumerate() {
+                let provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
+                for tx_bytes in transactions[start..end].iter() {
                     rate_limiter.until_ready().await;
-                    let provider = &providers[i % providers.len()];
 
                     match timeout(
                         Duration::from_secs(1),
@@ -198,12 +199,12 @@ fn send_transactions(
                     )
                     .await
                     {
-                        Ok(Ok(_)) => {}
+                        Ok(Ok(_)) => {
+                            tx_counter.fetch_add(1, Ordering::Relaxed);
+                        }
                         Ok(Err(e)) => eprintln!("Failed to send transaction: {}", e),
                         Err(_) => eprintln!("Tx send timed out"),
                     }
-
-                    tx_counter.fetch_add(1, Ordering::Relaxed);
                 }
             });
         });
