@@ -14,7 +14,7 @@ use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder,
+        PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
@@ -32,7 +32,9 @@ use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
 use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_primitives::{TempoPrimitives, TempoTxEnvelope, TempoTxType};
-use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
+use tempo_transaction_pool::{
+    TempoPriorityOrdering, TempoTransactionPool, validator::TempoTransactionValidator,
+};
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
@@ -347,9 +349,13 @@ where
         }
 
         let validator = validator.map(TempoTransactionValidator::new);
-        let transaction_pool = TxPoolBuilder::new(ctx)
-            .with_validator(validator)
-            .build_and_spawn_maintenance_task(blob_store, pool_config)?;
+        let transaction_pool = reth_transaction_pool::Pool::new(
+            validator,
+            TempoPriorityOrdering::default(),
+            blob_store,
+            pool_config.clone(),
+        );
+        spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");

@@ -1,6 +1,6 @@
 inherits = "default.toml"
 
-[rate_limiting]
+[benchmark]
 initial_ratelimit = 250
 ratelimit_thresholds = [
     [500, 1_000],

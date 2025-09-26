@@ -1,7 +1,6 @@
+use crate::crescendo::utils::merge_toml_values;
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::OnceLock};
-
-use crate::crescendo::utils::merge_toml_values;
 
 /// Global configuration instance for the application.
 static CONFIG_INSTANCE: OnceLock<Config> = OnceLock::new();
@@ -21,7 +20,7 @@ pub fn get() -> &'static Config {
 pub struct Config {
     pub tx_gen_worker: TxGenWorkerConfig,
     pub network_worker: NetworkWorkerConfig,
-    pub rate_limiting: RateLimitingConfig,
+    pub benchmark: BenchmarkConfig,
 
     pub workers: WorkersConfig,
     pub reporters: ReportersConfig,
@@ -87,9 +86,11 @@ pub struct TxGenWorkerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RateLimitingConfig {
+pub struct BenchmarkConfig {
     pub initial_ratelimit: u64,
     pub ratelimit_thresholds: Vec<(u32, u64)>,
+    pub run_duration: u64,
+    pub cool_down_duration: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
