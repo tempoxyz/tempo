@@ -1365,6 +1365,9 @@ mod tests {
         let mut token = TIP20Token::new(token_id, &mut storage);
         token.initialize("Test", "TST", "USD", &admin).unwrap();
 
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
         let amount = U256::from(100);
         token
             .mint(&admin, ITIP20::mintCall { to: user, amount })
