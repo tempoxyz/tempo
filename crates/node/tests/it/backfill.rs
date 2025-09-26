@@ -16,7 +16,7 @@ use tempo_payload_types::TempoPayloadBuilderAttributes;
 /// Test that verifies backfill sync works correctly.
 ///
 /// 1. Sets up two connected nodes
-/// 2. Advances the first node with random transactions
+/// 2. Advances the first node with enough blocks to trigger backfill
 /// 3. Sends FCU to second node to trigger backfill
 /// 4. Verifies the second node can sync to the first node's tip
 #[tokio::test(flavor = "multi_thread")]
@@ -77,8 +77,9 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     let chain_id = provider1.get_chain_id().await?;
 
     // Advance first node with blocks containing transactions
+    // Use more than 32 blocks to trigger actual backfill (threshold is MIN_BLOCKS_FOR_PIPELINE_RUN = 32)
     println!("Advancing first node...");
-    let target_blocks = 10;
+    let target_blocks = 50;
 
     // Create multiple wallets for different transactions to avoid nonce issues
     let wallets = Wallet::new(target_blocks as usize)
@@ -106,7 +107,9 @@ async fn test_backfill_sync() -> eyre::Result<()> {
             .assert_new_block(tx_hash, block_hash, block_number)
             .await?;
 
-        println!("Advanced to block {block_number}");
+        if block_number % 10 == 0 {
+            println!("Advanced to block {block_number}");
+        }
 
         if block_number >= target_blocks {
             break;
@@ -235,8 +238,6 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         mid_block1.header.hash, mid_block2.header.hash,
         "Intermediate block hashes don't match"
     );
-
-    println!("Backfill sync test completed successfully!");
 
     Ok(())
 }
