@@ -128,7 +128,7 @@ impl MaxTPSArgs {
         )?;
 
         // Wait for all sender threads to finish
-        std::thread::sleep(Duration::from_secs(self.duration + 5));
+        std::thread::sleep(Duration::from_secs(self.duration));
         println!("Finished sending transactions");
 
         Ok(())
