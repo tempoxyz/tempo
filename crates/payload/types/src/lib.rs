@@ -5,7 +5,7 @@
 
 mod attrs;
 
-pub use crate::attrs::TempoPayloadBuilderAttributes;
+pub use crate::attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
 
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;

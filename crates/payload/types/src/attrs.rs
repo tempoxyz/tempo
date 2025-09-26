@@ -8,13 +8,26 @@ use std::{
     sync::{Arc, atomic, atomic::Ordering},
 };
 
+/// A handle for a payload interrupt flag.
+///
+/// Can be fired using [`InterruptHandle::interrupt`].
+#[derive(Debug, Clone)]
+pub struct InterruptHandle(Arc<atomic::AtomicBool>);
+
+impl InterruptHandle {
+    /// Turns on the interrupt flag on the associated payload.
+    pub fn interrupt(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Container type for all components required to build a payload.
 ///
 /// The `TempoPayloadBuilderAttributes` has an additional feature of interrupting payload.
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
-    interrupt: Arc<atomic::AtomicBool>,
+    interrupt: InterruptHandle,
 }
 
 impl TempoPayloadBuilderAttributes {
@@ -22,14 +35,19 @@ impl TempoPayloadBuilderAttributes {
     pub fn new(inner: EthPayloadBuilderAttributes) -> Self {
         Self {
             inner,
-            interrupt: Arc::new(atomic::AtomicBool::new(false)),
+            interrupt: InterruptHandle(Arc::new(atomic::AtomicBool::new(false))),
         }
     }
 
     /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
     /// processing any more transactions.
     pub fn is_interrupted(&self) -> bool {
-        self.interrupt.load(Ordering::Relaxed)
+        self.interrupt.0.load(Ordering::Relaxed)
+    }
+
+    /// Returns a cloneable [`InterruptHandle`] for turning on the `interrupt` flag.
+    pub fn interrupt_handle(&self) -> &InterruptHandle {
+        &self.interrupt
     }
 }
 
