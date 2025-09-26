@@ -264,6 +264,11 @@ where
                 continue;
             }
 
+            // check if the job was interrupted, if so we can skip remaining transactions
+            if attributes.is_interrupted() {
+                break;
+            }
+
             // check if the job was cancelled, if so we can exit early
             if cancel.is_cancelled() {
                 return Ok(BuildOutcome::Cancelled);

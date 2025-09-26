@@ -20,4 +20,3 @@ alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-engine.workspace = true
 
 serde.workspace = true
-tokio.workspace = true

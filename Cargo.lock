@@ -13914,7 +13914,6 @@ dependencies = [
  "reth-primitives-traits",
  "serde",
  "tempo-primitives",
- "tokio",
 ]
 
 [[package]]

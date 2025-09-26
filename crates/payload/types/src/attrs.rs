@@ -3,39 +3,33 @@ use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
 use reth_node_api::PayloadBuilderAttributes;
-use std::convert::Infallible;
-use tokio::sync::broadcast;
+use std::{
+    convert::Infallible,
+    sync::{Arc, atomic, atomic::Ordering},
+};
 
 /// Container type for all components required to build a payload.
 ///
 /// The `TempoPayloadBuilderAttributes` has an additional feature of interrupting payload.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
-    interrupt_sender: broadcast::Sender<()>,
-    _interrupt: broadcast::Receiver<()>,
-}
-
-impl Clone for TempoPayloadBuilderAttributes {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            interrupt_sender: self.interrupt_sender.clone(),
-            _interrupt: self.interrupt_sender.subscribe(),
-        }
-    }
+    interrupt: Arc<atomic::AtomicBool>,
 }
 
 impl TempoPayloadBuilderAttributes {
     /// Creates new `TempoPayloadBuilderAttributes` with `inner` attributes.
     pub fn new(inner: EthPayloadBuilderAttributes) -> Self {
-        let (interrupt_sender, interrupt) = broadcast::channel(10);
-
         Self {
             inner,
-            interrupt_sender,
-            _interrupt: interrupt,
+            interrupt: Arc::new(atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
+    /// processing any more transactions.
+    pub fn is_interrupted(&self) -> bool {
+        self.interrupt.load(Ordering::Relaxed)
     }
 }
 
