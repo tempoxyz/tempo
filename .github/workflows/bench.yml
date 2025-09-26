@@ -28,11 +28,11 @@ jobs:
           git: https://github.com/cross-rs/cross
           tag: v0.2.5
       - run: |
-          just build tempo "--profile maxperf"
+          just build tempo "--profile release"
           just build tempo-bench "--profile maxperf"
       - run: |
           target/x86_64-unknown-linux-gnu/maxperf/tempo-bench generate-genesis -a 50000 --base-fee-per-gas 44 --output genesis.json
-          target/x86_64-unknown-linux-gnu/maxperf/tempo node \
+          target/x86_64-unknown-linux-gnu/release/tempo node \
               --http \
               --http.addr 0.0.0.0 \
               --http.port 8545 \
@@ -63,14 +63,10 @@ jobs:
               --rpc.max-request-size 1000000 \
               --rpc.max-response-size 1000000 \
               --max-tx-reqs 1000000 &
-          
-          while :; do
-            hex=$(curl -s -H 'Content-Type: application/json' \
-              --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
-              http://127.0.0.1:8545 | jq -r '.result')
 
-            block_number=$((16#${hex#0x}))
-            (( block_number > 1 )) && { echo "Block: $block_number"; break; }
+          until curl -sSf -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":1}' \
+            http://127.0.0.1:8545 >/dev/null; do
             sleep 1
           done
           
