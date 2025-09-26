@@ -84,7 +84,7 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Resolves fee payer from the signature.
+    /// Resolves fee payer for the transaction.
     pub fn fee_payer(&self, sender: Address) -> Result<Address, SignatureError> {
         match self {
             Self::FeeToken(tx) => {
