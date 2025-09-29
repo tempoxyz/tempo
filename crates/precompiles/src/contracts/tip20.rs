@@ -499,19 +499,16 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.check_transfer_authorized(&from, &to)?;
 
         // Check and update allowance
-        // Skip allowance check if the caller is the fee manager
-        if *msg_sender != TIP_FEE_MANAGER_ADDRESS {
-            let allowed = self.get_allowance(&from, msg_sender);
-            if amount > allowed {
-                return Err(TIP20Error::insufficient_allowance());
-            }
+        let allowed = self.get_allowance(&from, msg_sender);
+        if amount > allowed {
+            return Err(TIP20Error::insufficient_allowance());
+        }
 
-            if allowed != U256::MAX {
-                let new_allowance = allowed
-                    .checked_sub(amount)
-                    .ok_or(TIP20Error::insufficient_allowance())?;
-                self.set_allowance(&from, msg_sender, new_allowance);
-            }
+        if allowed != U256::MAX {
+            let new_allowance = allowed
+                .checked_sub(amount)
+                .ok_or(TIP20Error::insufficient_allowance())?;
+            self.set_allowance(&from, msg_sender, new_allowance);
         }
 
         self._transfer(&from, &to, amount)?;
