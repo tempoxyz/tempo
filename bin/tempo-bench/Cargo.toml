@@ -30,7 +30,6 @@ reth.workspace = true
 reth-evm.workspace = true
 thiserror.workspace = true
 
-
 # Bespoke dependencies
 alloy-signer-local = { version = "1", features = ["mnemonic"] }
 core_affinity = "0.8.3"
@@ -49,4 +48,3 @@ rlimit = "0.10.2"
 simple-tqdm = { version = "0.2.0", features = ["rayon"] }
 thousands = "0.2.0"
 governor = "0.10.1"
-
