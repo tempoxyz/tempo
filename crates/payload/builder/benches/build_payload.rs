@@ -1,6 +1,6 @@
 use alloy_consensus::{Signed, TxLegacy};
 use alloy_primitives::{Address, B256, U256};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use reth_basic_payload_builder::{BuildArguments, PayloadConfig};
 use reth_chainspec::ChainSpecProvider;
 use reth_db::{DatabaseEnv, open_db_read_only};
@@ -8,7 +8,7 @@ use reth_ethereum::EthereumNode;
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_payload_builder::PayloadBuilder;
 use reth_payload_primitives::EthPayloadBuilderAttributes;
-use reth_primitives_traits::{SealedHeader, Recovered};
+use reth_primitives_traits::{Recovered, SealedHeader};
 use reth_provider::{StaticFileProvider, providers::StaticFileWriter};
 use reth_revm::CachedReads;
 use std::sync::Arc;
@@ -72,11 +72,11 @@ struct MockBigBlockTransactions {
 impl MockBigBlockTransactions {
     fn new(tx_count: usize, data_size_per_tx: usize) -> Self {
         let mut transactions = VecDeque::new();
-        
+
         for i in 0..tx_count {
             // Create large calldata
             let large_data = vec![0u8; data_size_per_tx];
-            
+
             let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
                 TxLegacy {
                     chain_id: Some(1),
@@ -89,18 +89,16 @@ impl MockBigBlockTransactions {
                 },
                 TEMPO_SYSTEM_TX_SIGNATURE,
             ));
-            
-            let recovered_tx = Recovered::new_unchecked(
-                tx.clone(),
-                Address::random(),
-            );
-            
-            let pooled_tx = TempoPooledTransaction::new(recovered_tx, U256::from(20_000_000_000u128));
+
+            let recovered_tx = Recovered::new_unchecked(tx.clone(), Address::random());
+
+            let pooled_tx =
+                TempoPooledTransaction::new(recovered_tx, U256::from(20_000_000_000u128));
             let valid_tx = Arc::new(ValidPoolTransaction::new(pooled_tx, 0));
-            
+
             transactions.push_back(valid_tx);
         }
-        
+
         Self { transactions }
     }
 }
@@ -148,29 +146,32 @@ fn create_mock_header(block_number: u64) -> Header {
 
 fn bench_build_payload_big_blocks(c: &mut Criterion) {
     let mut group = c.benchmark_group("build_payload_big_blocks");
-    
+
     // Test scenarios: (tx_count, data_size_per_tx in KB)
     let scenarios = vec![
-        (10, 1024),   // 10 txs with 1KB each
-        (50, 2048),   // 50 txs with 2KB each  
-        (20, 10240),  // 20 txs with 10KB each
-        (10, 51200),  // 10 txs with 50KB each
-        (5, 102400),  // 5 txs with 100KB each
+        (10, 1024),  // 10 txs with 1KB each
+        (50, 2048),  // 50 txs with 2KB each
+        (20, 10240), // 20 txs with 10KB each
+        (10, 51200), // 10 txs with 50KB each
+        (5, 102400), // 5 txs with 100KB each
     ];
-    
+
     for &(tx_count, data_size) in &scenarios {
         let provider = MockProvider::new();
         let pool = TempoTransactionPool::new(provider.clone(), Default::default());
         let evm_config = TempoEvmConfig::default();
         let builder = TempoPayloadBuilder::new(pool, provider.clone(), evm_config);
-        
+
         group.bench_with_input(
-            BenchmarkId::new("big_block", format!("{}tx_{}KB", tx_count, data_size / 1024)),
+            BenchmarkId::new(
+                "big_block",
+                format!("{}tx_{}KB", tx_count, data_size / 1024),
+            ),
             &(tx_count, data_size),
             |b, &(tx_count, data_size)| {
                 b.iter(|| {
                     let parent_header = create_mock_header(100);
-                    
+
                     let attributes = TempoPayloadBuilderAttributes::new(
                         reth_payload_primitives::PayloadId::new([1u8; 8]),
                         parent_header.hash(),
@@ -181,31 +182,32 @@ fn bench_build_payload_big_blocks(c: &mut Criterion) {
                         false,
                         Vec::new(),
                     );
-                    
+
                     let config = PayloadConfig {
                         parent_header: Arc::new(parent_header),
                         attributes,
                     };
-                    
+
                     let args = BuildArguments::new(
                         CachedReads::default(),
                         config,
                         Default::default(),
                         Default::default(),
                     );
-                    
+
                     // Create mock transactions with big data
                     let mock_txs = MockBigBlockTransactions::new(tx_count, data_size);
-                    
+
                     // Call build_payload with our big block transactions
-                    let result = builder.build_payload(black_box(args), |_attrs| black_box(mock_txs));
-                    
+                    let result =
+                        builder.build_payload(black_box(args), |_attrs| black_box(mock_txs));
+
                     black_box(result);
                 });
             },
         );
     }
-    
+
     group.finish();
 }
 
