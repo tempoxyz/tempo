@@ -73,6 +73,7 @@ mod tests {
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         revm::context::{ContextTr, Host},
     };
+    use alloy_primitives::{address, b256, bytes};
     use reth_evm::revm::{
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
@@ -115,6 +116,130 @@ mod tests {
         };
 
         assert_eq!(data, *code.original_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_account_info() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+        let address = address!("3000000000000000000000000000000000000003");
+
+        // Get account info for a new account
+        let account_info = provider.get_account_info(address)?;
+
+        // Should be an empty account
+        assert!(account_info.balance.is_zero());
+        assert_eq!(account_info.nonce, 0);
+        // Note: load_account_code may return empty bytecode as Some(empty) for new accounts
+        if let Some(ref code) = account_info.code {
+            assert!(code.is_empty(), "New account should have empty code");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_emit_event() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+        let address = address!("4000000000000000000000000000000000000004");
+        let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
+        let data = bytes!(
+            "00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001"
+        );
+
+        let log_data = LogData::new_unchecked(vec![topic], data);
+
+        // Should not error even though events can't be emitted from handlers
+        provider.emit_event(address, log_data)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_multiple_storage_operations() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+        let address = address!("5000000000000000000000000000000000000005");
+
+        // Store multiple values
+        for i in 0..10 {
+            let key = U256::from(i);
+            let value = U256::from(i * 100);
+            provider.sstore(address, key, value)?;
+        }
+
+        // Verify all values
+        for i in 0..10 {
+            let key = U256::from(i);
+            let expected_value = U256::from(i * 100);
+            let loaded_value = provider.sload(address, key)?;
+            assert_eq!(loaded_value, expected_value);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_overwrite_storage() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+        let address = address!("6000000000000000000000000000000000000006");
+        let key = U256::from(99);
+
+        // Store initial value
+        let initial_value = U256::from(111);
+        provider.sstore(address, key, initial_value)?;
+        assert_eq!(provider.sload(address, key)?, initial_value);
+
+        // Overwrite with new value
+        let new_value = U256::from(999);
+        provider.sstore(address, key, new_value)?;
+        assert_eq!(provider.sload(address, key)?, new_value);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_different_addresses() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+        let address1 = address!("7000000000000000000000000000000000000001");
+        let address2 = address!("7000000000000000000000000000000000000002");
+        let key = U256::from(42);
+
+        // Store different values at the same key for different addresses
+        let value1 = U256::from(100);
+        let value2 = U256::from(200);
+
+        provider.sstore(address1, key, value1)?;
+        provider.sstore(address2, key, value2)?;
+
+        // Verify values are independent
+        assert_eq!(provider.sload(address1, key)?, value1);
+        assert_eq!(provider.sload(address2, key)?, value2);
+
         Ok(())
     }
 }

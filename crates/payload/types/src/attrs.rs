@@ -3,39 +3,51 @@ use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
 use reth_node_api::PayloadBuilderAttributes;
-use std::convert::Infallible;
-use tokio::sync::broadcast;
+use std::{
+    convert::Infallible,
+    sync::{Arc, atomic, atomic::Ordering},
+};
+
+/// A handle for a payload interrupt flag.
+///
+/// Can be fired using [`InterruptHandle::interrupt`].
+#[derive(Debug, Clone)]
+pub struct InterruptHandle(Arc<atomic::AtomicBool>);
+
+impl InterruptHandle {
+    /// Turns on the interrupt flag on the associated payload.
+    pub fn interrupt(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 /// Container type for all components required to build a payload.
 ///
 /// The `TempoPayloadBuilderAttributes` has an additional feature of interrupting payload.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
-    interrupt_sender: broadcast::Sender<()>,
-    _interrupt: broadcast::Receiver<()>,
-}
-
-impl Clone for TempoPayloadBuilderAttributes {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            interrupt_sender: self.interrupt_sender.clone(),
-            _interrupt: self.interrupt_sender.subscribe(),
-        }
-    }
+    interrupt: InterruptHandle,
 }
 
 impl TempoPayloadBuilderAttributes {
     /// Creates new `TempoPayloadBuilderAttributes` with `inner` attributes.
     pub fn new(inner: EthPayloadBuilderAttributes) -> Self {
-        let (interrupt_sender, interrupt) = broadcast::channel(10);
-
         Self {
             inner,
-            interrupt_sender,
-            _interrupt: interrupt,
+            interrupt: InterruptHandle(Arc::new(atomic::AtomicBool::new(false))),
         }
+    }
+
+    /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
+    /// processing any more transactions.
+    pub fn is_interrupted(&self) -> bool {
+        self.interrupt.0.load(Ordering::Relaxed)
+    }
+
+    /// Returns a cloneable [`InterruptHandle`] for turning on the `interrupt` flag.
+    pub fn interrupt_handle(&self) -> &InterruptHandle {
+        &self.interrupt
     }
 }
 

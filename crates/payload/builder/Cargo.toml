@@ -22,6 +22,7 @@ reth-chainspec.workspace = true
 reth-consensus-common.workspace = true
 reth-errors.workspace = true
 reth-evm.workspace = true
+reth-metrics.workspace = true
 reth-payload-builder.workspace = true
 reth-primitives-traits.workspace = true
 reth-revm.workspace = true
@@ -34,4 +35,5 @@ alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 alloy-rlp = "0.3"
 
+metrics.workspace = true
 tracing.workspace = true
