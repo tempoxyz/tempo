@@ -6,11 +6,10 @@
 // Will this require some feedback mechanism between execution layer and consensus layer
 // (i.e. reth becoming aware of consensus and allowing to update peers)?
 
+use commonware_consensus::types::View;
 use commonware_cryptography::ed25519;
 use commonware_resolver::p2p;
 use std::collections::HashMap;
-
-use crate::consensus::View;
 
 use tempo_commonware_node_cryptography::{
     BlsScheme, BlsSignature, GroupShare, Identity, PublicKey, PublicPolynomial,

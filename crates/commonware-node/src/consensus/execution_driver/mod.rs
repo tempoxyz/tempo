@@ -4,7 +4,12 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadId;
-use commonware_consensus::{Automaton, Block as _, Relay, Reporter, marshal};
+use commonware_consensus::{
+    Automaton, Block as _, Epochable, Relay, Reporter,
+    marshal::{self, ingress::mailbox::Identifier},
+    threshold_simplex::types::Context,
+    types::{Epoch, Round, View},
+};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 
 use commonware_utils::SystemTimeExt;
@@ -35,7 +40,7 @@ mod executor;
 
 use crate::consensus::execution_driver::executor::ExecutorMailbox;
 
-use super::{View, block::Block};
+use super::block::Block;
 
 pub(super) struct ExecutionDriverBuilder<TContext> {
     /// The execution context of the commonwarexyz application (tokio runtime, etc).
@@ -247,6 +252,9 @@ impl Inner<Init> {
 
     #[instrument(
         skip_all,
+        fields(
+            epoch = genesis.epoch,
+        ),
         ret(Display),
         err(level = Level::WARN)
     )]
@@ -262,38 +270,40 @@ impl Inner<Init> {
     #[instrument(
         skip_all,
         fields(
-            view = request.view,
+            epoch = request.round.epoch(),
+            view = request.round.view(),
             parent.view = request.parent.0,
             parent.digest = %request.parent.1,
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_propose<TContext>(
-        self,
-        mut request: Propose,
-        context: TContext,
-    ) -> eyre::Result<()>
+    async fn handle_propose<TContext>(self, request: Propose, context: TContext) -> eyre::Result<()>
     where
         TContext: Clock,
     {
+        let Propose {
+            parent,
+            mut response,
+            round,
+        } = request;
         let proposal = tokio::select!(
             biased;
 
-            () = request.response.cancellation() => {
+            () = response.cancellation() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
                     engine before block could be proposed; aborting"
                 ))
            }
 
-            res = self.clone().propose(request.parent, context) => {
+            res = self.clone().propose(context, parent, round) => {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
 
         let consensus_block = Block::from_execution_block(proposal.block().clone());
         let proposed_block_digest = consensus_block.digest();
-        request.response.send(proposed_block_digest).map_err(|_| {
+        response.send(proposed_block_digest).map_err(|_| {
             eyre!(
                 "failed returning proposal to consensus engine: response channel was already closed"
             )
@@ -331,7 +341,8 @@ impl Inner<Init> {
     #[instrument(
         skip_all,
         fields(
-            view = verify.view,
+            epoch = verify.round.epoch(),
+            view = verify.round.view(),
             digest = %verify.payload,
             parent.view = verify.parent.0,
             parent.digest = %verify.parent.1,
@@ -339,10 +350,10 @@ impl Inner<Init> {
     )]
     async fn handle_verify(mut self, verify: Verify) {
         let Verify {
-            view,
             parent,
             payload,
             mut response,
+            round,
         } = verify;
         let result = tokio::select!(
             biased;
@@ -354,7 +365,7 @@ impl Inner<Init> {
                 ))
             }
 
-            res = self.clone().verify(parent, payload) => {
+            res = self.clone().verify(parent, payload, round) => {
                 res.wrap_err("block verification failed")
             }
         );
@@ -371,14 +382,15 @@ impl Inner<Init> {
                     "failed making the verified proposal the head of the canonical chain",
                 );
             }
-            self.syncer.verified(view, block).await;
+            self.syncer.verified(round, block).await;
         }
     }
 
     async fn propose<TContext>(
         mut self,
-        parent: (View, Digest),
         context: TContext,
+        parent: (View, Digest),
+        round: Round,
     ) -> eyre::Result<EthBuiltPayload<TempoPrimitives>>
     where
         TContext: Clock,
@@ -395,7 +407,11 @@ impl Inner<Init> {
                 move || Ok((*genesis_block).clone())
             }))
         } else {
-            Either::Right(self.syncer.subscribe(Some(parent.0), parent.1).await)
+            Either::Right(
+                self.syncer
+                    .subscribe(Some(Round::new(round.epoch(), parent.0)), parent.1)
+                    .await,
+            )
         };
         let parent = parent_request
                 .await
@@ -505,24 +521,13 @@ impl Inner<Init> {
         // storage or from memory and likely for small numbers only. So concurrency
         // likely really doesn't matter.
         while next_height > latest_execution_block_number {
-            let block = self
-                .syncer
-                .get_block_by_height(next_height)
-                .await
-                .await
-                .wrap_err_with(|| {
-                    format!(
-                        "failed reading finalized block for height \
-                    `{next_height}` from consensus"
-                    )
-                })?
-                .ok_or_else(|| {
-                    eyre!(
-                        "consensus returned that no block for height \
+            let block = self.syncer.get_block(next_height).await.ok_or_else(|| {
+                eyre!(
+                    "consensus returned that no block for height \
                     `{next_height}` exists, even though it is at or below its \
                     latest finalized height"
-                    )
-                })?;
+                )
+            })?;
             self.state
                 .executor_mailbox
                 .backfill(block)
@@ -536,6 +541,7 @@ impl Inner<Init> {
         mut self,
         parent: (View, Digest),
         payload: Digest,
+        round: Round,
     ) -> eyre::Result<(Block, bool)> {
         if let Err(error) = self.state.executor_mailbox.canonicalize(parent.1) {
             tracing::warn!(
@@ -552,7 +558,7 @@ impl Inner<Init> {
         } else {
             Either::Right(
                 self.syncer
-                    .subscribe(Some(parent.0), parent.1)
+                    .subscribe(Some(Round::new(round.epoch(), parent.0)), parent.1)
                     .await
                     .map_err(|_| eyre!("syncer dropped channel before the parent block was sent")),
             )
@@ -600,15 +606,22 @@ impl Inner<Uninit> {
         // If so, we should have some kind of heartbeat to inform telemetry.
         let (finalized_consensus_height, finalized_consensus_digest) = self
             .syncer
-            .get_finalized()
+            .get_info(Identifier::Latest)
             .await
-            .await
-            .wrap_err("consensus dropped channel before returning the last finalized block")?
-            .unwrap_or_else(|| (0, self.genesis_block.digest()));
+            .unwrap_or_else(|| {
+                info!(
+                    "marshal actor returned nothing for the latest block; \
+                    cannot distinguish between the actor failing or us still \
+                    being at genesis; using height 0 and genesis digest; \
+                    consider looking at logs"
+                );
+                (0, self.genesis_block.digest())
+            });
 
         let latest_execution_block_number =
             self.execution_node.provider.last_block_number().wrap_err(
-                "failed getting last block number from execution layer; cannot continue without it",
+                "failed getting last block number from execution layer; cannot \
+                continue without it",
             )?;
 
         info!(
@@ -616,7 +629,8 @@ impl Inner<Uninit> {
             %finalized_consensus_digest,
             latest_execution_block_number,
             "consensus and execution layers reported their latest local state; \
-            setting forkchoice-state and catching up execution layer, if necessary",
+            setting forkchoice-state and catching up execution layer, if \
+            necessary",
         );
 
         let executor = executor::Builder {
@@ -737,16 +751,22 @@ async fn verify_block(
 }
 
 impl Automaton for ExecutionDriverMailbox {
-    type Context = super::Context;
+    type Context = Context<Self::Digest>;
 
     type Digest = Digest;
 
-    async fn genesis(&mut self) -> Self::Digest {
+    async fn genesis(&mut self, epoch: <Self::Context as Epochable>::Epoch) -> Self::Digest {
         let (tx, rx) = oneshot::channel();
         // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
         // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
         self.to_execution_driver
-            .send(Genesis { response: tx }.into())
+            .send(
+                Genesis {
+                    epoch,
+                    response: tx,
+                }
+                .into(),
+            )
             .await
             .expect("application is present and ready to receive genesis");
         rx.await
@@ -764,9 +784,9 @@ impl Automaton for ExecutionDriverMailbox {
         self.to_execution_driver
             .send(
                 Propose {
-                    view: context.view,
                     parent: context.parent,
                     response: tx,
+                    round: context.round,
                 }
                 .into(),
             )
@@ -790,9 +810,9 @@ impl Automaton for ExecutionDriverMailbox {
         self.to_execution_driver
             .send(
                 Verify {
-                    view: context.view,
                     parent: context.parent,
                     payload,
+                    round: context.round,
                     response: tx,
                 }
                 .into(),
@@ -859,6 +879,7 @@ enum Message {
 }
 
 struct Genesis {
+    epoch: Epoch,
     response: oneshot::Sender<Digest>,
 }
 
@@ -869,9 +890,9 @@ impl From<Genesis> for Message {
 }
 
 struct Propose {
-    view: View,
     parent: (View, Digest),
     response: oneshot::Sender<Digest>,
+    round: Round,
 }
 
 impl From<Propose> for Message {
@@ -891,10 +912,10 @@ impl From<Broadcast> for Message {
 }
 
 struct Verify {
-    view: View,
     parent: (View, Digest),
     payload: Digest,
     response: oneshot::Sender<bool>,
+    round: Round,
 }
 
 impl From<Verify> for Message {

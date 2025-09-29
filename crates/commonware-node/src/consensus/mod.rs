@@ -24,11 +24,7 @@ type Consensus<TContext, TBlocker> = commonware_consensus::threshold_simplex::En
     Supervisor,
 >;
 
-type Context = commonware_consensus::threshold_simplex::types::Context<Digest>;
-
 // This seems to be the reporter that the marshal "syncer" is talking to.
 // Alto actually has 2 reporters, this "marshal mailbox" and a custom indexer::Pusher;
 // we skip the latter for now.
 type Reporter = marshal::Mailbox<BlsScheme, block::Block>;
-
-type View = commonware_consensus::threshold_simplex::types::View;
