@@ -214,14 +214,7 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
         TIP20Token::new(validator_token_id, self.storage)
-            .transfer_from(
-                &self.contract_address,
-                ITIP20::transferFromCall {
-                    from: msg_sender,
-                    to: self.contract_address,
-                    amount: amount_in,
-                },
-            )
+            .system_transfer_from(msg_sender, self.contract_address, amount_in)
             .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
         let user_token_id = address_to_token_id_unchecked(&user_token);
@@ -301,26 +294,12 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
         // Transfer tokens from user to contract
         let user_token_id = address_to_token_id_unchecked(&user_token);
         let _ = TIP20Token::new(user_token_id, self.storage)
-            .transfer_from(
-                &self.contract_address,
-                ITIP20::transferFromCall {
-                    from: msg_sender,
-                    to: self.contract_address,
-                    amount: amount_user_token,
-                },
-            )
+            .system_transfer_from(msg_sender, self.contract_address, amount_user_token)
             .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
         let _ = TIP20Token::new(validator_token_id, self.storage)
-            .transfer_from(
-                &self.contract_address,
-                ITIP20::transferFromCall {
-                    from: msg_sender,
-                    to: self.contract_address,
-                    amount: amount_validator_token,
-                },
-            )
+            .system_transfer_from(msg_sender, self.contract_address, amount_validator_token)
             .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
         // Update reserves with overflow checks
