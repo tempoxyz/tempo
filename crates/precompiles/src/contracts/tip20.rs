@@ -1486,5 +1486,14 @@ mod tests {
 
         let result = token.system_transfer_from(from, to, amount);
         assert!(result.is_ok());
+
+        assert_eq!(
+            storage.events[&token_id_to_address(token_id)].last(),
+            Some(&TIP20Event::Transfer(ITIP20::Transfer {
+                from,
+                to,
+                amount,
+            }).into_log_data())
+        );
     }
 }
