@@ -19,6 +19,7 @@ tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 tempo-revm.workspace = true
 
+reth-consensus.workspace = true
 reth-evm.workspace = true
 reth-evm-ethereum.workspace = true
 reth-revm.workspace = true
@@ -31,6 +32,7 @@ alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 
 derive_more.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [features]

@@ -8,9 +8,11 @@ pub use assemble::TempoBlockAssembler;
 mod block;
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+mod error;
+pub use error::TempoEvmError;
 use tempo_consensus::TempoExtraData;
 pub mod evm;
-use std::{borrow::Cow, convert::Infallible, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 use alloy_primitives::Bytes;
 pub use evm::TempoEvmFactory;
@@ -97,7 +99,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
 
 impl ConfigureEvm for TempoEvmConfig {
     type Primitives = TempoPrimitives;
-    type Error = Infallible;
+    type Error = TempoEvmError;
     type NextBlockEnvCtx = TempoNextBlockEnvAttributes;
     type BlockExecutorFactory = Self;
     type BlockAssembler = TempoBlockAssembler;
@@ -111,7 +113,9 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &Header) -> Result<EvmEnv, Self::Error> {
-        self.inner.evm_env(header)
+        self.inner.evm_env(header).map_err(|_| {
+            TempoEvmError::InvalidEvmConfig("failed to create EVM environment".to_string())
+        })
     }
 
     fn next_evm_env(
@@ -119,7 +123,13 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &Header,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnv, Self::Error> {
-        self.inner.next_evm_env(parent, &attributes.inner)
+        self.inner
+            .next_evm_env(parent, &attributes.inner)
+            .map_err(|_| {
+                TempoEvmError::InvalidEvmConfig(
+                    "failed to create next block EVM environment".to_string(),
+                )
+            })
     }
 
     fn context_for_block<'a>(
