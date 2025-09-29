@@ -145,7 +145,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
     ) -> Result<TempoBlockExecutionCtx<'_>, Self::Error> {
-        Ok(TempoBlockExecutionCtx {
+        let ctx = TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
@@ -153,13 +153,15 @@ impl ConfigureEvm for TempoEvmConfig {
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
             },
             non_payment_gas_limit: attributes.non_payment_gas_limit,
-        })
+        };
+
+        Ok(ctx)
     }
 }
 
 impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     fn evm_env_for_payload(&self, payload: &TempoExecutionData) -> EvmEnvFor<Self> {
-        self.evm_env(&payload.0).expect("evm_env should not fail")
+        self.evm_env(&payload.0).expect("TODO: handle error")
     }
 
     fn context_for_payload<'a>(
@@ -167,7 +169,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &'a TempoExecutionData,
     ) -> ExecutionCtxFor<'a, Self> {
         self.context_for_block(&payload.0)
-            .expect("context_for_block should not fail")
+            .expect("TODO: handle error")
     }
 
     fn tx_iterator_for_payload(
