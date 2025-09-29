@@ -18,7 +18,7 @@ use tempo_revm::TempoTxEnv;
 
 /// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct TempoTransactionRequest {
     #[serde(flatten)]
     pub inner: TransactionRequest,

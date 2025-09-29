@@ -20,7 +20,7 @@ use tempo_commonware_node_cryptography::{
 ///
 /// Implementation of `[commonware_consensus::Supervisor]`.
 #[derive(Clone)]
-pub struct Supervisor {
+pub(crate) struct Supervisor {
     identity: Identity,
     polynomial: Vec<Identity>,
     participants: Vec<ed25519::PublicKey>,
@@ -31,7 +31,7 @@ pub struct Supervisor {
 
 impl Supervisor {
     /// Create a new [Supervisor].
-    pub fn new(
+    pub(crate) fn new(
         polynomial: PublicPolynomial,
         mut participants: Vec<ed25519::PublicKey>,
         share: GroupShare,

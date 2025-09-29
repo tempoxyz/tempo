@@ -1,5 +1,5 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
-use alloy_consensus::Transaction;
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_primitives::Bytes;
 use alloy_sol_types::SolCall;
 use reth_evm::{
@@ -18,6 +18,7 @@ use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::IFeeManager::executeBlockCall};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_revm::evm::TempoContext;
+use tracing::trace;
 
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -129,19 +130,32 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<ResultAndState, BlockExecutionError> {
-        if tx.tx().is_system_tx() {
+        let is_payment = tx.tx().is_payment();
+        let is_system = tx.tx().is_system_tx();
+        let gas_limit = tx.tx().gas_limit();
+
+        if is_system {
             self.validate_system_tx(tx.tx())?;
         } else if self.seen_system_tx {
+            trace!(target: "tempo::block", tx_hash = ?tx.tx().tx_hash(), "Rejecting: regular transaction after system transaction");
             return Err(BlockValidationError::msg(
                 "regular transaction can't follow system transaction",
             )
             .into());
-        } else if self.seen_payment_tx && !tx.tx().is_payment() {
+        } else if self.seen_payment_tx && !is_payment {
+            trace!(target: "tempo::block", tx_hash = ?tx.tx().tx_hash(), "Rejecting: non-payment transaction after payment transaction");
             return Err(BlockValidationError::msg(
                 "non-payment transaction can't follow payment transaction",
             )
             .into());
-        } else if !tx.tx().is_payment() && tx.tx().gas_limit() > self.non_payment_gas_left {
+        } else if !is_payment && gas_limit > self.non_payment_gas_left {
+            trace!(
+                target: "tempo::block",
+                gas_limit = gas_limit,
+                tx_hash = ?tx.tx().tx_hash(),
+                non_payment_gas_left = self.non_payment_gas_left,
+                "Rejecting: non-payment gas limit exceeded"
+            );
             return Err(BlockValidationError::msg(
                 "transaction gas limit exceeds non-payment gas limit",
             )

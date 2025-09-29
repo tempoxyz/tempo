@@ -1,11 +1,8 @@
 target
-genesis.json
-# Testnet runtime directories
-testnet/nodes/
-testnet/logs/
 
-# logs
-data
+scripts/logs
+scripts/data
+
 .DS_Store
 .idea
 **/.env

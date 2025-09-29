@@ -18,7 +18,7 @@ use reth_evm::{
 pub type TempoContext<DB> = Context<BlockEnv, TempoTxEnv, CfgEnv, DB>;
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
-#[derive(Debug)]
+#[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
 #[expect(clippy::type_complexity)]
 pub struct TempoEvm<DB: Database, I>(
     /// Inner EVM type.

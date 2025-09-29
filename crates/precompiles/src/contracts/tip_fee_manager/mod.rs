@@ -217,14 +217,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let token_id = address_to_token_id_unchecked(&user_token);
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
         tip20_token
-            .transfer_from(
-                &self.contract_address,
-                ITIP20::transferFromCall {
-                    from: user,
-                    to: self.contract_address,
-                    amount: max_amount,
-                },
-            )
+            .transfer_fee_pre_tx(&user, max_amount)
             .map_err(|_| FeeManagerError::insufficient_fee_token_balance())?;
 
         // Return the user's token preference
@@ -248,13 +241,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
             tip20_token
-                .transfer(
-                    &self.contract_address,
-                    ITIP20::transferCall {
-                        to: user,
-                        amount: refund_amount,
-                    },
-                )
+                .transfer_fee_post_tx(&user, refund_amount, actual_used)
                 .map_err(|_| {
                     IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
                         IFeeManager::InsufficientFeeTokenBalance {},

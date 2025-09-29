@@ -110,7 +110,7 @@ impl ConfigureEvm for TempoEvmConfig {
         &self.block_assembler
     }
 
-    fn evm_env(&self, header: &Header) -> EvmEnv {
+    fn evm_env(&self, header: &Header) -> Result<EvmEnv, Self::Error> {
         self.inner.evm_env(header)
     }
 
@@ -122,11 +122,14 @@ impl ConfigureEvm for TempoEvmConfig {
         self.inner.next_evm_env(parent, &attributes.inner)
     }
 
-    fn context_for_block<'a>(&self, block: &'a SealedBlock<Block>) -> TempoBlockExecutionCtx<'a> {
+    fn context_for_block<'a>(
+        &self,
+        block: &'a SealedBlock<Block>,
+    ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
         let non_payment_gas_limit = TempoExtraData::decode(&block.header().extra_data)
             .map(|data| data.non_payment_gas_limit)
             .unwrap_or(0);
-        TempoBlockExecutionCtx {
+        Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash,
                 parent_beacon_block_root: block.header().parent_beacon_block_root,
@@ -134,15 +137,15 @@ impl ConfigureEvm for TempoEvmConfig {
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
             },
             non_payment_gas_limit,
-        }
+        })
     }
 
     fn context_for_next_block(
         &self,
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
-    ) -> TempoBlockExecutionCtx<'_> {
-        TempoBlockExecutionCtx {
+    ) -> Result<TempoBlockExecutionCtx<'_>, Self::Error> {
+        Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
@@ -150,13 +153,13 @@ impl ConfigureEvm for TempoEvmConfig {
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
             },
             non_payment_gas_limit: attributes.non_payment_gas_limit,
-        }
+        })
     }
 }
 
 impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     fn evm_env_for_payload(&self, payload: &TempoExecutionData) -> EvmEnvFor<Self> {
-        self.evm_env(&payload.0)
+        self.evm_env(&payload.0).expect("evm_env should not fail")
     }
 
     fn context_for_payload<'a>(
@@ -164,6 +167,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &'a TempoExecutionData,
     ) -> ExecutionCtxFor<'a, Self> {
         self.context_for_block(&payload.0)
+            .expect("context_for_block should not fail")
     }
 
     fn tx_iterator_for_payload(

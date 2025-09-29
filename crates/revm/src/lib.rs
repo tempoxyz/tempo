@@ -6,7 +6,6 @@
 pub mod evm;
 pub mod exec;
 pub mod handler;
-pub mod journal_storage_provider;
 mod tx;
 
 pub use evm::TempoEvm;

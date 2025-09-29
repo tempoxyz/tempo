@@ -3,15 +3,15 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-pub mod config;
-pub mod consensus;
+pub(crate) mod config;
+pub(crate) mod consensus;
 pub mod metrics;
 
 use std::net::SocketAddr;
 
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated::discovery;
-use commonware_runtime::{Handle, Metrics as _};
+use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, bail, eyre};
 use indexmap::IndexMap;
 use tempo_node::TempoFullNode;
@@ -19,16 +19,11 @@ use tracing::info;
 
 use crate::config::{
     BACKFILL_BY_DIGEST_CHANNE_IDENTL, BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, FINALIZED_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-    NUMBER_CONCURRENT_FETCHES, NUMBER_MAX_FETCHES, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
-    RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, NUMBER_CONCURRENT_FETCHES, NUMBER_MAX_FETCHES,
+    PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT,
+    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
 };
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
-
-pub struct ConsensusStack {
-    pub network: Handle<()>,
-    pub consensus_engine: Handle<eyre::Result<()>>,
-}
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
@@ -67,7 +62,6 @@ pub async fn run_consensus_stack(
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         blocks_freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-        finalized_freezer_table_initial_size: FINALIZED_FREEZER_TABLE_INITIAL_SIZE_BYTES,
         signer: config.signer.clone(),
         polynomial: config.polynomial.clone(),
         share: config.share.clone(),

@@ -804,6 +804,67 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// Transfers fee tokens from user to fee manager before transaction execution
+    pub fn transfer_fee_pre_tx(&mut self, from: &Address, amount: U256) -> Result<(), TIP20Error> {
+        let from_balance = self.get_balance(from);
+        if amount > from_balance {
+            return Err(TIP20Error::insufficient_balance());
+        }
+
+        let new_from_balance = from_balance
+            .checked_sub(amount)
+            .ok_or(TIP20Error::insufficient_balance())?;
+
+        self.set_balance(from, new_from_balance);
+
+        let to_balance = self.get_balance(&TIP_FEE_MANAGER_ADDRESS);
+        let new_to_balance = to_balance
+            .checked_add(amount)
+            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        self.set_balance(&TIP_FEE_MANAGER_ADDRESS, new_to_balance);
+
+        Ok(())
+    }
+
+    /// Refunds unused fee tokens to user and emits transfer event for gas amount used
+    pub fn transfer_fee_post_tx(
+        &mut self,
+        to: &Address,
+        refund: U256,
+        actual_used: U256,
+    ) -> Result<(), TIP20Error> {
+        let from_balance = self.get_balance(&TIP_FEE_MANAGER_ADDRESS);
+        if refund > from_balance {
+            return Err(TIP20Error::insufficient_balance());
+        }
+
+        let new_from_balance = from_balance
+            .checked_sub(refund)
+            .ok_or(TIP20Error::insufficient_balance())?;
+
+        self.set_balance(&TIP_FEE_MANAGER_ADDRESS, new_from_balance);
+
+        let to_balance = self.get_balance(to);
+        let new_to_balance = to_balance
+            .checked_add(refund)
+            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        self.set_balance(to, new_to_balance);
+
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::Transfer(ITIP20::Transfer {
+                    from: *to,
+                    to: TIP_FEE_MANAGER_ADDRESS,
+                    amount: actual_used,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
+
+        Ok(())
+    }
+
     fn read_string(&mut self, slot: U256) -> String {
         let value = self
             .storage
@@ -1290,6 +1351,79 @@ mod tests {
                 to,
                 amount,
                 memo
+            })
+            .into_log_data()
+        );
+    }
+
+    #[test]
+    fn test_transfer_fee_pre_tx() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+        let amount = U256::from(100);
+        token
+            .mint(&admin, ITIP20::mintCall { to: user, amount })
+            .unwrap();
+
+        let fee_amount = U256::from(50);
+        token
+            .transfer_fee_pre_tx(&user, fee_amount)
+            .expect("transfer failed");
+
+        assert_eq!(token.get_balance(&user), U256::from(50));
+        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS), fee_amount);
+    }
+
+    #[test]
+    fn test_transfer_fee_pre_tx_insufficient_balance() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let fee_amount = U256::from(50);
+        let result = token.transfer_fee_pre_tx(&user, fee_amount);
+        assert_eq!(result, Err(TIP20Error::insufficient_balance()));
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let initial_fee = U256::from(100);
+        token.set_balance(&TIP_FEE_MANAGER_ADDRESS, initial_fee);
+
+        let refund_amount = U256::from(30);
+        let gas_used = U256::from(10);
+        token
+            .transfer_fee_post_tx(&user, refund_amount, gas_used)
+            .expect("transfer failed");
+
+        assert_eq!(token.get_balance(&user), refund_amount);
+        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS), U256::from(70));
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+        assert_eq!(
+            events.last().unwrap(),
+            &TIP20Event::Transfer(ITIP20::Transfer {
+                from: user,
+                to: TIP_FEE_MANAGER_ADDRESS,
+                amount: gas_used
             })
             .into_log_data()
         );
