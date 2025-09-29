@@ -1489,11 +1489,7 @@ mod tests {
 
         assert_eq!(
             storage.events[&token_id_to_address(token_id)].last(),
-            Some(&TIP20Event::Transfer(ITIP20::Transfer {
-                from,
-                to,
-                amount,
-            }).into_log_data())
+            Some(&TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data())
         );
     }
 }
