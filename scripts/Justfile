@@ -53,3 +53,7 @@ create-tip20-token:
 fee-amm:
 	#!/bin/bash
 	./fee-amm.sh
+
+estimate-gas-77:
+	#!/bin/bash
+	./estimate-gas-77.sh
