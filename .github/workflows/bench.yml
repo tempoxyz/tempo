@@ -32,7 +32,7 @@ jobs:
           just build tempo-bench "--profile maxperf"
       - run: |
           target/x86_64-unknown-linux-gnu/maxperf/tempo-bench generate-genesis -a 50000 --base-fee-per-gas 44 --output genesis.json
-          target/x86_64-unknown-linux-gnu/release/tempo node \
+          RUST_LOG=debug target/x86_64-unknown-linux-gnu/release/tempo node \
               --http \
               --http.addr 0.0.0.0 \
               --http.port 8545 \
@@ -71,3 +71,8 @@ jobs:
           done
           
           target/x86_64-unknown-linux-gnu/maxperf/tempo-bench run-max-tps --duration 15 --tps 20000
+          killall -9 tempo
+          cat ~/.cache/reth/logs/dev/reth.log | grep -E -i "Kgas|Executed block|State root task finished" > relevant.log
+      - id: logs
+        run: |
+          cat relevant.log >> $GITHUB_STEP_SUMMARY
