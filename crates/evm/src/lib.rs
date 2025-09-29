@@ -122,7 +122,10 @@ impl ConfigureEvm for TempoEvmConfig {
         self.inner.next_evm_env(parent, &attributes.inner)
     }
 
-    fn context_for_block<'a>(&self, block: &'a SealedBlock<Block>) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
+    fn context_for_block<'a>(
+        &self,
+        block: &'a SealedBlock<Block>,
+    ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
         let non_payment_gas_limit = TempoExtraData::decode(&block.header().extra_data)
             .map(|data| data.non_payment_gas_limit)
             .unwrap_or(0);
@@ -163,7 +166,8 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &'a TempoExecutionData,
     ) -> ExecutionCtxFor<'a, Self> {
-        self.context_for_block(&payload.0).expect("context_for_block should not fail")
+        self.context_for_block(&payload.0)
+            .expect("context_for_block should not fail")
     }
 
     fn tx_iterator_for_payload(
