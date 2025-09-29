@@ -13,9 +13,3 @@ pub enum TempoEvmError {
     #[error("invalid EVM configuration: {0}")]
     InvalidEvmConfig(String),
 }
-
-impl From<ConsensusError> for TempoEvmError {
-    fn from(err: ConsensusError) -> Self {
-        Self::FeeLaneDecoding(format!("consensus error: {err}"))
-    }
-}
