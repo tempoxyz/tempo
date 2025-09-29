@@ -20,32 +20,32 @@ use tempo_commonware_node_cryptography::Digest;
 // Sealed because of the frequent accesses to the hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Block(SealedBlock<tempo_primitives::Block>);
+pub(crate) struct Block(SealedBlock<tempo_primitives::Block>);
 
 impl Block {
-    pub fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {
+    pub(crate) fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {
         Self(block)
     }
 
-    pub fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
+    pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
         self.0
     }
 
     /// Returns the (eth) hash of the wrapped block.
-    pub fn block_hash(&self) -> B256 {
+    pub(crate) fn block_hash(&self) -> B256 {
         self.0.hash()
     }
 
     /// Returns the hash of the wrapped block as a commonware [`Digest`].
-    pub fn digest(&self) -> Digest {
+    pub(crate) fn digest(&self) -> Digest {
         Digest(self.hash())
     }
 
-    pub fn parent_digest(&self) -> Digest {
+    pub(crate) fn parent_digest(&self) -> Digest {
         Digest(self.0.parent_hash())
     }
 
-    pub fn timestamp(&self) -> u64 {
+    pub(crate) fn timestamp(&self) -> u64 {
         self.0.timestamp()
     }
 }
@@ -139,7 +139,7 @@ impl commonware_consensus::Block for Block {
 // /// A notarized [`Block`].
 // // XXX: Not used right now but will be used once an indexer is implemented.
 // #[derive(Clone, Debug, PartialEq, Eq)]
-// pub struct Notarized {
+// pub(crate) struct Notarized {
 //     proof: Notarization,
 //     block: Block,
 // }
@@ -148,14 +148,14 @@ impl commonware_consensus::Block for Block {
 // #[error(
 //     "invalid notarized block: proof proposal `{proposal}` does not match block digest `{digest}`"
 // )]
-// pub struct NotarizationProofNotForBlock {
+// pub(crate) struct NotarizationProofNotForBlock {
 //     proposal: Digest,
 //     digest: Digest,
 // }
 
 // impl Notarized {
 //     /// Constructs a new [`Notarized`] block.
-//     pub fn try_new(
+//     pub(crate) fn try_new(
 //         proof: Notarization,
 //         block: Block,
 //     ) -> Result<Self, NotarizationProofNotForBlock> {
@@ -168,19 +168,19 @@ impl commonware_consensus::Block for Block {
 //         Ok(Self { proof, block })
 //     }
 
-//     pub fn block(&self) -> &Block {
+//     pub(crate) fn block(&self) -> &Block {
 //         &self.block
 //     }
 
 //     /// Breaks up [`Notarized`] into its constituent parts.
-//     pub fn into_parts(self) -> (Notarization, Block) {
+//     pub(crate) fn into_parts(self) -> (Notarization, Block) {
 //         (self.proof, self.block)
 //     }
 
 //     /// Verifies the notarized block against `namespace` and `identity`.
 //     ///
 //     // XXX: But why does this ignore the block entirely??
-//     pub fn verify(&self, namespace: &[u8], identity: &BlsPublicKey) -> bool {
+//     pub(crate) fn verify(&self, namespace: &[u8], identity: &BlsPublicKey) -> bool {
 //         self.proof.verify(namespace, identity)
 //     }
 // }
@@ -219,7 +219,7 @@ impl commonware_consensus::Block for Block {
 // //
 // // XXX: Not used right now but will be used once an indexer is implemented.
 // #[derive(Clone, Debug, PartialEq, Eq)]
-// pub struct Finalized {
+// pub(crate) struct Finalized {
 //     proof: Finalization,
 //     block: Block,
 // }
@@ -228,14 +228,14 @@ impl commonware_consensus::Block for Block {
 // #[error(
 //     "invalid finalized block: proof proposal `{proposal}` does not match block digest `{digest}`"
 // )]
-// pub struct FinalizationProofNotForBlock {
+// pub(crate) struct FinalizationProofNotForBlock {
 //     proposal: Digest,
 //     digest: Digest,
 // }
 
 // impl Finalized {
 //     /// Constructs a new [`Finalized`] block.
-//     pub fn try_new(
+//     pub(crate) fn try_new(
 //         proof: Finalization,
 //         block: Block,
 //     ) -> Result<Self, FinalizationProofNotForBlock> {
@@ -248,19 +248,19 @@ impl commonware_consensus::Block for Block {
 //         Ok(Self { proof, block })
 //     }
 
-//     pub fn block(&self) -> &Block {
+//     pub(crate) fn block(&self) -> &Block {
 //         &self.block
 //     }
 
 //     /// Breaks up [`Finalized`] into its constituent parts.
-//     pub fn into_parts(self) -> (Finalization, Block) {
+//     pub(crate) fn into_parts(self) -> (Finalization, Block) {
 //         (self.proof, self.block)
 //     }
 
 //     /// Verifies the notarized block against `namespace` and `identity`.
 //     ///
 //     // XXX: But why does this ignore the block entirely??
-//     pub fn verify(&self, namespace: &[u8], identity: &BlsPublicKey) -> bool {
+//     pub(crate) fn verify(&self, namespace: &[u8], identity: &BlsPublicKey) -> bool {
 //         self.proof.verify(namespace, identity)
 //     }
 // }

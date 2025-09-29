@@ -45,46 +45,45 @@ const MAX_REPAIR: u64 = 20;
 ///
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
-pub struct Builder<
+pub(crate) struct Builder<
     TBlocker,
     TContext,
     // TODO: add the indexer. It's part of alto and we have skipped it, for now.
     // TIndexer,
 > {
     /// The contextg
-    pub context: TContext,
+    pub(crate) context: TContext,
 
-    pub fee_recipient: alloy_primitives::Address,
+    pub(crate) fee_recipient: alloy_primitives::Address,
 
-    pub execution_node: TempoFullNode,
+    pub(crate) execution_node: TempoFullNode,
 
-    // pub chainspec: Arc<TempoChainSpec>,
-    // pub execution_engine: ConsensusEngineHandle<TNodeTypes::Payload>,
-    // pub execution_payload_builder: PayloadBuilderHandle<TNodeTypes::Payload>,
+    // pub(crate) chainspec: Arc<TempoChainSpec>,
+    // pub(crate) execution_engine: ConsensusEngineHandle<TNodeTypes::Payload>,
+    // pub(crate) execution_payload_builder: PayloadBuilderHandle<TNodeTypes::Payload>,
     /// A handle to the reth execution node so that consensus can drive execution.
     //
-    pub blocker: TBlocker,
-    pub partition_prefix: String,
-    pub blocks_freezer_table_initial_size: u32,
-    pub finalized_freezer_table_initial_size: u32,
-    pub signer: PrivateKey,
-    pub polynomial: PublicPolynomial,
-    pub share: GroupShare,
-    pub participants: Vec<PublicKey>,
-    pub mailbox_size: usize,
-    pub backfill_quota: Quota,
-    pub deque_size: usize,
+    pub(crate) blocker: TBlocker,
+    pub(crate) partition_prefix: String,
+    pub(crate) blocks_freezer_table_initial_size: u32,
+    pub(crate) signer: PrivateKey,
+    pub(crate) polynomial: PublicPolynomial,
+    pub(crate) share: GroupShare,
+    pub(crate) participants: Vec<PublicKey>,
+    pub(crate) mailbox_size: usize,
+    pub(crate) backfill_quota: Quota,
+    pub(crate) deque_size: usize,
 
-    pub leader_timeout: Duration,
-    pub notarization_timeout: Duration,
-    pub nullify_retry: Duration,
-    pub fetch_timeout: Duration,
-    pub activity_timeout: u64,
-    pub skip_timeout: u64,
-    pub new_payload_wait_time: Duration,
-    pub max_fetch_count: usize,
-    pub fetch_concurrent: usize,
-    pub fetch_rate_per_peer: Quota,
+    pub(crate) leader_timeout: Duration,
+    pub(crate) notarization_timeout: Duration,
+    pub(crate) nullify_retry: Duration,
+    pub(crate) fetch_timeout: Duration,
+    pub(crate) activity_timeout: u64,
+    pub(crate) skip_timeout: u64,
+    pub(crate) new_payload_wait_time: Duration,
+    pub(crate) max_fetch_count: usize,
+    pub(crate) fetch_concurrent: usize,
+    pub(crate) fetch_rate_per_peer: Quota,
     // pub indexer: Option<TIndexer>,
 }
 
@@ -93,7 +92,7 @@ where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
+    pub(crate) async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
         let supervisor = Supervisor::new(
             self.polynomial.clone(),
             self.participants.clone(),
@@ -206,7 +205,7 @@ where
     }
 }
 
-pub struct Engine<TBlocker, TContext>
+pub(crate) struct Engine<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
@@ -243,7 +242,7 @@ where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    pub fn start(
+    pub(crate) fn start(
         self,
         pending_network: (
             impl Sender<PublicKey = PublicKey>,

@@ -1,14 +1,12 @@
 //! Mainly aliases to define consensus within tempo.
 
-pub mod block;
-pub mod engine;
-pub mod execution_driver;
+pub(crate) mod block;
+pub(crate) mod engine;
+pub(crate) mod execution_driver;
 mod supervisor;
 
-pub use engine::Engine;
-
 use commonware_consensus::marshal;
-pub use supervisor::Supervisor;
+pub(crate) use supervisor::Supervisor;
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest, PrivateKey};
 
