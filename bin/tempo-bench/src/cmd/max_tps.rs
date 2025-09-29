@@ -171,7 +171,7 @@ fn send_transactions(
         let start = thread_id * chunk_size;
         let end = (start + chunk_size).min(transactions.len());
 
-        // Spawn thread and send transactions over specifed duration
+        // Spawn thread and send transactions over specified duration
         thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
