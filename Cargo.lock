@@ -14186,6 +14186,7 @@ dependencies = [
  "reth-transaction-pool",
  "serde",
  "serde_json",
+ "tempfile",
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-contracts",

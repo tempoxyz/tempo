@@ -3,6 +3,7 @@ use alloy::{
     transports::http::reqwest::Url,
 };
 use std::{process::Stdio, time::Duration};
+use tempfile::TempDir;
 use tokio::{
     process::{Child, Command},
     task::JoinHandle,
@@ -64,6 +65,7 @@ struct TempoValidator {
     validator_id: String,
     rpc_port: u16,
     p2p_port: u16,
+    temp_dir: TempDir,
 }
 
 impl TempoValidator {
@@ -71,7 +73,9 @@ impl TempoValidator {
         let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/assets/consensus-config.toml");
 
-        let datadir = format!("/tmp/tempo-test-{}", validator_id);
+        let temp_dir =
+            TempDir::new().map_err(|e| eyre::eyre!("Failed to create temp directory: {}", e))?;
+        let datadir = temp_dir.path().to_string_lossy();
 
         let mut cmd = Command::new("cargo");
         cmd.args(&[
@@ -99,6 +103,7 @@ impl TempoValidator {
             validator_id,
             rpc_port,
             p2p_port,
+            temp_dir,
         };
 
         Ok(validator)
