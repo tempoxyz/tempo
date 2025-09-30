@@ -46,5 +46,5 @@ ratelimit = "0.10"
 rayon = "1.10"
 rlimit = "0.10.2"
 simple-tqdm = { version = "0.2.0", features = ["rayon"] }
-thousands = "0.2.0"
 governor = "0.10.1"
+thousands = "0.2.0"
