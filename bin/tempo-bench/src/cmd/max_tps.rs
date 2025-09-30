@@ -1,155 +1,342 @@
-use crate::crescendo::{
-    DesireType, NETWORK_STATS, TX_QUEUE, TX_TRACKER, WorkerType,
-    config::{self, Config},
-    tx_gen::TxGenerator,
-    utils, workers,
+use alloy::{
+    network::TxSignerSync,
+    primitives::{Address, TxKind, U256},
+    providers::{Provider, ProviderBuilder},
+    sol,
+    sol_types::SolCall,
+    transports::http::reqwest::Url,
 };
+use alloy_consensus::{SignableTransaction, TxLegacy};
+use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use clap::Parser;
-use eyre::WrapErr;
-use std::{path::PathBuf, sync::Arc, thread, time::Duration};
-use tokio::time;
-use tokio_util::sync::CancellationToken;
+use core_affinity::CoreId;
+use eyre::{Context, ensure};
+use governor::{Quota, RateLimiter};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rlimit::Resource;
+use simple_tqdm::ParTqdm;
+use std::{
+    num::NonZeroU32,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread,
+    time::Duration,
+};
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tokio::time::timeout;
+
+sol! {
+    interface ERC20 {
+        function transfer(address to, uint256 amount) external returns (bool);
+    }
+}
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
-pub struct TPSArgs {
-    /// Path to the configuration file
+pub struct MaxTpsArgs {
+    /// Target transactions per second
     #[arg(short, long)]
-    pub config: PathBuf,
+    tps: u64,
+
+    /// Test duration in seconds
+    #[arg(short, long, default_value = "30")]
+    duration: u64,
+
+    /// Number of accounts for pre-generation
+    #[arg(short, long, default_value = "100")]
+    accounts: u64,
+
+    /// Number of workers to send transactions
+    #[arg(short, long, default_value = "10")]
+    workers: usize,
+
+    /// Mnemonic for generating accounts
+    #[arg(
+        short,
+        long,
+        default_value = "test test test test test test test test test test test junk"
+    )]
+    mnemonic: String,
+
+    /// Chain ID
+    #[arg(long, default_value = "1337")]
+    chain_id: u64,
+
+    /// Token address used when creating TIP20 transfer calldata
+    #[arg(long, default_value = "0x20c0000000000000000000000000000000000000")]
+    token_address: Address,
+
+    /// Target URLs for network connections
+    #[arg(long, default_values_t = vec!["http://localhost:8545".to_string()])]
+    target_urls: Vec<String>,
+
+    /// Total network connections
+    #[arg(long, default_value = "100")]
+    total_connections: u64,
+
+    /// Disable binding worker threads to specific CPU cores, letting the OS scheduler handle placement.
+    #[arg(long)]
+    disable_thread_pinning: bool,
+
+    /// File descriptor limit to set
+    #[arg(long)]
+    fd_limit: Option<u64>,
 }
 
-impl TPSArgs {
+impl MaxTpsArgs {
     pub async fn run(self) -> eyre::Result<()> {
-        println!("[~] Loading config from {}...", self.config.display());
-        config::init(Config::from_file(&self.config)?);
-
-        if let Err(err) =
-            utils::increase_nofile_limit(config::get().network_worker.total_connections * 10)
-        {
-            println!("[!] Failed to increase file descriptor limit: {err}.");
+        // Set file descriptor limit if provided
+        if let Some(fd_limit) = self.fd_limit {
+            increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
         }
 
-        let mut core_ids =
-            core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
-        println!("[*] Detected {} effective cores.", core_ids.len());
+        let target_urls: Vec<Url> = self
+            .target_urls
+            .iter()
+            .map(|s| {
+                s.parse::<Url>()
+                    .wrap_err_with(|| format!("failed to parse `{s}` as URL"))
+            })
+            .collect::<eyre::Result<Vec<_>>>()
+            .wrap_err("failed parsing input target URLs")?;
 
-        // Initialize Rayon with explicit thread count.
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(core_ids.len())
-            .build_global()?;
-
-        // Pin the tokio runtime to a core (if enabled).
-        utils::maybe_pin_thread(
-            core_ids
-                .pop()
-                .ok_or_else(|| eyre::eyre!("No core available for main runtime"))?,
+        // Generate all transactions
+        let total_txs = self.tps * self.duration;
+        let transactions = Arc::new(
+            generate_transactions(
+                total_txs,
+                self.accounts,
+                &self.mnemonic,
+                self.chain_id,
+                self.token_address,
+                &target_urls[0],
+            )
+            .await
+            .context("Failed to generate transactions")?,
         );
 
-        let tx_generator = TxGenerator::new()
-            .await
-            .wrap_err("failed to construct transaction generator")?;
+        // Create shared transaction counter and monitoring
+        let tx_counter = Arc::new(AtomicU64::new(0));
 
-        // Given our desired breakdown of workers, translate this into actual numbers of workers to spawn.
-        let (workers, worker_counts) = workers::assign_workers(
-            core_ids, // Doesn't include the main runtime core.
-            vec![
-                (
-                    WorkerType::TxGen,
-                    DesireType::Percentage(config::get().workers.tx_gen_worker_percentage),
-                ),
-                (
-                    WorkerType::Network,
-                    DesireType::Percentage(config::get().workers.network_worker_percentage),
-                ),
-            ],
-            config::get().workers.thread_pinning, // Only log core ranges if thread pinning is actually enabled.
-        );
+        // Spawn monitoring thread for TPS tracking
+        let _monitor_handle = monitor_tps(tx_counter.clone());
 
-        let connections_per_network_worker =
-            config::get().network_worker.total_connections / worker_counts[&WorkerType::Network];
-        println!("[*] Connections per network worker: {connections_per_network_worker}");
+        // Spawn workers and send transactions
+        send_transactions(
+            transactions,
+            self.workers,
+            self.total_connections,
+            target_urls,
+            self.tps,
+            self.disable_thread_pinning,
+            tx_counter,
+        )
+        .context("Failed to send transactions")?;
 
-        // TODO: Having the assign_workers function do this would be cleaner.
-        let cancellation_token = CancellationToken::new();
-        let tx_gen_worker_count = worker_counts[&WorkerType::TxGen] as usize;
-        let mut tx_gen_worker_id = 0;
-        let mut network_worker_id = 0;
-
-        println!("[*] Starting workers...");
-
-        // Spawn the workers, pinning them to the appropriate cores if enabled.
-        for (core_id, worker_type) in workers {
-            match worker_type {
-                WorkerType::TxGen => {
-                    let tx_gen_clone: Arc<TxGenerator> = Arc::clone(&tx_generator);
-                    let cloned_token = cancellation_token.clone();
-                    thread::spawn(move || {
-                        utils::maybe_pin_thread(core_id);
-                        tx_gen_clone.tx_gen_worker(
-                            tx_gen_worker_id,
-                            tx_gen_worker_count,
-                            cloned_token,
-                        );
-                    });
-                    tx_gen_worker_id += 1;
-                }
-                WorkerType::Network => {
-                    let cloned_token = cancellation_token.clone();
-                    thread::spawn(move || {
-                        utils::maybe_pin_thread(core_id);
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .expect("Failed to build tokio runtime");
-
-                        rt.block_on(async {
-                            for i in 0..connections_per_network_worker {
-                                tokio::spawn(workers::network_worker(
-                                    (network_worker_id * connections_per_network_worker + i)
-                                        as usize,
-                                    cloned_token.clone(),
-                                ));
-                            }
-                            cloned_token.cancelled().await;
-                        });
-                    });
-                    network_worker_id += 1;
-                }
-            }
-        }
-
-        println!("[*] Starting reporters...");
-
-        // Start reporters.
-        tokio::spawn(TX_QUEUE.start_reporter(
-            Duration::from_secs(config::get().reporters.tx_queue_report_interval_secs),
-            cancellation_token.clone(),
-        ));
-        tokio::spawn(NETWORK_STATS.start_reporter(
-            Duration::from_secs(config::get().reporters.network_stats_report_interval_secs),
-            cancellation_token.clone(),
-        ));
-
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(config::get().benchmark.run_duration)).await;
-            println!("[*] Stopping reporters...");
-            cancellation_token.cancel();
-        })
-        .await?;
-
-        println!("[*] All workers stopped, entering cool down period");
-        time::sleep(Duration::from_secs(
-            config::get().benchmark.cool_down_duration,
-        ))
-        .await;
-
-        let report = TX_TRACKER
-            .tally_sent_txs(0)
-            .await
-            .expect("Failed to generate tx report");
-
-        println!("Final report: {:?}", report);
+        // Wait for all sender threads to finish
+        std::thread::sleep(Duration::from_secs(self.duration));
+        println!("Finished sending transactions");
 
         Ok(())
     }
+}
+
+fn send_transactions(
+    transactions: Arc<Vec<Vec<u8>>>,
+    num_workers: usize,
+    _num_connections: u64,
+    target_urls: Vec<Url>,
+    tps: u64,
+    disable_thread_pinning: bool,
+    tx_counter: Arc<AtomicU64>,
+) -> eyre::Result<()> {
+    // Get available cores
+    let core_ids =
+        core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
+    println!("Detected {} effective cores.", core_ids.len());
+
+    let num_sender_threads = num_workers.min(core_ids.len());
+    let chunk_size = transactions.len().div_ceil(num_sender_threads);
+
+    // Create a shared rate limiter for all threads
+    let rate_limiter = Arc::new(RateLimiter::direct(Quota::per_second(
+        NonZeroU32::new(tps as u32).unwrap(),
+    )));
+
+    for thread_id in 0..num_sender_threads {
+        if !disable_thread_pinning {
+            let core_id = core_ids[thread_id % core_ids.len()];
+            pin_thread(core_id);
+        }
+
+        // Segment transactions
+        let rate_limiter = rate_limiter.clone();
+        let transactions = transactions.clone();
+        let target_urls = target_urls.to_vec();
+        let tx_counter = tx_counter.clone();
+        let start = thread_id * chunk_size;
+        let end = (start + chunk_size).min(transactions.len());
+
+        // Spawn thread and send transactions over specified duration
+        thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build tokio runtime");
+
+            rt.block_on(async {
+                // TODO: Send txs from multiple senders
+                // Create multiple connections for this thread
+                // let mut providers = Vec::new();
+                // for i in 0..num_connections {
+                //     println!("{i:?}");
+                //     let url = &target_urls[(i as usize) % target_urls.len()];
+                //     let provider = ProviderBuilder::new().connect_http(url.clone());
+                //     providers.push(provider);
+                // }
+
+                let provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
+                for tx_bytes in transactions[start..end].iter() {
+                    rate_limiter.until_ready().await;
+
+                    match timeout(
+                        Duration::from_secs(1),
+                        provider.send_raw_transaction(tx_bytes),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            tx_counter.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Ok(Err(e)) => eprintln!("Failed to send transaction: {}", e),
+                        Err(_) => eprintln!("Tx send timed out"),
+                    }
+                }
+            });
+        });
+    }
+
+    Ok(())
+}
+
+async fn generate_transactions(
+    total_txs: u64,
+    num_accounts: u64,
+    mnemonic: &str,
+    chain_id: u64,
+    token_address: Address,
+    rpc_url: &Url,
+) -> eyre::Result<Vec<Vec<u8>>> {
+    println!("Generating {num_accounts} accounts...");
+    let signers: Vec<PrivateKeySigner> = (0..num_accounts as u32)
+        .into_par_iter()
+        .tqdm()
+        .map(|i| -> eyre::Result<PrivateKeySigner> {
+            let signer = MnemonicBuilder::<English>::default()
+                .phrase(mnemonic)
+                .index(i)?
+                .build()?;
+            Ok(signer)
+        })
+        .collect::<eyre::Result<Vec<_>>>()?;
+
+    let txs_per_sender = total_txs / num_accounts;
+    ensure!(
+        txs_per_sender > 0,
+        "txs per sender is 0, increase tps or decrease senders"
+    );
+
+    // Fetch current nonces for all accounts
+    let provider = ProviderBuilder::new().connect_http(rpc_url.clone());
+    println!("Fetching nonces for {} accounts...", signers.len());
+
+    let mut params = Vec::new();
+    for signer in signers {
+        let address = signer.address();
+        let current_nonce = provider
+            .get_transaction_count(address)
+            .await
+            .context("Failed to get transaction count")?;
+
+        for i in 0..txs_per_sender {
+            params.push((signer.clone(), current_nonce + i));
+        }
+    }
+
+    let transactions: Vec<Vec<u8>> = params
+        .into_par_iter()
+        .tqdm()
+        .map(|(signer, nonce)| -> eyre::Result<Vec<u8>> {
+            let mut tx = TxLegacy {
+                chain_id: Some(chain_id),
+                nonce,
+                gas_price: TEMPO_BASE_FEE as u128,
+                gas_limit: 300000,
+                to: TxKind::Call(token_address),
+                value: U256::ZERO,
+                input: ERC20::transferCall {
+                    to: Address::random(),
+                    amount: U256::ONE,
+                }
+                .abi_encode()
+                .into(),
+            };
+
+            let signature = signer
+                .sign_transaction_sync(&mut tx)
+                .map_err(|e| eyre::eyre!("Failed to sign transaction: {}", e))?;
+            let mut payload = Vec::new();
+            tx.into_signed(signature).eip2718_encode(&mut payload);
+            Ok(payload)
+        })
+        .collect::<eyre::Result<Vec<_>>>()?;
+
+    println!("Generated {} transactions", transactions.len());
+    Ok(transactions)
+}
+
+pub fn increase_nofile_limit(min_limit: u64) -> eyre::Result<u64> {
+    let (soft, hard) = Resource::NOFILE.get()?;
+    println!("[*] At startup, file descriptor limit:      soft = {soft}, hard = {hard}");
+
+    if hard < min_limit {
+        panic!(
+            "[!] File descriptor hard limit is too low. Please increase it to at least {min_limit}."
+        );
+    }
+
+    if soft != hard {
+        Resource::NOFILE.set(hard, hard)?; // Just max things out to give us plenty of overhead.
+        let (soft, hard) = Resource::NOFILE.get()?;
+        println!("[+] After increasing file descriptor limit: soft = {soft}, hard = {hard}");
+    }
+
+    Ok(soft)
+}
+
+/// Pin the current thread to the given core ID if enabled.
+/// Panics if the thread fails to pin.
+pub fn pin_thread(core_id: CoreId) {
+    if !core_affinity::set_for_current(core_id) {
+        panic!(
+            "[!] Failed to pin thread to core {}. Try disabling thread_pinning in your config.",
+            core_id.id
+        );
+    }
+}
+
+fn monitor_tps(tx_counter: Arc<AtomicU64>) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut last_count = 0u64;
+        loop {
+            let current_count = tx_counter.load(Ordering::Relaxed);
+            let tps = current_count - last_count;
+            last_count = current_count;
+
+            println!("TPS Sent: {tps}, Total Txs Sent: {current_count}");
+            thread::sleep(Duration::from_secs(1));
+        }
+    })
 }

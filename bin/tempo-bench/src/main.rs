@@ -1,5 +1,4 @@
 mod cmd;
-mod crescendo;
 mod opts;
 
 use clap::Parser;
@@ -16,7 +15,7 @@ async fn main() -> eyre::Result<()> {
     let args = TempoBench::parse();
 
     match args.cmd {
-        TempoBenchSubcommand::RunMaxTPS(cmd) => cmd.run().await,
+        TempoBenchSubcommand::RunMaxTps(cmd) => cmd.run().await,
         TempoBenchSubcommand::GenerateGenesis(cmd) => cmd.run().await,
     }
 }
