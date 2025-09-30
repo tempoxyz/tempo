@@ -113,16 +113,30 @@ where
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
+        // XXX: All hard-coded values here are the same as prior to commonware
+        // making the resolver configurable in
+        // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
+        let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
+            public_key: self.signer.public_key(),
+            coordinator: supervisor.clone(),
+            mailbox_size: self.mailbox_size,
+            requester_config: commonware_p2p::utils::requester::Config {
+                public_key: self.signer.public_key(),
+                rate_limit: self.backfill_quota,
+                initial: Duration::from_secs(1),
+                timeout: Duration::from_secs(2),
+            },
+            fetch_retry_timeout: Duration::from_millis(100),
+            priority_requests: false,
+            priority_responses: false,
+        };
         let (syncer, syncer_mailbox): (_, marshal::Mailbox<BlsScheme, Block>) =
             marshal::Actor::init(
                 self.context.with_label("sync"),
                 marshal::Config {
-                    public_key: self.signer.public_key(),
                     identity: *self.polynomial.constant(),
-                    coordinator: supervisor.clone(),
                     partition_prefix: self.partition_prefix.clone(),
                     mailbox_size: self.mailbox_size,
-                    backfill_quota: self.backfill_quota,
                     view_retention_timeout: self
                         .activity_timeout
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
@@ -164,6 +178,8 @@ where
         let consensus = threshold_simplex::Engine::new(
             self.context.with_label("consensus"),
             threshold_simplex::Config {
+                // TODO(janis): make configuration epoch aware.
+                epoch: 0,
                 namespace: crate::config::NAMESPACE.to_vec(),
                 crypto: self.signer,
                 automaton: execution_driver.mailbox().clone(),
@@ -198,6 +214,7 @@ where
             execution_driver,
             execution_driver_mailbox,
 
+            resolver_config,
             syncer,
 
             consensus,
@@ -224,15 +241,12 @@ where
     execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
     execution_driver_mailbox: crate::consensus::execution_driver::ExecutionDriverMailbox,
 
-    /// Responsible for syncing(?) messages from/to other nodes.
-    // FIXME: This is a complex beast, interacting with very many parts of the system. At
-    // its core it seems to be responsible for maintaining an ordered history of the chain,
-    // which means tracking the chain, finalizing blocks after getting a finalization signal
-    // from consensus, writign finalized blocks to the filesystem, backfilling missing blocks from
-    // its peers...
-    //
-    // Alto calls this `marshal`, we opt to call it `syncer` which seems marginally more expressive.
-    syncer: marshal::Actor<Block, TContext, BlsScheme, PublicKey, Supervisor>,
+    /// Resolver config that will be passed to the marshal actor upon start.
+    resolver_config: marshal::resolver::p2p::Config<PublicKey, Supervisor>,
+
+    /// Listens to consensus events and syncs blocks from the network to the
+    /// local node.
+    syncer: marshal::Actor<Block, TContext, BlsScheme>,
 
     consensus: crate::consensus::Consensus<TContext, TBlocker>,
 }
@@ -304,10 +318,13 @@ where
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_network);
         let execution_driver = self.execution_driver.start();
+
+        let resolver =
+            marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
         let syncer = self.syncer.start(
             self.execution_driver_mailbox,
             self.broadcast_mailbox,
-            backfill_network,
+            resolver,
         );
 
         let simplex = self

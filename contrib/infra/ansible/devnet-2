@@ -1,5 +1,0 @@
-[devnet-2]
-lon-node-1 ansible_user=ubuntu ansible_hostname=lon-node-1 tempo_proposer=true
-lon-node-2 ansible_user=ubuntu ansible_hostname=lon-node-2 tempo_proposer=false tempo_producer=lon-node-1
-lon-node-3 ansible_user=ubuntu ansible_hostname=lon-node-3 tempo_proposer=false tempo_producer=lon-node-1
-lon-node-4 ansible_user=ubuntu ansible_hostname=lon-node-4 tempo_proposer=false tempo_producer=lon-node-1

@@ -470,6 +470,23 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(true)
     }
 
+    /// Transfer from `from` to `to` address without approval requirement
+    /// This function is not exposed via the public interface and should only be invoked by precompiles
+    pub fn system_transfer_from(
+        &mut self,
+        from: Address,
+        to: Address,
+        amount: U256,
+    ) -> Result<bool, TIP20Error> {
+        self.check_not_paused()?;
+        self.check_not_token_address(&to)?;
+        self.check_transfer_authorized(&from, &to)?;
+
+        self._transfer(&from, &to, amount)?;
+
+        Ok(true)
+    }
+
     fn _transfer_from(
         &mut self,
         msg_sender: &Address,
@@ -482,19 +499,16 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.check_transfer_authorized(&from, &to)?;
 
         // Check and update allowance
-        // Skip allowance check if the caller is the fee manager
-        if *msg_sender != TIP_FEE_MANAGER_ADDRESS {
-            let allowed = self.get_allowance(&from, msg_sender);
-            if amount > allowed {
-                return Err(TIP20Error::insufficient_allowance());
-            }
+        let allowed = self.get_allowance(&from, msg_sender);
+        if amount > allowed {
+            return Err(TIP20Error::insufficient_allowance());
+        }
 
-            if allowed != U256::MAX {
-                let new_allowance = allowed
-                    .checked_sub(amount)
-                    .ok_or(TIP20Error::insufficient_allowance())?;
-                self.set_allowance(&from, msg_sender, new_allowance);
-            }
+        if allowed != U256::MAX {
+            let new_allowance = allowed
+                .checked_sub(amount)
+                .ok_or(TIP20Error::insufficient_allowance())?;
+            self.set_allowance(&from, msg_sender, new_allowance);
         }
 
         self._transfer(&from, &to, amount)?;
@@ -1426,6 +1440,56 @@ mod tests {
                 amount: gas_used
             })
             .into_log_data()
+        );
+    }
+
+    #[test]
+    fn test_transfer_from_insufficient_allowance() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let from = Address::random();
+        let spender = Address::random();
+        let to = Address::random();
+        let amount = U256::from(100);
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+        token
+            .mint(&admin, ITIP20::mintCall { to: from, amount })
+            .unwrap();
+
+        let result = token.transfer_from(&spender, ITIP20::transferFromCall { from, to, amount });
+        assert!(matches!(result, Err(TIP20Error::InsufficientAllowance(_))));
+    }
+
+    #[test]
+    fn test_system_transfer_from() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let from = Address::random();
+        let to = Address::random();
+        let amount = U256::from(100);
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", &admin).unwrap();
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+        token
+            .mint(&admin, ITIP20::mintCall { to: from, amount })
+            .unwrap();
+
+        let result = token.system_transfer_from(from, to, amount);
+        assert!(result.is_ok());
+
+        assert_eq!(
+            storage.events[&token_id_to_address(token_id)].last(),
+            Some(&TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data())
         );
     }
 }

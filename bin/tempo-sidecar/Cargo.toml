@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 clap.workspace = true
-alloy = { workspace = true, default-features = false, features = ["network", "rpc", "rpc-types", "transports", "providers", "reqwest-rustls-tls"] }
+alloy = { workspace = true, default-features = false, features = ["network", "rpc", "rpc-types", "transports", "providers", "reqwest-rustls-tls", "signers", "signer-local"] }
 eyre.workspace = true
 itertools = "0.14.0"
 tempo-precompiles.workspace = true
@@ -15,6 +15,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 metrics-exporter-prometheus = { version = "0.17.2", default-features = false }
 metrics = "0.24.2"
 poem = "3.1.12"
+rand_distr = "0.5.1"
+tempo-telemetry-util.workspace = true
 tracing-subscriber = {workspace = true, features = ["env-filter"]}
 tokio.workspace = true
 tracing.workspace = true
