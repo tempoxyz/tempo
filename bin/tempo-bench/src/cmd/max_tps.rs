@@ -113,7 +113,8 @@ impl MaxTpsArgs {
                 self.token_address,
                 &target_urls[0],
             )
-            .await?,
+            .await
+            .context("Failed to generate transactions")?,
         );
 
         // Create shared transaction counter and monitoring
@@ -131,7 +132,8 @@ impl MaxTpsArgs {
             self.tps,
             self.disable_thread_pinning,
             tx_counter,
-        )?;
+        )
+        .context("Failed to send transactions")?;
 
         // Wait for all sender threads to finish
         std::thread::sleep(Duration::from_secs(self.duration));
