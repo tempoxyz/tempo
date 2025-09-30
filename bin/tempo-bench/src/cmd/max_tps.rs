@@ -10,7 +10,7 @@ use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use clap::Parser;
 use core_affinity::CoreId;
-use eyre::Context;
+use eyre::{Context, ensure};
 use governor::{Quota, RateLimiter};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rlimit::Resource;
@@ -243,7 +243,7 @@ async fn generate_transactions(
         .collect::<eyre::Result<Vec<_>>>()?;
 
     let txs_per_sender = total_txs / num_accounts;
-    assert!(
+    ensure!(
         txs_per_sender > 0,
         "txs per sender is 0, increase tps or decrease senders"
     );
@@ -255,7 +255,10 @@ async fn generate_transactions(
     let mut params = Vec::new();
     for signer in signers {
         let address = signer.address();
-        let current_nonce = provider.get_transaction_count(address).await?;
+        let current_nonce = provider
+            .get_transaction_count(address)
+            .await
+            .context("Failed to get transaction count")?;
 
         for i in 0..txs_per_sender {
             params.push((signer.clone(), current_nonce + i));
