@@ -93,8 +93,8 @@ impl MaxTPSArgs {
         let target_urls: Vec<Url> = self
             .target_urls
             .iter()
-            .map(|url| url.as_str().parse().expect("Could not parse Url"))
-            .collect();
+            .map(|url| url.as_str().parse())
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Generate all transactions
         let total_txs = self.tps * self.duration;
@@ -225,15 +225,14 @@ async fn generate_transactions(
     let signers: Vec<PrivateKeySigner> = (0..num_accounts as u32)
         .into_par_iter()
         .tqdm()
-        .map(|i| {
-            MnemonicBuilder::<English>::default()
+        .map(|i| -> eyre::Result<PrivateKeySigner> {
+            let signer = MnemonicBuilder::<English>::default()
                 .phrase(mnemonic)
-                .index(i)
-                .unwrap()
-                .build()
-                .unwrap()
+                .index(i)?
+                .build()?;
+            Ok(signer)
         })
-        .collect();
+        .collect::<eyre::Result<Vec<_>>>()?;
 
     let txs_per_sender = total_txs / num_accounts;
     assert!(
@@ -258,7 +257,7 @@ async fn generate_transactions(
     let transactions: Vec<Vec<u8>> = params
         .into_par_iter()
         .tqdm()
-        .map(|(signer, nonce)| {
+        .map(|(signer, nonce)| -> eyre::Result<Vec<u8>> {
             let mut tx = TxLegacy {
                 chain_id: Some(chain_id),
                 nonce,
@@ -274,12 +273,13 @@ async fn generate_transactions(
                 .into(),
             };
 
-            let signature = signer.sign_transaction_sync(&mut tx).unwrap();
+            let signature = signer.sign_transaction_sync(&mut tx)
+                .map_err(|e| eyre::eyre!("Failed to sign transaction: {}", e))?;
             let mut payload = Vec::new();
             tx.into_signed(signature).eip2718_encode(&mut payload);
-            payload
+            Ok(payload)
         })
-        .collect();
+        .collect::<eyre::Result<Vec<_>>>()?;
 
     println!("Generated {} transactions", transactions.len());
     Ok(transactions)
