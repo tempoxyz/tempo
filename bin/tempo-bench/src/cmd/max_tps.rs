@@ -35,7 +35,7 @@ sol! {
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
-pub struct MaxTPSArgs {
+pub struct MaxTpsArgs {
     /// Target transactions per second
     #[arg(short, long)]
     tps: u64,
@@ -85,7 +85,7 @@ pub struct MaxTPSArgs {
     fd_limit: Option<u64>,
 }
 
-impl MaxTPSArgs {
+impl MaxTpsArgs {
     pub async fn run(self) -> eyre::Result<()> {
         // Set file descriptor limit if provided
         if let Some(fd_limit) = self.fd_limit {
