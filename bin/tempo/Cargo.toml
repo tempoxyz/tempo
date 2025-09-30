@@ -11,21 +11,26 @@ default-run = "tempo"
 workspace = true
 
 [dependencies]
+tempo-eyre.workspace = true
 tempo-node.workspace = true
+tempo-commonware-node.workspace = true
+tempo-commonware-node-config.workspace = true
 tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
-tempo-evm.workspace = true
 tempo-faucet.workspace = true
+
+camino = { workspace = true, features = ["serde1"] }
+commonware-runtime.workspace = true
+futures = { workspace = true, features = ["executor"] }
 reth-cli-util.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
-reth-ethereum-engine-primitives.workspace = true
 reth-node-builder.workspace = true
-reth-provider.workspace = true
-alloy-rpc-types-engine.workspace = true
 clap.workspace = true
 eyre.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
+tempo-evm.workspace = true
 
 [[bin]]
 name = "tempo"

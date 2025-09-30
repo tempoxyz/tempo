@@ -8,7 +8,6 @@ license = ""
 members = [
   "bin/tempo",
   "bin/tempo-bench",
-  "bin/tempo-commonware",
   "bin/tempo-sidecar",
   "bin/tempo-arber",
   "crates/chainspec",
@@ -191,20 +190,6 @@ commonware-p2p = "0.0.62"
 commonware-resolver = "0.0.62"
 commonware-runtime = "0.0.62"
 commonware-utils = "0.0.62"
-
-malachitebft-app = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app" }
-malachitebft-app-channel = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-app-channel" }
-malachitebft-codec = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-codec" }
-malachitebft-core-consensus = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-core-consensus" }
-malachitebft-core-types = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-core-types", features = [
-  "serde",
-] }
-malachitebft-signing-ed25519 = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-signing-ed25519", features = [
-  "serde",
-  "rand",
-] }
-malachitebft-sync = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-sync" }
-malachitebft-proto = { git = "https://github.com/informalsystems/malachite", rev = "0c5a67ffc24b15e2db9d367f4952b350d7fc5415", package = "informalsystems-malachitebft-proto" }
 
 anyhow = "1.0.98"
 async-trait = "0.1"
