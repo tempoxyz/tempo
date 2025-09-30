@@ -75,6 +75,7 @@ pub struct MaxTPSArgs {
     #[arg(long, default_value = "100")]
     pub total_connections: u64,
 
+    /// Disable binding worker threads to specific CPU cores, letting the OS scheduler handle placement.
     #[arg(long)]
     pub disable_thread_pinning: bool,
 
