@@ -1,23 +1,14 @@
 use alloy::{
-    primitives::{Address, U256, TxKind},
     providers::{Provider, ProviderBuilder},
-    rpc::types::TransactionRequest,
     transports::http::reqwest::Url,
-    network::TxSignerSync,
-    sol_types::SolCall,
 };
-use alloy_consensus::{SignableTransaction, TxLegacy, transaction::RlpEcdsaEncodableTx};
-use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
     core::{ContainerPort, WaitFor},
     runners::AsyncRunner,
 };
 use tokio::{task::JoinHandle, time::sleep};
-use governor::{Quota, RateLimiter};
-use std::num::NonZeroU32;
-use tempo_precompiles::contracts::ITIP20;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_validator_recovery() -> eyre::Result<()> {
@@ -134,8 +125,8 @@ struct TxGenerator {
 
 impl TxGenerator {
     async fn new(
-        providers: Vec<impl Provider + Clone + Send + 'static>,
-        tps: u32,
+        _providers: Vec<impl Provider + Clone + Send + 'static>,
+        _tps: u32,
     ) -> eyre::Result<Self> {
         let handle = tokio::spawn(async move {
             // TODO: Implement transaction generation with governor rate limiter
