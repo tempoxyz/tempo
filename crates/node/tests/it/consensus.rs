@@ -2,9 +2,12 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     transports::http::reqwest::Url,
 };
-use std::time::Duration;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner};
-use tokio::{task::JoinHandle, time::sleep};
+use std::{process::Stdio, time::Duration};
+use tokio::{
+    process::{Child, Command},
+    task::JoinHandle,
+    time::sleep,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_validator_recovery() -> eyre::Result<()> {
@@ -31,7 +34,7 @@ async fn test_validator_recovery() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_majority_network_failure() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
+    // reth_tracing::init_test_tracing();
 
     // TODO: Set up 3+ validator nodes
     // TODO: Stop 2/3rds of validator nodes
@@ -44,7 +47,7 @@ async fn test_majority_network_failure() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_invalid_proposal() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
+    // reth_tracing::init_test_tracing();
 
     // TODO: Set up validator network
     // TODO: Submit invalid proposals (malformed txs, invalid state transitions, etc.)
@@ -55,9 +58,8 @@ async fn test_invalid_proposal() -> eyre::Result<()> {
     Ok(())
 }
 
-// TDOO: update this to a different name
 struct TempoValidator {
-    container: ContainerAsync<GenericImage>,
+    process: Child,
     rpc_url: Url,
     validator_id: String,
     rpc_port: u16,
@@ -66,43 +68,33 @@ struct TempoValidator {
 
 impl TempoValidator {
     async fn new(validator_id: String, rpc_port: u16, p2p_port: u16) -> eyre::Result<Self> {
-        let config_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/consensus-config.toml");
+        let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/assets/consensus-config.toml");
 
-        let image = GenericImage::new("tempo", "latest")
-            .with_exposed_port(rpc_port.into())
-            .with_exposed_port(p2p_port.into())
-            .with_wait_for(WaitFor::message_on_stdout("RPC HTTP server started"))
-            .with_env_var("RUST_LOG", "debug")
-            .with_copy_to("/tmp/consensus-config.toml", config_path)
-            .with_cmd(vec![
-                "tempo-commonware",
-                "node",
-                "--consensus-config",
-                "/tmp/consensus-config.toml",
-                "--http",
-                "--http.addr",
-                "0.0.0.0",
-                "--http.port",
-                &rpc_port.to_string(),
-                "--instance",
-                "1",
-            ]);
+        let datadir = format!("/tmp/tempo-test-{}", validator_id);
 
-        let container = image
-            .start()
-            .await
-            .map_err(|e| eyre::eyre!("Failed to start container: {}", e))?;
+        let mut cmd = Command::new("cargo");
+        cmd.args(&[
+            "run",
+            "--bin",
+            "tempo-commonware",
+            "--",
+            "node",
+            "--consensus-config",
+        ])
+        .arg(&config_path)
+        .args(&["--datadir", &datadir])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-        let host_port = container
-            .get_host_port_ipv4(rpc_port)
-            .await
-            .map_err(|e| eyre::eyre!("Failed to get container port: {}", e))?;
+        let process = cmd
+            .spawn()
+            .map_err(|e| eyre::eyre!("Failed to start tempo-commonware process: {}", e))?;
 
-        let rpc_url: Url = format!("http://127.0.0.1:{host_port}").parse()?;
+        let rpc_url: Url = "http://127.0.0.1:8545".parse()?;
 
         let validator = Self {
-            container,
+            process,
             rpc_url,
             validator_id,
             rpc_port,
@@ -127,11 +119,11 @@ impl TempoValidator {
         Err(eyre::eyre!("Node not ready after 3 attempts"))
     }
 
-    async fn stop(self) -> eyre::Result<()> {
-        self.container
-            .stop()
+    async fn stop(mut self) -> eyre::Result<()> {
+        self.process
+            .kill()
             .await
-            .map_err(|e| eyre::eyre!("Failed to stop validator: {}", e))?;
+            .map_err(|e| eyre::eyre!("Failed to stop validator process: {}", e))?;
         Ok(())
     }
 
