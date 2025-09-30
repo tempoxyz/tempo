@@ -24,6 +24,9 @@ pub struct SyntheticLoadArgs {
 
     #[arg(long, default_values_t = vec![address!("0x20C0000000000000000000000000000000000000")])]
     fee_token_addresses: Vec<Address>,
+
+    #[arg(long)]
+    seed: Option<u64>
 }
 
 impl SyntheticLoadArgs {
@@ -38,6 +41,7 @@ impl SyntheticLoadArgs {
             self.wallet_count,
             self.average_tps,
             self.fee_token_addresses.clone(),
+            self.seed,
         );
 
         generator.worker().await?;

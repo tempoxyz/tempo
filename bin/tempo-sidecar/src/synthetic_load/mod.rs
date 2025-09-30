@@ -1,16 +1,20 @@
+use tempo_telemetry_util::error_field;
 use alloy::{
     network::EthereumWallet,
     primitives::{Address, U256, private::rand},
     providers::ProviderBuilder,
     signers::local::MnemonicBuilder,
 };
+use alloy::primitives::private::rand::rngs::StdRng;
+use alloy::primitives::private::rand::{RngCore, SeedableRng};
+use eyre::Context;
 use rand_distr::{Distribution, Exp, Zipf};
 use reqwest::Url;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{IFeeManager, ITIP20},
 };
-use tracing::{debug, error, info, trace};
+use tracing::{debug, info, warn};
 
 pub struct SyntheticLoadGenerator {
     mnemonic: String,
@@ -18,6 +22,7 @@ pub struct SyntheticLoadGenerator {
     wallet_count: usize,
     average_tps: usize,
     fee_token_addresses: Vec<Address>,
+    seed: Option<u64>,
 }
 
 impl SyntheticLoadGenerator {
@@ -27,6 +32,7 @@ impl SyntheticLoadGenerator {
         wallet_count: usize,
         average_tps: usize,
         fee_token_addresses: Vec<Address>,
+        seed: Option<u64>,
     ) -> Self {
         Self {
             rpc_url,
@@ -34,11 +40,17 @@ impl SyntheticLoadGenerator {
             average_tps,
             fee_token_addresses,
             mnemonic,
+            seed,
         }
     }
 
     pub async fn worker(&self) -> eyre::Result<()> {
         info!("starting synthetic load generator");
+
+        let mut rng = match self.seed {
+            Some(seed) => StdRng::seed_from_u64(seed),
+            None => StdRng::seed_from_u64(rand::rng().next_u64()),
+        };
 
         let mut wallet = EthereumWallet::default();
         let mut addresses = Vec::new();
@@ -60,20 +72,15 @@ impl SyntheticLoadGenerator {
         info!("setting fee tokens for load generating wallets");
 
         for address in &addresses {
-            let fee_token_address = zipf_vec_sample(fee_token_zipf, &self.fee_token_addresses)?;
+            let fee_token_address = zipf_vec_sample(&mut rng, fee_token_zipf, &self.fee_token_addresses)?;
             let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
             _ = fee_manager
                 .setUserToken(*fee_token_address)
                 .from(*address)
                 .send()
                 .await
-                .map_err(|e| {
-                    eyre::eyre!(
-                        "failed to set fee token ({}) for address {}: {}",
-                        address,
-                        fee_token_address,
-                        e
-                    )
+                .wrap_err_with(|| {
+                    format!("failed to set fee token {address} for address {fee_token_address}",)
                 })?;
         }
 
@@ -81,13 +88,13 @@ impl SyntheticLoadGenerator {
         let zipf = Zipf::new(self.wallet_count as f64, 1.4)?;
 
         loop {
-            let sender = zipf_vec_sample(zipf, &addresses)?;
-            let recipient = zipf_vec_sample(zipf, &addresses)?;
-            let token = zipf_vec_sample(fee_token_zipf, &self.fee_token_addresses)?;
+            let sender = zipf_vec_sample(&mut rng, zipf, &addresses)?;
+            let recipient = zipf_vec_sample(&mut rng, zipf, &addresses)?;
+            let token = zipf_vec_sample(&mut rng, fee_token_zipf, &self.fee_token_addresses)?;
 
-            trace!(
-                sender = sender.to_string(),
-                recipient = recipient.to_string(),
+            info!(
+                %sender,
+                %recipient,
                 "sending tip20 tokens"
             );
 
@@ -98,15 +105,15 @@ impl SyntheticLoadGenerator {
                 .send()
                 .await
             {
-                error!(
-                    sender = sender.to_string(),
-                    recipient = recipient.to_string(),
-                    err = e.to_string(),
+                warn!(
+                    %sender,
+                    %recipient,
+                    err = error_field(&e),
                     "failed to transfer tip20 token"
                 );
             }
 
-            let delay = exp.sample(&mut rand::rng());
+            let delay = exp.sample(&mut rng);
 
             debug!(%delay, "sleeping until next round");
 
@@ -115,8 +122,8 @@ impl SyntheticLoadGenerator {
     }
 }
 
-fn zipf_vec_sample<T>(zipf: Zipf<f64>, items: &[T]) -> eyre::Result<&T> {
-    let index = zipf.sample(&mut rand::rng()) as u32 - 1;
+fn zipf_vec_sample<'a, T>(rng: &mut StdRng, zipf: Zipf<f64>, items: &'a [T]) -> eyre::Result<&'a T> {
+    let index = zipf.sample(rng) as u32 - 1;
     items
         .get(index as usize)
         .ok_or_else(|| eyre::eyre!("zipf out of bounds"))

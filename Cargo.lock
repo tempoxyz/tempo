@@ -14000,6 +14000,7 @@ dependencies = [
  "rand_distr 0.5.1",
  "reqwest",
  "tempo-precompiles",
+ "tempo-telemetry-util",
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.20",

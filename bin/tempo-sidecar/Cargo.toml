@@ -17,6 +17,7 @@ metrics-exporter-prometheus = { version = "0.17.2", default-features = false }
 metrics = "0.24.2"
 poem = "3.1.12"
 rand_distr = "0.5.1"
+tempo-telemetry-util.workspace = true
 tracing-subscriber = {workspace = true, features = ["env-filter"]}
 tokio.workspace = true
 tracing.workspace = true
