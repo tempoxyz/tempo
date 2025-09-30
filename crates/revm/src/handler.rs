@@ -433,7 +433,9 @@ mod tests {
         let mut ctx = TempoContext::new(CacheDB::new(EmptyDB::default()), SpecId::default())
             .with_new_journal(journal);
         let user = Address::random();
+        ctx.tx.inner.caller = user;
         let validator = Address::random();
+        ctx.block.beneficiary = validator;
         let user_fee_token = Address::random();
         let validator_fee_token = Address::random();
         let tx_fee_token = Address::random();
