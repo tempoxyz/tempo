@@ -30,7 +30,7 @@ pub struct TempoTxEnv {
 
     /// Optional fee payer specified for the transaction.
     ///
-    /// - Some(Some(address)) corresponds to a successfuly recovered fee payer
+    /// - Some(Some(address)) corresponds to a successfully recovered fee payer
     /// - Some(None) corresponds to a failed recovery and means that transaction is invalid
     /// - None corresponds to a transaction without a fee payer
     pub fee_payer: Option<Option<Address>>,
