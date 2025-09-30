@@ -10,6 +10,7 @@ use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use clap::Parser;
 use core_affinity::CoreId;
+use eyre::Context;
 use governor::{Quota, RateLimiter};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rlimit::Resource;
@@ -37,19 +38,19 @@ sol! {
 pub struct MaxTPSArgs {
     /// Target transactions per second
     #[arg(short, long)]
-    pub tps: u64,
+    tps: u64,
 
     /// Test duration in seconds
     #[arg(short, long, default_value = "30")]
-    pub duration: u64,
+    duration: u64,
 
     /// Number of accounts for pre-generation
     #[arg(short, long, default_value = "100")]
-    pub accounts: u64,
+    accounts: u64,
 
     /// Number of workers to send transactions
     #[arg(short, long, default_value = "10")]
-    pub workers: usize,
+    workers: usize,
 
     /// Mnemonic for generating accounts
     #[arg(
@@ -57,31 +58,31 @@ pub struct MaxTPSArgs {
         long,
         default_value = "test test test test test test test test test test test junk"
     )]
-    pub mnemonic: String,
+    mnemonic: String,
 
     /// Chain ID
     #[arg(long, default_value = "1337")]
-    pub chain_id: u64,
+    chain_id: u64,
 
     /// Token address used when creating TIP20 transfer calldata
     #[arg(long, default_value = "0x20c0000000000000000000000000000000000000")]
-    pub token_address: Address,
+    token_address: Address,
 
     /// Target URLs for network connections
     #[arg(long, default_values_t = vec!["http://localhost:8545".to_string()])]
-    pub target_urls: Vec<String>,
+    target_urls: Vec<String>,
 
     /// Total network connections
     #[arg(long, default_value = "100")]
-    pub total_connections: u64,
+    total_connections: u64,
 
     /// Disable binding worker threads to specific CPU cores, letting the OS scheduler handle placement.
     #[arg(long)]
-    pub disable_thread_pinning: bool,
+    disable_thread_pinning: bool,
 
     /// File descriptor limit to set
     #[arg(long)]
-    pub fd_limit: Option<u64>,
+    fd_limit: Option<u64>,
 }
 
 impl MaxTPSArgs {
@@ -94,8 +95,12 @@ impl MaxTPSArgs {
         let target_urls: Vec<Url> = self
             .target_urls
             .iter()
-            .map(|url| url.as_str().parse())
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|s| {
+                s.parse::<Url>()
+                    .wrap_err_with(|| format!("failed to parse `{s}` as URL"))
+            })
+            .collect::<eyre::Result<Vec<_>>>()
+            .wrap_err("failed parsing input target URLs")?;
 
         // Generate all transactions
         let total_txs = self.tps * self.duration;
@@ -274,7 +279,8 @@ async fn generate_transactions(
                 .into(),
             };
 
-            let signature = signer.sign_transaction_sync(&mut tx)
+            let signature = signer
+                .sign_transaction_sync(&mut tx)
                 .map_err(|e| eyre::eyre!("Failed to sign transaction: {}", e))?;
             let mut payload = Vec::new();
             tx.into_signed(signature).eip2718_encode(&mut payload);
