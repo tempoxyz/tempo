@@ -70,6 +70,7 @@ alloy = { workspace = true, features = [
 rand = "0.9.2"
 futures = "0.3"
 test-case.workspace = true
+testcontainers = "0.25.0"
 
 [build-dependencies]
 vergen.workspace = true

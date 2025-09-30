@@ -1,5 +1,6 @@
 mod backfill;
 mod base_fee;
+mod consensus;
 mod eip7702_delegation;
 mod eth_call;
 mod payment_lane;
