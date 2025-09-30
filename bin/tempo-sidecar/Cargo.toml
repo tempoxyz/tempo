@@ -9,7 +9,6 @@ license.workspace = true
 clap.workspace = true
 alloy = { workspace = true, default-features = false, features = ["network", "rpc", "rpc-types", "transports", "providers", "reqwest-rustls-tls", "signers", "signer-local"] }
 eyre.workspace = true
-foundry-wallets = { git = "https://github.com/foundry-rs/foundry", rev = "a8dc5ae" }
 itertools = "0.14.0"
 tempo-precompiles.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }

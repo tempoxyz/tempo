@@ -13992,7 +13992,6 @@ dependencies = [
  "alloy",
  "clap",
  "eyre",
- "foundry-wallets",
  "itertools 0.14.0",
  "metrics",
  "metrics-exporter-prometheus 0.17.2",

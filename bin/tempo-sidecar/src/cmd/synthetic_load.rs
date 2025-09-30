@@ -26,7 +26,7 @@ pub struct SyntheticLoadArgs {
     fee_token_addresses: Vec<Address>,
 
     #[arg(long)]
-    seed: Option<u64>
+    seed: Option<u64>,
 }
 
 impl SyntheticLoadArgs {

@@ -1,12 +1,15 @@
-use tempo_telemetry_util::error_field;
 use alloy::{
     network::EthereumWallet,
-    primitives::{Address, U256, private::rand},
+    primitives::{
+        Address, U256,
+        private::{
+            rand,
+            rand::{RngCore, SeedableRng, rngs::StdRng},
+        },
+    },
     providers::ProviderBuilder,
     signers::local::MnemonicBuilder,
 };
-use alloy::primitives::private::rand::rngs::StdRng;
-use alloy::primitives::private::rand::{RngCore, SeedableRng};
 use eyre::Context;
 use rand_distr::{Distribution, Exp, Zipf};
 use reqwest::Url;
@@ -14,6 +17,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{IFeeManager, ITIP20},
 };
+use tempo_telemetry_util::error_field;
 use tracing::{debug, info, warn};
 
 pub struct SyntheticLoadGenerator {
@@ -72,7 +76,8 @@ impl SyntheticLoadGenerator {
         info!("setting fee tokens for load generating wallets");
 
         for address in &addresses {
-            let fee_token_address = zipf_vec_sample(&mut rng, fee_token_zipf, &self.fee_token_addresses)?;
+            let fee_token_address =
+                zipf_vec_sample(&mut rng, fee_token_zipf, &self.fee_token_addresses)?;
             let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
             _ = fee_manager
                 .setUserToken(*fee_token_address)
@@ -122,7 +127,11 @@ impl SyntheticLoadGenerator {
     }
 }
 
-fn zipf_vec_sample<'a, T>(rng: &mut StdRng, zipf: Zipf<f64>, items: &'a [T]) -> eyre::Result<&'a T> {
+fn zipf_vec_sample<'a, T>(
+    rng: &mut StdRng,
+    zipf: Zipf<f64>,
+    items: &'a [T],
+) -> eyre::Result<&'a T> {
     let index = zipf.sample(rng) as u32 - 1;
     items
         .get(index as usize)
