@@ -25,7 +25,6 @@ members = [
   "crates/precompiles",
   "crates/primitives",
   "crates/contracts",
-  "crates/reth-malachite",
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
@@ -93,7 +92,6 @@ codegen-units = 1
 
 [workspace.dependencies]
 tempo-node = { path = "crates/node" }
-reth-malachite = { path = "crates/reth-malachite" }
 sequential-futures-queue = { path = "crates/sequential-futures-queue" }
 
 tempo-chainspec = { path = "crates/chainspec" }
