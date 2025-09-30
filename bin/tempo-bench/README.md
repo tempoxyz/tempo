@@ -220,7 +220,7 @@ rmdir /s "%APPDATA%\reth"
 
 
 ### Sampling 
-Use the following commands to run the node with sampling.
+Use the following commands to run the node with [sampling](https://github.com/mstange/samply):
 ```bash
 	samply record --output tempo.samply -- tempo node \
     --http \

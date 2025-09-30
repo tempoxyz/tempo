@@ -89,7 +89,7 @@ impl MaxTpsArgs {
     pub async fn run(self) -> eyre::Result<()> {
         // Set file descriptor limit if provided
         if let Some(fd_limit) = self.fd_limit {
-            increase_nofile_limit(fd_limit)?;
+            increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
         }
 
         let target_urls: Vec<Url> = self
