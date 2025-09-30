@@ -14108,6 +14108,7 @@ dependencies = [
  "test-case",
  "testcontainers",
  "tokio",
+ "tracing",
  "vergen",
  "vergen-git2",
 ]

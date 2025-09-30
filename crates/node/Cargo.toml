@@ -72,6 +72,7 @@ futures = "0.3"
 test-case.workspace = true
 testcontainers = "0.25.0"
 governor = "0.7.0"
+tracing.workspace = true
 
 [build-dependencies]
 vergen.workspace = true
