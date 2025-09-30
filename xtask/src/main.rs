@@ -190,7 +190,7 @@ fn generate_config(
     for (instance, (name, dst, cfg)) in (1u32..).zip(&configurations) {
         let eth_dst = cfg.storage_directory.with_file_name("reth_storage");
         let command = format!(
-            "cargo run --release --bin tempo-commonware -- \
+            "cargo run --release --bin tempo -- \
                 \\\nnode \
                 \\\n--consensus-config {dst} \
                 \\\n--datadir {eth_dst} \
