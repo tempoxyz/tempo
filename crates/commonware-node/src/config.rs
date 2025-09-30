@@ -3,7 +3,7 @@
 //! This is a verbatim copy of the alto config for now.
 //!
 //! It feels more apt to call this "config" rather than "genesis" as both
-//! summit and the malachite-tempo node are doing: the validator set is
+//! summit and the tempo node are doing: the validator set is
 //! not coming to consensus over the information contained in this type,
 //! and neither does this information feed into the genesis block generated
 //! by the execution client/reth. This genesis block is entirely the domain

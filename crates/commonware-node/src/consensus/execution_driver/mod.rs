@@ -443,11 +443,11 @@ impl Inner<Init> {
             parent: parent.block_hash(),
             timestamp,
             suggested_fee_recipient: self.fee_recipient,
-            // XXX(tempo-malachite): for PoS compatibility
+            // XXX(tempo): for PoS compatibility
             prev_randao: B256::ZERO,
-            // XXX(tempo-malachite): empty withdrawals post-shanghai
+            // XXX(tempo): empty withdrawals post-shanghai
             withdrawals: Withdrawals::default(),
-            // TODO: tempo-malachite does this (why?); but maybe we can
+            // TODO: tempo does this (why?); but maybe we can
             // use the consensus block' digest for this? alternatively somehow
             // tie this to the threshold simplex view / round / height?;
             parent_beacon_block_root: Some(B256::ZERO),
