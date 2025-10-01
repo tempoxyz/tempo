@@ -1,0 +1,27 @@
+signer = "0x2b4f8c12345678901234567890123456789012345678901234567890123456789"
+share = "0x01643e45b4d8bb4655017d547565f71d5c53c8f8915a60e16818f6586fdf60e6d6"
+polynomial = "0x9918647152ef45b39a7890e98331d8300b46bed7df6549398169e84e6f96dcdef32c6460684b5efd43d9304ffefe60b514391673559e415855cbfe359f6ff033f080d536bbd8e22dd0231f16abd11e0e4a33b9cbc17dce17436028a15fbf8e4"
+listen_port = 30305
+metrics_port = 8547
+storage_directory = "/tmp/consensus-storage-1"
+worker_threads = 3
+bootstrappers = ["0xadd2526311f5e895975fe1b063a8acc4537b48d590d8eb7dd986ab5583a83a3d"]
+message_backlog = 1000
+mailbox_size = 1000
+deque_size = 1000
+fee_recipient = "0x2345678901234567890123456789012345678901"
+
+[p2p]
+max_message_size_bytes = 1048576
+
+[peers]
+0xadd2526311f5e895975fe1b063a8acc4537b48d590d8eb7dd986ab5583a83a3d = "127.0.0.1:30304"
+
+[timeouts]
+time_for_peer_response = "2s"
+time_to_collect_notarizations = "2s"
+time_to_propose = "2s"
+time_to_retry_nullify_broadcast = "10s"
+views_to_track = 256
+views_until_leader_skip = 32
+new_payload_wait_time = "500ms"

@@ -1,5 +1,6 @@
 use alloy::{
     providers::{Provider, ProviderBuilder},
+    rpc,
     transports::http::reqwest::Url,
 };
 use std::{net::TcpListener, time::Duration};
@@ -11,53 +12,60 @@ use testcontainers::{
 };
 use tokio::{task::JoinHandle, time::sleep};
 
-fn get_available_port() -> eyre::Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    Ok(port)
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn test_validator_recovery() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Start a single validator node
-    let validator = TempoValidator::new("validator-1".to_string(), "consensus-config.toml").await?;
-    validator.wait_for_ready().await?;
+    let (validator0, validator1, validator2) = start_network().await?;
 
-    println!(
-        "Validator started successfully at RPC URL: {}",
-        validator.rpc_url
-    );
+    let provider = validator0.provider();
+    ensure_block_production(provider.clone()).await?;
 
-    // TODO: Set up 3+ validator nodes
-    // TODO: Stop one validator node
-    // TODO: Assert network continues block production with remaining validators
-    // TODO: Restart the stopped node
-    // TODO: Assert node re-syncs to tip and resumes participation
-    // TODO: Assert block production continues as normal
+    // Stop a validator and ensure blocks are still being produced
+    validator1.stop().await?;
+    ensure_block_production(provider.clone()).await?;
+
+    // Restart validator 1
+    let _validator0 = TempoValidator::new(
+        "validator-0".to_string(),
+        "consensus-config-0.toml",
+        8545,
+        30304,
+    )
+    .await?;
+    ensure_block_production(provider.clone()).await?;
 
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_majority_network_failure() -> eyre::Result<()> {
-    // reth_tracing::init_test_tracing();
+    reth_tracing::init_test_tracing();
 
-    // TODO: Set up 3+ validator nodes
-    // TODO: Stop 2/3rds of validator nodes
-    // TODO: Assert network halts (no new blocks produced)
-    // TODO: Restart stopped validators
-    // TODO: Assert network recovers and resumes from last finalized block
+    let (validator0, validator1, validator2) = start_network().await?;
+
+    let provider = validator0.provider();
+    ensure_block_production(provider.clone()).await?;
+
+    validator1.stop().await?;
+    validator2.stop().await?;
+
+    let last_block = provider.get_block_number().await?;
+    for _ in 0..5 {
+        sleep(Duration::from_secs(1)).await;
+        let current_block = provider.get_block_number().await?;
+        assert_eq!(current_block, last_block);
+    }
 
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_invalid_proposal() -> eyre::Result<()> {
-    // reth_tracing::init_test_tracing();
+    reth_tracing::init_test_tracing();
 
-    // TODO: Set up validator network
+    let (validator0, validator1, validator2) = start_network().await?;
+
     // TODO: Submit invalid proposals (malformed txs, invalid state transitions, etc.)
     // TODO: Assert nodes reject invalid proposals without halting the network
     // TODO: Assert valid block production continues
@@ -70,15 +78,20 @@ struct TempoValidator {
     container: ContainerAsync<GenericImage>,
     rpc_url: Url,
     validator_id: String,
-    container_rpc_port: u16,
-    container_p2p_port: u16,
+    rpc_port: u16,
+    p2p_port: u16,
     host_rpc_port: u16,
     host_p2p_port: u16,
     _temp_dir: TempDir,
 }
 
 impl TempoValidator {
-    async fn new(validator_id: String, consensus_config: &str) -> eyre::Result<Self> {
+    async fn new(
+        validator_id: String,
+        consensus_config: &str,
+        rpc_port: u16,
+        p2p_port: u16,
+    ) -> eyre::Result<Self> {
         let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/assets")
             .join(consensus_config);
@@ -89,15 +102,13 @@ impl TempoValidator {
         std::fs::copy(&config_path, &config_in_temp)
             .map_err(|e| eyre::eyre!("Failed to copy consensus config: {}", e))?;
 
-        let container_rpc_port = get_available_port()?;
-        let container_p2p_port = get_available_port()?;
         let container_discovery_port = get_available_port()?;
         let container_auth_port = get_available_port()?;
 
         let image = GenericImage::new("tempo-commonware", "latest")
             .with_wait_for(WaitFor::message_on_stdout("RPC HTTP server started"))
-            .with_exposed_port(ContainerPort::Tcp(container_rpc_port))
-            .with_exposed_port(ContainerPort::Tcp(container_p2p_port))
+            .with_exposed_port(ContainerPort::Tcp(rpc_port))
+            .with_exposed_port(ContainerPort::Tcp(p2p_port))
             .with_env_var("RUST_LOG", "debug")
             .with_mount(testcontainers::core::Mount::bind_mount(
                 config_in_temp.to_string_lossy(),
@@ -110,12 +121,12 @@ impl TempoValidator {
                 "--datadir".to_string(),
                 format!("/tmp/{}-data", validator_id),
                 "--port".to_string(),
-                container_p2p_port.to_string(),
+                p2p_port.to_string(),
                 "--http".to_string(),
                 "--http.addr".to_string(),
                 "0.0.0.0".to_string(),
                 "--http.port".to_string(),
-                container_rpc_port.to_string(),
+                rpc_port.to_string(),
                 "--http.api".to_string(),
                 "all".to_string(),
                 "--discovery.port".to_string(),
@@ -126,23 +137,23 @@ impl TempoValidator {
 
         let container = image.start().await?;
         let host_rpc_port = container
-            .get_host_port_ipv4(container_rpc_port)
+            .get_host_port_ipv4(rpc_port)
             .await
             .map_err(|e| eyre::eyre!("Failed to get host port for RPC: {}", e))?;
 
         let host_p2p_port = container
-            .get_host_port_ipv4(container_p2p_port)
+            .get_host_port_ipv4(p2p_port)
             .await
             .map_err(|e| eyre::eyre!("Failed to get host port for P2P: {}", e))?;
 
-        let rpc_url: Url = format!("http://127.0.0.1:{}", host_rpc_port).parse()?;
+        let rpc_url: Url = format!("http://127.0.0.1:{host_rpc_port}").parse()?;
 
         let validator = Self {
             container,
             rpc_url,
             validator_id,
-            container_rpc_port,
-            container_p2p_port,
+            rpc_port,
+            p2p_port,
             host_rpc_port,
             host_p2p_port,
             _temp_dir: temp_dir,
@@ -153,16 +164,16 @@ impl TempoValidator {
 
     async fn wait_for_ready(&self) -> eyre::Result<()> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.clone());
-        for _ in 0..30 {
+        for _ in 0..5 {
             match provider.get_block_number().await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     tracing::debug!("Waiting for node to be ready: {}", e);
                 }
             }
-            sleep(Duration::from_secs(2)).await;
+            sleep(Duration::from_secs(1)).await;
         }
-        Err(eyre::eyre!("Node not ready after 60 seconds"))
+        Err(eyre::eyre!("Node not ready"))
     }
 
     async fn stop(self) -> eyre::Result<()> {
@@ -173,12 +184,16 @@ impl TempoValidator {
         Ok(())
     }
 
-    fn provider(&self) -> impl Provider {
+    fn provider(&self) -> impl Provider + Clone {
         ProviderBuilder::new().connect_http(self.rpc_url.clone())
     }
 
     fn get_ports(&self) -> (u16, u16) {
         (self.host_rpc_port, self.host_p2p_port)
+    }
+
+    fn get_rpc_url(&self) -> &Url {
+        &self.rpc_url
     }
 }
 
@@ -207,4 +222,54 @@ impl Drop for TxGenerator {
     fn drop(&mut self) {
         self.handle.abort();
     }
+}
+
+fn get_available_port() -> eyre::Result<u16> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    Ok(port)
+}
+
+async fn start_network() -> eyre::Result<(TempoValidator, TempoValidator, TempoValidator)> {
+    let validator0 = TempoValidator::new(
+        "validator-0".to_string(),
+        "consensus-config-0.toml",
+        8545,
+        30304,
+    )
+    .await?;
+
+    let validator1 = TempoValidator::new(
+        "validator-1".to_string(),
+        "consensus-config-1.toml",
+        8546,
+        30305,
+    )
+    .await?;
+
+    let validator2 = TempoValidator::new(
+        "validator-2".to_string(),
+        "consensus-config-2.toml",
+        8547,
+        30306,
+    )
+    .await?;
+
+    // Wait for all validators to be ready
+    validator0.wait_for_ready().await?;
+    validator1.wait_for_ready().await?;
+    validator2.wait_for_ready().await?;
+
+    Ok((validator0, validator1, validator2))
+}
+
+async fn ensure_block_production(provider: impl Provider) -> eyre::Result<()> {
+    let mut last_block = provider.get_block_number().await?;
+    for _ in 0..3 {
+        sleep(Duration::from_secs(1)).await;
+        let current_block = provider.get_block_number().await?;
+        assert!(current_block > last_block);
+        last_block = current_block;
+    }
+    Ok(())
 }
