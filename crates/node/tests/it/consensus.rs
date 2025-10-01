@@ -2,10 +2,14 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     transports::http::reqwest::Url,
 };
-use std::{process::Stdio, time::Duration};
+use std::{collections::HashMap, time::Duration};
 use tempfile::TempDir;
+use testcontainers::{
+    core::{ContainerPort, WaitFor},
+    runners::AsyncRunner,
+    ContainerAsync, GenericImage, ImageExt,
+};
 use tokio::{
-    process::{Child, Command},
     task::JoinHandle,
     time::sleep,
 };
@@ -66,7 +70,7 @@ async fn test_invalid_proposal() -> eyre::Result<()> {
 }
 
 struct TempoValidator {
-    process: Child,
+    container: ContainerAsync<GenericImage>,
     rpc_url: Url,
     validator_id: String,
     rpc_port: u16,
@@ -89,61 +93,58 @@ impl TempoValidator {
             TempDir::new().map_err(|e| eyre::eyre!("Failed to create temp directory: {}", e))?;
         let datadir = temp_dir.path().to_string_lossy();
 
-        // Get project root directory
-        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap();
+        // Copy consensus config to temp directory for mounting
+        let config_in_temp = temp_dir.path().join("consensus-config.toml");
+        std::fs::copy(&config_path, &config_in_temp).map_err(|e| {
+            eyre::eyre!("Failed to copy consensus config: {}", e)
+        })?;
 
-        let mut cmd = Command::new("cargo");
-        cmd.current_dir(project_root)
-            .args(&[
-                "run",
-                "--bin",
-                "tempo-commonware",
-                "--",
-                "node",
-                "--consensus-config",
-            ])
-            .arg(&config_path)
-            .args(&[
-                "--datadir",
-                &datadir,
-                "--port",
-                &p2p_port.to_string(),
-                "--http",
-                "--http.addr",
-                "127.0.0.1",
-                "--http.port",
-                &rpc_port.to_string(),
-                "--http.api",
-                "all",
-                "--discovery.port",
-                "30306",
-                "--authrpc.port",
-                "8558",
-            ])
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+        // Create a Docker image for the tempo node
+        let image = GenericImage::new("tempo-commonware", "latest")
+            .with_exposed_port(ContainerPort::Tcp(8545))  // Default RPC port
+            .with_exposed_port(ContainerPort::Tcp(30303)) // Default P2P port
+            .with_exposed_port(ContainerPort::Tcp(8546))  // Default metrics port
+            .with_env_var("RUST_LOG", "debug")
+            .with_wait_for(WaitFor::message_on_stdout("Server started"))
+            .with_volume((temp_dir.path().to_string_lossy().to_string(), "/tmp"))
+            .with_cmd(vec![
+                "node".to_string(),
+                "--consensus-config".to_string(),
+                "/tmp/consensus-config.toml".to_string(),
+                "--datadir".to_string(),
+                format!("/tmp/{}-data", validator_id),
+                "--port".to_string(),
+                "30303".to_string(),
+                "--http".to_string(),
+                "--http.addr".to_string(),
+                "0.0.0.0".to_string(),
+                "--http.port".to_string(),
+                "8545".to_string(),
+                "--http.api".to_string(),
+                "all".to_string(),
+                "--discovery.port".to_string(),
+                "30306".to_string(),
+                "--authrpc.port".to_string(),
+                "8558".to_string(),
+            ]);
 
         println!(
-            "Running command from {}: cargo run --bin tempo-commonware -- node --consensus-config {} --datadir {} --port {} --http --http.addr 127.0.0.1 --http.port {} --http.api all",
-            project_root.display(),
-            config_path.display(),
-            datadir,
-            p2p_port,
-            rpc_port
+            "Starting container for validator {} with RPC port {} and P2P port {}",
+            validator_id, rpc_port, p2p_port
         );
 
-        let process = cmd
-            .spawn()
-            .map_err(|e| eyre::eyre!("Failed to start tempo-commonware process: {}", e))?;
+        let container = image.start().await.map_err(|e| {
+            eyre::eyre!("Failed to start tempo-commonware container: {}", e)
+        })?;
 
-        let rpc_url: Url = format!("http://127.0.0.1:{}", rpc_port).parse()?;
+        let host_rpc_port = container.get_host_port_ipv4(8545).await.map_err(|e| {
+            eyre::eyre!("Failed to get host port for RPC: {}", e)
+        })?;
+
+        let rpc_url: Url = format!("http://127.0.0.1:{}", host_rpc_port).parse()?;
 
         let validator = Self {
-            process,
+            container,
             rpc_url,
             validator_id,
             rpc_port,
@@ -156,23 +157,23 @@ impl TempoValidator {
 
     async fn wait_for_ready(&self) -> eyre::Result<()> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.clone());
-        for _ in 0..5 {
+        for _ in 0..30 {
             match provider.get_block_number().await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
-                    tracing::error!("Failed to connect to provider and get block number: {}", e);
+                    tracing::debug!("Waiting for node to be ready: {}", e);
                 }
             }
-            sleep(Duration::from_secs(1)).await;
+            sleep(Duration::from_secs(2)).await;
         }
-        Err(eyre::eyre!("Node not ready"))
+        Err(eyre::eyre!("Node not ready after 60 seconds"))
     }
 
-    async fn stop(mut self) -> eyre::Result<()> {
-        self.process
-            .kill()
+    async fn stop(self) -> eyre::Result<()> {
+        self.container
+            .stop()
             .await
-            .map_err(|e| eyre::eyre!("Failed to stop validator process: {}", e))?;
+            .map_err(|e| eyre::eyre!("Failed to stop validator container: {}", e))?;
         Ok(())
     }
 
