@@ -2,17 +2,14 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     transports::http::reqwest::Url,
 };
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 use tempfile::TempDir;
 use testcontainers::{
+    ContainerAsync, GenericImage, ImageExt,
     core::{ContainerPort, WaitFor},
     runners::AsyncRunner,
-    ContainerAsync, GenericImage, ImageExt,
 };
-use tokio::{
-    task::JoinHandle,
-    time::sleep,
-};
+use tokio::{task::JoinHandle, time::sleep};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_validator_recovery() -> eyre::Result<()> {
@@ -95,18 +92,16 @@ impl TempoValidator {
 
         // Copy consensus config to temp directory for mounting
         let config_in_temp = temp_dir.path().join("consensus-config.toml");
-        std::fs::copy(&config_path, &config_in_temp).map_err(|e| {
-            eyre::eyre!("Failed to copy consensus config: {}", e)
-        })?;
+        std::fs::copy(&config_path, &config_in_temp)
+            .map_err(|e| eyre::eyre!("Failed to copy consensus config: {}", e))?;
 
         // Create a Docker image for the tempo node
         let image = GenericImage::new("tempo-commonware", "latest")
-            .with_exposed_port(ContainerPort::Tcp(8545))  // Default RPC port
+            .with_wait_for(WaitFor::message_on_stdout("RPC Server Started"))
+            .with_exposed_port(ContainerPort::Tcp(8545)) // Default RPC port
             .with_exposed_port(ContainerPort::Tcp(30303)) // Default P2P port
-            .with_exposed_port(ContainerPort::Tcp(8546))  // Default metrics port
+            .with_exposed_port(ContainerPort::Tcp(8546)) // Default metrics port
             .with_env_var("RUST_LOG", "debug")
-            .with_wait_for(WaitFor::message_on_stdout("Server started"))
-            .with_volume((temp_dir.path().to_string_lossy().to_string(), "/tmp"))
             .with_cmd(vec![
                 "node".to_string(),
                 "--consensus-config".to_string(),
@@ -133,13 +128,11 @@ impl TempoValidator {
             validator_id, rpc_port, p2p_port
         );
 
-        let container = image.start().await.map_err(|e| {
-            eyre::eyre!("Failed to start tempo-commonware container: {}", e)
-        })?;
-
-        let host_rpc_port = container.get_host_port_ipv4(8545).await.map_err(|e| {
-            eyre::eyre!("Failed to get host port for RPC: {}", e)
-        })?;
+        let container = image.start().await?;
+        let host_rpc_port = container
+            .get_host_port_ipv4(8545)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get host port for RPC: {}", e))?;
 
         let rpc_url: Url = format!("http://127.0.0.1:{}", host_rpc_port).parse()?;
 

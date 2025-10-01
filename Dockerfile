@@ -16,6 +16,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY bin/ ./bin/
 COPY crates/ ./crates/
 
+# NOTE: Remove xtask from workspace to avoid missing dependency error for now
+RUN sed -i '/xtask/d' Cargo.toml
+
 # Install nightly Rust and build the tempo binary
 RUN rustup toolchain install nightly && rustup default nightly
 RUN cargo build --bin tempo-commonware
@@ -28,7 +31,7 @@ RUN apt-get update && apt-get install -y \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary
-COPY --from=builder /app/target/release/tempo-commonware /usr/local/bin/tempo-commonware
+COPY --from=builder /app/target/debug/tempo-commonware /usr/local/bin/tempo-commonware
 
 WORKDIR /data
 
