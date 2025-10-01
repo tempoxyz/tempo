@@ -3,15 +3,29 @@ use alloy::{
     rpc,
     transports::http::reqwest::Url,
 };
+use alloy_primitives::U160;
+use commonware_cryptography::Signer as _;
 use eyre::WrapErr as _;
-use std::{net::TcpListener, time::Duration};
+use rand::SeedableRng as _;
+use std::{
+    net::{IpAddr, SocketAddr, TcpListener},
+    path::PathBuf,
+    time::Duration,
+};
 use tempfile::TempDir;
+use tempo_commonware_node_cryptography::PrivateKey;
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
     core::{ContainerPort, WaitFor},
     runners::AsyncRunner,
 };
 use tokio::{task::JoinHandle, time::sleep};
+
+const CONSENSUS_P2P_PORT: u16 = 8_000;
+const EXECUTION_RPC_PORT: u16 = 8_545;
+const EXECUTION_P2P_PORT: u16 = 30_303;
+
+const CONSENSUS_CONFIG: &str = "/tmp/consensus.toml";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_validator_recovery() -> eyre::Result<()> {
@@ -296,4 +310,217 @@ async fn ensure_block_production(provider: impl Provider) -> eyre::Result<()> {
         last_block = current_block;
     }
     Ok(())
+}
+
+struct Validator {
+    container: ContainerAsync<GenericImage>,
+    config: tempo_commonware_node_config::Config,
+    execution_rpc_addr: SocketAddr,
+}
+
+struct Validators {
+    bootstrapper: Validator,
+    peers: Vec<Validator>,
+    _tmp: TempDir,
+}
+
+/// Creates the configuration for `amount` validators.
+async fn run_validators(amount: usize) -> Validators {
+    let mut all_configs = create_pre_configs(amount).into_iter();
+
+    let ephemeral_out =
+        TempDir::new().expect("must be able to create a temp direcetory for tests to work");
+    let bootstrapper_toml = ephemeral_out.path().join("bootstrapper.toml");
+
+    let bootstrapper_cfg = all_configs.next().unwrap();
+
+    std::fs::write(
+        &bootstrapper_toml,
+        &toml::to_string_pretty(&bootstrapper_cfg).expect("must be able to turn config to toml"),
+    )
+    .expect("must be able to write bootstrapper config to temp test directory");
+
+    let image = GenericImage::new("tempo-commonware", "latest")
+        .with_wait_for(WaitFor::message_on_stdout("RPC HTTP server started"))
+        .with_exposed_port(ContainerPort::Tcp(CONSENSUS_P2P_PORT))
+        .with_exposed_port(ContainerPort::Tcp(EXECUTION_RPC_PORT))
+        .with_exposed_port(ContainerPort::Tcp(EXECUTION_P2P_PORT))
+        .with_env_var("RUST_LOG", "debug")
+        .with_mount(testcontainers::core::Mount::bind_mount(
+            bootstrapper_toml.to_string_lossy(),
+            CONSENSUS_CONFIG,
+        ))
+        .with_cmd(vec![
+            "node",
+            "--consensus-config",
+            CONSENSUS_CONFIG,
+            "--datadir",
+            "/tmp/data",
+            "--port",
+            EXECUTION_P2P_PORT.to_string().as_str(),
+            "--http",
+            "--http.addr",
+            "0.0.0.0",
+            "--http.port",
+            EXECUTION_RPC_PORT.to_string().as_str(),
+            "--http.api",
+            "all",
+        ]);
+
+    let container = image
+        .start()
+        .await
+        .expect("must be able to run bootstrapper node");
+
+    let url::Host::Ipv4(bootstrapper_addr) = container
+        .get_host()
+        .await
+        .expect("boostrapper must have a host")
+    else {
+        panic!("can't deal with non-ipv4 hosts for now")
+    };
+    let bootstrapper_consensus_p2p_port = container
+        .get_host_port_ipv4(CONSENSUS_P2P_PORT)
+        .await
+        .expect("bootstrapper consensus p2p must have a port");
+    let bootstrapper_execution_rpc_port = container
+        .get_host_port_ipv4(EXECUTION_RPC_PORT)
+        .await
+        .expect("bootstrapper rpc must have a port");
+
+    let bootstrapper = Validator {
+        container,
+        config: bootstrapper_cfg,
+        execution_rpc_addr: SocketAddr::new(
+            IpAddr::V4(bootstrapper_addr),
+            bootstrapper_execution_rpc_port,
+        ),
+    };
+
+    // Consume the rest of the configs
+    let mut peers = vec![];
+    for (i, mut config) in all_configs.enumerate() {
+        // XXX: here we set the bootstrapper so that we can find the node.
+        let entry = config
+            .peers
+            .get_mut(&bootstrapper.config.signer.public_key())
+            .expect("the bootstrapper must have an entry in the peers table");
+        *entry = SocketAddr::new(
+            IpAddr::V4(bootstrapper_addr),
+            bootstrapper_consensus_p2p_port,
+        )
+        .to_string();
+
+        let peer_toml = ephemeral_out.path().join(format!("peer-{i}.toml"));
+        std::fs::write(
+            &peer_toml,
+            &toml::to_string_pretty(&config).expect("must be able to turn config to toml"),
+        )
+        .expect("must be able to write peer config to temp test directory");
+
+        let image = GenericImage::new("tempo-commonware", "latest")
+            .with_wait_for(WaitFor::message_on_stdout("RPC HTTP server started"))
+            .with_exposed_port(ContainerPort::Tcp(CONSENSUS_P2P_PORT))
+            .with_exposed_port(ContainerPort::Tcp(EXECUTION_RPC_PORT))
+            .with_exposed_port(ContainerPort::Tcp(EXECUTION_P2P_PORT))
+            .with_env_var("RUST_LOG", "debug")
+            .with_mount(testcontainers::core::Mount::bind_mount(
+                peer_toml.to_string_lossy(),
+                CONSENSUS_CONFIG,
+            ))
+            .with_cmd(vec![
+                "node",
+                "--consensus-config",
+                CONSENSUS_CONFIG,
+                "--datadir",
+                "/tmp/data",
+                "--port",
+                EXECUTION_P2P_PORT.to_string().as_str(),
+                "--http",
+                "--http.addr",
+                "0.0.0.0",
+                "--http.port",
+                EXECUTION_RPC_PORT.to_string().as_str(),
+                "--http.api",
+                "all",
+            ]);
+
+        let container = image.start().await.expect("must be able to run peer node");
+
+        let url::Host::Ipv4(host_addr) = container.get_host().await.expect("peer must have a host")
+        else {
+            panic!("can't deal with non-ipv4 hosts for now")
+        };
+
+        let execution_rpc_port = container
+            .get_host_port_ipv4(EXECUTION_RPC_PORT)
+            .await
+            .expect("peer rpc must have a port");
+        let peer = Validator {
+            container,
+            config,
+            execution_rpc_addr: SocketAddr::new(IpAddr::V4(host_addr), execution_rpc_port),
+        };
+        peers.push(peer);
+    }
+
+    Validators {
+        bootstrapper,
+        peers,
+        _tmp: ephemeral_out,
+    }
+}
+
+/// Creates a bunch of "raw" configs that are still lacking peers information.
+fn create_pre_configs(peers: usize) -> Vec<tempo_commonware_node_config::Config> {
+    use commonware_cryptography::PrivateKeyExt as _;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+
+    let threshold = commonware_utils::quorum(peers as u32);
+    let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
+        _,
+        tempo_commonware_node_cryptography::BlsScheme,
+    >(&mut rng, None, peers as u32, threshold);
+
+    let mut all_configs = vec![];
+    let mut bootstrapper = None;
+    for share in shares {
+        let signer = PrivateKey::from_rng(&mut rng);
+        // XXX: the first peer always becomes the bootstrapper.
+        let bootstrappers = vec![bootstrapper.get_or_insert(signer.public_key()).clone()].into();
+
+        all_configs.push(tempo_commonware_node_config::Config {
+            signer,
+            share,
+            polynomial: polynomial.clone(),
+            listen_port: CONSENSUS_P2P_PORT,
+            metrics_port: None,
+            p2p: Default::default(),
+            storage_directory: "/tmp/consensus".into(),
+            worker_threads: 3,
+            // this will be updated after we have collected all peers
+            peers: Default::default(),
+            bootstrappers,
+            message_backlog: 16384,
+            mailbox_size: 16384,
+            deque_size: 10,
+            fee_recipient: alloy_primitives::Address::from(U160::ZERO),
+            timeouts: Default::default(),
+        });
+    }
+    // XXX: Bit silly workaround; we need all public keys to identify the peers, but
+    // the IP address will be set later once it is known.
+    let peers = all_configs
+        .iter()
+        .map(|cfg| {
+            (
+                cfg.signer.public_key(),
+                "0.0.0.0:{CONSENSUS_P2P_PORT}".to_string(),
+            )
+        })
+        .collect::<indexmap::IndexMap<_, _>>();
+    all_configs
+        .iter_mut()
+        .for_each(|cfg| cfg.peers = peers.clone());
+    all_configs
 }
