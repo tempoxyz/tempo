@@ -172,7 +172,29 @@ where
             let to_addr = tx.kind().into_to().unwrap_or_default();
             fee_manager
                 .collect_fee_pre_tx(tx.caller(), self.fee_token, to_addr, gas_balance_spending)
-                .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                .map_err(|e| {
+                    // Map fee collection errors to transaction validation errors since they
+                    // indicate the transaction cannot be included (e.g., insufficient liquidity
+                    // in FeeAMM pool for fee swaps)
+                    use tempo_precompiles::contracts::IFeeManager;
+                    match e {
+                        IFeeManager::IFeeManagerErrors::InsufficientLiquidity(_) => {
+                            // Treat as lack of funds since user cannot pay fees
+                            EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee {
+                                fee: Box::new(gas_balance_spending),
+                                balance: Box::new(U256::ZERO),
+                            })
+                        }
+                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(_) => {
+                            // User doesn't have enough fee tokens
+                            EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee {
+                                fee: Box::new(gas_balance_spending),
+                                balance: Box::new(U256::ZERO),
+                            })
+                        }
+                        _ => EVMError::Custom(format!("{e:?}")),
+                    }
+                })?;
         }
 
         // journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
