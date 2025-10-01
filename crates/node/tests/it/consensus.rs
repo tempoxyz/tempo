@@ -349,6 +349,16 @@ async fn run_validators(amount: usize) -> Validators {
     let ephemeral_out =
         TempDir::new().expect("must be able to create a temp direcetory for tests to work");
     let bootstrapper_toml = ephemeral_out.path().join("bootstrapper.toml");
+    
+    // Copy test genesis file to temp directory (same pattern as consensus config)
+    let test_genesis_path = ephemeral_out.path().join("test-genesis.json");
+    let source_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/assets/test-genesis.json");
+    assert!(std::path::Path::new(source_path).exists());
+    
+    std::fs::copy(source_path, &test_genesis_path)
+        .expect("must be able to copy test genesis file");
+    
+    assert!(test_genesis_path.exists());
 
     let bootstrapper_cfg = all_configs.next().unwrap();
 
@@ -368,8 +378,14 @@ async fn run_validators(amount: usize) -> Validators {
             bootstrapper_toml.to_string_lossy(),
             CONSENSUS_CONFIG,
         ))
+        .with_mount(testcontainers::core::Mount::bind_mount(
+            test_genesis_path.to_string_lossy(),
+            "/tmp/test-genesis.json",
+        ))
         .with_cmd(vec![
             "node",
+            "--chain",
+            "/tmp/test-genesis.json",
             "--consensus-config",
             CONSENSUS_CONFIG,
             "--datadir",
@@ -452,8 +468,14 @@ async fn run_validators(amount: usize) -> Validators {
                 peer_toml.to_string_lossy(),
                 CONSENSUS_CONFIG,
             ))
+            .with_mount(testcontainers::core::Mount::bind_mount(
+                test_genesis_path.to_string_lossy(),
+                "/tmp/test-genesis.json",
+            ))
             .with_cmd(vec![
                 "node",
+                "--chain",
+                "/tmp/test-genesis.json",
                 "--consensus-config",
                 CONSENSUS_CONFIG,
                 "--datadir",
