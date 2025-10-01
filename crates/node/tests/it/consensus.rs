@@ -15,7 +15,13 @@ async fn test_validator_recovery() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Start a single validator node
-    let validator = TempoValidator::new("validator-1".to_string(), 8545, 30303).await?;
+    let validator = TempoValidator::new(
+        "validator-1".to_string(),
+        8545,
+        30305,
+        "consensus-config.toml",
+    )
+    .await?;
     validator.wait_for_ready().await?;
 
     println!(
@@ -65,37 +71,72 @@ struct TempoValidator {
     validator_id: String,
     rpc_port: u16,
     p2p_port: u16,
-    temp_dir: TempDir,
+    _temp_dir: TempDir,
 }
 
 impl TempoValidator {
-    async fn new(validator_id: String, rpc_port: u16, p2p_port: u16) -> eyre::Result<Self> {
+    async fn new(
+        validator_id: String,
+        rpc_port: u16,
+        p2p_port: u16,
+        consensus_config: &str,
+    ) -> eyre::Result<Self> {
         let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/assets/consensus-config.toml");
+            .join("tests/assets")
+            .join(consensus_config);
 
         let temp_dir =
             TempDir::new().map_err(|e| eyre::eyre!("Failed to create temp directory: {}", e))?;
         let datadir = temp_dir.path().to_string_lossy();
 
+        // Get project root directory
+        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+
         let mut cmd = Command::new("cargo");
-        cmd.args(&[
-            "run",
-            "--bin",
-            "tempo-commonware",
-            "--",
-            "node",
-            "--consensus-config",
-        ])
-        .arg(&config_path)
-        .args(&["--datadir", &datadir])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        cmd.current_dir(project_root)
+            .args(&[
+                "run",
+                "--bin",
+                "tempo-commonware",
+                "--",
+                "node",
+                "--consensus-config",
+            ])
+            .arg(&config_path)
+            .args(&[
+                "--datadir",
+                &datadir,
+                "--port",
+                &p2p_port.to_string(),
+                "--http",
+                "--http.addr",
+                "127.0.0.1",
+                "--http.port",
+                &rpc_port.to_string(),
+                "--http.api",
+                "all",
+            ])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        println!(
+            "Running command from {}: cargo run --bin tempo-commonware -- node --consensus-config {} --datadir {} --port {} --http --http.addr 127.0.0.1 --http.port {} --http.api all",
+            project_root.display(),
+            config_path.display(),
+            datadir,
+            p2p_port,
+            rpc_port
+        );
 
         let process = cmd
             .spawn()
             .map_err(|e| eyre::eyre!("Failed to start tempo-commonware process: {}", e))?;
 
-        let rpc_url: Url = "http://127.0.0.1:8545".parse()?;
+        let rpc_url: Url = format!("http://127.0.0.1:{}", rpc_port).parse()?;
 
         let validator = Self {
             process,
@@ -103,7 +144,7 @@ impl TempoValidator {
             validator_id,
             rpc_port,
             p2p_port,
-            temp_dir,
+            _temp_dir: temp_dir,
         };
 
         Ok(validator)
@@ -111,7 +152,7 @@ impl TempoValidator {
 
     async fn wait_for_ready(&self) -> eyre::Result<()> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.clone());
-        for _ in 0..3 {
+        for _ in 0..5 {
             match provider.get_block_number().await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
@@ -120,8 +161,7 @@ impl TempoValidator {
             }
             sleep(Duration::from_secs(1)).await;
         }
-
-        Err(eyre::eyre!("Node not ready after 3 attempts"))
+        Err(eyre::eyre!("Node not ready"))
     }
 
     async fn stop(mut self) -> eyre::Result<()> {
