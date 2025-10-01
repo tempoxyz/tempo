@@ -85,18 +85,15 @@ impl TempoValidator {
 
         let temp_dir =
             TempDir::new().map_err(|e| eyre::eyre!("Failed to create temp directory: {}", e))?;
-        // Copy consensus config to temp directory for mounting
         let config_in_temp = temp_dir.path().join("consensus-config.toml");
         std::fs::copy(&config_path, &config_in_temp)
             .map_err(|e| eyre::eyre!("Failed to copy consensus config: {}", e))?;
 
-        // Get dynamic ports
         let container_rpc_port = get_available_port()?;
         let container_p2p_port = get_available_port()?;
         let container_discovery_port = get_available_port()?;
         let container_auth_port = get_available_port()?;
 
-        // Create a Docker image for the tempo node with dynamic ports
         let image = GenericImage::new("tempo-commonware", "latest")
             .with_wait_for(WaitFor::message_on_stdout("RPC HTTP server started"))
             .with_exposed_port(ContainerPort::Tcp(container_rpc_port))
@@ -127,11 +124,6 @@ impl TempoValidator {
                 container_auth_port.to_string(),
             ]);
 
-        println!(
-            "Starting container for validator {} with RPC port {} and P2P port {}",
-            validator_id, container_rpc_port, container_p2p_port
-        );
-
         let container = image.start().await?;
         let host_rpc_port = container
             .get_host_port_ipv4(container_rpc_port)
@@ -144,11 +136,6 @@ impl TempoValidator {
             .map_err(|e| eyre::eyre!("Failed to get host port for P2P: {}", e))?;
 
         let rpc_url: Url = format!("http://127.0.0.1:{}", host_rpc_port).parse()?;
-
-        println!(
-            "Validator {} started - Container RPC: {}, Host RPC: {}, Container P2P: {}, Host P2P: {}",
-            validator_id, container_rpc_port, host_rpc_port, container_p2p_port, host_p2p_port
-        );
 
         let validator = Self {
             container,
