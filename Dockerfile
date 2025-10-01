@@ -36,6 +36,6 @@ COPY --from=builder /app/target/debug/tempo-commonware /usr/local/bin/tempo-comm
 WORKDIR /data
 
 # Expose default ports
-EXPOSE 8545 8546 30303 30303/udp
+EXPOSE 8000 8545 8546 30303 30303/udp
 
 ENTRYPOINT ["tempo-commonware"]
