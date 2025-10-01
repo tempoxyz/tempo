@@ -189,7 +189,8 @@ where
 }
 
 impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
-    type RpcBlock = alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
+    type RpcBlock =
+        alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
     fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> tempo_primitives::Block {
         rpc_block

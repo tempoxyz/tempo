@@ -20,6 +20,7 @@ tempo-primitives.workspace = true
 tempo-revm.workspace = true
 
 reth-consensus.workspace = true
+reth-chainspec.workspace = true
 reth-evm.workspace = true
 reth-evm-ethereum.workspace = true
 reth-revm.workspace = true

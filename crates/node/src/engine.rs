@@ -1,5 +1,5 @@
 use crate::{TempoExecutionData, TempoPayloadTypes};
-use reth_ethereum::{engine::EthPayloadAttributes};
+use reth_ethereum::engine::EthPayloadAttributes;
 use reth_node_api::{InvalidPayloadAttributesError, NewPayloadError, PayloadValidator};
 use reth_primitives_traits::RecoveredBlock;
 use tempo_primitives::{Block, TempoHeader};

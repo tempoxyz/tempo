@@ -13873,6 +13873,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "derive_more",
+ "reth-chainspec",
  "reth-consensus",
  "reth-evm",
  "reth-evm-ethereum",

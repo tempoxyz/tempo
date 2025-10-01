@@ -21,10 +21,7 @@ pub struct Header {
 }
 
 impl FromConsensusHeader<TempoHeader> for Header {
-    fn from_consensus_header(
-        header: SealedHeader<TempoHeader>,
-        block_size: usize,
-    ) -> Self {
+    fn from_consensus_header(header: SealedHeader<TempoHeader>, block_size: usize) -> Self {
         let extra_data = TempoExtraData::decode(&header.extra_data);
 
         let general_gas_limit = extra_data

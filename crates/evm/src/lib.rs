@@ -14,8 +14,10 @@ use tempo_consensus::TempoExtraData;
 pub mod evm;
 use std::{borrow::Cow, sync::Arc};
 
+use alloy_evm::eth::NextEvmEnvAttributes;
 use alloy_primitives::Bytes;
 pub use evm::TempoEvmFactory;
+use reth_chainspec::EthChainSpec;
 use reth_evm::{
     self, ConfigureEngineEvm, ConfigureEvm, Database, EvmEnv, EvmEnvFor, ExecutableTxIterator,
     ExecutionCtxFor,
@@ -113,7 +115,12 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnv, Self::Error> {
-        self.inner.evm_env(header)
+        Ok(EvmEnv::for_eth_block(
+            header,
+            self.chain_spec(),
+            self.chain_spec().chain().id(),
+            self.chain_spec().blob_params_at_timestamp(header.timestamp),
+        ))
     }
 
     fn next_evm_env(
@@ -121,13 +128,22 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnv, Self::Error> {
-        self.inner
-            .next_evm_env(parent, &attributes.inner)
-            .map_err(|_| {
-                TempoEvmError::InvalidEvmConfig(
-                    "failed to create next block EVM environment".to_string(),
-                )
-            })
+        Ok(EvmEnv::for_eth_next_block(
+            parent,
+            NextEvmEnvAttributes {
+                timestamp: attributes.timestamp,
+                suggested_fee_recipient: attributes.suggested_fee_recipient,
+                prev_randao: attributes.prev_randao,
+                gas_limit: attributes.gas_limit,
+            },
+            self.chain_spec()
+                .next_block_base_fee(parent, attributes.timestamp)
+                .unwrap_or_default(),
+            self.chain_spec(),
+            self.chain_spec().chain().id(),
+            self.chain_spec()
+                .blob_params_at_timestamp(attributes.timestamp),
+        ))
     }
 
     fn context_for_block<'a>(
