@@ -50,8 +50,8 @@ jobs:
       id: binary_upload
       with:
         if-no-files-found: 'error'
-        name: ${{ matrix.binary }}-x86_64-unknown-linux-gnu
-        path: target/x86_64-unknown-linux-gnu/${{ inputs.profile || 'debug' }}/${{ matrix.binary }}
+        name: ${{ matrix.binary }}
+        path: target/${{ inputs.profile || 'debug' }}/${{ matrix.binary }}
     - uses: cloudposse/github-action-matrix-outputs-write@v1
       id: out
       with:
