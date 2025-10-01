@@ -46,7 +46,7 @@ jobs:
       with:
         RUSTC_WRAPPER: "true"
       run: |
-        just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'release' }}"
+        just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'dev' }}"
     - uses: actions/upload-artifact@v4
       id: binary_upload
       with:
