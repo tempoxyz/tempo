@@ -119,6 +119,10 @@ impl TempoValidator {
                 &rpc_port.to_string(),
                 "--http.api",
                 "all",
+                "--discovery.port",
+                "30306",
+                "--authrpc.port",
+                "8558",
             ])
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
