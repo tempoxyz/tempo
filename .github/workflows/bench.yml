@@ -73,7 +73,9 @@ jobs:
           
           target/x86_64-unknown-linux-gnu/maxperf/tempo-bench run-max-tps --duration 60 --tps 25000
           killall -9 tempo
-          cat ~/.cache/reth/logs/dev/reth.log | grep -E -i "Kgas|Executed block|State root task finished" > relevant.log
+          echo -ne "# Logs\n```\n" >> relevant.log
+          cat ~/.cache/reth/logs/dev/reth.log | grep -E -i "Kgas|Executed block|State root task finished" >> relevant.log
+          echo -ne "```" >> relevant.log
       - id: logs
         run: |
           cat relevant.log >> $GITHUB_STEP_SUMMARY
