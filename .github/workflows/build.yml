@@ -43,7 +43,7 @@ jobs:
       uses: mozilla-actions/sccache-action@v0.0.9
     - uses: taiki-e/install-action@just
     - name: Build
-      with:
+      env:
         RUSTC_WRAPPER: "true"
       run: |
         just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'dev' }}"
