@@ -12,7 +12,10 @@ use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
-use reth_evm::{EvmEnvFor, TxEnvFor, revm::Database};
+use reth_evm::{
+    EvmEnvFor, TxEnvFor,
+    revm::{Database, context::result::EVMError},
+};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy, PrimitivesTy};
 use reth_node_builder::{
     NodeAdapter,
@@ -69,11 +72,16 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
         db: &mut DB,
         env: &TempoTxEnv,
         validator: Address,
-    ) -> Result<U256, DB::Error>
+    ) -> Result<U256, EthApiError>
     where
-        DB: Database,
+        DB: Database<Error: Into<EthApiError>>,
     {
-        db.get_fee_token_balance(env.caller, validator, env.fee_token)
+        db.get_fee_token_balance(
+            env.fee_payer().map_err(EVMError::<DB::Error>::from)?,
+            validator,
+            env.fee_token,
+        )
+        .map_err(Into::into)
     }
 }
 
@@ -208,9 +216,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        let fee_token_balance = self
-            .caller_fee_token_allowance(&mut db, tx_env, evm_env.block_env.beneficiary)
-            .map_err(Into::into)?;
+        let fee_token_balance =
+            self.caller_fee_token_allowance(&mut db, tx_env, evm_env.block_env.beneficiary)?;
 
         // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
         // 10**9 so we must adjust by USD_DECIMAL_FACTOR

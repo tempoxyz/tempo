@@ -19,7 +19,6 @@ pub trait TIPFeeStateProviderExt: StateProvider {
     /// validator token if user has no token set.
     fn get_fee_token_balance(
         &self,
-        user: Address,
         fee_payer: Address,
         tx_fee_token: Option<Address>,
     ) -> ProviderResult<U256> {
@@ -27,7 +26,7 @@ pub trait TIPFeeStateProviderExt: StateProvider {
             fee_token
         } else {
             // Look up user's configured fee token in TIPFeeManager storage
-            let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
+            let user_token_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
             let fee_token = self
                 .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot.into())?
                 .unwrap_or_default()
@@ -60,7 +59,7 @@ pub trait TIPFeeDatabaseExt: Database {
     /// validator token if user has no token set.
     fn get_fee_token_balance(
         &mut self,
-        user: Address,
+        fee_payer: Address,
         validator: Address,
         tx_fee_token: Option<Address>,
     ) -> Result<U256, Self::Error> {
@@ -68,7 +67,7 @@ pub trait TIPFeeDatabaseExt: Database {
             fee_token
         } else {
             // Look up user's configured fee token in TIPFeeManager storage
-            let user_token_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
+            let user_token_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
             let user_fee_token = self
                 .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot)?
                 .into_address();
@@ -92,7 +91,7 @@ pub trait TIPFeeDatabaseExt: Database {
         };
 
         // Query the user's balance in the determined fee token's TIP20 contract
-        let balance_slot = mapping_slot(user, tip20::slots::BALANCES);
+        let balance_slot = mapping_slot(fee_payer, tip20::slots::BALANCES);
         let balance = self.storage(fee_token, balance_slot)?;
 
         Ok(balance)
