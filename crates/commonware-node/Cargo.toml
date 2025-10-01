@@ -44,3 +44,12 @@ reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
+
+[features]
+default = []
+asm-keccak = [
+	"reth-node-core/asm-keccak",
+	"alloy-primitives/asm-keccak",
+	"reth/asm-keccak",
+	"tempo-node/asm-keccak"
+]

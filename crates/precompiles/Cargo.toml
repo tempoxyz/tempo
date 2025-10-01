@@ -28,6 +28,13 @@ alloy-primitives = { workspace = true, features = ["rand"] }
 eyre.workspace = true
 rand.workspace = true
 
+[features]
+default = []
+asm-keccak = [
+	"alloy/asm-keccak",
+	"alloy-primitives/asm-keccak"
+]
+
 [[bench]]
 name = "tempo_precompiles"
 harness = false
