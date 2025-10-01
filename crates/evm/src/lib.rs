@@ -126,8 +126,8 @@ impl ConfigureEvm for TempoEvmConfig {
         &self,
         block: &'a SealedBlock<Block>,
     ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
-        let non_payment_gas_limit = TempoExtraData::decode(&block.header().extra_data)
-            .map(|data| data.non_payment_gas_limit)
+        let general_gas_limit = TempoExtraData::decode(&block.header().extra_data)
+            .map(|data| data.general_gas_limit)
             .unwrap_or(0);
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
@@ -136,7 +136,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 ommers: &block.body().ommers,
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
             },
-            non_payment_gas_limit,
+            general_gas_limit,
         })
     }
 
@@ -152,7 +152,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 ommers: &[],
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
             },
-            non_payment_gas_limit: attributes.non_payment_gas_limit,
+            general_gas_limit: attributes.general_gas_limit,
         })
     }
 }
