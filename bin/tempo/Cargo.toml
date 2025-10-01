@@ -31,3 +31,9 @@ tracing.workspace = true
 [[bin]]
 name = "tempo"
 path = "src/main.rs"
+
+[features]
+default = []
+asm-keccak = [
+	"tempo-node/asm-keccak"
+]

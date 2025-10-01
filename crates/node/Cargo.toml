@@ -74,3 +74,12 @@ test-case.workspace = true
 [build-dependencies]
 vergen.workspace = true
 vergen-git2.workspace = true
+
+[features]
+default = []
+asm-keccak = [
+	"alloy/asm-keccak",
+	"alloy-primitives/asm-keccak",
+	"reth-node-core/asm-keccak",
+	"reth-node-ethereum/asm-keccak"
+]
