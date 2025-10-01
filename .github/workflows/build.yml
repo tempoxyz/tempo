@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  RUSTC_WRAPPER: "scchace"
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   build:
