@@ -334,11 +334,11 @@ async fn run_validators(amount: usize) -> Validators {
 
     let bootstrapper_cfg = all_configs.next().unwrap();
 
-    let pretty =
-        toml::to_string_pretty(&bootstrapper_cfg).expect("must be able to turn config to toml");
-
-    std::fs::write(&bootstrapper_toml, &pretty)
-        .expect("must be able to write bootstrapper config to temp test directory");
+    std::fs::write(
+        &bootstrapper_toml,
+        &toml::to_string_pretty(&bootstrapper_cfg).expect("must be able to turn config to toml"),
+    )
+    .expect("must be able to write bootstrapper config to temp test directory");
 
     let image = GenericImage::new("tempo-commonware", "latest")
         .with_wait_for(WaitFor::message_on_stdout("RPC HTTP server started"))
@@ -399,7 +399,7 @@ async fn run_validators(amount: usize) -> Validators {
 
     // Consume the rest of the configs
     let mut peers = vec![];
-    for mut config in all_configs {
+    for (i, mut config) in all_configs.enumerate() {
         // XXX: here we set the bootstrapper so that we can find the node.
         let entry = config
             .peers
@@ -411,6 +411,13 @@ async fn run_validators(amount: usize) -> Validators {
         )
         .to_string();
 
+        let peer_toml = ephemeral_out.path().join(format!("peer-{i}.toml"));
+        std::fs::write(
+            &peer_toml,
+            &toml::to_string_pretty(&config).expect("must be able to turn config to toml"),
+        )
+        .expect("must be able to write peer config to temp test directory");
+
         let image = GenericImage::new("tempo-commonware", "latest")
             .with_wait_for(WaitFor::message_on_stdout("RPC HTTP server started"))
             .with_exposed_port(ContainerPort::Tcp(CONSENSUS_P2P_PORT))
@@ -418,7 +425,7 @@ async fn run_validators(amount: usize) -> Validators {
             .with_exposed_port(ContainerPort::Tcp(EXECUTION_P2P_PORT))
             .with_env_var("RUST_LOG", "debug")
             .with_mount(testcontainers::core::Mount::bind_mount(
-                bootstrapper_toml.to_string_lossy(),
+                peer_toml.to_string_lossy(),
                 CONSENSUS_CONFIG,
             ))
             .with_cmd(vec![
@@ -438,10 +445,7 @@ async fn run_validators(amount: usize) -> Validators {
                 "all",
             ]);
 
-        let container = image
-            .start()
-            .await
-            .expect("must be able to run bootstrapper node");
+        let container = image.start().await.expect("must be able to run peer node");
 
         let url::Host::Ipv4(host_addr) = container.get_host().await.expect("peer must have a host")
         else {
