@@ -1,9 +1,13 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
-use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256};
+use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use reth_codecs::Compact;
 use reth_primitives_traits::{InMemorySize, serde_bincode_compat::RlpBincode};
 
+/// Tempo block header.
+///
+/// Encoded as `rlp([inner, general_gas_limit])` meaning that any new 
+/// fields added to the inner header will only affect the first list element.
 #[derive(
     Debug,
     Clone,
@@ -19,6 +23,7 @@ use reth_primitives_traits::{InMemorySize, serde_bincode_compat::RlpBincode};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TempoHeader {
+    /// Inner Ethereum [`Header`].
     #[deref]
     #[deref_mut]
     #[cfg_attr(feature = "serde", serde(flatten))]
@@ -125,13 +130,17 @@ impl BlockHeader for TempoHeader {
 
 impl InMemorySize for TempoHeader {
     fn size(&self) -> usize {
-        self.inner.size()
+        let Self {
+            inner,
+            general_gas_limit,
+        } = self;
+        inner.size() + general_gas_limit.size()
     }
 }
 
 impl Sealable for TempoHeader {
     fn hash_slow(&self) -> B256 {
-        self.inner.hash_slow()
+        keccak256(&alloy_rlp::encode(self))
     }
 }
 
