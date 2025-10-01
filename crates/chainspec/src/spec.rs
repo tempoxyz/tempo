@@ -65,6 +65,7 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 
     let genesis_header = SealedHeader::new_unhashed(TempoHeader {
         inner: spec.genesis_header.clone().into_header(),
+        general_gas_limit: 0,
     });
 
     TempoChainSpec {
@@ -87,8 +88,10 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         let inner: ChainSpec = genesis.into();
+        let header = inner.genesis_header.clone().into_header();
         let header = TempoHeader {
-            inner: inner.genesis_header.clone().into_header(),
+            general_gas_limit: header.gas_limit,
+            inner: header,
         };
         Self {
             inner,

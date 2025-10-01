@@ -10,7 +10,6 @@ mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 mod error;
 pub use error::TempoEvmError;
-use tempo_consensus::TempoExtraData;
 pub mod evm;
 use std::{borrow::Cow, sync::Arc};
 
@@ -150,9 +149,6 @@ impl ConfigureEvm for TempoEvmConfig {
         &self,
         block: &'a SealedBlock<Block>,
     ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
-        let general_gas_limit = TempoExtraData::decode(&block.header().extra_data)
-            .map(|data| data.general_gas_limit)
-            .unwrap_or(0);
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash,
@@ -161,7 +157,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 ommers: &[],
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
             },
-            general_gas_limit,
+            general_gas_limit: block.header().general_gas_limit,
         })
     }
 

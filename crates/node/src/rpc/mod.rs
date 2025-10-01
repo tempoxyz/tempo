@@ -1,7 +1,5 @@
-mod header;
 mod request;
 
-pub use header::Header;
 pub use request::TempoTransactionRequest;
 use tempo_revm::TempoTxEnv;
 

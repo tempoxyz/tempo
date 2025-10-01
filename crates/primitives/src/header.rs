@@ -17,11 +17,16 @@ use reth_primitives_traits::{InMemorySize, serde_bincode_compat::RlpBincode};
     RlpDecodable,
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TempoHeader {
     #[deref]
     #[deref_mut]
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub inner: Header,
+
+    /// Non-payment gas limit for the block.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub general_gas_limit: u64,
 }
 
 impl AsRef<Self> for TempoHeader {
@@ -137,12 +142,21 @@ impl Compact for TempoHeader {
     where
         B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
     {
-        self.inner.to_compact(buf)
+        let identifier = self.inner.to_compact(buf);
+        self.general_gas_limit.to_compact(buf);
+        identifier
     }
 
     fn from_compact(buf: &[u8], identifier: usize) -> (Self, &[u8]) {
         let (inner, buf) = Compact::from_compact(buf, identifier);
-        (Self { inner }, buf)
+        let (general_gas_limit, buf) = Compact::from_compact(buf, buf.len());
+        (
+            Self {
+                inner,
+                general_gas_limit,
+            },
+            buf,
+        )
     }
 }
 

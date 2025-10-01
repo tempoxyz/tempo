@@ -49,7 +49,6 @@ alloy-network.workspace = true
 alloy-primitives.workspace = true
 
 clap.workspace = true
-derive_more.workspace = true
 eyre.workspace = true
 tokio.workspace = true
 serde.workspace = true

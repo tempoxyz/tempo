@@ -37,9 +37,8 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
     fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
         self.inner.validate_header(header)?;
 
-        // Decode and validate the extra data
-        let extra_data = TempoExtraData::decode(header.extra_data())?;
-        if extra_data.general_gas_limit != header.gas_limit() / TEMPO_GENERAL_GAS_DIVISOR {
+        // Validate the non-payment gas limit
+        if header.general_gas_limit != header.gas_limit() / TEMPO_GENERAL_GAS_DIVISOR {
             return Err(ConsensusError::Other(
                 "Non-payment gas limit does not match header gas limit".to_string(),
             ));
@@ -111,58 +110,5 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
     }
 }
 
-/// Length of the Tempo extra data suffix.
-pub const TEMPO_EXTRA_DATA_SUFFIX_LENGTH: usize = 13;
-
 /// Divisor for calculating non-payment gas limit.
 pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;
-
-/// Tempo-specific extra data. Encoded as a suffix of [`Header::extra_data`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TempoExtraData {
-    /// Non-payment gas limit.
-    pub general_gas_limit: u64,
-}
-
-impl TempoExtraData {
-    /// Decodes the extra data from the given bytes.
-    ///
-    /// Expected format:
-    /// 0x4e504753 ASCII "NPGS" || uint8 version || uint64 nonPaymentGasLimit || uint64 nonPaymentGasUsed
-    pub fn decode(extra_data: &[u8]) -> Result<Self, ConsensusError> {
-        if extra_data.len() < TEMPO_EXTRA_DATA_SUFFIX_LENGTH {
-            return Err(ConsensusError::Other(
-                "Extra data must be at least 21 bytes length".to_string(),
-            ));
-        }
-
-        let suffix = &extra_data[extra_data.len() - TEMPO_EXTRA_DATA_SUFFIX_LENGTH..];
-        if !suffix.starts_with(b"NPGS") {
-            return Err(ConsensusError::Other(
-                "Invalid extra data suffix".to_string(),
-            ));
-        }
-
-        let version = suffix[4];
-        if version != 1 {
-            return Err(ConsensusError::Other(
-                "Invalid extra data version".to_string(),
-            ));
-        }
-
-        let non_payment_gas_limit = u64::from_be_bytes(suffix[5..13].try_into().unwrap());
-
-        Ok(Self {
-            general_gas_limit: non_payment_gas_limit,
-        })
-    }
-
-    /// Encodes the extra data into a byte array.
-    pub fn encode(&self) -> [u8; TEMPO_EXTRA_DATA_SUFFIX_LENGTH] {
-        let mut out = [0; TEMPO_EXTRA_DATA_SUFFIX_LENGTH];
-        out[..4].copy_from_slice(b"NPGS");
-        out[4] = 1;
-        out[5..13].copy_from_slice(&self.general_gas_limit.to_be_bytes());
-        out
-    }
-}
