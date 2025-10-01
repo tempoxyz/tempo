@@ -17,6 +17,9 @@ concurrency:
   group: build-${{ github.head_ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  RUSTC_WRAPPER: "scchace"
+
 jobs:
   build:
     name: Build
@@ -26,24 +29,11 @@ jobs:
         binary: [tempo, tempo-bench, tempo-commonware, tempo-sidecar]
     steps:
     - uses: actions/checkout@v2
-    - uses: rui314/setup-mold@v1
     - uses: dtolnay/rust-toolchain@stable
-      with:
-        target: x86_64-unknown-linux-gnu
-    - name: Cache
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    - name: Run sccache-cache
-      uses: mozilla-actions/sccache-action@v0.0.9
+    - uses: rui314/setup-mold@v1
+    - uses: mozilla-actions/sccache-action@v0.0.9
     - uses: taiki-e/install-action@just
     - name: Build
-      env:
-        RUSTC_WRAPPER: "sccache"
       run: |
         just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'dev' }}"
     - uses: actions/upload-artifact@v4
