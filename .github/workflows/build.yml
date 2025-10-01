@@ -2,6 +2,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      profile:
+        default: "maxperf"
+        description: "Build profile"
+        type: choice
+        options:
+          - "release"
+          - "maxperf"
+          - "debug"
+          - "profiling"
 
 concurrency:
   group: build-${{ github.head_ref }}
@@ -35,7 +46,7 @@ jobs:
         git: https://github.com/cross-rs/cross
         tag: v0.2.5
     - run: |
-        just build-release ${{ matrix.binary }}
+        just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'release' }}"
     - uses: actions/upload-artifact@v4
       id: binary_upload
       with:
