@@ -2,7 +2,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     transports::http::reqwest::Url,
 };
-use std::time::Duration;
+use std::{net::TcpListener, time::Duration};
 use tempfile::TempDir;
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
@@ -11,18 +11,18 @@ use testcontainers::{
 };
 use tokio::{task::JoinHandle, time::sleep};
 
+fn get_available_port() -> eyre::Result<u16> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    Ok(port)
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_validator_recovery() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Start a single validator node
-    let validator = TempoValidator::new(
-        "validator-1".to_string(),
-        8545,
-        30305,
-        "consensus-config.toml",
-    )
-    .await?;
+    let validator = TempoValidator::new("validator-1".to_string(), "consensus-config.toml").await?;
     validator.wait_for_ready().await?;
 
     println!(
@@ -70,18 +70,15 @@ struct TempoValidator {
     container: ContainerAsync<GenericImage>,
     rpc_url: Url,
     validator_id: String,
-    rpc_port: u16,
-    p2p_port: u16,
+    container_rpc_port: u16,
+    container_p2p_port: u16,
+    host_rpc_port: u16,
+    host_p2p_port: u16,
     _temp_dir: TempDir,
 }
 
 impl TempoValidator {
-    async fn new(
-        validator_id: String,
-        rpc_port: u16,
-        p2p_port: u16,
-        consensus_config: &str,
-    ) -> eyre::Result<Self> {
+    async fn new(validator_id: String, consensus_config: &str) -> eyre::Result<Self> {
         let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/assets")
             .join(consensus_config);
@@ -93,12 +90,17 @@ impl TempoValidator {
         std::fs::copy(&config_path, &config_in_temp)
             .map_err(|e| eyre::eyre!("Failed to copy consensus config: {}", e))?;
 
-        // Create a Docker image for the tempo node
+        // Get dynamic ports
+        let container_rpc_port = get_available_port()?;
+        let container_p2p_port = get_available_port()?;
+        let container_discovery_port = get_available_port()?;
+        let container_auth_port = get_available_port()?;
+
+        // Create a Docker image for the tempo node with dynamic ports
         let image = GenericImage::new("tempo-commonware", "latest")
             .with_wait_for(WaitFor::message_on_stdout("RPC HTTP server started"))
-            .with_exposed_port(ContainerPort::Tcp(8545)) // Default RPC port
-            .with_exposed_port(ContainerPort::Tcp(30303)) // Default P2P port
-            .with_exposed_port(ContainerPort::Tcp(8546)) // Default metrics port
+            .with_exposed_port(ContainerPort::Tcp(container_rpc_port))
+            .with_exposed_port(ContainerPort::Tcp(container_p2p_port))
             .with_env_var("RUST_LOG", "debug")
             .with_mount(testcontainers::core::Mount::bind_mount(
                 config_in_temp.to_string_lossy(),
@@ -111,39 +113,51 @@ impl TempoValidator {
                 "--datadir".to_string(),
                 format!("/tmp/{}-data", validator_id),
                 "--port".to_string(),
-                "30303".to_string(),
+                container_p2p_port.to_string(),
                 "--http".to_string(),
                 "--http.addr".to_string(),
                 "0.0.0.0".to_string(),
                 "--http.port".to_string(),
-                "8545".to_string(),
+                container_rpc_port.to_string(),
                 "--http.api".to_string(),
                 "all".to_string(),
                 "--discovery.port".to_string(),
-                "30306".to_string(),
+                container_discovery_port.to_string(),
                 "--authrpc.port".to_string(),
-                "8558".to_string(),
+                container_auth_port.to_string(),
             ]);
 
         println!(
             "Starting container for validator {} with RPC port {} and P2P port {}",
-            validator_id, rpc_port, p2p_port
+            validator_id, container_rpc_port, container_p2p_port
         );
 
         let container = image.start().await?;
         let host_rpc_port = container
-            .get_host_port_ipv4(8545)
+            .get_host_port_ipv4(container_rpc_port)
             .await
             .map_err(|e| eyre::eyre!("Failed to get host port for RPC: {}", e))?;
 
+        let host_p2p_port = container
+            .get_host_port_ipv4(container_p2p_port)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get host port for P2P: {}", e))?;
+
         let rpc_url: Url = format!("http://127.0.0.1:{}", host_rpc_port).parse()?;
+
+        println!(
+            "Validator {} started - Container RPC: {}, Host RPC: {}, Container P2P: {}, Host P2P: {}",
+            validator_id, container_rpc_port, host_rpc_port, container_p2p_port, host_p2p_port
+        );
 
         let validator = Self {
             container,
             rpc_url,
             validator_id,
-            rpc_port,
-            p2p_port,
+            container_rpc_port,
+            container_p2p_port,
+            host_rpc_port,
+            host_p2p_port,
             _temp_dir: temp_dir,
         };
 
@@ -177,7 +191,7 @@ impl TempoValidator {
     }
 
     fn get_ports(&self) -> (u16, u16) {
-        (self.rpc_port, self.p2p_port)
+        (self.host_rpc_port, self.host_p2p_port)
     }
 }
 
