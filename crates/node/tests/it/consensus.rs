@@ -53,6 +53,22 @@ async fn test_validator_recovery() -> eyre::Result<()> {
     // .await?;
     // ensure_block_production(provider.clone()).await?;
 
+    // Check container logs
+    let logs = validators.bootstrapper.container.stdout(true);
+
+    // Create provider for bootstrapper node
+    let rpc_url = format!("http://{}", validators.bootstrapper.execution_rpc_addr);
+    println!("Connecting to RPC URL: {}", rpc_url);
+    let provider = ProviderBuilder::new().connect_http(rpc_url.parse()?);
+
+    println!("Waiting for consensus to start producing blocks...");
+    for i in 0..10 {
+        if let Ok(block_number) = provider.get_block_number().await {
+            println!("Block number at attempt {}: {}", i + 1, block_number);
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
     Ok(())
 }
 
@@ -528,7 +544,7 @@ fn create_pre_configs(peers: usize) -> Vec<tempo_commonware_node_config::Config>
         .map(|cfg| {
             (
                 cfg.signer.public_key(),
-                "0.0.0.0:{CONSENSUS_P2P_PORT}".to_string(),
+                format!("0.0.0.0:{}", CONSENSUS_P2P_PORT),
             )
         })
         .collect::<indexmap::IndexMap<_, _>>();
