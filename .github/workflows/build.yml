@@ -39,13 +39,13 @@ jobs:
           ~/.cargo/git
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Run sccache-cache
+      uses: mozilla-actions/sccache-action@v0.0.9
     - uses: taiki-e/install-action@just
-    - uses: taiki-e/cache-cargo-install-action@v2
+    - name: Build
       with:
-        tool: cross
-        git: https://github.com/cross-rs/cross
-        tag: v0.2.5
-    - run: |
+        RUSTC_WRAPPER: "true"
+      run: |
         just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'release' }}"
     - uses: actions/upload-artifact@v4
       id: binary_upload
