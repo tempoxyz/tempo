@@ -29,10 +29,3 @@ reth-transaction-pool.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
 alloy-eips.workspace = true
 tokio.workspace = true
-
-[features]
-default = []
-asm-keccak = [
-	"alloy-primitives/asm-keccak",
-	"tempo-precompiles/asm-keccak"
-]

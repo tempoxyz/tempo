@@ -32,11 +32,4 @@ derive_more.workspace = true
 tracing.workspace = true
 
 [features]
-default = []
 rpc = ["dep:reth-rpc-eth-api"]
-asm-keccak = [
-	"alloy-primitives/asm-keccak",
-	"tempo-precompiles/asm-keccak",
-	"tempo-revm/asm-keccak",
-	"tempo-chainspec/asm-keccak"
-]

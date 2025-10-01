@@ -21,9 +21,3 @@ alloy-genesis.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-
-[features]
-default = []
-asm-keccak = [
-	"alloy-primitives/asm-keccak"
-]

@@ -37,13 +37,3 @@ alloy-rlp = "0.3"
 
 metrics.workspace = true
 tracing.workspace = true
-
-[features]
-default = []
-asm-keccak = [
-	"alloy-primitives/asm-keccak",
-	"tempo-precompiles/asm-keccak",
-	"tempo-evm/asm-keccak",
-	"tempo-chainspec/asm-keccak",
-	"tempo-transaction-pool/asm-keccak"
-]

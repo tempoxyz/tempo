@@ -71,21 +71,6 @@ rand = "0.9.2"
 futures = "0.3"
 test-case.workspace = true
 
-[features]
-default = []
-asm-keccak = [
-	"reth-node-core/asm-keccak",
-	"reth-node-ethereum/asm-keccak",
-	"alloy/asm-keccak",
-	"alloy-primitives/asm-keccak",
-	"tempo-precompiles/asm-keccak",
-	"tempo-revm/asm-keccak",
-	"tempo-payload-builder/asm-keccak",
-	"tempo-evm/asm-keccak",
-	"tempo-chainspec/asm-keccak",
-	"tempo-transaction-pool/asm-keccak"
-]
-
 [build-dependencies]
 vergen.workspace = true
 vergen-git2.workspace = true
