@@ -41,8 +41,7 @@ use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::IFeeManager::executeBlockCall};
 use tempo_primitives::{
-    TempoPrimitives, TempoTxEnvelope,
-    transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+    transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE}, TempoHeader, TempoPrimitives, TempoTxEnvelope
 };
 use tempo_transaction_pool::{
     TempoTransactionPool,
@@ -129,7 +128,7 @@ where
 
     fn build_empty_payload(
         &self,
-        config: PayloadConfig<Self::Attributes>,
+        config: PayloadConfig<Self::Attributes, TempoHeader>,
     ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
         self.build_payload(
             BuildArguments::new(

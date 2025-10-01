@@ -11,11 +11,14 @@ use reth_primitives_traits::NodePrimitives;
 pub mod transaction;
 pub use transaction::{FEE_TOKEN_TX_TYPE_ID, TempoTxEnvelope, TempoTxType, TxFeeToken};
 
+mod header;
+pub use header::TempoHeader;
+
 /// Tempo block.
-pub type Block = alloy_consensus::Block<TempoTxEnvelope>;
+pub type Block = alloy_consensus::Block<TempoTxEnvelope, TempoHeader>;
 
 /// Tempo block body.
-pub type BlockBody = alloy_consensus::BlockBody<TempoTxEnvelope>;
+pub type BlockBody = alloy_consensus::BlockBody<TempoTxEnvelope, TempoHeader>;
 
 /// Tempo receipt.
 pub type TempoReceipt<L = Log> = EthereumReceipt<TempoTxType, L>;
@@ -27,7 +30,7 @@ pub struct TempoPrimitives;
 
 impl NodePrimitives for TempoPrimitives {
     type Block = Block;
-    type BlockHeader = Header;
+    type BlockHeader = TempoHeader;
     type BlockBody = BlockBody;
     type SignedTx = TempoTxEnvelope;
     type Receipt = TempoReceipt;

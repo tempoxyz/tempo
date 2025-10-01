@@ -23,9 +23,9 @@ use reth_evm::{
     eth::EthBlockExecutionCtx,
     revm::{Inspector, database::State},
 };
-use reth_primitives_traits::{Header, SealedBlock, SealedHeader, SignedTransaction};
+use reth_primitives_traits::{SealedBlock, SealedHeader, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
-use tempo_primitives::{Block, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
@@ -81,7 +81,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
     type Receipt = TempoReceipt;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
-        self.inner.evm_factory()
+        self.inner.executor_factory.evm_factory()
     }
 
     fn create_executor<'a, DB, I>(
@@ -112,15 +112,13 @@ impl ConfigureEvm for TempoEvmConfig {
         &self.block_assembler
     }
 
-    fn evm_env(&self, header: &Header) -> Result<EvmEnv, Self::Error> {
-        self.inner.evm_env(header).map_err(|_| {
-            TempoEvmError::InvalidEvmConfig("failed to create EVM environment".to_string())
-        })
+    fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnv, Self::Error> {
+        self.inner.evm_env(header)
     }
 
     fn next_evm_env(
         &self,
-        parent: &Header,
+        parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnv, Self::Error> {
         self.inner
@@ -143,7 +141,8 @@ impl ConfigureEvm for TempoEvmConfig {
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash,
                 parent_beacon_block_root: block.header().parent_beacon_block_root,
-                ommers: &block.body().ommers,
+                // no ommers in tempo
+                ommers: &[],
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
             },
             general_gas_limit,
@@ -152,7 +151,7 @@ impl ConfigureEvm for TempoEvmConfig {
 
     fn context_for_next_block(
         &self,
-        parent: &SealedHeader,
+        parent: &SealedHeader<TempoHeader>,
         attributes: Self::NextBlockEnvCtx,
     ) -> Result<TempoBlockExecutionCtx<'_>, Self::Error> {
         Ok(TempoBlockExecutionCtx {

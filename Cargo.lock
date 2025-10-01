@@ -13737,7 +13737,6 @@ dependencies = [
 name = "tempo-chainspec"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
  "alloy-eips",
  "alloy-genesis",
  "alloy-primitives",
@@ -13748,6 +13747,7 @@ dependencies = [
  "reth-network-peers",
  "serde_json",
  "tempo-contracts",
+ "tempo-primitives",
 ]
 
 [[package]]
@@ -14042,7 +14042,9 @@ dependencies = [
  "alloy-rpc-types-eth",
  "alloy-serde",
  "arbitrary",
+ "derive_more",
  "modular-bitfield",
+ "reth-cli-commands",
  "reth-codecs",
  "reth-db-api",
  "reth-ethereum-primitives",

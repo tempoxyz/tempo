@@ -8,9 +8,11 @@ use reth_evm::{
     execute::{BlockAssembler, BlockAssemblerInput},
 };
 use reth_evm_ethereum::EthBlockAssembler;
+use reth_primitives_traits::SealedHeader;
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_EXTRA_DATA_SUFFIX_LENGTH, TempoExtraData};
+use tempo_primitives::TempoHeader;
 
 /// Assembler for Tempo blocks.
 #[derive(Debug, Clone)]
@@ -31,7 +33,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
 
     fn assemble_block(
         &self,
-        input: BlockAssemblerInput<'_, '_, TempoEvmConfig>,
+        input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
     ) -> Result<Self::Block, BlockExecutionError> {
         let BlockAssemblerInput {
             evm_env,
@@ -49,13 +51,15 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             ..
         } = input;
 
+        let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
+
         // Delegate block building to the inner assembler
         let mut block = self.inner.assemble_block(BlockAssemblerInput::<
             EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
         >::new(
             evm_env,
             inner,
-            parent,
+            &parent,
             transactions,
             output,
             bundle_state,
@@ -81,6 +85,6 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
         // set correct extra data
         block.header.extra_data = [prefix, suffix.into()].concat().into();
 
-        Ok(block)
+        Ok(block.map_header(|inner| TempoHeader { inner }))
     }
 }

@@ -13,6 +13,14 @@ workspace = true
 [dependencies]
 tempo-precompiles.workspace = true
 
+# Reth
+reth-cli-commands = { workspace = true, optional = true }
+reth-db-api = { workspace = true, optional = true }
+reth-ethereum-primitives.workspace = true
+reth-primitives-traits.workspace = true
+reth-codecs = { workspace = true, optional = true }
+reth-rpc-convert = { workspace = true, optional = true }
+
 # Alloy
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
@@ -22,15 +30,9 @@ alloy-serde = { workspace = true, optional = true }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 alloy-network = { workspace = true, optional = true }
 
-# Reth
-reth-db-api = { workspace = true, optional = true }
-reth-ethereum-primitives.workspace = true
-reth-primitives-traits.workspace = true
-reth-codecs = { workspace = true, optional = true }
-reth-rpc-convert = { workspace = true, optional = true }
-
 # Utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }
+derive_more.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 modular-bitfield = { version = "0.11.2", optional = true }
 
@@ -39,7 +41,7 @@ reth-codecs.workspace = true
 test-fuzz.workspace = true
 
 [features]
-default = ["serde", "reth-codec", "serde-bincode-compat", "rpc"]
+default = ["serde", "reth-codec", "serde-bincode-compat", "rpc", "cli"]
 serde = [
 	"dep:serde",
 	"dep:alloy-serde",
@@ -85,3 +87,4 @@ rpc = [
 	"dep:reth-rpc-convert",
 	"dep:alloy-network",
 ]
+cli = ["dep:reth-cli-commands"]

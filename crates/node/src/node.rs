@@ -31,7 +31,7 @@ use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
 use tempo_payload_builder::TempoPayloadBuilder;
-use tempo_primitives::{TempoPrimitives, TempoTxEnvelope, TempoTxType};
+use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
 
 /// Type configuration for a regular Ethereum node.
@@ -76,7 +76,7 @@ impl TempoNode {
 impl NodeTypes for TempoNode {
     type Primitives = TempoPrimitives;
     type ChainSpec = TempoChainSpec;
-    type Storage = EthStorage<TempoTxEnvelope>;
+    type Storage = EthStorage<TempoTxEnvelope, TempoHeader>;
     type Payload = TempoPayloadTypes;
 }
 
@@ -189,11 +189,11 @@ where
 }
 
 impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
-    type RpcBlock = alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>>;
+    type RpcBlock = alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
     fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> tempo_primitives::Block {
         rpc_block
-            .into_consensus()
+            .into_consensus_block()
             .map_transactions(|tx| tx.into_inner())
     }
 

@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy_consensus::{BlockHeader, Header};
+use alloy_consensus::BlockHeader;
 use alloy_evm::block::BlockExecutionResult;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
@@ -15,7 +15,7 @@ use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_primitives::{Block, BlockBody, TempoPrimitives, TempoReceipt};
+use tempo_primitives::{Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt};
 
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
@@ -33,8 +33,8 @@ impl TempoConsensus {
     }
 }
 
-impl HeaderValidator<Header> for TempoConsensus {
-    fn validate_header(&self, header: &SealedHeader) -> Result<(), ConsensusError> {
+impl HeaderValidator<TempoHeader> for TempoConsensus {
+    fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
         self.inner.validate_header(header)?;
 
         // Decode and validate the extra data
@@ -50,8 +50,8 @@ impl HeaderValidator<Header> for TempoConsensus {
 
     fn validate_header_against_parent(
         &self,
-        header: &SealedHeader,
-        parent: &SealedHeader,
+        header: &SealedHeader<TempoHeader>,
+        parent: &SealedHeader<TempoHeader>,
     ) -> Result<(), ConsensusError> {
         validate_against_parent_hash_number(header.header(), parent)?;
 
@@ -81,7 +81,7 @@ impl Consensus<Block> for TempoConsensus {
     fn validate_body_against_header(
         &self,
         body: &BlockBody,
-        header: &SealedHeader,
+        header: &SealedHeader<TempoHeader>,
     ) -> Result<(), Self::Error> {
         Consensus::<Block>::validate_body_against_header(&self.inner, body, header)
     }

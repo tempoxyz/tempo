@@ -5,6 +5,7 @@ use reth_primitives_traits::{AlloyBlockHeader, SealedHeader};
 use reth_rpc_convert::transaction::FromConsensusHeader;
 use serde::{Deserialize, Serialize};
 use tempo_consensus::TempoExtraData;
+use tempo_primitives::TempoHeader;
 
 /// Tempo RPC block header
 #[derive(Debug, Clone, derive_more::Deref, Serialize, Deserialize)]
@@ -13,15 +14,15 @@ pub struct Header {
     /// Inner Ethereum header.
     #[deref]
     #[serde(flatten)]
-    pub inner: alloy_rpc_types_eth::Header,
+    pub inner: alloy_rpc_types_eth::Header<TempoHeader>,
     /// Non-payment gas limit.
     #[serde(with = "alloy::serde::quantity")]
     pub general_gas_limit: u64,
 }
 
-impl FromConsensusHeader<tempo_primitives::Header> for Header {
+impl FromConsensusHeader<TempoHeader> for Header {
     fn from_consensus_header(
-        header: SealedHeader<tempo_primitives::Header>,
+        header: SealedHeader<TempoHeader>,
         block_size: usize,
     ) -> Self {
         let extra_data = TempoExtraData::decode(&header.extra_data);

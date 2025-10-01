@@ -1,4 +1,6 @@
 use reth_evm::{NextBlockEnvAttributes, eth::EthBlockExecutionCtx};
+#[cfg(feature = "rpc")]
+use tempo_primitives::TempoHeader;
 
 /// Execution context for Tempo block.
 #[derive(Debug, Clone, derive_more::Deref)]
@@ -21,10 +23,10 @@ pub struct TempoNextBlockEnvAttributes {
 }
 
 #[cfg(feature = "rpc")]
-impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<alloy_consensus::Header>
+impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<TempoHeader>
     for TempoNextBlockEnvAttributes
 {
-    fn build_pending_env(parent: &crate::SealedHeader) -> Self {
+    fn build_pending_env(parent: &crate::SealedHeader<TempoHeader>) -> Self {
         Self {
             inner: NextBlockEnvAttributes::build_pending_env(parent),
             general_gas_limit: parent.gas_limit / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR,

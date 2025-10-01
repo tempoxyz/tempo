@@ -1,4 +1,3 @@
-use alloy_consensus::Header;
 use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
@@ -7,10 +6,11 @@ use reth_chainspec::{
     EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks, Head,
 };
 use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
-use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
+use reth_ethereum::{evm::primitives::eth::spec::EthExecutorSpec, primitives::SealedHeader};
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+use tempo_primitives::TempoHeader;
 
 pub const TEMPO_BASE_FEE: u64 = 44;
 
@@ -29,10 +29,7 @@ pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
         "adagio" => ADAGIO.clone(),
         "dev" => DEV.clone(),
-        _ => {
-            let spec: ChainSpec = parse_genesis(s)?.into();
-            TempoChainSpec { inner: spec }.into()
-        }
+        _ => TempoChainSpec::from_genesis(parse_genesis(s)?).into(),
     })
 }
 
@@ -66,7 +63,15 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .alloc
         .insert(DEFAULT_7702_DELEGATE_ADDRESS, default_7702_alloc.clone());
 
-    TempoChainSpec { inner: spec }.into()
+    let genesis_header = SealedHeader::new_unhashed(TempoHeader {
+        inner: spec.genesis_header.clone().into_header(),
+    });
+
+    TempoChainSpec {
+        inner: spec,
+        genesis_header,
+    }
+    .into()
 });
 
 /// Tempo chain spec type.
@@ -74,13 +79,21 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 pub struct TempoChainSpec {
     /// [`ChainSpec`].
     pub inner: ChainSpec,
+    /// Genesis header.
+    pub genesis_header: SealedHeader<TempoHeader>,
 }
 
 impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         let inner: ChainSpec = genesis.into();
-        Self { inner }
+        let header = TempoHeader {
+            inner: inner.genesis_header.clone().into_header(),
+        };
+        Self {
+            inner,
+            genesis_header: SealedHeader::new_unhashed(header),
+        }
     }
 }
 
@@ -107,7 +120,7 @@ impl Hardforks for TempoChainSpec {
 }
 
 impl EthChainSpec for TempoChainSpec {
-    type Header = Header;
+    type Header = TempoHeader;
 
     fn base_fee_params_at_timestamp(&self, timestamp: u64) -> BaseFeeParams {
         self.inner.base_fee_params_at_timestamp(timestamp)
@@ -146,14 +159,14 @@ impl EthChainSpec for TempoChainSpec {
     }
 
     fn genesis_header(&self) -> &Self::Header {
-        self.inner.genesis_header()
+        &self.genesis_header
     }
 
     fn final_paris_total_difficulty(&self) -> Option<U256> {
         self.inner.get_final_paris_total_difficulty()
     }
 
-    fn next_block_base_fee(&self, _parent: &Header, _target_timestamp: u64) -> Option<u64> {
+    fn next_block_base_fee(&self, _parent: &TempoHeader, _target_timestamp: u64) -> Option<u64> {
         Some(TEMPO_BASE_FEE)
     }
 }
