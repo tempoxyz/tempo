@@ -1,3 +1,4 @@
+name: Build binaries
 on:
   push:
     branches: [main]

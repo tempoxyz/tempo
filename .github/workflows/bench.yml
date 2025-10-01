@@ -1,4 +1,4 @@
-name: bench.yml
+name: Benchmark single node
 on:
   workflow_dispatch:
 
