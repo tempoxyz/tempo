@@ -88,8 +88,6 @@ impl TempoValidator {
 
         let temp_dir =
             TempDir::new().map_err(|e| eyre::eyre!("Failed to create temp directory: {}", e))?;
-        let datadir = temp_dir.path().to_string_lossy();
-
         // Copy consensus config to temp directory for mounting
         let config_in_temp = temp_dir.path().join("consensus-config.toml");
         std::fs::copy(&config_path, &config_in_temp)
@@ -97,11 +95,15 @@ impl TempoValidator {
 
         // Create a Docker image for the tempo node
         let image = GenericImage::new("tempo-commonware", "latest")
-            .with_wait_for(WaitFor::message_on_stdout("RPC Server Started"))
+            .with_wait_for(WaitFor::message_on_stdout("RPC HTTP server started"))
             .with_exposed_port(ContainerPort::Tcp(8545)) // Default RPC port
             .with_exposed_port(ContainerPort::Tcp(30303)) // Default P2P port
             .with_exposed_port(ContainerPort::Tcp(8546)) // Default metrics port
             .with_env_var("RUST_LOG", "debug")
+            .with_mount(testcontainers::core::Mount::bind_mount(
+                config_in_temp.to_string_lossy(),
+                "/tmp/consensus-config.toml",
+            ))
             .with_cmd(vec![
                 "node".to_string(),
                 "--consensus-config".to_string(),
