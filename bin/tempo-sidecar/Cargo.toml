@@ -8,7 +8,10 @@ license.workspace = true
 [dependencies]
 clap.workspace = true
 alloy = { workspace = true, default-features = false, features = ["network", "rpc", "rpc-types", "transports", "providers", "reqwest-rustls-tls", "signers", "signer-local"] }
+dashmap = "6.1"
 eyre.workspace = true
+futures.workspace = true
+hex = "0.4"
 itertools = "0.14.0"
 tempo-precompiles.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
