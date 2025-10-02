@@ -26,8 +26,6 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
-        with:
-          cache-on-failure: true
       - name: Run tests
         run: cargo nextest run
 
