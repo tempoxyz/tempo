@@ -80,6 +80,7 @@ arbitrary = [
 	"reth-primitives-traits/arbitrary",
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
+	"reth-cli-commands?/arbitrary"
 ]
 rpc = [
 	"reth-ethereum-primitives/rpc",
