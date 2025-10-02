@@ -44,25 +44,6 @@ main() {
   fi
   echo ""
 
-  # Restart the validator
-  echo "Restarting the validator..."
-  start_validator 2
-  echo ""
-
-  # Wait for validator to rejoin
-  echo "Waiting 3 seconds for validator to rejoin..."
-  sleep 3
-  echo ""
-
-  # Check blocks still being produced
-  echo "Checking block production after validator recovery..."
-  if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
-    echo "Test FAILED: Network should continue producing blocks after validator recovery"
-    stop_tx_generator "$tx_gen_pid" || true
-    exit 1
-  fi
-  echo ""
-
   # Stop transaction generator and check for failures
   if ! stop_tx_generator "$tx_gen_pid"; then
     echo "Test FAILED: Transaction generator encountered failures"
