@@ -221,9 +221,12 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let token_id = address_to_token_id_unchecked(&user_token);
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
-        // Ensure that user is authorized to interact with the token
+        // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token
             .ensure_user_authorized(&user)
+            .map_err(|_| FeeManagerError::token_policy_forbids())?;
+        tip20_token
+            .ensure_user_authorized(&self.contract_address)
             .map_err(|_| FeeManagerError::token_policy_forbids())?;
 
         tip20_token
@@ -322,19 +325,23 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         if !collected_fees.is_zero() {
             let token_id = address_to_token_id_unchecked(&validator_token);
             let mut token = TIP20Token::new(token_id, self.storage);
-            token
-                .transfer(
-                    &self.contract_address,
-                    ITIP20::transferCall {
-                        to: self.beneficiary,
-                        amount: collected_fees,
-                    },
-                )
-                .map_err(|_| {
-                    IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                        IFeeManager::InsufficientFeeTokenBalance {},
+
+            // If FeeManager or validator are blacklisted, we are not transferring any fees
+            if token.is_transfer_authorized(&self.contract_address, &self.beneficiary) {
+                token
+                    .transfer(
+                        &self.contract_address,
+                        ITIP20::transferCall {
+                            to: self.beneficiary,
+                            amount: collected_fees,
+                        },
                     )
-                })?;
+                    .map_err(|_| {
+                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                            IFeeManager::InsufficientFeeTokenBalance {},
+                        )
+                    })?;
+            }
 
             self.clear_collected_fees();
         }

@@ -755,20 +755,29 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    /// Ensures the user is authorized to transfer the token.
-    pub fn ensure_user_authorized(&mut self, user: &Address) -> Result<(), TIP20Error> {
+    /// Checks if the user is authorized to transfer the token.
+    pub fn is_user_authorized(&mut self, user: &Address) -> bool {
         let transfer_policy_id = self.transfer_policy_id();
-        let mut registry = TIP403Registry::new(self.storage);
 
         // Check if 'from' address is authorized
-        if !registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+        TIP403Registry::new(self.storage).is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: transfer_policy_id,
             user: *user,
-        }) {
+        })
+    }
+
+    /// Ensures the user is authorized to transfer the token.
+    pub fn ensure_user_authorized(&mut self, user: &Address) -> Result<(), TIP20Error> {
+        if !self.is_user_authorized(user) {
             return Err(TIP20Error::policy_forbids());
         }
 
         Ok(())
+    }
+
+    /// Checks if the transfer is authorized.
+    pub fn is_transfer_authorized(&mut self, from: &Address, to: &Address) -> bool {
+        self.is_user_authorized(from) && self.is_user_authorized(to)
     }
 
     fn ensure_transfer_authorized(
