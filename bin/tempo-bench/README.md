@@ -201,7 +201,7 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
 ### 3. Run max TPS benchmark
 
 ```bash
-tempo-bench run-max-tps --config configs/default.toml
+tempo-bench run-max-tps --duration 15 --tps 20000
 ```
 
 For the most accurate results, make sure to clear the datadir after each run.
