@@ -4782,27 +4782,6 @@ dependencies = [
 
 [[package]]
 name = "governor"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0746aa765db78b521451ef74221663b57ba595bf83f75d0ce23cc09447c8139f"
-dependencies = [
- "cfg-if",
- "dashmap 6.1.0",
- "futures-sink",
- "futures-timer",
- "futures-util",
- "no-std-compat",
- "nonzero_ext",
- "parking_lot",
- "portable-atomic",
- "quanta",
- "rand 0.8.5",
- "smallvec",
- "spinning_top",
-]
-
-[[package]]
-name = "governor"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "444405bbb1a762387aa22dd569429533b54a1d8759d35d3b64cb39b0293eaa19"
@@ -14158,15 +14137,9 @@ dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
- "camino",
  "clap",
- "commonware-cryptography",
- "commonware-utils",
  "derive_more",
  "eyre",
- "futures",
- "governor 0.7.0",
- "indexmap 2.11.4",
  "rand 0.8.5",
  "reth-chainspec",
  "reth-e2e-test-utils",
@@ -14192,8 +14165,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tempo-chainspec",
- "tempo-commonware-node-config",
- "tempo-commonware-node-cryptography",
  "tempo-consensus",
  "tempo-contracts",
  "tempo-evm",
