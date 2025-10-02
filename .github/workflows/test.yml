@@ -4,20 +4,24 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
 
 jobs:
   test:
     name: test
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
@@ -25,14 +29,14 @@ jobs:
         with:
           cache-on-failure: true
       - name: Run tests
-        run: cargo nextest run --verbose
+        run: cargo nextest run
 
   msrv:
     name: MSRV
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.88" # MSRV
@@ -45,7 +49,7 @@ jobs:
 
   test-success:
     name: test success
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-latest-4
     if: always()
     needs:
       - test

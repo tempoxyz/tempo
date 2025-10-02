@@ -1,8 +1,11 @@
 name: Build binaries
+
+# TODO: Vercel requires that the repo is either open sourced or contributors have deployment permissions.
+# This should be uncommented when the repo is public.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # push:
+  #   branches: [main]
+  # pull_request:
   workflow_dispatch:
     inputs:
       profile:
@@ -24,59 +27,57 @@ env:
 jobs:
   build:
     name: Build
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: depot-ubuntu-latest-16
     strategy:
       matrix:
         binary: [tempo, tempo-bench, tempo-commonware, tempo-sidecar]
     steps:
-    - uses: actions/checkout@v2
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: rui314/setup-mold@v1
-    - uses: mozilla-actions/sccache-action@v0.0.9
-    - uses: taiki-e/install-action@just
-    - name: Build
-      run: |
-        just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'dev' }}"
-    - uses: actions/upload-artifact@v4
-      id: binary_upload
-      with:
-        if-no-files-found: 'error'
-        name: ${{ matrix.binary }}
-        path: target/${{ inputs.profile || 'debug' }}/${{ matrix.binary }}
-    - uses: cloudposse/github-action-matrix-outputs-write@v1
-      id: out
-      with:
-        matrix-step-name: ${{ github.job }}
-        matrix-key: ${{ matrix.binary }}
-        outputs: |-
-          artifact_id: ${{ steps.binary_upload.outputs.artifact-id }}
-  # TODO: Vercel requires that the repo is either open sourced or contributors have deployment permissions. 
-  # This should be uncommented when the repo is public.
-  # deploy:
-  #   name: Deploy to devnet-1
-  #   runs-on: depot-ubuntu-24.04-4
-  #   needs: build
-  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-  #   steps:
-  #   - uses: actions/checkout@v2
-  #   - uses: taiki-e/install-action@just
-  #   - name: Install Ansible
-  #     shell: bash
-  #     run: |
-  #       sudo apt update
-  #       sudo apt install -y ansible
-  #   - name: Export vault password file
-  #     working-directory: contrib/infra/ansible
-  #     env:
-  #       ANSIBLE_VAULT_PASSWORD: "${{secrets.ANSIBLE_VAULT_PASSWORD}}"
-  #     run: |
-  #       echo -e "$ANSIBLE_VAULT_PASSWORD" >> vault.key
-  #   - uses: cloudposse/github-action-matrix-outputs-read@v1
-  #     id: read
-  #     with:
-  #       matrix-step-name: tempo
-  #   - name: Run playbook
-  #     working-directory: contrib/infra/ansible
-  #     run: |
-  #       just dependencies
-  #       just run-playbook-ci devnet devnet-1 "tempo_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{ fromJson(steps.read.outputs.result).artifact_id.tempo }}/zip' tempo_sidecar_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{ fromJson(steps.read.outputs.result).artifact_id.tempo_sidecar }}/zip'"
+      - uses: actions/checkout@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: taiki-e/install-action@just
+      - name: Build
+        run: just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'dev' }}"
+      - uses: actions/upload-artifact@v4
+        id: binary_upload
+        with:
+          if-no-files-found: "error"
+          name: ${{ matrix.binary }}
+          path: target/${{ inputs.profile || 'debug' }}/${{ matrix.binary }}
+      - uses: cloudposse/github-action-matrix-outputs-write@v1
+        id: out
+        with:
+          matrix-step-name: ${{ github.job }}
+          matrix-key: ${{ matrix.binary }}
+          outputs: |-
+            artifact_id: ${{ steps.binary_upload.outputs.artifact-id }}
+
+  deploy:
+    name: Deploy to devnet-1
+    runs-on: depot-ubuntu-latest-4
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v2
+      - uses: taiki-e/install-action@just
+      - name: Install Ansible
+        shell: bash
+        run: |
+          sudo apt update
+          sudo apt install -y ansible
+      - name: Export vault password file
+        working-directory: contrib/infra/ansible
+        env:
+          ANSIBLE_VAULT_PASSWORD: "${{secrets.ANSIBLE_VAULT_PASSWORD}}"
+        run: |
+          echo -e "$ANSIBLE_VAULT_PASSWORD" >> vault.key
+      - uses: cloudposse/github-action-matrix-outputs-read@v1
+        id: read
+        with:
+          matrix-step-name: tempo
+      - name: Run playbook
+        working-directory: contrib/infra/ansible
+        run: |
+          just dependencies
+          just run-playbook-ci devnet devnet-1 "tempo_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{ fromJson(steps.read.outputs.result).artifact_id.tempo }}/zip' tempo_sidecar_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{ fromJson(steps.read.outputs.result).artifact_id.tempo_sidecar }}/zip'"

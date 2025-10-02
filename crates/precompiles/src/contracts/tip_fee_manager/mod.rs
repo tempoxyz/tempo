@@ -257,7 +257,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
                 })?;
         }
 
-        // Execute fee swap and track collecte fees
+        // Execute fee swap and track collect fees
         if !actual_used.is_zero() {
             let validator_token = self.get_validator_token();
 
