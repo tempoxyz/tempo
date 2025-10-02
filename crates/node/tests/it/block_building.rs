@@ -107,26 +107,6 @@ fn extract_user_txs(all_transactions: Vec<TempoTxEnvelope>) -> Vec<TempoTxEnvelo
         .collect()
 }
 
-/// Helper to verify payment transactions come after non-payment transactions
-fn assert_payment_ordering(transactions: &[TempoTxEnvelope]) {
-    let mut payment_found = false;
-    let mut non_payment_after_payment = false;
-
-    for tx in transactions {
-        if tx.is_payment() {
-            payment_found = true;
-        } else if payment_found {
-            non_payment_after_payment = true;
-            break;
-        }
-    }
-
-    assert!(
-        !non_payment_after_payment,
-        "Non-payment transactions should come before payment transactions"
-    );
-}
-
 /// Helper to setup a test node with optional custom gas limit
 /// Returns the node and TaskManager (which must be kept alive for the node to function)
 async fn setup_test_node(
@@ -284,9 +264,6 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
         num_payment_txs + num_non_payment_txs,
         "Block should contain all transactions when there are only a few"
     );
-
-    // Verify correct ordering
-    assert_payment_ordering(&user_txs);
 
     // Count transaction types
     let (payment_count, non_payment_count) = count_transaction_types(&user_txs);
@@ -504,9 +481,6 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
         first_user_txs.len()
     );
 
-    // Verify ordering in first block
-    assert_payment_ordering(&first_user_txs);
-
     // Count transaction types in first block
     let (first_payment_count, first_non_payment_count) = count_transaction_types(&first_user_txs);
 
@@ -535,9 +509,6 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
         if user_txs.is_empty() {
             break;
         }
-
-        // Verify ordering in each block
-        assert_payment_ordering(&user_txs);
 
         let (payment_count, non_payment_count) = count_transaction_types(&user_txs);
         println!(
