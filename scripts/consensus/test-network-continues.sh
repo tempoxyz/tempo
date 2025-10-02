@@ -57,9 +57,33 @@ start_validator() {
   echo "  Started tempo-validator-$validator_id"
 }
 
+# Function to start background transaction generation
+start_tx_generator() {
+  local rpc_url="$1"
+  local tps="${2:-2}"
+  
+  echo "Starting transaction generator (${tps} TPS)..."
+  "$SCRIPT_DIR/tx-generator.sh" --url "$rpc_url" --tps "$tps" --duration 999999 >/dev/null 2>&1 &
+  local tx_gen_pid=$!
+  echo "  Transaction generator started (PID: $tx_gen_pid)"
+  echo "$tx_gen_pid"
+}
+
+# Function to stop transaction generator
+stop_tx_generator() {
+  local tx_gen_pid="$1"
+  if [ -n "$tx_gen_pid" ] && kill -0 "$tx_gen_pid" 2>/dev/null; then
+    echo "Stopping transaction generator..."
+    kill "$tx_gen_pid" 2>/dev/null || true
+    wait "$tx_gen_pid" 2>/dev/null || true
+    echo "  Transaction generator stopped"
+  fi
+}
+
 # Main test
 main() {
   local rpc_url="http://localhost:8545"
+  local tx_gen_pid=""
 
   # Start the network
   echo "Starting consensus network..."
@@ -79,6 +103,10 @@ main() {
   fi
   echo ""
 
+  # Start transaction generator
+  tx_gen_pid=$(start_tx_generator "$rpc_url" 2)
+  echo ""
+
   # Stop one validator (validator-2)
   echo "Stopping one validator..."
   stop_validator 2
@@ -88,6 +116,7 @@ main() {
   echo "Checking block production with one validator down..."
   if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
     echo "Test FAILED: Network should continue producing blocks with one validator down"
+    stop_tx_generator "$tx_gen_pid"
     exit 1
   fi
   echo ""
@@ -106,8 +135,13 @@ main() {
   echo "Checking block production after validator recovery..."
   if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
     echo "Test FAILED: Network should continue producing blocks after validator recovery"
+    stop_tx_generator "$tx_gen_pid"
     exit 1
   fi
+  echo ""
+
+  # Stop transaction generator
+  stop_tx_generator "$tx_gen_pid"
   echo ""
 
   echo "Test PASSED: Validator recovery working correctly"

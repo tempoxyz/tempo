@@ -5,7 +5,9 @@ listen_port = 8000
 metrics_port = 8001
 storage_directory = "/tmp/consensus"
 worker_threads = 3
-bootstrappers = ["0x1bc6dd47289a73e859502db4233ebcc36976cedf33f4a45635f7cd6a983f9a7b"]
+bootstrappers = [
+  "0x1bc6dd47289a73e859502db4233ebcc36976cedf33f4a45635f7cd6a983f9a7b",
+]
 message_backlog = 16384
 mailbox_size = 16384
 deque_size = 10
