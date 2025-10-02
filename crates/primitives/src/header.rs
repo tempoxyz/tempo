@@ -140,7 +140,7 @@ impl InMemorySize for TempoHeader {
 
 impl Sealable for TempoHeader {
     fn hash_slow(&self) -> B256 {
-        keccak256(&alloy_rlp::encode(self))
+        keccak256(alloy_rlp::encode(self))
     }
 }
 
