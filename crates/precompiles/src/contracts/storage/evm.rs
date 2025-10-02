@@ -1,6 +1,6 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
-use reth_evm::revm::state::Bytecode;
+use revm::state::Bytecode;
 
 use crate::contracts::storage::{AccountInfo, StorageProvider};
 
@@ -69,12 +69,12 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::{address, b256, bytes};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         revm::context::{ContextTr, Host},
     };
-    use alloy_primitives::{address, b256, bytes};
-    use reth_evm::revm::{
+    use revm::{
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
     };

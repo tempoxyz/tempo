@@ -1,9 +1,11 @@
 [package]
 name = "tempo-node"
+
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
@@ -78,8 +80,8 @@ vergen-git2.workspace = true
 [features]
 default = []
 asm-keccak = [
-	"alloy/asm-keccak",
-	"alloy-primitives/asm-keccak",
-	"reth-node-core/asm-keccak",
-	"reth-node-ethereum/asm-keccak"
+  "alloy/asm-keccak",
+  "alloy-primitives/asm-keccak",
+  "reth-node-core/asm-keccak",
+  "reth-node-ethereum/asm-keccak",
 ]

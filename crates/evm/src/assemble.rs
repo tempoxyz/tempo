@@ -38,7 +38,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             execution_ctx:
                 TempoBlockExecutionCtx {
                     inner,
-                    non_payment_gas_limit,
+                    general_gas_limit,
                 },
             parent,
             transactions,
@@ -48,15 +48,6 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             state_root,
             ..
         } = input;
-
-        let mut non_payment_gas_used = 0;
-        for (tx, receipt) in transactions.iter().zip(output.receipts.iter()) {
-            if !tx.is_payment() {
-                non_payment_gas_used = receipt.cumulative_gas_used;
-            } else {
-                break;
-            }
-        }
 
         // Delegate block building to the inner assembler
         let mut block = self.inner.assemble_block(BlockAssemblerInput::<
@@ -72,11 +63,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             state_root,
         ))?;
 
-        let suffix = TempoExtraData {
-            non_payment_gas_limit,
-            non_payment_gas_used,
-        }
-        .encode();
+        let suffix = TempoExtraData { general_gas_limit }.encode();
 
         // respect extra data produced by inner assembler and only keep its prefix that
         // fits within the maximum extra data size

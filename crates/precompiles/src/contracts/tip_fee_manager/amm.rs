@@ -5,10 +5,9 @@ use crate::contracts::{
     types::{ITIP20, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
+    primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
     sol_types::SolValue,
 };
-use alloy_primitives::IntoLogData;
 
 /// Constants from the Solidity reference implementation
 pub const M: U256 = uint!(9970_U256); // m = 0.9970 (scaled by 10000)
@@ -59,8 +58,7 @@ impl PoolKey {
 /// Storage slots for FeeAMM
 pub mod slots {
     use crate::contracts::storage::slots::{double_mapping_slot, mapping_slot};
-    use alloy::primitives::{U256, uint};
-    use alloy_primitives::{Address, B256};
+    use alloy::primitives::{Address, B256, U256, uint};
 
     // FeeAMM storage slots
     pub const POOLS: U256 = uint!(0_U256);

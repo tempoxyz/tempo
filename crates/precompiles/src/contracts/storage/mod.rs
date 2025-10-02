@@ -5,7 +5,7 @@ pub mod slots;
 use std::fmt::Debug;
 
 use alloy::primitives::{Address, LogData, U256};
-use reth_evm::revm::state::{AccountInfo, Bytecode};
+use revm::state::{AccountInfo, Bytecode};
 
 pub trait StorageProvider {
     type Error: Debug;

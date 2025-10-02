@@ -126,8 +126,8 @@ impl ConfigureEvm for TempoEvmConfig {
         &self,
         block: &'a SealedBlock<Block>,
     ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
-        let non_payment_gas_limit = TempoExtraData::decode(&block.header().extra_data)
-            .map(|data| data.non_payment_gas_limit)
+        let general_gas_limit = TempoExtraData::decode(&block.header().extra_data)
+            .map(|data| data.general_gas_limit)
             .unwrap_or(0);
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
@@ -136,7 +136,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 ommers: &block.body().ommers,
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
             },
-            non_payment_gas_limit,
+            general_gas_limit,
         })
     }
 
@@ -152,34 +152,36 @@ impl ConfigureEvm for TempoEvmConfig {
                 ommers: &[],
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
             },
-            non_payment_gas_limit: attributes.non_payment_gas_limit,
+            general_gas_limit: attributes.general_gas_limit,
         })
     }
 }
 
 impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
-    fn evm_env_for_payload(&self, payload: &TempoExecutionData) -> EvmEnvFor<Self> {
-        self.evm_env(&payload.0).expect("evm_env should not fail")
+    fn evm_env_for_payload(
+        &self,
+        payload: &TempoExecutionData,
+    ) -> Result<EvmEnvFor<Self>, Self::Error> {
+        self.evm_env(&payload.0)
     }
 
     fn context_for_payload<'a>(
         &self,
         payload: &'a TempoExecutionData,
-    ) -> ExecutionCtxFor<'a, Self> {
+    ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         self.context_for_block(&payload.0)
-            .expect("context_for_block should not fail")
     }
 
     fn tx_iterator_for_payload(
         &self,
         payload: &TempoExecutionData,
-    ) -> impl ExecutableTxIterator<Self> {
-        payload
+    ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
+        Ok(payload
             .0
             .body()
             .transactions
             .clone()
             .into_iter()
-            .map(|tx| tx.try_recover().map(|signer| tx.with_signer(signer)))
+            .map(|tx| tx.try_recover().map(|signer| tx.with_signer(signer))))
     }
 }

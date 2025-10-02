@@ -11,10 +11,11 @@ use crate::{
         types::{TIP20Error, TIP20Event},
     },
 };
-use alloy::primitives::{Address, B256, IntoLogData, Signature as EthSignature, U256, keccak256};
-use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
-use alloy_primitives::Bytes;
-use reth_evm::revm::state::Bytecode;
+use alloy::{
+    consensus::crypto::secp256k1 as eth_secp256k1,
+    primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
+};
+use revm::state::Bytecode;
 use tracing::trace;
 
 pub mod slots {
@@ -953,8 +954,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, U256, keccak256};
-    use alloy_primitives::FixedBytes;
+    use alloy::primitives::{Address, FixedBytes, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 

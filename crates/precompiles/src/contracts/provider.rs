@@ -1,6 +1,6 @@
-use alloy_primitives::{Address, U256};
-use reth_evm::revm::{Database, interpreter::instructions::utility::IntoAddress};
+use alloy::primitives::{Address, U256};
 use reth_storage_api::{StateProvider, errors::ProviderResult};
+use revm::{Database, interpreter::instructions::utility::IntoAddress};
 
 use crate::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
