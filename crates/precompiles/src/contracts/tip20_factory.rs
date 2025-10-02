@@ -7,8 +7,7 @@ use crate::{
         types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
     },
 };
-use alloy::primitives::{Address, IntoLogData, U256};
-use alloy_primitives::Bytes;
+use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use reth_evm::revm::state::Bytecode;
 use tracing::trace;
 

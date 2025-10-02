@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, U256};
+use alloy::primitives::{Address, U256};
 use reth_evm::revm::{Database, interpreter::instructions::utility::IntoAddress};
 use reth_storage_api::{StateProvider, errors::ProviderResult};
 

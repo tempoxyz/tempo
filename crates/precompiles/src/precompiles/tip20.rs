@@ -69,10 +69,9 @@ mod tests {
         precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
     };
     use alloy::{
-        primitives::{U256, keccak256},
+        primitives::{Bytes, U256, keccak256},
         sol_types::SolValue,
     };
-    use alloy_primitives::Bytes;
 
     use super::*;
 

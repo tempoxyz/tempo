@@ -14013,7 +14013,6 @@ name = "tempo-precompiles"
 version = "0.1.0"
 dependencies = [
  "alloy",
- "alloy-consensus",
  "alloy-evm",
  "alloy-primitives",
  "alloy-signer",

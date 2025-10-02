@@ -13,10 +13,8 @@ workspace = true
 tempo-contracts.workspace = true
 reth-evm.workspace = true
 reth-storage-api.workspace = true
-alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
+alloy = { workspace = true, default-features = false }
 alloy-evm.workspace = true
-alloy-consensus.workspace = true
-alloy-primitives.workspace = true
 
 tracing.workspace = true
 

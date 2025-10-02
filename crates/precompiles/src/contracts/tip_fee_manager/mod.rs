@@ -14,8 +14,7 @@ use crate::{
 };
 
 // Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, IntoLogData, U256, uint};
-use alloy_primitives::Bytes;
+use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
 use reth_evm::revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
@@ -30,8 +29,7 @@ use reth_evm::revm::{
 /// This shared storage layout means that FeeManager can directly access and modify
 /// AMM pool data using the same storage slots that TIPFeeAMM would use.
 pub mod slots {
-    use alloy::primitives::{U256, uint};
-    use alloy_primitives::Address;
+    use alloy::primitives::{Address, U256, uint};
 
     use crate::contracts::storage::slots::mapping_slot;
 

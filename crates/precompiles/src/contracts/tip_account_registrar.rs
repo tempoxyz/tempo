@@ -1,5 +1,7 @@
-use alloy::eips::eip7702::constants::SECP256K1N_HALF;
-use alloy_primitives::{Address, B512, U256};
+use alloy::{
+    eips::eip7702::constants::SECP256K1N_HALF,
+    primitives::{Address, B512, U256},
+};
 use reth_evm::revm::{precompile::secp256k1::ecrecover, state::Bytecode};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
@@ -103,7 +105,7 @@ fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TipAccountRegistra
 mod tests {
     use super::*;
     use crate::contracts::{HashMapStorageProvider, types::ITipAccountRegistrar};
-    use alloy_primitives::keccak256;
+    use alloy::primitives::keccak256;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 

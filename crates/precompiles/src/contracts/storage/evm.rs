@@ -69,11 +69,11 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::{address, b256, bytes};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         revm::context::{ContextTr, Host},
     };
-    use alloy_primitives::{address, b256, bytes};
     use reth_evm::revm::{
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
