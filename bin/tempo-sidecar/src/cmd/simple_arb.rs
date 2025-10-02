@@ -6,6 +6,7 @@ use alloy::{
 };
 use clap::Parser;
 use dashmap::DashMap;
+use eyre::Context;
 use futures::StreamExt;
 use itertools::Itertools;
 use std::{collections::HashSet, sync::Arc, time::Duration};
@@ -45,7 +46,8 @@ async fn fetch_all_tokens(
         .map(token_id_to_address)
         .collect::<HashSet<_>>();
 
-    info!("Fetched {} tokens", tokens.len());
+    info!(count = tokens.len(), "Fetched tokens");
+
     Ok(tokens)
 }
 
@@ -57,7 +59,7 @@ async fn fetch_all_pools(
 ) -> eyre::Result<DashMap<(Address, Address), Pool>> {
     let provider = ProviderBuilder::new()
         .wallet(signer)
-        .connect_http(rpc_url.parse()?);
+        .connect_http(rpc_url.parse().context("failed to parse RPC URL")?);
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
     let pools = DashMap::new();
@@ -70,12 +72,17 @@ async fn fetch_all_pools(
             #[warn(clippy::collapsible_if)]
             if pool.reserveUserToken > 0 || pool.reserveValidatorToken > 0 {
                 pools.insert((token_a, token_b), pool);
-                debug!("Found pool: {:?} <-> {:?}", token_a, token_b);
+                debug!(
+                    %token_a,
+                    %token_b,
+                    "Found pool",
+                );
             }
         }
     }
 
-    info!("Fetched {} pools", pools.len());
+    info!(count = pools.len(), "Fetched pools");
+
     Ok(pools)
 }
 
@@ -89,12 +96,16 @@ async fn rebalance_pool(
 ) -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(signer.clone())
-        .connect_http(rpc_url.parse()?);
+        .connect_http(rpc_url.parse().context("failed to parse RPC URL")?);
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
     // Get current pool state
-    let pool = fee_amm.getPool(token_a, token_b).call().await?;
+    let pool = fee_amm
+        .getPool(token_a, token_b)
+        .call()
+        .await
+        .wrap_err_with(|| format!("failed to fetch pool for tokens {token_a}, {token_b}"))?;
 
     // Simple rebalancing strategy: if reserves are imbalanced, perform rebalance
     let user_reserve = U256::from(pool.reserveUserToken);
@@ -140,7 +151,13 @@ async fn rebalance_pool(
                     );
 
                     // Update local pool state
-                    let updated_pool = fee_amm.getPool(token_a, token_b).call().await?;
+                    let updated_pool = fee_amm
+                        .getPool(token_a, token_b)
+                        .call()
+                        .await
+                        .wrap_err_with(|| {
+                            format!("failed to fetch pool for tokens {token_a},{token_b}")
+                        })?;
                     pools.insert((token_a, token_b), updated_pool);
                 }
                 Err(e) => {
@@ -170,11 +187,15 @@ async fn listen_for_feeswaps(
 ) -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(signer.clone())
-        .connect_http(rpc_url.parse()?);
+        .connect_http(rpc_url.parse().context("failed to parse RPC URL")?);
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
-    let mut filter = fee_amm.FeeSwap_filter().watch().await?;
+    let mut filter = fee_amm
+        .FeeSwap_filter()
+        .watch()
+        .await
+        .context("failed to initialize fee swap filter")?;
     filter.poller.set_poll_interval(poll_interval);
     let mut stream = filter.into_stream();
 
@@ -249,7 +270,10 @@ async fn run_simple_arb(
     private_key: String,
     poll_interval_ms: u64,
 ) -> eyre::Result<()> {
-    let signer = PrivateKeySigner::from_slice(&hex::decode(&private_key)?)?;
+    let signer = PrivateKeySigner::from_slice(
+        &hex::decode(&private_key).context("failed to decode private key")?,
+    )
+    .context("failed to parse private key")?;
     let wallet = EthereumWallet::from(signer);
     let wallet = Arc::new(wallet);
     let poll_interval = Duration::from_millis(poll_interval_ms);
