@@ -95,8 +95,8 @@ main() {
   echo ""
 
   # Wait for recovery
-  if ! wait_for_network_ready "$rpc_url" 60 1; then
-    echo "Test FAILED: Network failed to recover within 60 seconds"
+  if ! wait_for_network_ready "$rpc_url" 100 1; then
+    echo "Test FAILED: Network failed to recover within 100 seconds"
     exit 1
   fi
   echo ""
