@@ -613,6 +613,11 @@ mod tests {
         let token = token_id_to_address(rand::random::<u64>());
 
         let call = IFeeManager::setValidatorTokenCall { token };
+        let result = fee_manager.set_validator_token(&validator, call.clone());
+        assert_eq!(result, Err(FeeManagerError::cannot_change_within_block()));
+
+        // Now set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
+        fee_manager.beneficiary = Address::random();
         let result = fee_manager.set_validator_token(&validator, call);
         assert!(result.is_ok());
 
@@ -645,9 +650,12 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
 
         // Set validator token
+        // Set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
+        fee_manager.beneficiary = Address::random();
         fee_manager
             .set_validator_token(&validator, IFeeManager::setValidatorTokenCall { token })
             .unwrap();
+        fee_manager.beneficiary = validator;
 
         // Set user token
         fee_manager
@@ -697,9 +705,12 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
 
         // Set validator token
+        // Set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
+        fee_manager.beneficiary = Address::random();
         fee_manager
             .set_validator_token(&validator, IFeeManager::setValidatorTokenCall { token })
             .unwrap();
+        fee_manager.beneficiary = validator;
 
         // Set user token
         fee_manager
