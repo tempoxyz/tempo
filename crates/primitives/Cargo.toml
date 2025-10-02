@@ -1,9 +1,11 @@
 [package]
 name = "tempo-primitives"
+
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
@@ -46,16 +48,23 @@ serde = [
 	"reth-ethereum-primitives/serde",
 	"alloy-eips/serde",
 	"alloy-primitives/serde",
-	"reth-codecs?/serde"
+	"reth-codecs?/serde",
 ]
-reth-codec = ["dep:reth-codecs", "dep:reth-db-api", "dep:modular-bitfield", "reth-ethereum-primitives/reth-codec", "reth-codecs/alloy", "reth-primitives-traits/reth-codec"]
+reth-codec = [
+	"dep:reth-codecs",
+	"dep:reth-db-api",
+	"dep:modular-bitfield",
+	"reth-ethereum-primitives/reth-codec",
+	"reth-codecs/alloy",
+	"reth-primitives-traits/reth-codec",
+]
 serde-bincode-compat = [
 	"serde",
 	"alloy-consensus/serde-bincode-compat",
 	"reth-primitives-traits/serde-bincode-compat",
 	"reth-ethereum-primitives/serde-bincode-compat",
 	"alloy-eips/serde-bincode-compat",
-	"alloy-rpc-types-eth?/serde-bincode-compat"
+	"alloy-rpc-types-eth?/serde-bincode-compat",
 ]
 arbitrary = [
 	"dep:arbitrary",
@@ -68,6 +77,11 @@ arbitrary = [
 	"reth-ethereum-primitives/arbitrary",
 	"reth-primitives-traits/arbitrary",
 	"alloy-rpc-types-eth?/arbitrary",
-	"reth-db-api?/arbitrary"
+	"reth-db-api?/arbitrary",
 ]
-rpc = ["reth-ethereum-primitives/rpc", "dep:alloy-rpc-types-eth", "dep:reth-rpc-convert", "dep:alloy-network"]
+rpc = [
+	"reth-ethereum-primitives/rpc",
+	"dep:alloy-rpc-types-eth",
+	"dep:reth-rpc-convert",
+	"dep:alloy-network",
+]

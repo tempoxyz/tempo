@@ -1,10 +1,12 @@
 [package]
 name = "reth-malachite"
+description = "TODO:"
+
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "TODO:"
+publish.workspace = true
 
 # [lints]
 # workspace = true

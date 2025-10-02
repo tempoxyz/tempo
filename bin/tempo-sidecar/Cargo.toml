@@ -1,22 +1,37 @@
 [package]
 name = "tempo-sidecar"
+
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 clap.workspace = true
-alloy = { workspace = true, default-features = false, features = ["network", "rpc", "rpc-types", "transports", "providers", "reqwest-rustls-tls", "signers", "signer-local"] }
+alloy = { workspace = true, default-features = false, features = [
+    "network",
+    "rpc",
+    "rpc-types",
+    "transports",
+    "providers",
+    "reqwest-rustls-tls",
+    "signers",
+    "signer-local",
+] }
 eyre.workspace = true
 itertools = "0.14.0"
 tempo-precompiles.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "rustls-tls-native-roots",
+] }
 metrics-exporter-prometheus = { version = "0.17.2", default-features = false }
 metrics = "0.24.2"
 poem = "3.1.12"
 rand_distr = "0.5.1"
 tempo-telemetry-util.workspace = true
-tracing-subscriber = {workspace = true, features = ["env-filter"]}
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tokio.workspace = true
 tracing.workspace = true

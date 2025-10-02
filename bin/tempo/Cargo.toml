@@ -1,11 +1,13 @@
 [package]
 name = "tempo"
+description = "Tempo node implementation"
+default-run = "tempo"
+
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Tempo node implementation"
-default-run = "tempo"
+publish.workspace = true
 
 [lints]
 workspace = true
@@ -34,6 +36,4 @@ path = "src/main.rs"
 
 [features]
 default = []
-asm-keccak = [
-	"tempo-node/asm-keccak"
-]
+asm-keccak = ["tempo-node/asm-keccak"]
