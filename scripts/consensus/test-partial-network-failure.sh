@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "=== Validator Recovery Test ==="
+echo "=== Partial Network Failure Test ==="
 
 # Function to get current block number
 get_block_number() {
@@ -59,11 +59,10 @@ start_validator() {
 
 # Function to start background transaction generation
 start_tx_generator() {
-  local rpc_url="$1"
-  local tps="${2:-2}"
-  
-  echo "Starting transaction generator (${tps} TPS)..."
-  "$SCRIPT_DIR/tx-generator.sh" --url "$rpc_url" --tps "$tps" --duration 999999 >/dev/null 2>&1 &
+  local duration="${1:-999999}"
+
+  echo "Starting transaction generator..."
+  "$SCRIPT_DIR/tx-generator.sh" --duration "$duration" >/dev/null 2>&1 &
   local tx_gen_pid=$!
   echo "  Transaction generator started (PID: $tx_gen_pid)"
   echo "$tx_gen_pid"
@@ -75,9 +74,15 @@ stop_tx_generator() {
   if [ -n "$tx_gen_pid" ] && kill -0 "$tx_gen_pid" 2>/dev/null; then
     echo "Stopping transaction generator..."
     kill "$tx_gen_pid" 2>/dev/null || true
-    wait "$tx_gen_pid" 2>/dev/null || true
+    wait "$tx_gen_pid" 2>/dev/null
+    local exit_code=$?
     echo "  Transaction generator stopped"
+    if [ $exit_code -ne 0 ] && [ $exit_code -ne 143 ]; then # 143 is SIGTERM
+      echo "  ERROR: Transaction generator failed with exit code $exit_code"
+      return 1
+    fi
   fi
+  return 0
 }
 
 # Main test
@@ -103,8 +108,11 @@ main() {
   fi
   echo ""
 
-  # Start transaction generator
-  tx_gen_pid=$(start_tx_generator "$rpc_url" 2)
+  # Start transaction generator (perpetually)
+  echo "Starting transaction generator..."
+  "$SCRIPT_DIR/tx-generator.sh" --duration 999999 >/dev/null 2>&1 &
+  tx_gen_pid=$!
+  echo "  Transaction generator started (PID: $tx_gen_pid)"
   echo ""
 
   # Stop one validator (validator-2)
@@ -116,7 +124,7 @@ main() {
   echo "Checking block production with one validator down..."
   if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
     echo "Test FAILED: Network should continue producing blocks with one validator down"
-    stop_tx_generator "$tx_gen_pid"
+    stop_tx_generator "$tx_gen_pid" || true
     exit 1
   fi
   echo ""
@@ -135,13 +143,28 @@ main() {
   echo "Checking block production after validator recovery..."
   if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
     echo "Test FAILED: Network should continue producing blocks after validator recovery"
-    stop_tx_generator "$tx_gen_pid"
+    stop_tx_generator "$tx_gen_pid" || true
     exit 1
   fi
   echo ""
 
-  # Stop transaction generator
-  stop_tx_generator "$tx_gen_pid"
+  # Stop transaction generator and check for failures
+  echo "Stopping transaction generator..."
+  if kill -0 "$tx_gen_pid" 2>/dev/null; then
+    kill "$tx_gen_pid" 2>/dev/null || true
+    wait "$tx_gen_pid" 2>/dev/null
+    exit_code=$?
+    echo "  Transaction generator stopped"
+    if [ $exit_code -ne 0 ] && [ $exit_code -ne 143 ]; then  # 143 is SIGTERM
+      echo "  ERROR: Transaction generator failed with exit code $exit_code"
+      echo "Test FAILED: Transaction generator encountered failures"
+      exit 1
+    fi
+  else
+    echo "  Transaction generator already stopped"
+    echo "Test FAILED: Transaction generator exited unexpectedly"
+    exit 1
+  fi
   echo ""
 
   echo "Test PASSED: Validator recovery working correctly"
