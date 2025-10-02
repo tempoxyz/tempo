@@ -1,115 +1,122 @@
 #!/bin/bash
 
 # Test validator recovery scenario
-# This script starts a 3-validator network and tests block production and recovery
-
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 echo "=== Validator Recovery Test ==="
-echo "Testing 3-validator network with block production monitoring"
 
-# Configuration
-VALIDATORS=3
-TEST_DURATION=30
-BLOCK_CHECK_INTERVAL=2
-
-echo "Starting $VALIDATORS validators..."
-echo "Test duration: $TEST_DURATION seconds"
-echo "Block check interval: $BLOCK_CHECK_INTERVAL seconds"
-
-# TODO: Implement actual validator startup logic
-# This would use Docker containers similar to the Rust test
-echo "TODO: Start validators using tempo-commonware Docker containers"
-echo "TODO: Wait for RPC HTTP server started message"
-echo "TODO: Monitor block production for $TEST_DURATION seconds"
-
-# Placeholder for validator management
-start_validators() {
-    echo "Starting validators..."
-    # Start 3 validator containers with different configs
-    # - validator-0: consensus-config-0.toml, ports 8000/8545/30304
-    # - validator-1: consensus-config-1.toml, ports 8001/8546/30305  
-    # - validator-2: consensus-config-2.toml, ports 8002/8547/30306
+# Function to get current block number
+get_block_number() {
+  local rpc_url="$1"
+  curl -s -X POST "$rpc_url" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' |
+    jq -r '.result // "0x0"' | xargs printf "%d\n" 2>/dev/null || echo "0"
 }
 
-monitor_block_production() {
-    local rpc_url="$1"
-    local duration="$2"
-    
-    echo "Monitoring block production at $rpc_url for $duration seconds..."
-    
-    local start_time=$(date +%s)
-    local end_time=$((start_time + duration))
-    local last_block=0
-    
-    while [ $(date +%s) -lt $end_time ]; do
-        # Check block number using curl/jq
-        if command -v curl >/dev/null && command -v jq >/dev/null; then
-            local current_block=$(curl -s -X POST "$rpc_url" \
-                -H "Content-Type: application/json" \
-                -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
-                | jq -r '.result // "0x0"' | xargs printf "%d\n")
-            
-            if [ "$current_block" -gt "$last_block" ]; then
-                echo "Block production active: block $current_block"
-                last_block=$current_block
-            else
-                echo "Block production stalled at block $last_block"
-            fi
-        else
-            echo "Warning: curl or jq not available, skipping block monitoring"
-        fi
-        
-        sleep $BLOCK_CHECK_INTERVAL
-    done
+# Function to monitor block production for a specified duration
+monitor_blocks() {
+  local rpc_url="$1"
+  local duration="$2"
+  local description="$3"
+
+  echo "$description"
+
+  local start_block=$(get_block_number "$rpc_url")
+  echo "  Starting block: $start_block"
+
+  sleep "$duration"
+
+  local end_block=$(get_block_number "$rpc_url")
+  echo "  Ending block: $end_block"
+
+  if [ "$end_block" -gt "$start_block" ]; then
+    echo "  Blocks produced: $((end_block - start_block))"
+    return 0
+  else
+    echo "  No blocks produced"
+    return 1
+  fi
 }
 
-test_validator_recovery() {
-    echo "=== Starting validator recovery test ==="
-    
-    # Start all validators
-    start_validators
-    
-    # Monitor initial block production
-    echo "Checking initial block production..."
-    monitor_block_production "http://localhost:8545" 10
-    
-    echo "TODO: Stop validator-1 and continue monitoring"
-    echo "TODO: Restart validator-1 and verify recovery"
-    echo "TODO: Verify continuous block production throughout"
-    
-    echo "=== Validator recovery test completed ==="
+# Function to stop a validator
+stop_validator() {
+  local validator_id="$1"
+  echo "Stopping tempo-validator-$validator_id..."
+  docker stop "tempo-validator-$validator_id" >/dev/null
+  echo "  Stopped tempo-validator-$validator_id"
 }
 
-# Main execution
+# Function to start a validator
+start_validator() {
+  local validator_id="$1"
+  echo "Starting tempo-validator-$validator_id..."
+  docker start "tempo-validator-$validator_id" >/dev/null
+  echo "  Started tempo-validator-$validator_id"
+}
+
+# Main test
 main() {
-    echo "Current directory: $(pwd)"
-    echo "Project root: $PROJECT_ROOT"
-    
-    # Check for required config files
-    local assets_dir="$PROJECT_ROOT/crates/node/tests/assets"
-    if [ ! -d "$assets_dir" ]; then
-        echo "Error: Test assets directory not found at $assets_dir"
-        exit 1
-    fi
-    
-    for i in 0 1 2; do
-        local config_file="$assets_dir/consensus-config-$i.toml"
-        if [ ! -f "$config_file" ]; then
-            echo "Error: Config file not found: $config_file"
-            exit 1
-        fi
-    done
-    
-    echo "All required config files found"
-    
-    # Run the test
-    test_validator_recovery
+  local rpc_url="http://localhost:8545"
+
+  # Start the network
+  echo "Starting consensus network..."
+  "$SCRIPT_DIR/start-network.sh"
+  echo ""
+
+  # Wait for network to produce blocks
+  echo "Waiting 3 seconds for network to produce blocks..."
+  sleep 3
+  echo ""
+
+  # Check initial block production
+  echo "Checking initial block production..."
+  if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
+    echo "Test FAILED: Initial block production not working"
+    exit 1
+  fi
+  echo ""
+
+  # Stop one validator (validator-2)
+  echo "Stopping one validator..."
+  stop_validator 2
+  echo ""
+
+  # Check blocks still being produced
+  echo "Checking block production with one validator down..."
+  if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
+    echo "Test FAILED: Network should continue producing blocks with one validator down"
+    exit 1
+  fi
+  echo ""
+
+  # Restart the validator
+  echo "Restarting the validator..."
+  start_validator 2
+  echo ""
+
+  # Wait for validator to rejoin
+  echo "Waiting 3 seconds for validator to rejoin..."
+  sleep 3
+  echo ""
+
+  # Check blocks still being produced
+  echo "Checking block production after validator recovery..."
+  if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
+    echo "Test FAILED: Network should continue producing blocks after validator recovery"
+    exit 1
+  fi
+  echo ""
+
+  echo "Test PASSED: Validator recovery working correctly"
+  echo ""
+
+  # Stop the network
+  echo "Stopping network..."
+  "$SCRIPT_DIR/stop-network.sh"
 }
 
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    main "$@"
-fi
+# Run the test
+main "$@"

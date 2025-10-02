@@ -3,7 +3,7 @@ share = "0x01203bd2e35ba3d410759bf8922241e9856953d880465eb720975e4701b710ff68"
 polynomial = "0xb128f0eb093b4614c2052d5b25f62b62b83dcd1ede73a8d32bcf8a5194993f91fed9a481c478e92a49d277fdd82569d810279262e01a614b5acf051258ed51c05097dd95fb628aa0f3c3ee4a0c19687b3daf5fcd50c0fc6188565021a26b707ba65307dfb58527eb153c537fb2f718cbf4dfa4c9bd987e19cbccec110a5dc4823ce3ef4c6e99d20b98f18880ab6158ce07bc3463ed40cbb321a77e5d4deeb8818726d0492746f398a850729a87481f0523dbc2249a69175eeb0966616e4347559792d042553d1a906550caec160b2fa0afbe55a5cf8dab96ddb196b02cb2dcdccb020db105b4a18a3094740b5643cbef00ce5c7faa9e8d55905fcbd0f0d1d6e14b766d18aa4776cf3472875c3abbbb177474091bc73ebaba030196d3e71a4dbc"
 listen_port = 8000
 metrics_port = 8003
-storage_directory = "/Users/daniel/tempo/tempo/scripts/consensus/configs/1bc6dd47289a73e859502db4233ebcc36976cedf33f4a45635f7cd6a983f9a7b/storage"
+storage_directory = "/tmp/consensus"
 worker_threads = 3
 bootstrappers = ["0x1bc6dd47289a73e859502db4233ebcc36976cedf33f4a45635f7cd6a983f9a7b"]
 message_backlog = 16384
@@ -21,10 +21,10 @@ max_message_size_bytes = 1048576
 0xa964d167f9ed16a76e1e48efa74ef8d84545f8af883aae8373c63776871c2d89 = "tempo-validator-3:8000"
 
 [timeouts]
-time_for_peer_response = "2s"
-time_to_collect_notarizations = "2s"
-time_to_propose = "2s"
-time_to_retry_nullify_broadcast = "10s"
+time_for_peer_response = "200ms"
+time_to_collect_notarizations = "200ms"
+time_to_propose = "200ms"
+time_to_retry_nullify_broadcast = "3s"
 views_to_track = 256
 views_until_leader_skip = 32
-new_payload_wait_time = "500ms"
+new_payload_wait_time = "100ms"
