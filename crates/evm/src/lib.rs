@@ -158,7 +158,10 @@ impl ConfigureEvm for TempoEvmConfig {
 }
 
 impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
-    fn evm_env_for_payload(&self, payload: &TempoExecutionData) -> Result<EvmEnvFor<Self>, Self::Error> {
+    fn evm_env_for_payload(
+        &self,
+        payload: &TempoExecutionData,
+    ) -> Result<EvmEnvFor<Self>, Self::Error> {
         self.evm_env(&payload.0)
     }
 
