@@ -174,6 +174,7 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
     --dev.block-time 1s \
     --chain genesis.json \
     --engine.disable-precompile-cache \
+    --engine.legacy-state-root \
     --builder.gaslimit 3000000000 \
     --builder.max-tasks 8 \
     --builder.deadline 4 \
@@ -219,7 +220,7 @@ rmdir /s "%APPDATA%\reth"
 
 
 
-### Sampling 
+### Sampling
 Use the following commands to run the node with [sampling](https://github.com/mstange/samply):
 ```bash
 	samply record --output tempo.samply -- tempo node \
