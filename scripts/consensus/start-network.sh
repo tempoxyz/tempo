@@ -65,9 +65,12 @@ for i in {0..3}; do
 done
 wait
 
-# Wait for all containers to initialize
-echo "Waiting for network to stabilize..."
-sleep 5
+# Wait for network to be ready
+echo "Waiting for network to be ready..."
+if ! wait_for_network_ready "http://localhost:8545" 15 3; then
+  echo "ERROR: Network failed to start properly"
+  exit 1
+fi
 
 echo ""
 echo "=== Network Started ==="
