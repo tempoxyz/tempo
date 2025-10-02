@@ -1,0 +1,32 @@
+signer = "0x7f6f2ccdb23f2abb7b69278e947c01c6160a31cf02c19d06d0f6e5ab1d768b95"
+share = "0x0313a293ef5c1ee72cd3bcfb2d8f905c7937eb5a002a353139682cf75448573577"
+polynomial = "0x98c6e82fdf8990fa8b78df3788c45d4a36d83dd6c4e619b7b746abe12891427dd93ccd2d00596b8a87a5b084578fd2cf0a1f3a02672f4b370b2601e6425f873eafeb10a62adaa093b503a8630b89994c5f1401e62001896d2bd4f858be2cb94186445b36c1e706cf466b003845b0aabdade971bd12eae6c97c5c489d77b55301fc0c20d3c70172c9e80441cf1c1168680906ac1638aa86671fb3e5cecbc9356b30044ca8e8cc1b3baa4389d62fba2812e1d3820f63f7785f763f82fb3b3cf1a787f4417a797c779941dc3a61fe17cf23ea885f447cd319aed4ebe916242968f781480c2c06980ec7c1b6b6c73f0b51cf04f301e6bd7d10b45e2106510af7bff7ee392f4319224352722fd1cd5c1d1f2785caf6808be769232813fd78804397b7"
+listen_port = 8000
+metrics_port = 8007
+storage_directory = "/tmp/consensus"
+worker_threads = 3
+bootstrappers = [
+  "0x1bc6dd47289a73e859502db4233ebcc36976cedf33f4a45635f7cd6a983f9a7b",
+]
+message_backlog = 16384
+mailbox_size = 16384
+deque_size = 10
+fee_recipient = "0x0000000000000000000000000000000000000000"
+
+[p2p]
+max_message_size_bytes = 1048576
+
+[peers]
+0x196506320dcb5ea6bf4a5404dae21d6119341e7248e8f7f6dfb14d12301befe2 = "tempo-validator-0:8000"
+0x1bc6dd47289a73e859502db4233ebcc36976cedf33f4a45635f7cd6a983f9a7b = "tempo-validator-1:8000"
+0x2635bdd26e096ae9dbd6d57a45558606d301e7962f10a43359dd7e7fbb0422ce = "tempo-validator-2:8000"
+0xa964d167f9ed16a76e1e48efa74ef8d84545f8af883aae8373c63776871c2d89 = "tempo-validator-3:8000"
+
+[timeouts]
+time_for_peer_response = "200ms"
+time_to_collect_notarizations = "200ms"
+time_to_propose = "200ms"
+time_to_retry_nullify_broadcast = "3s"
+views_to_track = 256
+views_until_leader_skip = 32
+new_payload_wait_time = "100ms"
