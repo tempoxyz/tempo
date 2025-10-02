@@ -6,7 +6,7 @@ use reth_primitives_traits::{InMemorySize, serde_bincode_compat::RlpBincode};
 
 /// Tempo block header.
 ///
-/// Encoded as `rlp([inner, general_gas_limit])` meaning that any new 
+/// Encoded as `rlp([inner, general_gas_limit])` meaning that any new
 /// fields added to the inner header will only affect the first list element.
 #[derive(
     Debug,
