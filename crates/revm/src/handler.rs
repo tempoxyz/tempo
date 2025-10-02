@@ -39,7 +39,7 @@ const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
 ///
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug)]
-pub struct TempoEvmHandler<DB: reth_evm::Database, I> {
+pub struct TempoEvmHandler<DB, I> {
     /// Fee token used for the transaction.
     fee_token: Address,
     /// Fee payer for the transaction.
@@ -48,7 +48,7 @@ pub struct TempoEvmHandler<DB: reth_evm::Database, I> {
     _phantom: core::marker::PhantomData<(DB, I)>,
 }
 
-impl<DB: reth_evm::Database, I> TempoEvmHandler<DB, I> {
+impl<DB, I> TempoEvmHandler<DB, I> {
     /// Create a new [`TempoEvmHandler`] handler instance
     pub fn new() -> Self {
         Self {
@@ -59,7 +59,7 @@ impl<DB: reth_evm::Database, I> TempoEvmHandler<DB, I> {
     }
 }
 
-impl<DB: reth_evm::Database, I> Default for TempoEvmHandler<DB, I> {
+impl<DB, I> Default for TempoEvmHandler<DB, I> {
     fn default() -> Self {
         Self::new()
     }
