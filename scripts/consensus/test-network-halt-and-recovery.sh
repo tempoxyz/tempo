@@ -20,7 +20,7 @@ main() {
   echo ""
 
   # Wait for network to be ready and producing blocks
-  if ! wait_for_network_ready "$rpc_url" 30 5; then
+  if ! wait_for_network_ready "$rpc_url" 30 3; then
     echo "Test FAILED: Network failed to start properly"
     exit 1
   fi
@@ -67,8 +67,10 @@ main() {
   echo ""
 
   # Wait for recovery
-  echo "Waiting 10 seconds for network recovery..."
-  sleep 10
+  if ! wait_for_network_ready "$rpc_url" 60 1; then
+    echo "Test FAILED: Network failed to recover within 60 seconds"
+    exit 1
+  fi
   echo ""
 
   # Start transaction generator and assert block production
