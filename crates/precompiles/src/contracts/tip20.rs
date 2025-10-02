@@ -755,38 +755,35 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    /// Checks if the user is authorized to transfer the token.
-    pub fn is_user_authorized(&mut self, user: &Address) -> bool {
-        let transfer_policy_id = self.transfer_policy_id();
-
-        // Check if 'from' address is authorized
-        TIP403Registry::new(self.storage).is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: transfer_policy_id,
-            user: *user,
-        })
-    }
-
-    /// Ensures the user is authorized to transfer the token.
-    pub fn ensure_user_authorized(&mut self, user: &Address) -> Result<(), TIP20Error> {
-        if !self.is_user_authorized(user) {
-            return Err(TIP20Error::policy_forbids());
-        }
-
-        Ok(())
-    }
-
     /// Checks if the transfer is authorized.
     pub fn is_transfer_authorized(&mut self, from: &Address, to: &Address) -> bool {
-        self.is_user_authorized(from) && self.is_user_authorized(to)
+        let transfer_policy_id = self.transfer_policy_id();
+        let mut registry = TIP403Registry::new(self.storage);
+
+        // Check if 'from' address is authorized
+        let from_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: transfer_policy_id,
+            user: *from,
+        });
+
+        // Check if 'to' address is authorized
+        let to_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: transfer_policy_id,
+            user: *to,
+        });
+
+        from_authorized && to_authorized
     }
 
-    fn ensure_transfer_authorized(
+    /// Ensures the transfer is authorized.
+    pub fn ensure_transfer_authorized(
         &mut self,
         from: &Address,
         to: &Address,
     ) -> Result<(), TIP20Error> {
-        self.ensure_user_authorized(from)?;
-        self.ensure_user_authorized(to)?;
+        if !self.is_transfer_authorized(from, to) {
+            return Err(TIP20Error::policy_forbids());
+        }
 
         Ok(())
     }
