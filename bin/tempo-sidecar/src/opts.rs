@@ -1,4 +1,6 @@
-use crate::cmd::{monitor::MonitorArgs, simple_arb::SimpleArbArgs, synthetic_load::SyntheticLoadArgs};
+use crate::cmd::{
+    monitor::MonitorArgs, simple_arb::SimpleArbArgs, synthetic_load::SyntheticLoadArgs,
+};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]

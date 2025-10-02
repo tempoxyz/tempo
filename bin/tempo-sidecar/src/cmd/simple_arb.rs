@@ -7,19 +7,13 @@ use alloy::{
 use clap::Parser;
 use dashmap::DashMap;
 use futures::StreamExt;
-use std::{
-    collections::HashSet,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashSet, sync::Arc, time::Duration};
+use itertools::Itertools;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    contracts::{
-        ITIP20Factory, ITIPFeeAMM,
-        ITIPFeeAMM::Pool,
-        token_id_to_address,
-    },
+    contracts::{ITIP20Factory, ITIPFeeAMM, ITIPFeeAMM::Pool, token_id_to_address},
 };
+use tempo_telemetry_util::error_field;
 use tracing::{debug, error, info, instrument, warn};
 
 #[derive(Parser, Debug)]
@@ -36,10 +30,13 @@ pub struct SimpleArbArgs {
 }
 
 #[instrument(skip(signer))]
-async fn fetch_all_tokens(rpc_url: &str, signer: Arc<EthereumWallet>) -> eyre::Result<HashSet<Address>> {
+async fn fetch_all_tokens(
+    rpc_url: &str,
+    signer: Arc<EthereumWallet>,
+) -> eyre::Result<HashSet<Address>> {
     let provider = ProviderBuilder::new()
         .wallet(signer)
-        .on_http(rpc_url.parse()?);
+        .connect_http(rpc_url.parse()?);
 
     let tip20_factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider);
     let last_token_id = tip20_factory.tokenIdCounter().call().await?.to::<u64>();
@@ -56,23 +53,23 @@ async fn fetch_all_tokens(rpc_url: &str, signer: Arc<EthereumWallet>) -> eyre::R
 async fn fetch_all_pools(
     rpc_url: &str,
     signer: Arc<EthereumWallet>,
-    tokens: &HashSet<Address>
+    tokens: &HashSet<Address>,
 ) -> eyre::Result<DashMap<(Address, Address), Pool>> {
     let provider = ProviderBuilder::new()
         .wallet(signer)
-        .on_http(rpc_url.parse()?);
+        .connect_http(rpc_url.parse()?);
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
     let pools = DashMap::new();
     let token_vec: Vec<Address> = tokens.iter().copied().collect();
 
-    for (i, &token_a) in token_vec.iter().enumerate() {
-        for &token_b in token_vec.iter().skip(i + 1) {
-            if let Ok(pool) = fee_amm.getPool(token_a, token_b).call().await {
-                if pool.reserveUserToken > 0 || pool.reserveValidatorToken > 0 {
-                    pools.insert((token_a, token_b), pool);
-                    debug!("Found pool: {:?} <-> {:?}", token_a, token_b);
-                }
+    for token_combo in token_vec.iter().permutations(2) {
+        let (&token_a, &token_b) = (token_combo[0], token_combo[1]);
+
+        if let Ok(pool) = fee_amm.getPool(token_a, token_b).call().await {
+            if pool.reserveUserToken > 0 || pool.reserveValidatorToken > 0 {
+                pools.insert((token_a, token_b), pool);
+                debug!("Found pool: {:?} <-> {:?}", token_a, token_b);
             }
         }
     }
@@ -87,11 +84,11 @@ async fn rebalance_pool(
     signer: Arc<EthereumWallet>,
     token_a: Address,
     token_b: Address,
-    pools: &DashMap<(Address, Address), Pool>
+    pools: &DashMap<(Address, Address), Pool>,
 ) -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(signer.clone())
-        .on_http(rpc_url.parse()?);
+        .connect_http(rpc_url.parse()?);
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
@@ -118,7 +115,10 @@ async fn rebalance_pool(
     let threshold = U256::from(60); // If user reserves > 60% of total, rebalance
 
     if user_ratio > threshold {
-        info!("Rebalancing pool {:?}<->{:?}, user ratio: {}%", token_a, token_b, user_ratio);
+        info!(
+            %user_ratio,
+            "Rebalancing pool"
+        );
 
         // Calculate amount to rebalance - take half of the excess
         let excess = user_reserve.saturating_sub(validator_reserve);
@@ -127,21 +127,34 @@ async fn rebalance_pool(
         if amount_out > U256::ZERO {
             let to_address = signer.default_signer().address();
 
-            match fee_amm.rebalanceSwap(token_a, token_b, amount_out, to_address).send().await {
-                Ok(tx_hash) => {
-                    info!("Rebalance transaction sent: {:?}", tx_hash.tx_hash());
+            match fee_amm
+                .rebalanceSwap(token_a, token_b, amount_out, to_address)
+                .send()
+                .await
+            {
+                Ok(tx) => {
+                    info!(
+                        tx_hash = tx.tx_hash().to_string(),
+                        "Rebalance transaction sent",
+                    );
 
                     // Update local pool state
                     let updated_pool = fee_amm.getPool(token_a, token_b).call().await?;
                     pools.insert((token_a, token_b), updated_pool);
                 }
                 Err(e) => {
-                    error!("Failed to send rebalance transaction: {}", e);
+                    error!(
+                        err = error_field(&e),
+                        "Failed to send rebalance transaction"
+                    );
                 }
             }
         }
     } else {
-        debug!("Pool balance within threshold (user ratio: {}%), no rebalance needed", user_ratio);
+        debug!(
+            %user_ratio,
+            "Pool balance within threshold, no rebalance needed",
+        );
     }
 
     Ok(())
@@ -156,7 +169,7 @@ async fn listen_for_feeswaps(
 ) -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(signer.clone())
-        .on_http(rpc_url.parse()?);
+        .connect_http(rpc_url.parse()?);
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
@@ -170,8 +183,11 @@ async fn listen_for_feeswaps(
         match log_result {
             Ok((log, _)) => {
                 info!(
-                    "FeeSwap detected - User Token: {:?}, Validator Token: {:?}, Amount In: {}, Amount Out: {}",
-                    log.userToken, log.validatorToken, log.amountIn, log.amountOut
+                    user_token = %log.userToken,
+                    validator_token = %log.validatorToken,
+                    amount_in = %log.amountIn,
+                    amount_out = %log.amountOut,
+                    "Fee swap detected",
                 );
 
                 if let Err(e) = rebalance_pool(
@@ -179,13 +195,20 @@ async fn listen_for_feeswaps(
                     signer.clone(),
                     log.userToken,
                     log.validatorToken,
-                    &pools
-                ).await {
-                    error!("Failed to rebalance pool {:?}<->{:?}: {}", log.userToken, log.validatorToken, e);
+                    &pools,
+                )
+                .await
+                {
+                    error!(
+                        user_token = %log.userToken,
+                        validator_token = %log.validatorToken,
+                        e = error_field(&e),
+                        "Failed to rebalance pool"
+                    );
                 }
             }
             Err(e) => {
-                warn!("Error receiving FeeSwap event: {}", e);
+                warn!("Error receiving FeeSwap event: {e}");
             }
         }
     }
@@ -193,24 +216,53 @@ async fn listen_for_feeswaps(
     Ok(())
 }
 
-async fn run_simple_arb(rpc_url: String, private_key: String, poll_interval_ms: u64) -> eyre::Result<()> {
-    info!("Starting Simple Arbitrage Bot...");
+async fn check_and_rebalance_all_pools(
+    rpc_url: &str,
+    signer: Arc<EthereumWallet>,
+    pools: &DashMap<(Address, Address), Pool>,
+) -> eyre::Result<()> {
+    info!("Checking all pools for imbalances...");
 
+    let mut rebalanced_count = 0;
+    for entry in pools.iter() {
+        let ((token_a, token_b), _) = entry.pair();
+
+        if let Err(e) = rebalance_pool(rpc_url, signer.clone(), *token_a, *token_b, pools).await {
+            warn!(
+                %token_a,
+                %token_b,
+                error = error_field(&e),
+                "Failed to check/rebalance pool"
+            );
+        } else {
+            rebalanced_count += 1;
+        }
+    }
+
+    info!("Initial rebalance check completed for {rebalanced_count} pools");
+    Ok(())
+}
+
+async fn run_simple_arb(
+    rpc_url: String,
+    private_key: String,
+    poll_interval_ms: u64,
+) -> eyre::Result<()> {
     let signer = PrivateKeySigner::from_slice(&hex::decode(&private_key)?)?;
     let wallet = EthereumWallet::from(signer);
     let wallet = Arc::new(wallet);
     let poll_interval = Duration::from_millis(poll_interval_ms);
 
-    // Phase 1: Fetch all tokens
     info!("Fetching all tokens...");
     let tokens = fetch_all_tokens(&rpc_url, wallet.clone()).await?;
 
-    // Phase 2: Fetch all pools
     info!("Fetching all pools...");
     let pools = fetch_all_pools(&rpc_url, wallet.clone(), &tokens).await?;
     let pools = Arc::new(pools);
 
-    // Phase 3: Listen for feeswap events and rebalance
+    info!("Checking existing pools for imbalances...");
+    check_and_rebalance_all_pools(&rpc_url, wallet.clone(), &pools).await?;
+
     info!("Starting event listener...");
     listen_for_feeswaps(&rpc_url, wallet, pools, poll_interval).await?;
 
