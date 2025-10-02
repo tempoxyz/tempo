@@ -69,7 +69,6 @@ done
 wait
 
 # Wait for network to be ready
-echo "Waiting for network to be ready..."
 if ! wait_for_network_ready "http://localhost:8545" 15 3; then
   echo "ERROR: Network failed to start properly"
   exit 1
