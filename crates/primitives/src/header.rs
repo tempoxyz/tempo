@@ -19,19 +19,20 @@ use reth_primitives_traits::{InMemorySize, serde_bincode_compat::RlpBincode};
     derive_more::DerefMut,
     RlpEncodable,
     RlpDecodable,
+    Compact,
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TempoHeader {
+    /// Non-payment gas limit for the block.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub general_gas_limit: u64,
+
     /// Inner Ethereum [`Header`].
     #[deref]
     #[deref_mut]
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub inner: Header,
-
-    /// Non-payment gas limit for the block.
-    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
-    pub general_gas_limit: u64,
 }
 
 impl AsRef<Self> for TempoHeader {
@@ -145,29 +146,6 @@ impl Sealable for TempoHeader {
 }
 
 impl reth_primitives_traits::BlockHeader for TempoHeader {}
-
-impl Compact for TempoHeader {
-    fn to_compact<B>(&self, buf: &mut B) -> usize
-    where
-        B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
-    {
-        let identifier = self.inner.to_compact(buf);
-        self.general_gas_limit.to_compact(buf);
-        identifier
-    }
-
-    fn from_compact(buf: &[u8], identifier: usize) -> (Self, &[u8]) {
-        let (inner, buf) = Compact::from_compact(buf, identifier);
-        let (general_gas_limit, buf) = Compact::from_compact(buf, buf.len());
-        (
-            Self {
-                inner,
-                general_gas_limit,
-            },
-            buf,
-        )
-    }
-}
 
 impl reth_db_api::table::Compress for TempoHeader {
     type Compressed = Vec<u8>;
