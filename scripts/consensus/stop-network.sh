@@ -3,20 +3,20 @@
 # Stop consensus validator network
 set -euo pipefail
 
-NETWORK_NAME="tempo-consensus"
+NETWORK_NAME="tempo-commonware"
 
 echo "=== Stopping Tempo Network ==="
 
 # Stop and remove all validator containers
 for i in {0..3}; do
   container_name="tempo-validator-$i"
-  if docker ps -q -f name="$container_name" | grep -q .; then
+  if docker ps -a -q -f name="$container_name" | grep -q .; then
     echo "Stopping $container_name..."
-    docker stop "$container_name" >/dev/null
-    docker rm "$container_name" >/dev/null
+    docker stop "$container_name" >/dev/null 2>&1 || true
+    docker rm "$container_name" >/dev/null 2>&1 || true
     echo "  ✓ Stopped $container_name"
   else
-    echo "  - $container_name not running"
+    echo "  - $container_name not found"
   fi
 done
 

@@ -155,7 +155,7 @@ main() {
     wait "$tx_gen_pid" 2>/dev/null
     exit_code=$?
     echo "  Transaction generator stopped"
-    if [ $exit_code -ne 0 ] && [ $exit_code -ne 143 ]; then  # 143 is SIGTERM
+    if [ $exit_code -ne 0 ] && [ $exit_code -ne 143 ]; then # 143 is SIGTERM
       echo "  ERROR: Transaction generator failed with exit code $exit_code"
       echo "Test FAILED: Transaction generator encountered failures"
       exit 1
