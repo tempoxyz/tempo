@@ -20,7 +20,7 @@ main() {
   echo ""
 
   # Wait for network to be ready and producing blocks
-  if ! wait_for_network_ready "$rpc_url" 30 5; then
+  if ! wait_for_network_ready "$rpc_url" 30 3; then
     echo "Test FAILED: Network failed to start properly"
     exit 1
   fi
