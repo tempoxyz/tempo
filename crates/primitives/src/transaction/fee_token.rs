@@ -390,6 +390,8 @@ impl SignableTransaction<Signature> for TxFeeToken {
     }
 
     fn encode_for_signing(&self, out: &mut dyn alloy_rlp::BufMut) {
+        // We skip encoding the fee token if the signature is present to ensure that user
+        // does not commit to a specific fee token when someone else is paying for the transaction.
         let skip_fee_token = self.fee_payer_signature.is_some();
         // For signing, we don't encode the signature but only encode a single byte marking the presence of the signature
         out.put_u8(Self::tx_type());
