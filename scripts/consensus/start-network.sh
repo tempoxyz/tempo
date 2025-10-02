@@ -19,10 +19,10 @@ fi
 
 # Config files for 4 validators
 CONFIGS=(
-  "196506320dcb5ea6bf4a5404dae21d6119341e7248e8f7f6dfb14d12301befe2.toml"
-  "1bc6dd47289a73e859502db4233ebcc36976cedf33f4a45635f7cd6a983f9a7b.toml"
-  "2635bdd26e096ae9dbd6d57a45558606d301e7962f10a43359dd7e7fbb0422ce.toml"
-  "a964d167f9ed16a76e1e48efa74ef8d84545f8af883aae8373c63776871c2d89.toml"
+  "0c229e27a8c69e7afe86900dfbceab6ef6d207582c127a0d99fe9b3fb5a2068a.toml"
+  "2a685998ee44953a3eb0a5d316937f810a80bdcc952c0aa07b4d82b3fed459c2.toml"
+  "7f7fdd1ca8d7c3ed8206137178b47bcafe7a54d4a0b4ce5bd9e25978184b48ce.toml"
+  "ee1aa49a4459dfe813a3cf6eb882041230c7b2558469de81f87c9bf23bf10a03.toml"
 )
 
 start_validator() {
@@ -58,14 +58,16 @@ start_validator() {
   echo "  ✓ Started $container_name on port $rpc_port"
 }
 
-# Start all validators
+# Start all validators simultaneously
+echo "Starting all validators..."
 for i in {0..3}; do
-  start_validator "$i" "${CONFIGS[$i]}"
+  start_validator "$i" "${CONFIGS[$i]}" &
 done
+wait
 
-# Hacky fix: restart validator-0 if it failed
-echo "Restarting validator-0..."
-docker restart tempo-validator-0 >/dev/null 2>&1 || true
+# Wait for all containers to initialize
+echo "Waiting for network to stabilize..."
+sleep 5
 
 echo ""
 echo "=== Network Started ==="
