@@ -5,41 +5,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Source test utilities
+source "$SCRIPT_DIR/test-utils.sh"
+
 echo "=== Full Network Failure Test ==="
-
-# Function to get current block number
-get_block_number() {
-  local rpc_url="$1"
-  curl -s -X POST "$rpc_url" \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' |
-    jq -r '.result // "0x0"' | xargs printf "%d\n" 2>/dev/null || echo "0"
-}
-
-# Function to monitor block production for a specified duration
-monitor_blocks() {
-  local rpc_url="$1"
-  local duration="$2"
-  local description="$3"
-
-  echo "$description"
-
-  local start_block=$(get_block_number "$rpc_url")
-  echo "  Starting block: $start_block"
-
-  sleep "$duration"
-
-  local end_block=$(get_block_number "$rpc_url")
-  echo "  Ending block: $end_block"
-
-  if [ "$end_block" -gt "$start_block" ]; then
-    echo "  Blocks produced: $((end_block - start_block))"
-    return 0
-  else
-    echo "  No blocks produced"
-    return 1
-  fi
-}
 
 # Function to check if network is unreachable
 check_network_unreachable() {
@@ -77,33 +46,24 @@ start_all_validators() {
   echo "  All validators started"
 }
 
-# Function to start transaction generator
-start_tx_generator() {
-  local duration="${1:-10}"
-  echo "Starting transaction generator (${duration}s)..."
-  "$SCRIPT_DIR/tx-generator.sh" --duration "$duration" >/dev/null 2>&1 &
-  local tx_gen_pid=$!
-  echo "  Transaction generator started (PID: $tx_gen_pid)"
-  echo "$tx_gen_pid"
-}
-
 # Main test
 main() {
   local rpc_url="http://localhost:8545"
   local tx_gen_pid=""
 
-  # Start the network
-  echo "Starting consensus network..."
-  "$SCRIPT_DIR/start-network.sh"
+  # Start the network and wait for it to be ready
+  start_network "$SCRIPT_DIR"
   echo ""
 
-  # Wait for network to produce blocks
-  echo "Waiting 3 seconds for network to produce blocks..."
-  sleep 3
+  # Wait for network to be ready and producing blocks
+  if ! wait_for_network_ready "$rpc_url" 30 5; then
+    echo "Test FAILED: Network failed to start properly"
+    exit 1
+  fi
   echo ""
 
   # Start transaction generator and assert block production
-  tx_gen_pid=$(start_tx_generator 10)
+  tx_gen_pid=$(start_tx_generator 10 "$SCRIPT_DIR")
   echo ""
 
   echo "Checking initial block production with tx generator..."
@@ -135,12 +95,12 @@ main() {
   echo ""
 
   # Wait for recovery
-  echo "Waiting 20 seconds for full network recovery..."
-  sleep 20
+  echo "Waiting 10 seconds for full network recovery..."
+  sleep 10
   echo ""
 
   # Start transaction generator and ensure block production comes back up
-  tx_gen_pid=$(start_tx_generator 10)
+  tx_gen_pid=$(start_tx_generator 10 "$SCRIPT_DIR")
   echo ""
 
   echo "Checking block production after full restart..."
@@ -160,10 +120,8 @@ main() {
   echo ""
 
   # Stop the network
-  echo "Stopping network..."
-  "$SCRIPT_DIR/stop-network.sh"
+  stop_network "$SCRIPT_DIR"
 }
 
 # Run the test
 main "$@"
-
