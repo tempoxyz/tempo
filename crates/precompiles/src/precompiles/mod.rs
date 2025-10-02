@@ -3,12 +3,10 @@ use alloy::{
     sol,
     sol_types::{SolCall, SolError, SolInterface},
 };
-use reth_evm::{
-    precompiles::{DynPrecompile, PrecompilesMap},
-    revm::{
-        context::Block,
-        precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
-    },
+use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
+use revm::{
+    context::Block,
+    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub mod tip20;
@@ -217,13 +215,13 @@ mod tests {
     use super::*;
     use crate::precompiles::Precompile;
     use alloy::primitives::{Address, Bytes, U256};
-    use alloy_evm::{EthEvmFactory, EvmEnv, EvmFactory, EvmInternals};
-    use reth_evm::{
+    use alloy_evm::{
+        EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
-        revm::{
-            context::ContextTr,
-            database::{CacheDB, EmptyDB},
-        },
+    };
+    use revm::{
+        context::ContextTr,
+        database::{CacheDB, EmptyDB},
     };
 
     #[test]

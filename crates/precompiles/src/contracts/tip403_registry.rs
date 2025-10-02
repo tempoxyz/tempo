@@ -9,7 +9,7 @@ use crate::{
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use alloy_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
-use reth_evm::revm::state::Bytecode;
+use revm::state::Bytecode;
 
 mod slots {
     use alloy::primitives::{U256, uint};

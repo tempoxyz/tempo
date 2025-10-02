@@ -2,7 +2,7 @@ use alloy::{
     eips::eip7702::constants::SECP256K1N_HALF,
     primitives::{Address, B512, U256},
 };
-use reth_evm::revm::{precompile::secp256k1::ecrecover, state::Bytecode};
+use revm::{precompile::secp256k1::ecrecover, state::Bytecode};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 use crate::contracts::{

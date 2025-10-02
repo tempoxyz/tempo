@@ -1,6 +1,6 @@
 use crate::precompiles::{Precompile, mutate};
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{StorageProvider, TipAccountRegistrar, types::ITipAccountRegistrar};
 

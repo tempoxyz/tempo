@@ -11,10 +11,10 @@ workspace = true
 
 [dependencies]
 tempo-contracts.workspace = true
-reth-evm.workspace = true
 reth-storage-api.workspace = true
 alloy = { workspace = true, default-features = false }
 alloy-evm.workspace = true
+revm.workspace = true
 
 tracing.workspace = true
 

@@ -15,7 +15,7 @@ use crate::{
 
 // Re-export PoolKey for backward compatibility with tests
 use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
-use reth_evm::revm::{
+use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
 };

@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
-use reth_evm::revm::state::Bytecode;
+use revm::state::Bytecode;
 use tracing::trace;
 
 mod slots {

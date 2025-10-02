@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, LogData, U256};
-use reth_evm::revm::state::{AccountInfo, Bytecode};
+use revm::state::{AccountInfo, Bytecode};
 
 use crate::contracts::storage::StorageProvider;
 

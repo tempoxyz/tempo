@@ -7,7 +7,7 @@ use crate::{
     precompiles::{Precompile, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
@@ -28,7 +28,7 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
             ITIPFeeAMM::poolsCall::SELECTOR => view::<ITIPFeeAMM::poolsCall>(calldata, |call| self.pools(call)),
             ITIPFeeAMM::totalSupplyCall::SELECTOR => view::<ITIPFeeAMM::totalSupplyCall>(calldata, |call| self.total_supply(call)),
             ITIPFeeAMM::liquidityBalancesCall::SELECTOR => view::<ITIPFeeAMM::liquidityBalancesCall>(calldata, |call| self.liquidity_balances(call)),
-            
+
             // State changing functions
             IFeeManager::setValidatorTokenCall::SELECTOR => mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_validator_token(s, call)),
             IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),

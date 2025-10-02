@@ -14020,8 +14020,8 @@ dependencies = [
  "criterion 0.7.0",
  "eyre",
  "rand 0.8.5",
- "reth-evm",
  "reth-storage-api",
+ "revm",
  "tempo-contracts",
  "tracing",
 ]
