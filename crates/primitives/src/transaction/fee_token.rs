@@ -177,13 +177,12 @@ impl TxFeeToken {
     }
 
     pub fn fee_payer_signature_hash(&self, sender: Address) -> B256 {
-        let payload_length = self.rlp_encoded_fields_length(|_| sender.length(), false);
-        let mut buf = Vec::new();
-        alloy_rlp::Header {
+        let rlp_header = alloy_rlp::Header {
             list: true,
-            payload_length,
-        }
-        .encode(&mut buf);
+            payload_length: self.rlp_encoded_fields_length(|_| sender.length(), false),
+        };
+        let mut buf = Vec::with_capacity(rlp_header.length_with_payload());
+        rlp_header.encode(&mut buf);
         self.rlp_encode_fields(
             &mut buf,
             |_, out| {
