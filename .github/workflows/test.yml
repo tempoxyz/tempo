@@ -43,6 +43,26 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
+  consensus-e2e:
+    name: consensus e2e tests
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Build tempo image
+        run: docker build -t tempo-commonware:latest .
+      - name: Run consensus network tests
+        run: |
+          cd scripts/consensus
+          ./test-partial-network-failure.sh
+          ./test-network-halt-and-recovery.sh
+          ./test-full-network-failure-and-recovery.sh
+        env:
+          RUST_LOG: debug
+
   test-success:
     name: test success
     runs-on: depot-ubuntu-24.04-4
@@ -50,6 +70,7 @@ jobs:
     needs:
       - test
       - msrv
+      - consensus-e2e
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed
