@@ -3,13 +3,14 @@ use alloy::{
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::local::MnemonicBuilder,
 };
-use alloy_eips::Encodable2718;
+use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet, TxSignerSync};
 use alloy_primitives::{Address, U256};
+use alloy_rpc_types_eth::TransactionRequest;
 use std::env;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{ITIPFeeAMM, token_id_to_address, types::IFeeManager},
+    contracts::{ITIP20, ITIPFeeAMM, token_id_to_address, types::IFeeManager},
 };
 use tempo_primitives::TxFeeToken;
 
@@ -29,11 +30,44 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let user_token = setup_test_token(provider.clone(), user_address).await?;
-    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     let initial_token = fee_manager.userTokens(user_address).call().await?;
     // Initial token should be predeployed token
     assert_eq!(initial_token, token_id_to_address(0));
+
+    let validator = provider
+        .get_block(BlockId::latest())
+        .await?
+        .unwrap()
+        .header
+        .beneficiary;
+
+    let validator_balance_before = ITIP20::new(initial_token, &provider)
+        .balanceOf(validator)
+        .call()
+        .await?;
+
+    let receipt = provider
+        .send_transaction(
+            TransactionRequest::default()
+                .to(Address::ZERO)
+                .input(Default::default()),
+        )
+        .await?
+        .get_receipt()
+        .await?;
+
+    let expected_usage = U256::from(receipt.effective_gas_price * receipt.gas_used as u128);
+
+    let validator_balance_after = ITIP20::new(initial_token, &provider)
+        .balanceOf(validator)
+        .call()
+        .await?;
+    assert_eq!(
+        validator_balance_after,
+        validator_balance_before + expected_usage
+    );
 
     let set_receipt = fee_manager
         .setUserToken(*user_token.address())

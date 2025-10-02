@@ -136,6 +136,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token());
         }
 
+        if sender == &self.beneficiary {
+            return Err(FeeManagerError::cannot_change_within_block());
+        }
+
         // TODO: validate USD currency requirement
         // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
 
@@ -216,6 +220,12 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         let token_id = address_to_token_id_unchecked(&user_token);
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
+
+        // Ensure that user is authorized to interact with the token
+        tip20_token
+            .ensure_user_authorized(&user)
+            .map_err(|_| FeeManagerError::token_policy_forbids())?;
+
         tip20_token
             .transfer_fee_pre_tx(&user, max_amount)
             .map_err(|_| FeeManagerError::insufficient_fee_token_balance())?;
@@ -291,10 +301,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let validator_token = self.get_validator_token();
 
         // Process all collected fees and execute pending swaps
+        let mut collected_fees = self.get_collected_fees();
         let tokens_with_fees = self.drain_tokens_with_fees();
         let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
 
-        let mut collected_fees = U256::ZERO;
         for token in tokens_with_fees.iter() {
             if *token != validator_token {
                 // Check if pool exists
@@ -373,6 +383,12 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let slot = collected_fees_slot();
         let current_fees = self.sload(slot);
         self.sstore(slot, current_fees + amount);
+    }
+
+    /// Get collected fees
+    fn get_collected_fees(&mut self) -> U256 {
+        let slot = collected_fees_slot();
+        self.sload(slot)
     }
 
     /// Clear collected fees

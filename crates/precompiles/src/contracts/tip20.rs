@@ -433,7 +433,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         self.check_not_paused()?;
         self.check_not_token_address(&call.to)?;
-        self.check_transfer_authorized(msg_sender, &call.to)?;
+        self.ensure_transfer_authorized(msg_sender, &call.to)?;
         self._transfer(msg_sender, &call.to, call.amount)?;
         Ok(true)
     }
@@ -480,7 +480,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<bool, TIP20Error> {
         self.check_not_paused()?;
         self.check_not_token_address(&to)?;
-        self.check_transfer_authorized(&from, &to)?;
+        self.ensure_transfer_authorized(&from, &to)?;
 
         self._transfer(&from, &to, amount)?;
 
@@ -496,7 +496,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<bool, TIP20Error> {
         self.check_not_paused()?;
         self.check_not_token_address(&to)?;
-        self.check_transfer_authorized(&from, &to)?;
+        self.ensure_transfer_authorized(&from, &to)?;
 
         // Check and update allowance
         let allowed = self.get_allowance(&from, msg_sender);
@@ -596,7 +596,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TIP20Error> {
         self.check_not_paused()?;
         self.check_not_token_address(&call.to)?;
-        self.check_transfer_authorized(msg_sender, &call.to)?;
+        self.ensure_transfer_authorized(msg_sender, &call.to)?;
 
         self._transfer(msg_sender, &call.to, call.amount)?;
 
@@ -755,30 +755,29 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    fn check_transfer_authorized(
-        &mut self,
-        from: &Address,
-        to: &Address,
-    ) -> Result<(), TIP20Error> {
+    /// Ensures the user is authorized to transfer the token.
+    pub fn ensure_user_authorized(&mut self, user: &Address) -> Result<(), TIP20Error> {
         let transfer_policy_id = self.transfer_policy_id();
         let mut registry = TIP403Registry::new(self.storage);
 
         // Check if 'from' address is authorized
-        let from_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+        if !registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: transfer_policy_id,
-            user: *from,
-        });
-
-        // Check if 'to' address is authorized
-        let to_authorized_call = ITIP403Registry::isAuthorizedCall {
-            policyId: transfer_policy_id,
-            user: *to,
-        };
-        let to_authorized = registry.is_authorized(to_authorized_call);
-
-        if !from_authorized || !to_authorized {
+            user: *user,
+        }) {
             return Err(TIP20Error::policy_forbids());
         }
+
+        Ok(())
+    }
+
+    fn ensure_transfer_authorized(
+        &mut self,
+        from: &Address,
+        to: &Address,
+    ) -> Result<(), TIP20Error> {
+        self.ensure_user_authorized(from)?;
+        self.ensure_user_authorized(to)?;
 
         Ok(())
     }
