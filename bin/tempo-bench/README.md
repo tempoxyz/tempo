@@ -233,6 +233,7 @@ Use the following commands to run the node with [sampling](https://github.com/ms
     --dev.block-time 1s \
     --chain genesis.json \
     --engine.disable-precompile-cache \
+    --engine.legacy-state-root \
     --builder.gaslimit 3000000000 \
     --builder.max-tasks 8 \
     --builder.deadline 4 \
@@ -254,5 +255,4 @@ Use the following commands to run the node with [sampling](https://github.com/ms
     --rpc.max-request-size 1000000 \
     --rpc.max-response-size 1000000 \
     --max-tx-reqs 1000000
-
 ```
