@@ -7,8 +7,8 @@ use alloy::{
 use clap::Parser;
 use dashmap::DashMap;
 use futures::StreamExt;
-use std::{collections::HashSet, sync::Arc, time::Duration};
 use itertools::Itertools;
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     contracts::{ITIP20Factory, ITIPFeeAMM, ITIPFeeAMM::Pool, token_id_to_address},
@@ -67,6 +67,7 @@ async fn fetch_all_pools(
         let (&token_a, &token_b) = (token_combo[0], token_combo[1]);
 
         if let Ok(pool) = fee_amm.getPool(token_a, token_b).call().await {
+            #[warn(clippy::collapsible_if)]
             if pool.reserveUserToken > 0 || pool.reserveValidatorToken > 0 {
                 pools.insert((token_a, token_b), pool);
                 debug!("Found pool: {:?} <-> {:?}", token_a, token_b);
