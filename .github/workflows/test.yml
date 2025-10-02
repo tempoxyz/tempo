@@ -71,18 +71,18 @@ jobs:
 
       - name: Run partial network failure test
         run: |
-          cd scripts/consensus
-          ./test-partial-network-failure.sh
+          ./scripts/consensus/test-partial-network-failure.sh
+          sleep 5
 
       - name: Run network halt and recovery test
         run: |
-          cd scripts/consensus
-          ./test-network-halt-and-recovery.sh
+          ./scripts/consensus/test-network-halt-and-recovery.sh
+          sleep 5
 
       - name: Run full network failure and recovery test
         run: |
-          cd scripts/consensus
-          ./test-full-network-failure-and-recovery.sh
+          ./scripts/consensus/test-full-network-failure-and-recovery.sh
+          sleep 5
 
       # Cleanup
       - name: Cleanup containers

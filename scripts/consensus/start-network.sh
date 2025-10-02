@@ -6,6 +6,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# Source test utilities
+source "$SCRIPT_DIR/test-utils.sh"
+
 DOCKER_IMAGE="tempo-commonware:latest"
 NETWORK_NAME="tempo-commonware"
 
