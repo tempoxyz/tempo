@@ -52,7 +52,6 @@ generate_transactions() {
   local rpc_urls="$1"
   local duration="$2"
 
-  # Convert comma-separated URLs to array
   IFS=',' read -ra URL_ARRAY <<<"$rpc_urls"
   local num_nodes=${#URL_ARRAY[@]}
 
@@ -62,10 +61,7 @@ generate_transactions() {
   echo "  Duration: ${duration}s"
   echo ""
 
-  # Anvil test private key (first account, preallocated in genesis)
   local from_key="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-
-  # Generate random wallet for destination
   local to_addr=$(cast wallet new | grep "Address:" | awk '{print $2}')
 
   from_addr=$(cast wallet address --private-key "$from_key")
@@ -79,7 +75,7 @@ generate_transactions() {
   local end_time=$((start_time + duration))
 
   while [ $(date +%s) -lt $end_time ]; do
-    # Round-robin through nodes
+    # Rotate through nodes
     local node_index=$((tx_count % num_nodes))
     local current_rpc="${URL_ARRAY[$node_index]}"
 
