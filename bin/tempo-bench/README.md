@@ -174,6 +174,7 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
     --dev.block-time 1s \
     --chain genesis.json \
     --engine.disable-precompile-cache \
+    --engine.legacy-state-root \
     --builder.gaslimit 3000000000 \
     --builder.max-tasks 8 \
     --builder.deadline 4 \
@@ -200,7 +201,7 @@ tempo-bench generate-genesis --accounts 50000 --output genesis.json
 ### 3. Run max TPS benchmark
 
 ```bash
-tempo-bench run-max-tps --config configs/default.toml
+tempo-bench run-max-tps --duration 15 --tps 20000
 ```
 
 For the most accurate results, make sure to clear the datadir after each run.
@@ -219,7 +220,7 @@ rmdir /s "%APPDATA%\reth"
 
 
 
-### Sampling 
+### Sampling
 Use the following commands to run the node with [sampling](https://github.com/mstange/samply):
 ```bash
 	samply record --output tempo.samply -- tempo node \
@@ -232,6 +233,7 @@ Use the following commands to run the node with [sampling](https://github.com/ms
     --dev.block-time 1s \
     --chain genesis.json \
     --engine.disable-precompile-cache \
+    --engine.legacy-state-root \
     --builder.gaslimit 3000000000 \
     --builder.max-tasks 8 \
     --builder.deadline 4 \
@@ -253,5 +255,4 @@ Use the following commands to run the node with [sampling](https://github.com/ms
     --rpc.max-request-size 1000000 \
     --rpc.max-response-size 1000000 \
     --max-tx-reqs 1000000
-
 ```

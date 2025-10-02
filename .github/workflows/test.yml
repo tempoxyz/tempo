@@ -1,4 +1,4 @@
-name: test
+name: Test
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   test:
@@ -18,25 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
         with:
           cache-on-failure: true
       - name: Run tests
         run: cargo nextest run --verbose
-
-  build:
-    name: build
-    runs-on: depot-ubuntu-24.04-4
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - name: Build
-        run: cargo build --verbose
 
   msrv:
     name: MSRV
@@ -47,9 +36,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.88" # MSRV
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Build with MSRV
         run: cargo build --bin tempo
         env:
@@ -61,7 +49,6 @@ jobs:
     if: always()
     needs:
       - test
-      - build
       - msrv
     timeout-minutes: 30
     steps:

@@ -1,11 +1,25 @@
+name: Build binaries
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      profile:
+        default: "maxperf"
+        description: "Build profile"
+        type: choice
+        options:
+          - "release"
+          - "maxperf"
+          - "profiling"
 
 concurrency:
   group: build-${{ github.head_ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   build:
@@ -16,32 +30,19 @@ jobs:
         binary: [tempo, tempo-bench, tempo-commonware, tempo-sidecar]
     steps:
     - uses: actions/checkout@v2
-    - uses: rui314/setup-mold@v1
     - uses: dtolnay/rust-toolchain@stable
-      with:
-        target: x86_64-unknown-linux-gnu
-    - name: Cache
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - uses: rui314/setup-mold@v1
+    - uses: mozilla-actions/sccache-action@v0.0.9
     - uses: taiki-e/install-action@just
-    - uses: taiki-e/cache-cargo-install-action@v2
-      with:
-        tool: cross
-        git: https://github.com/cross-rs/cross
-        tag: v0.2.5
-    - run: |
-        just build-release ${{ matrix.binary }}
+    - name: Build
+      run: |
+        just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'dev' }}"
     - uses: actions/upload-artifact@v4
       id: binary_upload
       with:
         if-no-files-found: 'error'
-        name: ${{ matrix.binary }}-x86_64-unknown-linux-gnu
-        path: target/x86_64-unknown-linux-gnu/release/${{ matrix.binary }}
+        name: ${{ matrix.binary }}
+        path: target/${{ inputs.profile || 'debug' }}/${{ matrix.binary }}
     - uses: cloudposse/github-action-matrix-outputs-write@v1
       id: out
       with:

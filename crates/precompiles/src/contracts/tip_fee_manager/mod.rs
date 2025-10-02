@@ -136,6 +136,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token());
         }
 
+        if sender == &self.beneficiary {
+            return Err(FeeManagerError::cannot_change_within_block());
+        }
+
         // TODO: validate USD currency requirement
         // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
 
@@ -216,6 +220,12 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
 
         let token_id = address_to_token_id_unchecked(&user_token);
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
+
+        // Ensure that user and FeeManager are authorized to interact with the token
+        tip20_token
+            .ensure_transfer_authorized(&user, &self.contract_address)
+            .map_err(|_| FeeManagerError::token_policy_forbids())?;
+
         tip20_token
             .transfer_fee_pre_tx(&user, max_amount)
             .map_err(|_| FeeManagerError::insufficient_fee_token_balance())?;
@@ -291,10 +301,10 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let validator_token = self.get_validator_token();
 
         // Process all collected fees and execute pending swaps
+        let mut collected_fees = self.get_collected_fees();
         let tokens_with_fees = self.drain_tokens_with_fees();
         let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
 
-        let mut collected_fees = U256::ZERO;
         for token in tokens_with_fees.iter() {
             if *token != validator_token {
                 // Check if pool exists
@@ -312,19 +322,23 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         if !collected_fees.is_zero() {
             let token_id = address_to_token_id_unchecked(&validator_token);
             let mut token = TIP20Token::new(token_id, self.storage);
-            token
-                .transfer(
-                    &self.contract_address,
-                    ITIP20::transferCall {
-                        to: self.beneficiary,
-                        amount: collected_fees,
-                    },
-                )
-                .map_err(|_| {
-                    IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                        IFeeManager::InsufficientFeeTokenBalance {},
+
+            // If FeeManager or validator are blacklisted, we are not transferring any fees
+            if token.is_transfer_authorized(&self.contract_address, &self.beneficiary) {
+                token
+                    .transfer(
+                        &self.contract_address,
+                        ITIP20::transferCall {
+                            to: self.beneficiary,
+                            amount: collected_fees,
+                        },
                     )
-                })?;
+                    .map_err(|_| {
+                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                            IFeeManager::InsufficientFeeTokenBalance {},
+                        )
+                    })?;
+            }
 
             self.clear_collected_fees();
         }
@@ -373,6 +387,12 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
         let slot = collected_fees_slot();
         let current_fees = self.sload(slot);
         self.sstore(slot, current_fees + amount);
+    }
+
+    /// Get collected fees
+    fn get_collected_fees(&mut self) -> U256 {
+        let slot = collected_fees_slot();
+        self.sload(slot)
     }
 
     /// Clear collected fees
@@ -593,6 +613,11 @@ mod tests {
         let token = token_id_to_address(rand::random::<u64>());
 
         let call = IFeeManager::setValidatorTokenCall { token };
+        let result = fee_manager.set_validator_token(&validator, call.clone());
+        assert_eq!(result, Err(FeeManagerError::cannot_change_within_block()));
+
+        // Now set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
+        fee_manager.beneficiary = Address::random();
         let result = fee_manager.set_validator_token(&validator, call);
         assert!(result.is_ok());
 
@@ -625,9 +650,12 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
 
         // Set validator token
+        // Set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
+        fee_manager.beneficiary = Address::random();
         fee_manager
             .set_validator_token(&validator, IFeeManager::setValidatorTokenCall { token })
             .unwrap();
+        fee_manager.beneficiary = validator;
 
         // Set user token
         fee_manager
@@ -677,9 +705,12 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
 
         // Set validator token
+        // Set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
+        fee_manager.beneficiary = Address::random();
         fee_manager
             .set_validator_token(&validator, IFeeManager::setValidatorTokenCall { token })
             .unwrap();
+        fee_manager.beneficiary = validator;
 
         // Set user token
         fee_manager

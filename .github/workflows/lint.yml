@@ -1,4 +1,4 @@
-name: lint
+name: Lint
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: "sccache"
 
 concurrency:
   group: lint-${{ github.head_ref }}
@@ -24,9 +25,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Run clippy
         run: cargo clippy --lib --examples --tests --benches --all-features --locked
         env:
@@ -41,6 +41,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Run fmt
         run: cargo fmt --all --check
 
@@ -51,9 +53,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Check documentation
         run: cargo doc --no-deps --document-private-items --all-features
         env:
@@ -78,6 +79,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check advisories bans sources
 
@@ -88,6 +91,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: fetch deps
         run: |
           # Eagerly pull dependencies
