@@ -19,6 +19,8 @@ COPY crates/ ./crates/
 # NOTE: Remove xtask from workspace to avoid missing dependency error for now
 RUN sed -i '/xtask/d' Cargo.toml
 
+# Install nightly Rust and build the tempo binary
+RUN rustup toolchain install nightly && rustup default nightly
 RUN cargo build --bin tempo-commonware
 
 FROM debian:bookworm-slim
