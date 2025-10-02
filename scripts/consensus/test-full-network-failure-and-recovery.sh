@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Test network halt and recovery scenario
+# Test full network shutdown and restart scenario
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "=== Network Halt and Recovery Test ==="
+echo "=== Full Network Failure Test ==="
 
 # Function to get current block number
 get_block_number() {
@@ -41,20 +41,40 @@ monitor_blocks() {
   fi
 }
 
-# Function to stop a validator
-stop_validator() {
-  local validator_id="$1"
-  echo "Stopping tempo-validator-$validator_id..."
-  docker stop "tempo-validator-$validator_id" >/dev/null
-  echo "  Stopped tempo-validator-$validator_id"
+# Function to check if network is unreachable
+check_network_unreachable() {
+  local rpc_url="$1"
+  echo "Checking network is unreachable..."
+
+  if curl -s -m 2 -X POST "$rpc_url" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' >/dev/null 2>&1; then
+    echo "  ERROR: Network is still reachable"
+    return 1
+  else
+    echo "  ✓ Network is unreachable"
+    return 0
+  fi
 }
 
-# Function to start a validator
-start_validator() {
-  local validator_id="$1"
-  echo "Starting tempo-validator-$validator_id..."
-  docker start "tempo-validator-$validator_id" >/dev/null
-  echo "  Started tempo-validator-$validator_id"
+# Function to stop all validators
+stop_all_validators() {
+  echo "Stopping ALL validators..."
+  for i in {0..3}; do
+    echo "  Stopping tempo-validator-$i..."
+    docker stop "tempo-validator-$i" >/dev/null 2>&1 || true
+  done
+  echo "  All validators stopped"
+}
+
+# Function to start all validators
+start_all_validators() {
+  echo "Starting all validators..."
+  for i in {0..3}; do
+    echo "  Starting tempo-validator-$i..."
+    docker start "tempo-validator-$i" >/dev/null 2>&1 || true
+  done
+  echo "  All validators started"
 }
 
 # Function to start transaction generator
@@ -65,27 +85,6 @@ start_tx_generator() {
   local tx_gen_pid=$!
   echo "  Transaction generator started (PID: $tx_gen_pid)"
   echo "$tx_gen_pid"
-}
-
-# Function to stop transaction generator
-stop_tx_generator() {
-  local tx_gen_pid="$1"
-  echo "Stopping transaction generator..."
-  if kill -0 "$tx_gen_pid" 2>/dev/null; then
-    kill "$tx_gen_pid" 2>/dev/null || true
-    wait "$tx_gen_pid" 2>/dev/null
-    local exit_code=$?
-    echo "  Transaction generator stopped"
-    if [ $exit_code -ne 0 ] && [ $exit_code -ne 143 ]; then # 143 is SIGTERM
-      echo "  ERROR: Transaction generator failed with exit code $exit_code"
-      return 1
-    fi
-  else
-    echo "  Transaction generator already stopped"
-    echo "  ERROR: Transaction generator exited unexpectedly"
-    return 1
-  fi
-  return 0
 }
 
 # Main test
@@ -110,7 +109,6 @@ main() {
   echo "Checking initial block production with tx generator..."
   if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
     echo "Test FAILED: Initial block production not working"
-    stop_tx_generator "$tx_gen_pid" || true
     exit 1
   fi
   echo ""
@@ -121,41 +119,33 @@ main() {
   echo "  Transaction generator completed"
   echo ""
 
-  # Halt 2 nodes (majority failure)
-  echo "Halting 2 validators (majority failure)..."
-  stop_validator 1
-  stop_validator 2
+  # Kill all nodes
+  stop_all_validators
   echo ""
 
-  # Confirm blocks do not progress
-  echo "Confirming network has halted..."
-  if monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
-    echo "Test FAILED: Network should be halted with majority validators down"
+  # Ensure you can't reach the network
+  if ! check_network_unreachable "$rpc_url"; then
+    echo "Test FAILED: Network should be unreachable with all validators down"
     exit 1
-  else
-    echo "   Network correctly halted"
   fi
   echo ""
 
-  # Start nodes back up
-  echo "Starting validators back up..."
-  start_validator 1
-  start_validator 2
+  # Restart all nodes
+  start_all_validators
   echo ""
 
   # Wait for recovery
-  echo "Waiting 20 seconds for network recovery..."
+  echo "Waiting 20 seconds for full network recovery..."
   sleep 20
   echo ""
 
-  # Start transaction generator and assert block production
+  # Start transaction generator and ensure block production comes back up
   tx_gen_pid=$(start_tx_generator 10)
   echo ""
 
-  echo "Checking block production after recovery..."
+  echo "Checking block production after full restart..."
   if ! monitor_blocks "$rpc_url" 5 "  Monitoring for 5 seconds:"; then
-    echo "Test FAILED: Network should resume block production after recovery"
-    stop_tx_generator "$tx_gen_pid" || true
+    echo "Test FAILED: Network should resume block production after full restart"
     exit 1
   fi
   echo ""
@@ -166,7 +156,7 @@ main() {
   echo "  Transaction generator completed"
   echo ""
 
-  echo "Test PASSED: Network halt and recovery working correctly"
+  echo "Test PASSED: Full network restart working correctly"
   echo ""
 
   # Stop the network
