@@ -324,7 +324,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
             let mut token = TIP20Token::new(token_id, self.storage);
 
             // If FeeManager or validator are blacklisted, we are not transferring any fees
-            if !token.is_transfer_authorized(&self.contract_address, &self.beneficiary) {
+            if token.is_transfer_authorized(&self.contract_address, &self.beneficiary) {
                 token
                     .transfer(
                         &self.contract_address,
