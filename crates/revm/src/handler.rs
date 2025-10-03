@@ -133,11 +133,11 @@ where
             is_eip3607_disabled,
             is_nonce_check_disabled,
         )
-        .map_err(|e| EVMError::Transaction(TempoInvalidTransaction::Ethereum(e)))?;
+        .map_err(TempoInvalidTransaction::Ethereum)?;
 
         let max_balance_spending = tx
             .max_balance_spending()
-            .map_err(|e| EVMError::Transaction(TempoInvalidTransaction::Ethereum(e)))?;
+            .map_err(TempoInvalidTransaction::Ethereum)?;
         let effective_balance_spending = tx
             .effective_balance_spending(basefee, blob_price)
             .expect("effective balance is always smaller than max balance so it can't overflow");
