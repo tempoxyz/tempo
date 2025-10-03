@@ -14,7 +14,7 @@ use reth_evm::{
 pub enum TempoInvalidTransaction {
     /// Standard Ethereum transaction validation error.
     #[error(transparent)]
-    Ethereum(#[from] InvalidTransaction),
+    EthInvalidTransaction(#[from] InvalidTransaction),
 
     /// System transaction must be a call (not a create).
     #[error("system transaction must be a call, not a create")]
@@ -57,14 +57,14 @@ pub enum TempoInvalidTransaction {
 impl InvalidTxError for TempoInvalidTransaction {
     fn is_nonce_too_low(&self) -> bool {
         match self {
-            Self::Ethereum(err) => err.is_nonce_too_low(),
+            Self::EthInvalidTransaction(err) => err.is_nonce_too_low(),
             _ => false,
         }
     }
 
     fn as_invalid_tx_err(&self) -> Option<&InvalidTransaction> {
         match self {
-            Self::Ethereum(err) => Some(err),
+            Self::EthInvalidTransaction(err) => Some(err),
             _ => None,
         }
     }
@@ -107,6 +107,9 @@ mod tests {
     fn test_from_invalid_transaction() {
         let eth_err = InvalidTransaction::PriorityFeeGreaterThanMaxFee;
         let tempo_err: TempoInvalidTransaction = eth_err.into();
-        assert!(matches!(tempo_err, TempoInvalidTransaction::Ethereum(_)));
+        assert!(matches!(
+            tempo_err,
+            TempoInvalidTransaction::EthInvalidTransaction(_)
+        ));
     }
 }

@@ -133,11 +133,11 @@ where
             is_eip3607_disabled,
             is_nonce_check_disabled,
         )
-        .map_err(TempoInvalidTransaction::Ethereum)?;
+        .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
 
         let max_balance_spending = tx
             .max_balance_spending()
-            .map_err(TempoInvalidTransaction::Ethereum)?;
+            .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
         let effective_balance_spending = tx
             .effective_balance_spending(basefee, blob_price)
             .expect("effective balance is always smaller than max balance so it can't overflow");
@@ -154,12 +154,14 @@ where
         if is_balance_check_disabled {
             // ignore balance check.
         } else if account_balance < max_balance_spending {
-            return Err(EVMError::Transaction(TempoInvalidTransaction::Ethereum(
-                InvalidTransaction::LackOfFundForMaxFee {
-                    fee: Box::new(max_balance_spending),
-                    balance: Box::new(account_balance),
-                },
-            )));
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::LackOfFundForMaxFee {
+                        fee: Box::new(max_balance_spending),
+                        balance: Box::new(account_balance),
+                    },
+                ),
+            ));
         } else if !max_balance_spending.is_zero() {
             // Call collectFeePreTx on TipFeeManager precompile
             let gas_balance_spending = effective_balance_spending - value;
