@@ -4,14 +4,9 @@ use alloy::{
     signers::local::MnemonicBuilder,
 };
 use alloy_eips::BlockNumberOrTag;
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes};
-use reth_e2e_test_utils::{setup, transaction::TransactionTestContext, wallet::Wallet};
-use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
+use alloy_rpc_types_engine::ForkchoiceState;
+use reth_e2e_test_utils::{transaction::TransactionTestContext, wallet::Wallet};
 use reth_node_api::EngineApiMessageVersion;
-use std::sync::Arc;
-use tempo_chainspec::spec::TempoChainSpec;
-use tempo_node::node::TempoNode;
-use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 /// Test that verifies backfill sync works correctly.
 ///
@@ -23,9 +18,6 @@ use tempo_payload_types::TempoPayloadBuilderAttributes;
 async fn test_backfill_sync() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let genesis_content = include_str!("../assets/test-genesis.json").to_string();
-    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(&genesis_content)?);
-
     // Create wallet from mnemonic
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(0)?
@@ -35,34 +27,13 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     // Setup two connected nodes using e2e test utilities
     println!("Setting up two connected nodes...");
 
-    // Create attributes generator function
-    let attributes_generator = |timestamp| {
-        // Create PayloadAttributes directly
-        let attributes = PayloadAttributes {
-            timestamp,
-            prev_randao: alloy::primitives::B256::ZERO,
-            suggested_fee_recipient: alloy::primitives::Address::ZERO,
-            withdrawals: Some(vec![]),
-            parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
-        };
+    let mut multi_setup = crate::utils::TestNodeBuilder::new()
+        .with_node_count(2)
+        .build_multi_node()
+        .await?;
 
-        // Wrap in TempoPayloadBuilderAttributes
-        TempoPayloadBuilderAttributes::new(EthPayloadBuilderAttributes::new(
-            alloy::primitives::B256::ZERO,
-            attributes,
-        ))
-    };
-
-    let (mut nodes, _tasks, _wallet) = setup::<TempoNode>(
-        2,
-        Arc::new(chain_spec),
-        true, // is_dev
-        attributes_generator,
-    )
-    .await?;
-
-    let mut node1 = nodes.remove(0);
-    let node2 = nodes.remove(0);
+    let mut node1 = multi_setup.nodes.remove(0);
+    let node2 = multi_setup.nodes.remove(0);
 
     // Get provider for node1
     let http_url1 = node1.rpc_url();

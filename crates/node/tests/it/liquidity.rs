@@ -5,10 +5,10 @@ use alloy::{primitives::U256, providers::ProviderBuilder, signers::local::Mnemon
 async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = crate::utils::NodeSource::LocalNode(
-        include_str!("../assets/test-genesis.json").to_string(),
-    );
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = crate::utils::TestNodeBuilder::new()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(0)?

@@ -9,14 +9,9 @@ use alloy::{
 use alloy_eips::eip2718::Encodable2718;
 use alloy_network::Ethereum;
 use alloy_primitives::Bytes;
-use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::TransactionRequest;
-use reth_e2e_test_utils::{setup, transaction::TransactionTestContext};
-use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
-use std::sync::Arc;
-use tempo_chainspec::spec::TempoChainSpec;
+use reth_e2e_test_utils::transaction::TransactionTestContext;
 use tempo_node::node::TempoNode;
-use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
     TIP20_FACTORY_ADDRESS,
     contracts::{
@@ -107,44 +102,6 @@ fn extract_user_txs(all_transactions: Vec<TempoTxEnvelope>) -> Vec<TempoTxEnvelo
         .collect()
 }
 
-/// Helper to setup a test node with optional custom gas limit
-/// Returns the node and TaskManager (which must be kept alive for the node to function)
-async fn setup_test_node(
-    custom_gas_limit: Option<&str>,
-) -> eyre::Result<(
-    reth_e2e_test_utils::NodeHelperType<TempoNode>,
-    reth_ethereum::tasks::TaskManager,
-)> {
-    let genesis_content = include_str!("../assets/test-genesis.json").to_string();
-    let chain_spec = if let Some(gas_limit) = custom_gas_limit {
-        let mut genesis: serde_json::Value = serde_json::from_str(&genesis_content)?;
-        genesis["gasLimit"] = serde_json::json!(gas_limit);
-        TempoChainSpec::from_genesis(serde_json::from_value(genesis)?)
-    } else {
-        TempoChainSpec::from_genesis(serde_json::from_str(&genesis_content)?)
-    };
-
-    let attributes_generator = |timestamp| {
-        let attributes = PayloadAttributes {
-            timestamp,
-            prev_randao: alloy::primitives::B256::ZERO,
-            suggested_fee_recipient: alloy::primitives::Address::ZERO,
-            withdrawals: Some(vec![]),
-            parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
-        };
-
-        TempoPayloadBuilderAttributes::new(EthPayloadBuilderAttributes::new(
-            alloy::primitives::B256::ZERO,
-            attributes,
-        ))
-    };
-
-    let (mut nodes, tasks, _wallet) =
-        setup::<TempoNode>(1, Arc::new(chain_spec), true, attributes_generator).await?;
-
-    Ok((nodes.remove(0), tasks))
-}
-
 /// Helper to inject non-payment transactions from multiple wallets
 async fn inject_non_payment_txs(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
@@ -207,21 +164,24 @@ fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
 async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (mut node, _tasks) = setup_test_node(None).await?;
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
 
     let payment_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(0)?
         .build()?;
     let payment_wallet = EthereumWallet::from(payment_sender.clone());
 
-    let http_url = node.rpc_url();
+    let http_url = setup.node.rpc_url();
     let provider = ProviderBuilder::new()
         .wallet(payment_wallet.clone())
         .connect_http(http_url.clone());
 
     let chain_id = provider.get_chain_id().await?;
 
-    let payment_token = setup_token_manual(&mut node, &provider, &payment_sender, chain_id).await?;
+    let payment_token =
+        setup_token_manual(&mut setup.node, &provider, &payment_sender, chain_id).await?;
 
     // Inject a few mixed transactions
     let num_payment_txs: usize = 3;
@@ -232,11 +192,11 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
     );
 
     // Inject non-payment transactions
-    inject_non_payment_txs(&mut node, chain_id, num_non_payment_txs, 10).await?;
+    inject_non_payment_txs(&mut setup.node, chain_id, num_non_payment_txs, 10).await?;
 
     // Inject payment transactions
     inject_payment_txs_from_sender(
-        &mut node,
+        &mut setup.node,
         &provider,
         &payment_sender,
         &payment_token,
@@ -246,7 +206,7 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
     .await?;
 
     println!("Building block with few mixed transactions...");
-    let payload = node.advance_block().await?;
+    let payload = setup.node.advance_block().await?;
 
     let block = payload.block();
     let all_transactions: Vec<_> = block.body().transactions().cloned().collect();
@@ -289,14 +249,16 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
 async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (mut node, _tasks) = setup_test_node(None).await?;
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
 
     let payment_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(0)?
         .build()?;
     let payment_wallet = EthereumWallet::from(payment_sender.clone());
 
-    let http_url = node.rpc_url();
+    let http_url = setup.node.rpc_url();
     let provider = ProviderBuilder::new()
         .wallet(payment_wallet.clone())
         .connect_http(http_url.clone());
@@ -304,14 +266,15 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     // Setup payment token
-    let payment_token = setup_token_manual(&mut node, &provider, &payment_sender, chain_id).await?;
+    let payment_token =
+        setup_token_manual(&mut setup.node, &provider, &payment_sender, chain_id).await?;
 
     let num_payment_txs: usize = 10;
     println!("Injecting {num_payment_txs} payment transactions into pool...");
 
     // Inject only payment transactions
     inject_payment_txs_from_sender(
-        &mut node,
+        &mut setup.node,
         &provider,
         &payment_sender,
         &payment_token,
@@ -321,7 +284,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
     .await?;
 
     println!("Building block...");
-    let payload = node.advance_block().await?;
+    let payload = setup.node.advance_block().await?;
 
     let block = payload.block();
     let all_transactions: Vec<_> = block.body().transactions().cloned().collect();
@@ -354,9 +317,11 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
 async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (mut node, _tasks) = setup_test_node(None).await?;
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
 
-    let http_url = node.rpc_url();
+    let http_url = setup.node.rpc_url();
     let provider = ProviderBuilder::new().connect_http(http_url.clone());
 
     let chain_id = provider.get_chain_id().await?;
@@ -372,11 +337,11 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
         .wallet_gen();
     for wallet_signer in wallets {
         let raw_tx = TransactionTestContext::transfer_tx_bytes(chain_id, wallet_signer).await;
-        node.rpc.inject_tx(raw_tx).await?;
+        setup.node.rpc.inject_tx(raw_tx).await?;
     }
 
     println!("Building block...");
-    let payload = node.advance_block().await?;
+    let payload = setup.node.advance_block().await?;
 
     let block = payload.block();
     let all_transactions: Vec<_> = block.body().transactions().cloned().collect();
@@ -410,9 +375,12 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Use lower gas limit to ensure transactions overflow to multiple blocks
-    let (mut node, _tasks) = setup_test_node(Some("0xf4240")).await?; // 1,000,000 gas
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .with_gas_limit("0xf4240") // 1,000,000 gas
+        .build_with_node_access()
+        .await?;
 
-    let http_url = node.rpc_url();
+    let http_url = setup.node.rpc_url();
     let provider = ProviderBuilder::new().connect_http(http_url.clone());
 
     let chain_id = provider.get_chain_id().await?;
@@ -441,7 +409,8 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
             .wallet(EthereumWallet::from(sender.clone()))
             .connect_http(http_url.clone());
 
-        let token = setup_token_manual(&mut node, &sender_provider, &sender, chain_id).await?;
+        let token =
+            setup_token_manual(&mut setup.node, &sender_provider, &sender, chain_id).await?;
 
         payment_senders.push(sender);
         payment_tokens.push(token);
@@ -454,7 +423,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
             .connect_http(http_url.clone());
 
         inject_payment_txs_from_sender(
-            &mut node,
+            &mut setup.node,
             &sender_provider,
             sender,
             token,
@@ -466,11 +435,11 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
 
     // Inject non-payment transactions
     // Start from index 30 to avoid collision with payment senders (0-29)
-    inject_non_payment_txs(&mut node, chain_id, num_non_payment_txs, 30).await?;
+    inject_non_payment_txs(&mut setup.node, chain_id, num_non_payment_txs, 30).await?;
 
     // Build first block - should be full
     println!("Building first block...");
-    let first_payload = node.advance_block().await?;
+    let first_payload = setup.node.advance_block().await?;
     let first_block = first_payload.block();
     let first_all_txs: Vec<_> = first_block.body().transactions().cloned().collect();
     let first_user_txs = extract_user_txs(first_all_txs.clone());
@@ -494,7 +463,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
 
     loop {
         println!("Building block {block_num}...");
-        let payload = node.advance_block().await?;
+        let payload = setup.node.advance_block().await?;
         let block = payload.block();
         let all_txs: Vec<_> = block.body().transactions().cloned().collect();
         let user_txs = extract_user_txs(all_txs.clone());
