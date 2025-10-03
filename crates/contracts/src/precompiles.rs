@@ -481,8 +481,8 @@ impl TIP20Error {
 #[macro_export]
 macro_rules! tip403_err {
     ($err:ident) => {
-        $crate::contracts::types::TIP403RegistryError::$err(
-            $crate::contracts::types::ITIP403Registry::$err {},
+        $crate::precompiles::TIP403RegistryError::$err(
+            $crate::precompiles::ITIP403Registry::$err {},
         )
     };
 }
@@ -490,8 +490,8 @@ macro_rules! tip403_err {
 #[macro_export]
 macro_rules! fee_manager_err {
     ($err:ident) => {
-        $crate::contracts::types::IFeeManager::IFeeManagerErrors::$err(
-            $crate::contracts::types::IFeeManager::$err {},
+        $crate::precompiles::IFeeManager::IFeeManagerErrors::$err(
+            $crate::precompiles::IFeeManager::$err {},
         )
     };
 }

@@ -107,12 +107,11 @@ mod tests {
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
         contracts::{
-            HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked,
+            HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked, fee_manager_err,
             tip_fee_manager::amm::PoolKey,
             token_id_to_address,
             types::{IFeeManager, ITIP20, ITIPFeeAMM, TIPFeeAMMError},
         },
-        fee_manager_err,
         precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
     };
     use alloy::{

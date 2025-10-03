@@ -3,9 +3,9 @@ use crate::{
     contracts::{
         ITIP403Registry, StorageProvider,
         storage::slots::{double_mapping_slot, mapping_slot},
+        tip403_err,
         types::{TIP403RegistryError, TIP403RegistryEvent},
     },
-    tip403_err,
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use alloy_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};

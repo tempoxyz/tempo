@@ -7,7 +7,11 @@ pub mod tip403_registry;
 pub mod tip4217_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
-pub mod types;
+
+pub mod types {
+    pub use tempo_contracts::precompiles::*;
+}
+pub use tempo_contracts::{fee_manager_err, tip403_err};
 
 use crate::TIP20_TOKEN_PREFIX;
 use alloy::primitives::Address;
