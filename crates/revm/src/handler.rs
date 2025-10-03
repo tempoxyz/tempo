@@ -29,7 +29,7 @@ use tempo_precompiles::{
 };
 use tracing::trace;
 
-use crate::{TempoEvm, evm::TempoContext};
+use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
 
 /// Hashed account code of default 7702 delegate deployment
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
@@ -70,7 +70,7 @@ where
     DB: reth_evm::Database,
 {
     type Evm = TempoEvm<DB, I>;
-    type Error = EVMError<DB::Error>;
+    type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
 
     #[inline]
@@ -132,9 +132,12 @@ where
             tx.nonce(),
             is_eip3607_disabled,
             is_nonce_check_disabled,
-        )?;
+        )
+        .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
 
-        let max_balance_spending = tx.max_balance_spending()?;
+        let max_balance_spending = tx
+            .max_balance_spending()
+            .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
         let effective_balance_spending = tx
             .effective_balance_spending(basefee, blob_price)
             .expect("effective balance is always smaller than max balance so it can't overflow");
@@ -151,13 +154,14 @@ where
         if is_balance_check_disabled {
             // ignore balance check.
         } else if account_balance < max_balance_spending {
-            return Err(InvalidTransaction::LackOfFundForMaxFee {
-                // fee: Box::new(max_balance_spending),
-                // balance: Box::new(account_balance),
-                fee: Box::new(U256::ZERO),
-                balance: Box::new(U256::ZERO),
-            }
-            .into());
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::LackOfFundForMaxFee {
+                        fee: Box::new(max_balance_spending),
+                        balance: Box::new(account_balance),
+                    },
+                ),
+            ));
         } else if !max_balance_spending.is_zero() {
             // Call collectFeePreTx on TipFeeManager precompile
             let gas_balance_spending = effective_balance_spending - value;
@@ -187,18 +191,19 @@ where
                     use tempo_precompiles::contracts::IFeeManager;
                     match e {
                         IFeeManager::IFeeManagerErrors::InsufficientLiquidity(_) => {
-                            // Treat as lack of funds since user cannot pay fees
-                            EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee {
-                                fee: Box::new(gas_balance_spending),
-                                balance: Box::new(U256::ZERO),
-                            })
+                            EVMError::Transaction(
+                                TempoInvalidTransaction::InsufficientAmmLiquidity {
+                                    fee: Box::new(gas_balance_spending),
+                                },
+                            )
                         }
                         IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(_) => {
-                            // User doesn't have enough fee tokens
-                            EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee {
-                                fee: Box::new(gas_balance_spending),
-                                balance: Box::new(U256::ZERO),
-                            })
+                            EVMError::Transaction(
+                                TempoInvalidTransaction::InsufficientFeeTokenBalance {
+                                    fee: Box::new(gas_balance_spending),
+                                    balance: Box::new(account_balance),
+                                },
+                            )
                         }
                         _ => EVMError::Custom(format!("{e:?}")),
                     }
@@ -263,7 +268,9 @@ where
 /// Looks up the user's fee token in the `TIPFeemanager` contract.
 ///
 /// If no fee token is set for the user, or the fee token is the zero address, the returned fee token will be the validator's fee token.
-pub fn get_fee_token<DB>(ctx: &mut TempoContext<DB>) -> Result<Address, EVMError<DB::Error>>
+pub fn get_fee_token<DB>(
+    ctx: &mut TempoContext<DB>,
+) -> Result<Address, EVMError<DB::Error, TempoInvalidTransaction>>
 where
     DB: Database,
 {

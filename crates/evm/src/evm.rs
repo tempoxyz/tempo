@@ -13,13 +13,10 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, Bytes, TxKind};
-use reth_revm::{
-    InspectSystemCallEvm, MainContext,
-    context::result::{ExecutionResult, InvalidTransaction},
-};
+use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
-use tempo_revm::{TempoTxEnv, evm::TempoContext};
+use tempo_revm::{TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -29,7 +26,8 @@ impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
     type Context<DB: Database> = TempoContext<DB>;
     type Tx = TempoTxEnv;
-    type Error<DBError: std::error::Error + Send + Sync + 'static> = EVMError<DBError>;
+    type Error<DBError: std::error::Error + Send + Sync + 'static> =
+        EVMError<DBError, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
     type Precompiles = PrecompilesMap;
@@ -133,7 +131,7 @@ where
 {
     type DB = DB;
     type Tx = TempoTxEnv;
-    type Error = EVMError<DB::Error>;
+    type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
     type Precompiles = PrecompilesMap;
@@ -153,9 +151,7 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         if tx.is_system_tx {
             let TxKind::Call(to) = tx.inner.kind else {
-                return Err(EVMError::Transaction(
-                    InvalidTransaction::BlobCreateTransaction,
-                ));
+                return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
             };
 
             let mut result = if self.inspect {
@@ -173,9 +169,7 @@ where
                 ..
             } = &mut result.result
             else {
-                return Err(EVMError::Transaction(
-                    InvalidTransaction::BlobCreateTransaction,
-                ));
+                return Err(TempoInvalidTransaction::SystemTransactionFailed.into());
             };
 
             *gas_used = 0;
