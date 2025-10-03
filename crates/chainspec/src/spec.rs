@@ -158,7 +158,7 @@ impl EthChainSpec for TempoChainSpec {
     }
 
     fn genesis_hash(&self) -> B256 {
-        self.inner.genesis_hash()
+        self.genesis_header.hash()
     }
 
     fn genesis_header(&self) -> &Self::Header {
