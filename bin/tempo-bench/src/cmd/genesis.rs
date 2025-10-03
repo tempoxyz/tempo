@@ -306,11 +306,14 @@ fn initialize_fee_manager(
     initial_accounts: Vec<Address>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
+    // Update the beneficiary since the validator cant set the validator fee token for themselves
     let block = evm.block.clone();
+
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmStorageProvider::new(evm_internals, 1);
 
-    let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
+    let mut fee_manager =
+        TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut provider);
     fee_manager
         .initialize()
         .expect("Could not init fee manager");
