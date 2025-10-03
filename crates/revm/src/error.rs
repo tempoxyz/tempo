@@ -1,7 +1,10 @@
 //! Tempo-specific transaction validation errors.
 
 use alloy_primitives::U256;
-use reth_evm::{InvalidTxError, revm::context::result::InvalidTransaction};
+use reth_evm::{
+    InvalidTxError,
+    revm::context::result::{EVMError, InvalidTransaction},
+};
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -64,6 +67,12 @@ impl InvalidTxError for TempoInvalidTransaction {
             Self::Ethereum(err) => Some(err),
             _ => None,
         }
+    }
+}
+
+impl<DBError> From<TempoInvalidTransaction> for EVMError<DBError, TempoInvalidTransaction> {
+    fn from(err: TempoInvalidTransaction) -> Self {
+        Self::Transaction(err)
     }
 }
 

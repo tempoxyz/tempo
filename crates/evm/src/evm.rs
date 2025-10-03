@@ -151,9 +151,7 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         if tx.is_system_tx {
             let TxKind::Call(to) = tx.inner.kind else {
-                return Err(EVMError::Transaction(
-                    TempoInvalidTransaction::SystemTransactionMustBeCall,
-                ));
+                return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
             };
 
             let mut result = if self.inspect {
@@ -171,9 +169,7 @@ where
                 ..
             } = &mut result.result
             else {
-                return Err(EVMError::Transaction(
-                    TempoInvalidTransaction::SystemTransactionFailed,
-                ));
+                return Err(TempoInvalidTransaction::SystemTransactionFailed.into());
             };
 
             *gas_used = 0;
