@@ -4,7 +4,7 @@ use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator,
@@ -22,31 +22,18 @@ pub struct TempoTransactionValidator<Client> {
 
 impl<Client> TempoTransactionValidator<Client>
 where
-    Client: StateProviderFactory,
+    Client: ChainSpecProvider<ChainSpec: EthereumHardforks> + StateProviderFactory,
 {
     pub fn new(inner: EthTransactionValidator<Client, TempoPooledTransaction>) -> Self {
         Self { inner }
     }
-}
 
-impl<Client> TransactionValidator for TempoTransactionValidator<Client>
-where
-    Client: ChainSpecProvider<ChainSpec: EthereumHardforks> + StateProviderFactory,
-{
-    type Transaction = TempoPooledTransaction;
-
-    async fn validate_transaction(
+    fn validate_one(
         &self,
         origin: TransactionOrigin,
-        transaction: Self::Transaction,
-    ) -> TransactionValidationOutcome<Self::Transaction> {
-        let state_provider = match self.inner.client().latest() {
-            Ok(provider) => provider,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
-
+        transaction: TempoPooledTransaction,
+        state_provider: impl StateProvider,
+    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         if transaction.inner().is_system_tx() {
             return TransactionValidationOutcome::Error(
                 *transaction.hash(),
@@ -88,6 +75,28 @@ where
 
         self.inner.validate_one(origin, transaction)
     }
+}
+
+impl<Client> TransactionValidator for TempoTransactionValidator<Client>
+where
+    Client: ChainSpecProvider<ChainSpec: EthereumHardforks> + StateProviderFactory,
+{
+    type Transaction = TempoPooledTransaction;
+
+    async fn validate_transaction(
+        &self,
+        origin: TransactionOrigin,
+        transaction: Self::Transaction,
+    ) -> TransactionValidationOutcome<Self::Transaction> {
+        let state_provider = match self.inner.client().latest() {
+            Ok(provider) => provider,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
+
+        self.validate_one(origin, transaction, state_provider)
+    }
 
     async fn validate_transactions(
         &self,
@@ -107,47 +116,7 @@ where
 
         transactions
             .into_iter()
-            .map(|(origin, tx)| {
-                if tx.inner().is_system_tx() {
-                    return TransactionValidationOutcome::Error(
-                        *tx.hash(),
-                        InvalidTransactionError::TxTypeNotSupported.into(),
-                    );
-                }
-
-                let fee_payer = match tx.inner().fee_payer(tx.sender()) {
-                    Ok(fee_payer) => fee_payer,
-                    Err(err) => {
-                        return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
-                    }
-                };
-
-                let balance =
-                    match state_provider.get_fee_token_balance(fee_payer, tx.inner().fee_token()) {
-                        Ok(balance) => balance,
-                        Err(err) => {
-                            return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
-                        }
-                    };
-
-                // Get the tx cost and adjust for fee token decimals
-                let cost = tx.fee_token_cost().div_ceil(USD_DECIMAL_FACTOR);
-                if balance < cost {
-                    return TransactionValidationOutcome::Invalid(
-                        tx,
-                        InvalidTransactionError::InsufficientFunds(
-                            GotExpected {
-                                got: balance,
-                                expected: cost,
-                            }
-                            .into(),
-                        )
-                        .into(),
-                    );
-                }
-
-                self.inner.validate_one(origin, tx)
-            })
+            .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider))
             .collect()
     }
 
@@ -170,47 +139,7 @@ where
 
         transactions
             .into_iter()
-            .map(|tx| {
-                if tx.inner().is_system_tx() {
-                    return TransactionValidationOutcome::Error(
-                        *tx.hash(),
-                        InvalidTransactionError::TxTypeNotSupported.into(),
-                    );
-                }
-
-                let fee_payer = match tx.inner().fee_payer(tx.sender()) {
-                    Ok(fee_payer) => fee_payer,
-                    Err(err) => {
-                        return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
-                    }
-                };
-
-                let balance =
-                    match state_provider.get_fee_token_balance(fee_payer, tx.inner().fee_token()) {
-                        Ok(balance) => balance,
-                        Err(err) => {
-                            return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
-                        }
-                    };
-
-                // Get the tx cost and adjust for fee token decimals
-                let cost = tx.cost().div_ceil(USD_DECIMAL_FACTOR);
-                if balance < cost {
-                    return TransactionValidationOutcome::Invalid(
-                        tx,
-                        InvalidTransactionError::InsufficientFunds(
-                            GotExpected {
-                                got: balance,
-                                expected: cost,
-                            }
-                            .into(),
-                        )
-                        .into(),
-                    );
-                }
-
-                self.inner.validate_one(origin, tx)
-            })
+            .map(|tx| self.validate_one(origin, tx, &state_provider))
             .collect()
     }
 
