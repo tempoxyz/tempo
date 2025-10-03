@@ -1,6 +1,6 @@
 use alloy::{
     network::{EthereumWallet, TxSigner},
-    primitives::{Address, U256},
+    primitives::{Address, U256, uint},
     providers::ProviderBuilder,
     signers::local::PrivateKeySigner,
 };
@@ -111,20 +111,20 @@ async fn rebalance_pool(
     let user_reserve = U256::from(pool.reserveUserToken);
     let validator_reserve = U256::from(pool.reserveValidatorToken);
 
-    if user_reserve == U256::ZERO && validator_reserve == U256::ZERO {
+    if user_reserve.is_zero() && validator_reserve.is_zero() {
         debug!("Pool has zero reserves, skipping rebalance");
         return Ok(());
     }
 
     // Calculate if rebalance is needed - check if user reserves are significantly higher
     let total_reserve = user_reserve + validator_reserve;
-    if total_reserve == U256::ZERO {
+    if total_reserve.is_zero() {
         debug!("Total reserves are zero, skipping rebalance");
         return Ok(());
     }
 
-    let user_ratio = user_reserve * U256::from(100) / total_reserve;
-    let threshold = U256::from(60); // If user reserves > 60% of total, rebalance
+    let user_ratio = user_reserve * uint!(100_U256) / total_reserve;
+    let threshold = uint!(60_U256); // If user reserves > 60% of total, rebalance
 
     if user_ratio > threshold {
         info!(
@@ -134,9 +134,9 @@ async fn rebalance_pool(
 
         // Calculate amount to rebalance - take half of the excess
         let excess = user_reserve.saturating_sub(validator_reserve);
-        let amount_out = excess / U256::from(2);
+        let amount_out = excess / uint!(2_U256);
 
-        if amount_out > U256::ZERO {
+        if !amount_out.is_zero() {
             let to_address = signer.default_signer().address();
 
             match fee_amm
