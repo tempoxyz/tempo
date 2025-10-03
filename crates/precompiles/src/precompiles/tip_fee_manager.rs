@@ -9,37 +9,94 @@ use crate::{
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-#[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
-        let selector: [u8; 4] = calldata.get(..4).ok_or_else(|| {
-            PrecompileError::Other("Invalid input: missing function selector".to_string())
-        })?.try_into().map_err(|_| {
-            PrecompileError::Other("Invalid function selector length".to_string())
-        })?;
+        let selector: [u8; 4] = calldata
+            .get(..4)
+            .ok_or_else(|| {
+                PrecompileError::Other("Invalid input: missing function selector".to_string())
+            })?
+            .try_into()
+            .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
 
         match selector {
             // View functions
-            IFeeManager::userTokensCall::SELECTOR => view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call)),
-            IFeeManager::validatorTokensCall::SELECTOR => view::<IFeeManager::validatorTokensCall>(calldata, |call| self.validator_tokens(call)),
-            IFeeManager::getFeeTokenBalanceCall::SELECTOR => view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| self.get_fee_token_balance(call)),
-            ITIPFeeAMM::getPoolIdCall::SELECTOR => view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| self.get_pool_id(call)),
-            ITIPFeeAMM::getPoolCall::SELECTOR => view::<ITIPFeeAMM::getPoolCall>(calldata, |call| self.get_pool(call)),
-            ITIPFeeAMM::poolsCall::SELECTOR => view::<ITIPFeeAMM::poolsCall>(calldata, |call| self.pools(call)),
-            ITIPFeeAMM::totalSupplyCall::SELECTOR => view::<ITIPFeeAMM::totalSupplyCall>(calldata, |call| self.total_supply(call)),
-            ITIPFeeAMM::liquidityBalancesCall::SELECTOR => view::<ITIPFeeAMM::liquidityBalancesCall>(calldata, |call| self.liquidity_balances(call)),
+            IFeeManager::userTokensCall::SELECTOR => {
+                view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call))
+            }
+            IFeeManager::validatorTokensCall::SELECTOR => {
+                view::<IFeeManager::validatorTokensCall>(calldata, |call| {
+                    self.validator_tokens(call)
+                })
+            }
+            IFeeManager::getFeeTokenBalanceCall::SELECTOR => {
+                view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| {
+                    self.get_fee_token_balance(call)
+                })
+            }
+            ITIPFeeAMM::getPoolIdCall::SELECTOR => {
+                view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| self.get_pool_id(call))
+            }
+            ITIPFeeAMM::getPoolCall::SELECTOR => {
+                view::<ITIPFeeAMM::getPoolCall>(calldata, |call| self.get_pool(call))
+            }
+            ITIPFeeAMM::poolsCall::SELECTOR => {
+                view::<ITIPFeeAMM::poolsCall>(calldata, |call| self.pools(call))
+            }
+            ITIPFeeAMM::totalSupplyCall::SELECTOR => {
+                view::<ITIPFeeAMM::totalSupplyCall>(calldata, |call| self.total_supply(call))
+            }
+            ITIPFeeAMM::liquidityBalancesCall::SELECTOR => {
+                view::<ITIPFeeAMM::liquidityBalancesCall>(calldata, |call| {
+                    self.liquidity_balances(call)
+                })
+            }
 
             // State changing functions
-            IFeeManager::setValidatorTokenCall::SELECTOR => mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_validator_token(s, call)),
-            IFeeManager::setUserTokenCall::SELECTOR => mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, call| self.set_user_token(s, call)),
-            IFeeManager::executeBlockCall::SELECTOR => {
-                mutate_void::<IFeeManager::executeBlockCall, IFeeManager::IFeeManagerErrors>(calldata, msg_sender, |s, _call| self.execute_block(s))
+            IFeeManager::setValidatorTokenCall::SELECTOR => {
+                mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.set_validator_token(s, call),
+                )
             }
-            ITIPFeeAMM::mintCall::SELECTOR => mutate::<ITIPFeeAMM::mintCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.mint(*s, call)),
-            ITIPFeeAMM::burnCall::SELECTOR => mutate::<ITIPFeeAMM::burnCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.burn(*s, call)),
-            ITIPFeeAMM::rebalanceSwapCall::SELECTOR => mutate::<ITIPFeeAMM::rebalanceSwapCall, ITIPFeeAMM::ITIPFeeAMMErrors>(calldata, msg_sender, |s, call| self.rebalance_swap(*s, call)),
+            IFeeManager::setUserTokenCall::SELECTOR => {
+                mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.set_user_token(s, call),
+                )
+            }
+            IFeeManager::executeBlockCall::SELECTOR => {
+                mutate_void::<IFeeManager::executeBlockCall, IFeeManager::IFeeManagerErrors>(
+                    calldata,
+                    msg_sender,
+                    |s, _call| self.execute_block(s),
+                )
+            }
+            ITIPFeeAMM::mintCall::SELECTOR => mutate::<
+                ITIPFeeAMM::mintCall,
+                ITIPFeeAMM::ITIPFeeAMMErrors,
+            >(calldata, msg_sender, |s, call| {
+                self.mint(*s, call)
+            }),
+            ITIPFeeAMM::burnCall::SELECTOR => mutate::<
+                ITIPFeeAMM::burnCall,
+                ITIPFeeAMM::ITIPFeeAMMErrors,
+            >(calldata, msg_sender, |s, call| {
+                self.burn(*s, call)
+            }),
+            ITIPFeeAMM::rebalanceSwapCall::SELECTOR => {
+                mutate::<ITIPFeeAMM::rebalanceSwapCall, ITIPFeeAMM::ITIPFeeAMMErrors>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.rebalance_swap(*s, call),
+                )
+            }
 
-            _ => Err(PrecompileError::Other("Unknown function selector".to_string()))
+            _ => Err(PrecompileError::Other(
+                "Unknown function selector".to_string(),
+            )),
         }
     }
 }
