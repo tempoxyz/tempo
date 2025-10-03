@@ -1,7 +1,5 @@
 name: Build binaries
 
-# TODO: Vercel requires that the repo is either open sourced or contributors have deployment permissions.
-# This should be uncommented when the repo is public.
 on:
   # push:
   #   branches: [main]
@@ -52,32 +50,3 @@ jobs:
           matrix-key: ${{ matrix.binary }}
           outputs: |-
             artifact_id: ${{ steps.binary_upload.outputs.artifact-id }}
-
-  deploy:
-    name: Deploy to devnet-1
-    runs-on: depot-ubuntu-latest-4
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v2
-      - uses: taiki-e/install-action@just
-      - name: Install Ansible
-        shell: bash
-        run: |
-          sudo apt update
-          sudo apt install -y ansible
-      - name: Export vault password file
-        working-directory: contrib/infra/ansible
-        env:
-          ANSIBLE_VAULT_PASSWORD: "${{secrets.ANSIBLE_VAULT_PASSWORD}}"
-        run: |
-          echo -e "$ANSIBLE_VAULT_PASSWORD" >> vault.key
-      - uses: cloudposse/github-action-matrix-outputs-read@v1
-        id: read
-        with:
-          matrix-step-name: tempo
-      - name: Run playbook
-        working-directory: contrib/infra/ansible
-        run: |
-          just dependencies
-          just run-playbook-ci devnet devnet-1 "tempo_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{ fromJson(steps.read.outputs.result).artifact_id.tempo }}/zip' tempo_sidecar_download_url='https://api.github.com/repos/tempoxyz/tempo/actions/artifacts/${{ fromJson(steps.read.outputs.result).artifact_id.tempo_sidecar }}/zip'"

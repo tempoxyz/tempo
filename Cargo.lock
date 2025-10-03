@@ -12894,6 +12894,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "derive_more",
+ "reth-consensus",
  "reth-evm",
  "reth-evm-ethereum",
  "reth-primitives-traits",
@@ -12905,6 +12906,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
+ "thiserror 2.0.17",
  "tracing",
 ]
 
