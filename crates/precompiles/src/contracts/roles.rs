@@ -228,7 +228,7 @@ mod tests {
 
         let admin = Address::from([1u8; 20]);
         let user = Address::from([2u8; 20]);
-        let custom_role = B256::from(keccak256(b"CUSTOM_ROLE"));
+        let custom_role = keccak256(b"CUSTOM_ROLE");
 
         // Initialize and grant admin
         roles.initialize();
@@ -270,8 +270,8 @@ mod tests {
         let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
 
         let admin = Address::from([1u8; 20]);
-        let custom_role = B256::from(keccak256(b"CUSTOM_ROLE"));
-        let admin_role = B256::from(keccak256(b"ADMIN_ROLE"));
+        let custom_role = keccak256(b"CUSTOM_ROLE");
+        let admin_role = keccak256(b"ADMIN_ROLE");
 
         roles.initialize();
         roles.grant_default_admin(&admin);
@@ -300,7 +300,7 @@ mod tests {
         let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
 
         let user = Address::from([1u8; 20]);
-        let custom_role = B256::from(keccak256(b"CUSTOM_ROLE"));
+        let custom_role = keccak256(b"CUSTOM_ROLE");
 
         roles.initialize();
         roles.grant_role_internal(&user, custom_role);
@@ -322,7 +322,7 @@ mod tests {
 
         let user = Address::from([1u8; 20]);
         let other = Address::from([2u8; 20]);
-        let custom_role = B256::from(keccak256(b"CUSTOM_ROLE"));
+        let custom_role = keccak256(b"CUSTOM_ROLE");
 
         roles.initialize();
 

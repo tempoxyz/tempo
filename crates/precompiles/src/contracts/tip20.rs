@@ -14,6 +14,7 @@ use crate::{
 use alloy::{
     consensus::crypto::secp256k1 as eth_secp256k1,
     primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
+    sol_types::SolStruct,
 };
 use revm::state::Bytecode;
 use tracing::trace;
@@ -45,15 +46,10 @@ pub struct TIP20Token<'a, S: StorageProvider> {
     pub storage: &'a mut S,
 }
 
-pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"PAUSE_ROLE")));
-pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"UNPAUSE_ROLE")));
-pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| B256::from(keccak256(b"ISSUER_ROLE")));
-pub static BURN_BLOCKED_ROLE: LazyLock<B256> =
-    LazyLock::new(|| B256::from(keccak256(b"BURN_BLOCKED_ROLE")));
-
-pub static PERMIT_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
-});
+pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
+pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
+pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
+pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
 impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     pub fn name(&mut self) -> String {
@@ -543,8 +539,8 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         // Recover address from signature
         let recovered_addr = {
             let digest = self.compute_permit_digest(
-                &call.owner,
-                &call.spender,
+                call.owner,
+                call.spender,
                 call.value,
                 nonce,
                 U256::from(call.deadline),
@@ -917,30 +913,21 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn compute_permit_digest(
         &mut self,
-        owner: &Address,
-        spender: &Address,
+        owner: Address,
+        spender: Address,
         value: U256,
         nonce: U256,
         deadline: U256,
     ) -> B256 {
         // Build EIP-712 struct hash for Permit
-        let struct_hash = {
-            // 32 (typehash) + 20 (owner) + 20 (spender) + 32 (value) + 32 (nonce) + 32 (deadline) = 168
-            let mut struct_data = [0u8; 168];
-            // typehash
-            struct_data[0..32].copy_from_slice(PERMIT_TYPEHASH.as_slice());
-            // owner (20 bytes)
-            struct_data[32..52].copy_from_slice(owner.as_slice());
-            // spender (20 bytes)
-            struct_data[52..72].copy_from_slice(spender.as_slice());
-            // value (32 bytes)
-            struct_data[72..104].copy_from_slice(&value.to_be_bytes::<32>());
-            // nonce (32 bytes)
-            struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
-            // deadline (32 bytes)
-            struct_data[136..168].copy_from_slice(&deadline.to_be_bytes::<32>());
-            keccak256(struct_data)
-        };
+        let struct_hash = ITIP20::Permit {
+            owner,
+            spender,
+            value,
+            nonce,
+            deadline,
+        }
+        .eip712_hash_struct();
 
         // EIP-191 digest: 0x19 0x01 || domainSeparator || structHash
         let mut digest_data = [0u8; 66];
@@ -992,14 +979,14 @@ mod tests {
             .sload(token.token_address, nonce_slot)
             .expect("Could not get nonce");
 
-        let mut struct_data = [0u8; 168];
-        struct_data[0..32].copy_from_slice(super::PERMIT_TYPEHASH.as_slice());
-        struct_data[32..52].copy_from_slice(owner.as_slice());
-        struct_data[52..72].copy_from_slice(spender.as_slice());
-        struct_data[72..104].copy_from_slice(&value.to_be_bytes::<32>());
-        struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
-        struct_data[136..168].copy_from_slice(&deadline.to_be_bytes::<32>());
-        let struct_hash = keccak256(struct_data);
+        let struct_hash = ITIP20::Permit {
+            owner,
+            spender,
+            value,
+            nonce,
+            deadline,
+        }
+        .eip712_hash_struct();
 
         // Build digest per EIP-191
         let domain = token.domain_separator();
@@ -1072,14 +1059,14 @@ mod tests {
             .sload(token.token_address, nonce_slot)
             .expect("Could not get nonce");
 
-        let mut struct_data = [0u8; 168];
-        struct_data[0..32].copy_from_slice(super::PERMIT_TYPEHASH.as_slice());
-        struct_data[32..52].copy_from_slice(owner.as_slice());
-        struct_data[52..72].copy_from_slice(spender.as_slice());
-        struct_data[72..104].copy_from_slice(&value.to_be_bytes::<32>());
-        struct_data[104..136].copy_from_slice(&nonce.to_be_bytes::<32>());
-        struct_data[136..168].copy_from_slice(&deadline.to_be_bytes::<32>());
-        let struct_hash = keccak256(struct_data);
+        let struct_hash = ITIP20::Permit {
+            owner,
+            spender,
+            value,
+            nonce,
+            deadline,
+        }
+        .eip712_hash_struct();
 
         let domain = token.domain_separator();
         let mut digest_data = [0u8; 66];

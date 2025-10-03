@@ -102,7 +102,7 @@ mod tests {
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
-        let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
+        let issuer_role = keccak256(b"ISSUER_ROLE");
         token
             .get_roles_contract()
             .grant_role(
@@ -152,7 +152,7 @@ mod tests {
 
         // Grant ISSUER_ROLE to sender
         use alloy::primitives::keccak256;
-        let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
+        let issuer_role = keccak256(b"ISSUER_ROLE");
         token
             .get_roles_contract()
             .grant_role(
@@ -199,7 +199,7 @@ mod tests {
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
-        let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
+        let issuer_role = keccak256(b"ISSUER_ROLE");
         token
             .get_roles_contract()
             .grant_role(
@@ -275,7 +275,7 @@ mod tests {
         token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         // Grant ISSUER_ROLE to admin
-        let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
+        let issuer_role = keccak256(b"ISSUER_ROLE");
         token
             .get_roles_contract()
             .grant_role(
@@ -353,8 +353,8 @@ mod tests {
 
         // Grant PAUSE_ROLE to pauser and UNPAUSE_ROLE to unpauser
         use alloy::primitives::keccak256;
-        let pause_role = alloy::primitives::B256::from(keccak256(b"PAUSE_ROLE"));
-        let unpause_role = alloy::primitives::B256::from(keccak256(b"UNPAUSE_ROLE"));
+        let pause_role = keccak256(b"PAUSE_ROLE");
+        let unpause_role = keccak256(b"UNPAUSE_ROLE");
 
         token
             .get_roles_contract()
@@ -414,7 +414,7 @@ mod tests {
 
         // Grant ISSUER_ROLE to admin and burner
         use alloy::primitives::keccak256;
-        let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
+        let issuer_role = keccak256(b"ISSUER_ROLE");
 
         token
             .get_roles_contract()
@@ -539,7 +539,7 @@ mod tests {
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
-        let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
+        let issuer_role = keccak256(b"ISSUER_ROLE");
         token
             .get_roles_contract()
             .grant_role(
@@ -585,7 +585,7 @@ mod tests {
 
         // Grant a role to user1
         use alloy::primitives::keccak256;
-        let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
+        let issuer_role = keccak256(b"ISSUER_ROLE");
 
         let grant_call = IRolesAuth::grantRoleCall {
             role: issuer_role,
@@ -644,7 +644,7 @@ mod tests {
         token.initialize("Test", "TST", "USD", &admin).unwrap();
 
         use alloy::primitives::keccak256;
-        let issuer_role = alloy::primitives::B256::from(keccak256(b"ISSUER_ROLE"));
+        let issuer_role = keccak256(b"ISSUER_ROLE");
         token
             .get_roles_contract()
             .grant_role(
