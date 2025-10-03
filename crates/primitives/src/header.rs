@@ -23,8 +23,8 @@ use reth_primitives_traits::{InMemorySize, serde_bincode_compat::RlpBincode};
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-#[reth_codecs_derive::add_arbitrary_tests(compact)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]

@@ -19,7 +19,6 @@ reth-db-api = { workspace = true, optional = true }
 reth-ethereum-primitives.workspace = true
 reth-primitives-traits.workspace = true
 reth-codecs = { workspace = true, optional = true }
-reth-codecs-derive = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 
 # Alloy
@@ -38,7 +37,9 @@ serde = { workspace = true, features = ["derive"], optional = true }
 modular-bitfield = { version = "0.11.2", optional = true }
 
 [dev-dependencies]
+arbitrary.workspace = true
 reth-codecs.workspace = true
+reth-codecs-derive.workspace = true
 test-fuzz.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
@@ -57,7 +58,6 @@ serde = [
 ]
 reth-codec = [
 	"dep:reth-codecs",
-	"dep:reth-codecs-derive",
 	"dep:reth-db-api",
 	"dep:modular-bitfield",
 	"reth-ethereum-primitives/reth-codec",
