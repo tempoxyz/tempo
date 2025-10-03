@@ -107,10 +107,17 @@ pub(crate) async fn setup_test_node(
                 );
             node_config.txpool.max_account_slots = usize::MAX;
 
+            // Configure random non-zero validator address
+            let validator = Address::random();
+
             let node_handle = NodeBuilder::new(node_config.clone())
                 .testing_node(tasks.executor())
                 .node(TempoNode::default())
                 .launch_with_debug_capabilities()
+                .map_debug_payload_attributes(move |mut attributes| {
+                    attributes.suggested_fee_recipient = validator;
+                    attributes
+                })
                 .await?;
 
             let http_url = node_handle

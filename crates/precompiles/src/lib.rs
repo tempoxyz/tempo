@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy_primitives::{Address, address, hex};
+use alloy::primitives::{Address, address, hex};
 
 pub mod contracts;
 pub mod precompiles;

@@ -7,7 +7,7 @@ use crate::{
     precompiles::{Precompile, metadata, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 
 #[rustfmt::skip]
 impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
@@ -69,10 +69,9 @@ mod tests {
         precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
     };
     use alloy::{
-        primitives::{U256, keccak256},
+        primitives::{Bytes, U256, keccak256},
         sol_types::SolValue,
     };
-    use alloy_primitives::Bytes;
 
     use super::*;
 

@@ -54,8 +54,15 @@ where
             );
         }
 
+        let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
+            Ok(fee_payer) => fee_payer,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
+
         let balance = match state_provider
-            .get_fee_token_balance(transaction.sender(), transaction.inner().fee_token())
+            .get_fee_token_balance(fee_payer, transaction.inner().fee_token())
         {
             Ok(balance) => balance,
             Err(err) => {
@@ -108,14 +115,20 @@ where
                     );
                 }
 
-                let balance = match state_provider
-                    .get_fee_token_balance(tx.sender(), tx.inner().fee_token())
-                {
-                    Ok(balance) => balance,
+                let fee_payer = match tx.inner().fee_payer(tx.sender()) {
+                    Ok(fee_payer) => fee_payer,
                     Err(err) => {
                         return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
                     }
                 };
+
+                let balance =
+                    match state_provider.get_fee_token_balance(fee_payer, tx.inner().fee_token()) {
+                        Ok(balance) => balance,
+                        Err(err) => {
+                            return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
+                        }
+                    };
 
                 // Get the tx cost and adjust for fee token decimals
                 let cost = tx.fee_token_cost().div_ceil(USD_DECIMAL_FACTOR);
@@ -165,14 +178,20 @@ where
                     );
                 }
 
-                let balance = match state_provider
-                    .get_fee_token_balance(tx.sender(), tx.inner().fee_token())
-                {
-                    Ok(balance) => balance,
+                let fee_payer = match tx.inner().fee_payer(tx.sender()) {
+                    Ok(fee_payer) => fee_payer,
                     Err(err) => {
                         return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
                     }
                 };
+
+                let balance =
+                    match state_provider.get_fee_token_balance(fee_payer, tx.inner().fee_token()) {
+                        Ok(balance) => balance,
+                        Err(err) => {
+                            return TransactionValidationOutcome::Error(*tx.hash(), Box::new(err));
+                        }
+                    };
 
                 // Get the tx cost and adjust for fee token decimals
                 let cost = tx.cost().div_ceil(USD_DECIMAL_FACTOR);

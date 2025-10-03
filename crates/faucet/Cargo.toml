@@ -1,10 +1,12 @@
 [package]
 name = "tempo-faucet"
+description = "Faucet RPC module for dispensing TIP20 tokens"
+
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Faucet RPC module for dispensing TIP20 tokens"
+publish.workspace = true
 
 [lints]
 workspace = true
@@ -19,7 +21,7 @@ alloy = { workspace = true, features = [
   "signers",
   "signer-local",
   "signer-mnemonic-all-languages",
-  "reqwest-rustls-tls" # TODO(mattsse): set this to just reqwest after https://github.com/alloy-rs/alloy/pull/2865
+  "reqwest-rustls-tls", # TODO(mattsse): set this to just reqwest after https://github.com/alloy-rs/alloy/pull/2865
 ] }
 async-trait.workspace = true
 jsonrpsee.workspace = true

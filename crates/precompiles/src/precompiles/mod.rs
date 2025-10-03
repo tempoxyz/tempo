@@ -1,15 +1,12 @@
 use alloy::{
-    primitives::Address,
+    primitives::{Address, Bytes},
     sol,
     sol_types::{SolCall, SolError, SolInterface},
 };
-use alloy_primitives::Bytes;
-use reth_evm::{
-    precompiles::{DynPrecompile, PrecompilesMap},
-    revm::{
-        context::Block,
-        precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
-    },
+use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
+use revm::{
+    context::Block,
+    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub mod tip20;
@@ -202,7 +199,7 @@ where
 {
     match result {
         Err(PrecompileError::Other(hex_string)) => {
-            let bytes = alloy_primitives::hex::decode(hex_string)
+            let bytes = alloy::primitives::hex::decode(hex_string)
                 .expect("invalid hex string in PrecompileError::Other");
             let decoded: E = E::abi_decode(&bytes)
                 .expect("failed to decode precompile error as expected interface error");
@@ -217,14 +214,14 @@ where
 mod tests {
     use super::*;
     use crate::precompiles::Precompile;
-    use alloy_evm::{EthEvmFactory, EvmEnv, EvmFactory, EvmInternals};
-    use alloy_primitives::{Address, Bytes, U256};
-    use reth_evm::{
+    use alloy::primitives::{Address, Bytes, U256};
+    use alloy_evm::{
+        EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
-        revm::{
-            context::ContextTr,
-            database::{CacheDB, EmptyDB},
-        },
+    };
+    use revm::{
+        context::ContextTr,
+        database::{CacheDB, EmptyDB},
     };
 
     #[test]

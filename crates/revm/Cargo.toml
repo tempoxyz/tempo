@@ -1,9 +1,11 @@
 [package]
 name = "tempo-revm"
+
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
@@ -19,7 +21,6 @@ reth-rpc-convert = { workspace = true, optional = true }
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-rpc-types-eth = { workspace = true, optional = true }
-
 
 derive_more.workspace = true
 tracing.workspace = true

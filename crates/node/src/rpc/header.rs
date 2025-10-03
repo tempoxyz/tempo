@@ -16,10 +16,7 @@ pub struct Header {
     pub inner: alloy_rpc_types_eth::Header,
     /// Non-payment gas limit.
     #[serde(with = "alloy::serde::quantity")]
-    pub non_payment_gas_limit: u64,
-    /// Non-payment gas used.
-    #[serde(with = "alloy::serde::quantity")]
-    pub non_payment_gas_used: u64,
+    pub general_gas_limit: u64,
 }
 
 impl FromConsensusHeader<tempo_primitives::Header> for Header {
@@ -29,19 +26,13 @@ impl FromConsensusHeader<tempo_primitives::Header> for Header {
     ) -> Self {
         let extra_data = TempoExtraData::decode(&header.extra_data);
 
-        let non_payment_gas_limit = extra_data
+        let general_gas_limit = extra_data
             .as_ref()
-            .map(|e| e.non_payment_gas_limit)
-            .unwrap_or_default();
-
-        let non_payment_gas_used = extra_data
-            .as_ref()
-            .map(|e| e.non_payment_gas_used)
+            .map(|e| e.general_gas_limit)
             .unwrap_or_default();
 
         Self {
-            non_payment_gas_limit,
-            non_payment_gas_used,
+            general_gas_limit,
             inner: alloy_rpc_types_eth::Header::from_consensus_header(header, block_size),
         }
     }

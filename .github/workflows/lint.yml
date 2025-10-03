@@ -2,56 +2,53 @@ name: Lint
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
   merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
-
-concurrency:
-  group: lint-${{ github.head_ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   clippy:
     name: clippy
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Run clippy
-        run: cargo clippy --lib --examples --tests --benches --all-features --locked
+        run: cargo clippy --all-targets --all-features --locked
         env:
           RUSTFLAGS: -D warnings
 
   fmt:
     name: fmt
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
-      - uses: rui314/setup-mold@v1
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Run fmt
-        run: cargo fmt --all --check
+      - run: cargo fmt --all --check
 
   docs:
     name: docs
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
@@ -60,58 +57,41 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  codespell:
-    name: codespell
-    runs-on: depot-ubuntu-24.04-4
+  typos:
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: codespell-project/actions-codespell@v2
-        with:
-          skip: "*.json,target,Cargo.lock"
-          ignore_words_list: "amountIn"
+      - uses: actions/checkout@v5
+      - uses: crate-ci/typos@v1
 
   deny:
-    name: cargo deny check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-      - uses: rui314/setup-mold@v1
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: taiki-e/install-action@cargo-deny
-      - run: cargo deny check advisories bans sources
+    uses: ithacaxyz/ci/.github/workflows/deny.yml@main
 
   zepter:
     name: zepter
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: fetch deps
-        run: |
-          # Eagerly pull dependencies
-          time cargo metadata --format-version=1 --locked > /dev/null
-      - name: run zepter
-        run: |
-          cargo install zepter -f --locked
-          zepter --version
-          time zepter run check
+      - uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: zepter
+      - name: Eagerly pull dependencies
+        run: cargo metadata --format-version=1 --locked > /dev/null
+      - run: zepter run check
 
   lint-success:
     name: lint success
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: ubuntu-latest
     if: always()
     needs:
       - clippy
       - fmt
       - docs
-      - codespell
+      - typos
       - deny
       - zepter
     timeout-minutes: 30

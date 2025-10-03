@@ -11,10 +11,11 @@ use crate::{
         types::{TIP20Error, TIP20Event},
     },
 };
-use alloy::primitives::{Address, B256, IntoLogData, Signature as EthSignature, U256, keccak256};
-use alloy_consensus::crypto::secp256k1 as eth_secp256k1;
-use alloy_primitives::Bytes;
-use reth_evm::revm::state::Bytecode;
+use alloy::{
+    consensus::crypto::secp256k1 as eth_secp256k1,
+    primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
+};
+use revm::state::Bytecode;
 use tracing::trace;
 
 pub mod slots {
@@ -433,7 +434,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         self.check_not_paused()?;
         self.check_not_token_address(&call.to)?;
-        self.check_transfer_authorized(msg_sender, &call.to)?;
+        self.ensure_transfer_authorized(msg_sender, &call.to)?;
         self._transfer(msg_sender, &call.to, call.amount)?;
         Ok(true)
     }
@@ -480,7 +481,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<bool, TIP20Error> {
         self.check_not_paused()?;
         self.check_not_token_address(&to)?;
-        self.check_transfer_authorized(&from, &to)?;
+        self.ensure_transfer_authorized(&from, &to)?;
 
         self._transfer(&from, &to, amount)?;
 
@@ -496,7 +497,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<bool, TIP20Error> {
         self.check_not_paused()?;
         self.check_not_token_address(&to)?;
-        self.check_transfer_authorized(&from, &to)?;
+        self.ensure_transfer_authorized(&from, &to)?;
 
         // Check and update allowance
         let allowed = self.get_allowance(&from, msg_sender);
@@ -596,7 +597,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TIP20Error> {
         self.check_not_paused()?;
         self.check_not_token_address(&call.to)?;
-        self.check_transfer_authorized(msg_sender, &call.to)?;
+        self.ensure_transfer_authorized(msg_sender, &call.to)?;
 
         self._transfer(msg_sender, &call.to, call.amount)?;
 
@@ -755,11 +756,8 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    fn check_transfer_authorized(
-        &mut self,
-        from: &Address,
-        to: &Address,
-    ) -> Result<(), TIP20Error> {
+    /// Checks if the transfer is authorized.
+    pub fn is_transfer_authorized(&mut self, from: &Address, to: &Address) -> bool {
         let transfer_policy_id = self.transfer_policy_id();
         let mut registry = TIP403Registry::new(self.storage);
 
@@ -770,13 +768,21 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         });
 
         // Check if 'to' address is authorized
-        let to_authorized_call = ITIP403Registry::isAuthorizedCall {
+        let to_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: transfer_policy_id,
             user: *to,
-        };
-        let to_authorized = registry.is_authorized(to_authorized_call);
+        });
 
-        if !from_authorized || !to_authorized {
+        from_authorized && to_authorized
+    }
+
+    /// Ensures the transfer is authorized.
+    pub fn ensure_transfer_authorized(
+        &mut self,
+        from: &Address,
+        to: &Address,
+    ) -> Result<(), TIP20Error> {
+        if !self.is_transfer_authorized(from, to) {
             return Err(TIP20Error::policy_forbids());
         }
 
@@ -948,8 +954,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, U256, keccak256};
-    use alloy_primitives::FixedBytes;
+    use alloy::primitives::{Address, FixedBytes, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 

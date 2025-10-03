@@ -59,9 +59,8 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
         TempoReceiptBuilder,
     >,
 
-    non_payment_gas_left: u64,
+    general_gas_left: u64,
 
-    seen_payment_tx: bool,
     seen_system_tx: bool,
 }
 
@@ -76,14 +75,13 @@ where
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         Self {
-            non_payment_gas_left: ctx.non_payment_gas_limit,
+            general_gas_left: ctx.general_gas_limit,
             inner: EthBlockExecutor::new(
                 evm,
                 ctx.inner,
                 chain_spec,
                 TempoReceiptBuilder::default(),
             ),
-            seen_payment_tx: false,
             seen_system_tx: false,
         }
     }
@@ -142,18 +140,12 @@ where
                 "regular transaction can't follow system transaction",
             )
             .into());
-        } else if self.seen_payment_tx && !is_payment {
-            trace!(target: "tempo::block", tx_hash = ?tx.tx().tx_hash(), "Rejecting: non-payment transaction after payment transaction");
-            return Err(BlockValidationError::msg(
-                "non-payment transaction can't follow payment transaction",
-            )
-            .into());
-        } else if !is_payment && gas_limit > self.non_payment_gas_left {
+        } else if !is_payment && gas_limit > self.general_gas_left {
             trace!(
                 target: "tempo::block",
                 gas_limit = gas_limit,
                 tx_hash = ?tx.tx().tx_hash(),
-                non_payment_gas_left = self.non_payment_gas_left,
+                general_gas_left = self.general_gas_left,
                 "Rejecting: non-payment gas limit exceeded"
             );
             return Err(BlockValidationError::msg(
@@ -174,11 +166,9 @@ where
 
         if tx.tx().is_system_tx() {
             self.seen_system_tx = true;
-        } else if tx.tx().is_payment() {
-            self.seen_payment_tx = true;
-        } else {
-            self.non_payment_gas_left -= gas_used;
         }
+
+        self.general_gas_left = self.general_gas_left.saturating_sub(gas_used);
 
         Ok(gas_used)
     }

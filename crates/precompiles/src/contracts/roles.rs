@@ -213,8 +213,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::keccak256;
-    use alloy_primitives::address;
+    use alloy::primitives::{address, keccak256};
 
     use super::*;
     use crate::contracts::storage::hashmap::HashMapStorageProvider;

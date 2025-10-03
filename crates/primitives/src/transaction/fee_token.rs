@@ -3,8 +3,8 @@ use alloy_consensus::{
     transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx},
 };
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
-use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
-use alloy_rlp::{BufMut, Decodable, Encodable};
+use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
+use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 
 /// Fee token transaction type byte (0x77)
@@ -61,6 +61,9 @@ pub struct TxFeeToken {
     /// Authorization list (EIP-7702)
     pub authorization_list: Vec<SignedAuthorization>,
 
+    /// Optional fee payer signature.
+    pub fee_payer_signature: Option<Signature>,
+
     /// Input data
     // Note: This is at last position for the codecs derive
     pub input: Bytes,
@@ -79,6 +82,7 @@ impl Default for TxFeeToken {
             value: U256::ZERO,
             access_list: AccessList::default(),
             authorization_list: Vec::new(),
+            fee_payer_signature: None,
             input: Bytes::new(),
         }
     }
@@ -121,47 +125,112 @@ impl TxFeeToken {
         let tx_hash = self.tx_hash(&signature);
         Signed::new_unchecked(self, signature, tx_hash)
     }
-}
 
-impl RlpEcdsaEncodableTx for TxFeeToken {
-    /// Outputs the length of the transaction's fields, without a RLP header
-    fn rlp_encoded_fields_length(&self) -> usize {
+    /// Outputs the length of the transaction's fields, without a RLP header.
+    fn rlp_encoded_fields_length(
+        &self,
+        signature_length: impl FnOnce(&Option<Signature>) -> usize,
+        skip_fee_token: bool,
+    ) -> usize {
         self.chain_id.length() +
             self.nonce.length() +
-            // fee_token encoded like TxKind: Address or 1 byte for None
-            (match self.fee_token.as_ref() {
-                Some(addr) => addr.length(),
-                None => 1, // EMPTY_STRING_CODE is a single byte
-            }) +
             self.max_priority_fee_per_gas.length() +
             self.max_fee_per_gas.length() +
             self.gas_limit.length() +
             self.to.length() +
             self.value.length() +
+            self.input.length() +
             self.access_list.length() +
             self.authorization_list.length() +
-            self.input.length()
+            // fee_token encoded like TxKind: Address or 1 byte for None
+            if !skip_fee_token && let Some(addr) = self.fee_token {
+                addr.length()
+            } else {
+                1 // EMPTY_STRING_CODE is a single byte
+            } +
+            signature_length(&self.fee_payer_signature)
     }
 
-    /// Encodes only the transaction's fields into the desired buffer, without a RLP header
-    fn rlp_encode_fields(&self, out: &mut dyn alloy_rlp::BufMut) {
-        use alloy_rlp::EMPTY_STRING_CODE;
-
+    fn rlp_encode_fields(
+        &self,
+        out: &mut dyn BufMut,
+        encode_signature: impl FnOnce(&Option<Signature>, &mut dyn BufMut),
+        skip_fee_token: bool,
+    ) {
         self.chain_id.encode(out);
         self.nonce.encode(out);
-        // Encode fee_token like TxKind: Address or EMPTY_STRING_CODE for None
-        match self.fee_token.as_ref() {
-            Some(addr) => addr.encode(out),
-            None => out.put_u8(EMPTY_STRING_CODE),
-        }
         self.max_priority_fee_per_gas.encode(out);
         self.max_fee_per_gas.encode(out);
         self.gas_limit.encode(out);
         self.to.encode(out);
         self.value.encode(out);
+        self.input.encode(out);
         self.access_list.encode(out);
         self.authorization_list.encode(out);
-        self.input.encode(out);
+        // Encode fee_token like TxKind: Address or EMPTY_STRING_CODE for None
+        if !skip_fee_token && let Some(addr) = self.fee_token {
+            addr.encode(out);
+        } else {
+            out.put_u8(EMPTY_STRING_CODE);
+        }
+        encode_signature(&self.fee_payer_signature, out);
+    }
+
+    pub fn fee_payer_signature_hash(&self, sender: Address) -> B256 {
+        let rlp_header = alloy_rlp::Header {
+            list: true,
+            payload_length: self.rlp_encoded_fields_length(|_| sender.length(), false),
+        };
+        let mut buf = Vec::with_capacity(rlp_header.length_with_payload());
+        rlp_header.encode(&mut buf);
+        self.rlp_encode_fields(
+            &mut buf,
+            |_, out| {
+                sender.encode(out);
+            },
+            false,
+        );
+
+        keccak256(&buf)
+    }
+}
+
+impl RlpEcdsaEncodableTx for TxFeeToken {
+    /// Outputs the length of the transaction's fields, without a RLP header
+    fn rlp_encoded_fields_length(&self) -> usize {
+        self.rlp_encoded_fields_length(
+            |signature| {
+                signature.map_or(1, |s| {
+                    alloy_rlp::Header {
+                        list: true,
+                        payload_length: s.rlp_rs_len() + s.v().length(),
+                    }
+                    .length_with_payload()
+                })
+            },
+            false,
+        )
+    }
+
+    /// Encodes only the transaction's fields into the desired buffer, without a RLP header
+    fn rlp_encode_fields(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.rlp_encode_fields(
+            out,
+            |signature, out| {
+                if let Some(signature) = signature {
+                    let payload_length = signature.rlp_rs_len() + signature.v().length();
+                    alloy_rlp::Header {
+                        list: true,
+                        payload_length,
+                    }
+                    .encode(out);
+                    signature.write_rlp_vrs(out, signature.v());
+                } else {
+                    out.put_u8(EMPTY_STRING_CODE);
+                }
+            },
+            false,
+        );
     }
 }
 
@@ -173,21 +242,36 @@ impl RlpEcdsaDecodableTx for TxFeeToken {
         let chain_id = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
 
-        // Decode fee_token like TxKind: EMPTY_STRING_CODE for None, Address for Some
-        let fee_token = TxKind::decode(buf)?.into_to();
-
         let tx = Self {
             chain_id,
             nonce,
-            fee_token,
             max_priority_fee_per_gas: Decodable::decode(buf)?,
             max_fee_per_gas: Decodable::decode(buf)?,
             gas_limit: Decodable::decode(buf)?,
             to: Decodable::decode(buf)?,
             value: Decodable::decode(buf)?,
+            input: Decodable::decode(buf)?,
             access_list: Decodable::decode(buf)?,
             authorization_list: Decodable::decode(buf)?,
-            input: Decodable::decode(buf)?,
+            // Decode fee_token like TxKind: EMPTY_STRING_CODE for None, Address for Some
+            fee_token: TxKind::decode(buf)?.into_to(),
+            fee_payer_signature: if let Some(first) = buf.first() {
+                if *first == EMPTY_STRING_CODE {
+                    buf.advance(1);
+                    None
+                } else {
+                    let header = alloy_rlp::Header::decode(buf)?;
+                    if buf.len() < header.payload_length {
+                        return Err(alloy_rlp::Error::InputTooShort);
+                    }
+                    if !header.list {
+                        return Err(alloy_rlp::Error::UnexpectedString);
+                    }
+                    Some(Signature::decode_rlp_vrs(buf, bool::decode)?)
+                }
+            } else {
+                return Err(alloy_rlp::Error::InputTooShort);
+            },
         };
 
         // Validate the transaction
@@ -305,12 +389,38 @@ impl SignableTransaction<Signature> for TxFeeToken {
     }
 
     fn encode_for_signing(&self, out: &mut dyn alloy_rlp::BufMut) {
+        // We skip encoding the fee token if the signature is present to ensure that user
+        // does not commit to a specific fee token when someone else is paying for the transaction.
+        let skip_fee_token = self.fee_payer_signature.is_some();
+        // For signing, we don't encode the signature but only encode a single byte marking the presence of the signature
         out.put_u8(Self::tx_type());
-        self.encode(out);
+        let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(out);
+        self.rlp_encode_fields(
+            out,
+            |signature, out| {
+                if signature.is_some() {
+                    out.put_u8(0);
+                } else {
+                    out.put_u8(EMPTY_STRING_CODE);
+                }
+            },
+            skip_fee_token,
+        );
     }
 
     fn payload_len_for_signature(&self) -> usize {
-        self.length() + 1
+        let payload_length =
+            self.rlp_encoded_fields_length(|_| 1, self.fee_payer_signature.is_some());
+        1 + alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .length_with_payload()
     }
 }
 
@@ -365,6 +475,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TxFeeToken {
             value: u.arbitrary()?,
             access_list: u.arbitrary()?,
             authorization_list,
+            fee_payer_signature: None,
             input: u.arbitrary()?,
         })
     }

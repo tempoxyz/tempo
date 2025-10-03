@@ -36,7 +36,7 @@ use reth_transaction_pool::{
 };
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
-use tempo_consensus::TEMPO_NON_PAYMENT_GAS_DIVISOR;
+use tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::IFeeManager::executeBlockCall};
@@ -186,7 +186,7 @@ where
             .with_bundle_update()
             .build();
 
-        let non_payment_gas_limit = parent_header.gas_limit / TEMPO_NON_PAYMENT_GAS_DIVISOR;
+        let general_gas_limit = parent_header.gas_limit / TEMPO_GENERAL_GAS_DIVISOR;
 
         let mut builder = self
             .evm_config
@@ -202,7 +202,7 @@ where
                         parent_beacon_block_root: attributes.parent_beacon_block_root(),
                         withdrawals: Some(attributes.withdrawals().clone()),
                     },
-                    non_payment_gas_limit,
+                    general_gas_limit,
                 },
             )
             .map_err(PayloadBuilderError::other)?;
@@ -223,7 +223,6 @@ where
                 .map(|gasprice| gasprice as u64),
         ));
         let mut total_fees = U256::ZERO;
-        let mut non_payment_gas_used = 0u64;
 
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
@@ -250,10 +249,10 @@ where
                 continue;
             }
 
-            // If the tx is not a payment and the non payment block space is exhausted
+            // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !pool_tx.transaction.is_payment()
-                && pool_tx.gas_limit() + non_payment_gas_used > non_payment_gas_limit
+                && cumulative_gas_used + pool_tx.gas_limit() > general_gas_limit
             {
                 best_txs.mark_invalid(
                     &pool_tx,
@@ -299,7 +298,6 @@ where
 
             let tx_rlp_length = tx.inner().length();
             let effective_tip_per_gas = tx.effective_tip_per_gas(base_fee);
-            let tx_is_payment = tx.is_payment();
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
                 .then(|| format!("{tx:?}"))
@@ -307,12 +305,7 @@ where
 
             let execution_start = Instant::now();
             let gas_used = match builder.execute_transaction(tx) {
-                Ok(gas_used) => {
-                    if !tx_is_payment {
-                        non_payment_gas_used += gas_used;
-                    }
-                    gas_used
-                }
+                Ok(gas_used) => gas_used,
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
                     ..

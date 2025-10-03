@@ -7,7 +7,7 @@ pub struct TempoBlockExecutionCtx<'a> {
     #[deref]
     pub inner: EthBlockExecutionCtx<'a>,
     /// Non-payment gas limit for the block.
-    pub non_payment_gas_limit: u64,
+    pub general_gas_limit: u64,
 }
 
 /// Context required for next block environment.
@@ -17,7 +17,7 @@ pub struct TempoNextBlockEnvAttributes {
     #[deref]
     pub inner: NextBlockEnvAttributes,
     /// Non-payment gas limit for the block.
-    pub non_payment_gas_limit: u64,
+    pub general_gas_limit: u64,
 }
 
 #[cfg(feature = "rpc")]
@@ -27,8 +27,7 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<alloy_consensus::
     fn build_pending_env(parent: &crate::SealedHeader) -> Self {
         Self {
             inner: NextBlockEnvAttributes::build_pending_env(parent),
-            non_payment_gas_limit: parent.gas_limit
-                / tempo_consensus::TEMPO_NON_PAYMENT_GAS_DIVISOR,
+            general_gas_limit: parent.gas_limit / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR,
         }
     }
 }
