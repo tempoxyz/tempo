@@ -86,10 +86,12 @@ impl SimpleArbArgs {
                 .getPool(pair.0, pair.1)
                 .call()
                 .await
-                .wrap_err_with(|| format!("failed to fetch pool for tokens"))?;
+                .wrap_err_with(|| {
+                    format!("failed to fetch pool for tokens {}, {}", pair.0, pair.1)
+                })?;
 
-            if pool.reserveUserToken > 0 {
-                if let Err(e) = fee_amm
+            if pool.reserveUserToken > 0
+                && let Err(e) = fee_amm
                     .rebalanceSwap(
                         pair.0,
                         pair.1,
@@ -98,21 +100,20 @@ impl SimpleArbArgs {
                     )
                     .send()
                     .await
-                {
-                    error!(
-                        token_a = %pair.0,
-                        token_b = %pair.1,
-                        amount = %pool.reserveUserToken,
-                        err = error_field(&e),
-                        "Failed to send initial rebalance transaction"
-                    );
-                }
+            {
+                error!(
+                    token_a = %pair.0,
+                    token_b = %pair.1,
+                    amount = %pool.reserveUserToken,
+                    err = error_field(&e),
+                    "Failed to send initial rebalance transaction"
+                );
             }
         }
 
         info!("Listening for new blocks...");
         let mut watcher = provider.watch_blocks().await?.into_stream();
-        while let Some(_) = watcher.next().await {
+        while watcher.next().await.is_some() {
             debug!("New block received, checking pools for rebalancing");
             for pair in pairs.iter() {
                 // Get current pool state
@@ -124,8 +125,8 @@ impl SimpleArbArgs {
                         format!("failed to fetch pool for tokens {:?}, {:?}", pair.0, pair.1)
                     })?;
 
-                if pool.reserveUserToken > 0 {
-                    if let Err(e) = fee_amm
+                if pool.reserveUserToken > 0
+                    && let Err(e) = fee_amm
                         .rebalanceSwap(
                             pair.0,
                             pair.1,
@@ -134,15 +135,14 @@ impl SimpleArbArgs {
                         )
                         .send()
                         .await
-                    {
-                        error!(
-                            token_a = %pair.0,
-                            token_b = %pair.1,
-                            amount = %pool.reserveUserToken,
-                            err = error_field(&e),
-                            "Failed to send rebalance transaction"
-                        );
-                    }
+                {
+                    error!(
+                        token_a = %pair.0,
+                        token_b = %pair.1,
+                        amount = %pool.reserveUserToken,
+                        err = error_field(&e),
+                        "Failed to send rebalance transaction"
+                    );
                 }
             }
         }
