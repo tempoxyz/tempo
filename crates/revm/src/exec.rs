@@ -1,5 +1,5 @@
 use crate::{
-    TempoTxEnv,
+    TempoInvalidTransaction, TempoTxEnv,
     evm::{TempoContext, TempoEvm},
     handler::TempoEvmHandler,
 };
@@ -31,7 +31,7 @@ where
     type Tx = TempoTxEnv;
     type Block = BlockEnv;
     type State = EvmState;
-    type Error = EVMError<DB::Error>;
+    type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type ExecutionResult = ExecutionResult<HaltReason>;
 
     fn set_block(&mut self, block: Self::Block) {

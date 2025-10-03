@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy_consensus::{BlockHeader, Header};
+use alloy_consensus::BlockHeader;
 use alloy_evm::block::BlockExecutionResult;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
@@ -15,7 +15,7 @@ use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_primitives::{Block, BlockBody, TempoPrimitives, TempoReceipt};
+use tempo_primitives::{Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt};
 
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
@@ -33,27 +33,14 @@ impl TempoConsensus {
     }
 }
 
-impl HeaderValidator<Header> for TempoConsensus {
-    fn validate_header(&self, header: &SealedHeader) -> Result<(), ConsensusError> {
+impl HeaderValidator<TempoHeader> for TempoConsensus {
+    fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
         self.inner.validate_header(header)?;
 
-        // Decode and validate the extra data
-        let extra_data = TempoExtraData::decode(header.extra_data())?;
-        if extra_data.non_payment_gas_limit != header.gas_limit() / TEMPO_NON_PAYMENT_GAS_DIVISOR {
+        // Validate the non-payment gas limit
+        if header.general_gas_limit != header.gas_limit() / TEMPO_GENERAL_GAS_DIVISOR {
             return Err(ConsensusError::Other(
                 "Non-payment gas limit does not match header gas limit".to_string(),
-            ));
-        }
-
-        if extra_data.non_payment_gas_used > extra_data.non_payment_gas_limit {
-            return Err(ConsensusError::Other(
-                "Non-payment gas used exceeds non-payment gas limit".to_string(),
-            ));
-        }
-
-        if extra_data.non_payment_gas_used > header.gas_used() {
-            return Err(ConsensusError::Other(
-                "Non-payment gas used exceeds total gas used".to_string(),
             ));
         }
 
@@ -62,8 +49,8 @@ impl HeaderValidator<Header> for TempoConsensus {
 
     fn validate_header_against_parent(
         &self,
-        header: &SealedHeader,
-        parent: &SealedHeader,
+        header: &SealedHeader<TempoHeader>,
+        parent: &SealedHeader<TempoHeader>,
     ) -> Result<(), ConsensusError> {
         validate_against_parent_hash_number(header.header(), parent)?;
 
@@ -93,7 +80,7 @@ impl Consensus<Block> for TempoConsensus {
     fn validate_body_against_header(
         &self,
         body: &BlockBody,
-        header: &SealedHeader,
+        header: &SealedHeader<TempoHeader>,
     ) -> Result<(), Self::Error> {
         Consensus::<Block>::validate_body_against_header(&self.inner, body, header)
     }
@@ -119,92 +106,9 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
         block: &RecoveredBlock<Block>,
         result: &BlockExecutionResult<TempoReceipt>,
     ) -> Result<(), ConsensusError> {
-        FullConsensus::<TempoPrimitives>::validate_block_post_execution(
-            &self.inner,
-            block,
-            result,
-        )?;
-
-        // Validate non-payment gas usage.
-        //
-        // Block executor guarantees that non-payment transactions come first.
-        let extra_data = TempoExtraData::decode(block.header().extra_data())?;
-        let mut non_payment_gas_used = 0;
-        for (tx, receipt) in block.body().transactions.iter().zip(result.receipts.iter()) {
-            if !tx.is_payment() {
-                non_payment_gas_used = receipt.cumulative_gas_used;
-            } else {
-                break;
-            }
-        }
-
-        if non_payment_gas_used != extra_data.non_payment_gas_used {
-            return Err(ConsensusError::Other(
-                "Non-payment gas used does not match total gas used".to_string(),
-            ));
-        }
-
-        Ok(())
+        FullConsensus::<TempoPrimitives>::validate_block_post_execution(&self.inner, block, result)
     }
 }
-
-/// Length of the Tempo extra data suffix.
-pub const TEMPO_EXTRA_DATA_SUFFIX_LENGTH: usize = 21;
 
 /// Divisor for calculating non-payment gas limit.
-pub const TEMPO_NON_PAYMENT_GAS_DIVISOR: u64 = 2;
-
-/// Tempo-specific extra data. Encoded as a suffix of [`Header::extra_data`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TempoExtraData {
-    /// Non-payment gas limit.
-    pub non_payment_gas_limit: u64,
-    /// Non-payment gas used.
-    pub non_payment_gas_used: u64,
-}
-
-impl TempoExtraData {
-    /// Decodes the extra data from the given bytes.
-    ///
-    /// Expected format:
-    /// 0x4e504753 ASCII "NPGS" || uint8 version || uint64 nonPaymentGasLimit || uint64 nonPaymentGasUsed
-    pub fn decode(extra_data: &[u8]) -> Result<Self, ConsensusError> {
-        if extra_data.len() < TEMPO_EXTRA_DATA_SUFFIX_LENGTH {
-            return Err(ConsensusError::Other(
-                "Extra data must be at least 21 bytes length".to_string(),
-            ));
-        }
-
-        let suffix = &extra_data[extra_data.len() - TEMPO_EXTRA_DATA_SUFFIX_LENGTH..];
-        if !suffix.starts_with(b"NPGS") {
-            return Err(ConsensusError::Other(
-                "Invalid extra data suffix".to_string(),
-            ));
-        }
-
-        let version = suffix[4];
-        if version != 1 {
-            return Err(ConsensusError::Other(
-                "Invalid extra data version".to_string(),
-            ));
-        }
-
-        let non_payment_gas_limit = u64::from_be_bytes(suffix[5..13].try_into().unwrap());
-        let non_payment_gas_used = u64::from_be_bytes(suffix[13..21].try_into().unwrap());
-
-        Ok(Self {
-            non_payment_gas_limit,
-            non_payment_gas_used,
-        })
-    }
-
-    /// Encodes the extra data into a byte array.
-    pub fn encode(&self) -> [u8; TEMPO_EXTRA_DATA_SUFFIX_LENGTH] {
-        let mut out = [0; TEMPO_EXTRA_DATA_SUFFIX_LENGTH];
-        out[..4].copy_from_slice(b"NPGS");
-        out[4] = 1;
-        out[5..13].copy_from_slice(&self.non_payment_gas_limit.to_be_bytes());
-        out[13..21].copy_from_slice(&self.non_payment_gas_used.to_be_bytes());
-        out
-    }
-}
+pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;

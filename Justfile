@@ -1,4 +1,4 @@
-cross_compile := "true"
+cross_compile := "false"
 cargo_build_binary := if cross_compile == "true" { "cross" } else { "cargo" }
 act_debug_mode := env("ACT", "false")
 
@@ -17,8 +17,7 @@ build-all extra_args="": (build "tempo" extra_args)
 build-release binary extra_args="": (build binary "-r " + extra_args)
 
 build binary extra_args="":
-    CROSS_CONTAINER_IN_CONTAINER={{act_debug_mode}} RUSTFLAGS="-C link-arg=-lgcc -Clink-arg=-static-libgcc" \
-        {{cargo_build_binary}} build {{extra_args}} --target x86_64-unknown-linux-gnu --bin {{binary}}
+    {{cargo_build_binary}} build {{extra_args}} --bin {{binary}}
 
 mod scripts
 

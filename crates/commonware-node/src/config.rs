@@ -19,7 +19,7 @@ pub(crate) const PENDING_CHANNEL_IDENT: commonware_p2p::Channel = 0;
 pub(crate) const RECOVERED_CHANNEL_IDENT: commonware_p2p::Channel = 1;
 pub(crate) const RESOLVER_CHANNEL_IDENT: commonware_p2p::Channel = 2;
 pub(crate) const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
-pub(crate) const BACKFILL_BY_DIGEST_CHANNE_IDENTL: commonware_p2p::Channel = 4;
+pub(crate) const BACKFILL_BY_DIGEST_CHANNEL_IDENTL: commonware_p2p::Channel = 4;
 
 pub(crate) const NUMBER_CONCURRENT_FETCHES: usize = 4;
 pub(crate) const NUMBER_MAX_FETCHES: usize = 16;

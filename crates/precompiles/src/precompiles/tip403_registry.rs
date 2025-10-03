@@ -1,6 +1,6 @@
 use crate::precompiles::{Precompile, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolCall};
-use reth_evm::revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
     storage::StorageProvider,
@@ -423,7 +423,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result,
-            Err(reth_evm::revm::precompile::PrecompileError::Other(_))
+            Err(revm::precompile::PrecompileError::Other(_))
         ));
 
         // Test with insufficient data

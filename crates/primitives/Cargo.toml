@@ -1,15 +1,25 @@
 [package]
 name = "tempo-primitives"
+
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
 tempo-precompiles.workspace = true
+
+# Reth
+reth-cli-commands = { workspace = true, optional = true }
+reth-db-api = { workspace = true, optional = true }
+reth-ethereum-primitives.workspace = true
+reth-primitives-traits.workspace = true
+reth-codecs = { workspace = true, optional = true }
+reth-rpc-convert = { workspace = true, optional = true }
 
 # Alloy
 alloy-consensus.workspace = true
@@ -20,24 +30,22 @@ alloy-serde = { workspace = true, optional = true }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 alloy-network = { workspace = true, optional = true }
 
-# Reth
-reth-db-api = { workspace = true, optional = true }
-reth-ethereum-primitives.workspace = true
-reth-primitives-traits.workspace = true
-reth-codecs = { workspace = true, optional = true }
-reth-rpc-convert = { workspace = true, optional = true }
-
 # Utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }
+derive_more.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 modular-bitfield = { version = "0.11.2", optional = true }
 
 [dev-dependencies]
+arbitrary.workspace = true
 reth-codecs.workspace = true
+reth-codecs-derive.workspace = true
 test-fuzz.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
 
 [features]
-default = ["serde", "reth-codec", "serde-bincode-compat", "rpc"]
+default = ["serde", "reth-codec", "serde-bincode-compat", "rpc", "cli"]
 serde = [
 	"dep:serde",
 	"dep:alloy-serde",
@@ -46,16 +54,23 @@ serde = [
 	"reth-ethereum-primitives/serde",
 	"alloy-eips/serde",
 	"alloy-primitives/serde",
-	"reth-codecs?/serde"
+	"reth-codecs?/serde",
 ]
-reth-codec = ["dep:reth-codecs", "dep:reth-db-api", "dep:modular-bitfield", "reth-ethereum-primitives/reth-codec", "reth-codecs/alloy", "reth-primitives-traits/reth-codec"]
+reth-codec = [
+	"dep:reth-codecs",
+	"dep:reth-db-api",
+	"dep:modular-bitfield",
+	"reth-ethereum-primitives/reth-codec",
+	"reth-codecs/alloy",
+	"reth-primitives-traits/reth-codec",
+]
 serde-bincode-compat = [
 	"serde",
 	"alloy-consensus/serde-bincode-compat",
 	"reth-primitives-traits/serde-bincode-compat",
 	"reth-ethereum-primitives/serde-bincode-compat",
 	"alloy-eips/serde-bincode-compat",
-	"alloy-rpc-types-eth?/serde-bincode-compat"
+	"alloy-rpc-types-eth?/serde-bincode-compat",
 ]
 arbitrary = [
 	"dep:arbitrary",
@@ -68,6 +83,13 @@ arbitrary = [
 	"reth-ethereum-primitives/arbitrary",
 	"reth-primitives-traits/arbitrary",
 	"alloy-rpc-types-eth?/arbitrary",
-	"reth-db-api?/arbitrary"
+	"reth-db-api?/arbitrary",
+	"reth-cli-commands?/arbitrary"
 ]
-rpc = ["reth-ethereum-primitives/rpc", "dep:alloy-rpc-types-eth", "dep:reth-rpc-convert", "dep:alloy-network"]
+rpc = [
+	"reth-ethereum-primitives/rpc",
+	"dep:alloy-rpc-types-eth",
+	"dep:reth-rpc-convert",
+	"dep:alloy-network",
+]
+cli = ["dep:reth-cli-commands"]

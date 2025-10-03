@@ -6,7 +6,7 @@ use clap::Parser;
 use commonware_cryptography::{PrivateKeyExt as _, Signer as _};
 use eyre::{Context, ensure};
 use indexmap::IndexMap;
-use rand::{rngs::OsRng, seq::IteratorRandom as _};
+use rand::SeedableRng;
 use tempo_commonware_node_config::Config;
 use tempo_commonware_node_cryptography::PrivateKey;
 
@@ -59,8 +59,13 @@ struct GenerateConfig {
     /// The starting port from which addresses will be assigned to peers.
     #[arg(long)]
     from_port: u16,
+    /// The suggested fee recipient in payload builder args.
     #[arg(long)]
     fee_recipient: alloy_primitives::Address,
+    /// A fixed seed to generate all signing keys and group shares. This is
+    /// intended for use in development and testing. Use at your own peril.
+    #[arg(long)]
+    seed: Option<u64>,
 }
 
 fn generate_config(
@@ -74,6 +79,7 @@ fn generate_config(
         from_port,
         fee_recipient,
         message_backlog,
+        seed,
     }: GenerateConfig,
 ) -> eyre::Result<()> {
     let output = camino::absolute_utf8(&output).wrap_err_with(|| {
@@ -108,18 +114,17 @@ fn generate_config(
         "requested `{bootstrappers}` bootstrappers but only `{peers}` peers; there must be at least as many peers as bootstrappers",
     );
 
-    let mut signers = std::iter::repeat_n(OsRng, peers)
-        .map(|mut r| PrivateKey::from_rng(&mut r))
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
+    let mut signers = (0..peers)
+        .map(|_| PrivateKey::from_rng(&mut rng))
         .collect::<Vec<_>>();
-
     signers.sort_by_key(|signer| signer.public_key());
 
     let all_peers: Vec<_> = signers.iter().map(|signer| signer.public_key()).collect();
 
     let bootstrappers = all_peers
         .iter()
-        .choose_multiple(&mut OsRng, bootstrappers)
-        .into_iter()
+        .take(bootstrappers)
         .cloned()
         .collect::<Vec<_>>();
 
@@ -128,7 +133,7 @@ fn generate_config(
     let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
         _,
         tempo_commonware_node_cryptography::BlsScheme,
-    >(&mut OsRng, None, peers as u32, threshold);
+    >(&mut rng, None, peers as u32, threshold);
 
     // Generate instance configurations
     let mut port = from_port;

@@ -1,8 +1,8 @@
 use crate::{TempoExecutionData, TempoPayloadTypes};
-use reth_ethereum::{engine::EthPayloadAttributes, primitives::Header};
+use reth_ethereum::engine::EthPayloadAttributes;
 use reth_node_api::{InvalidPayloadAttributesError, NewPayloadError, PayloadValidator};
 use reth_primitives_traits::RecoveredBlock;
-use tempo_primitives::Block;
+use tempo_primitives::{Block, TempoHeader};
 
 /// Type encapsulating Tempo engine validation logic.
 #[derive(Debug, Default, Clone, Copy)]
@@ -32,7 +32,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
     fn validate_payload_attributes_against_header(
         &self,
         attr: &EthPayloadAttributes,
-        header: &Header,
+        header: &TempoHeader,
     ) -> Result<(), InvalidPayloadAttributesError> {
         // Ensure that payload attributes timestamp is not in the past
         if attr.timestamp < header.timestamp {

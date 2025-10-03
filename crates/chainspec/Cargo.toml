@@ -1,23 +1,28 @@
 [package]
 name = "tempo-chainspec"
+description = "TODO:"
+
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "TODO:"
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
+tempo-primitives.workspace = true
 tempo-contracts.workspace = true
+
 reth-cli.workspace = true
 reth-chainspec.workspace = true
 reth-network-peers.workspace = true
 reth-ethereum = { workspace = true, features = ["evm"] }
-eyre.workspace = true
-serde_json.workspace = true
+
 alloy-genesis.workspace = true
-alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
+
+eyre.workspace = true
+serde_json.workspace = true

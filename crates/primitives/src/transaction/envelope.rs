@@ -4,7 +4,7 @@ use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
     error::ValueError,
 };
-use alloy_primitives::{Address, B256, Signature, U256};
+use alloy_primitives::{Address, B256, Signature, SignatureError, U256};
 use core::fmt;
 use reth_primitives_traits::InMemorySize;
 use tempo_precompiles::TIP20_PAYMENT_PREFIX;
@@ -83,6 +83,22 @@ impl TempoTxEnvelope {
             _ => None,
         }
     }
+
+    /// Resolves fee payer for the transaction.
+    pub fn fee_payer(&self, sender: Address) -> Result<Address, SignatureError> {
+        match self {
+            Self::FeeToken(tx) => {
+                if let Some(fee_payer_signature) = tx.tx().fee_payer_signature {
+                    fee_payer_signature
+                        .recover_address_from_prehash(&tx.tx().fee_payer_signature_hash(sender))
+                } else {
+                    Ok(sender)
+                }
+            }
+            _ => Ok(sender),
+        }
+    }
+
     /// Return the [`TempoTxType`] of the inner txn.
     pub const fn tx_type(&self) -> TempoTxType {
         match self {

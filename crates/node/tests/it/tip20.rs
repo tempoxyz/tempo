@@ -98,7 +98,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         tx_data.push((pending_tx, sender_balance, recipient, recipient_balance));
     }
 
-    for (pending_tx, sender_balance, recipient, receipient_balance) in tx_data.into_iter() {
+    for (pending_tx, sender_balance, recipient, recipient_balance) in tx_data.into_iter() {
         let receipt = pending_tx.get_receipt().await?;
 
         // Verify Transfer event was emitted
@@ -121,7 +121,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         let recipient_balance_after = token.balanceOf(recipient).call().await?;
 
         assert_eq!(sender_balance_after, U256::ZERO);
-        assert_eq!(recipient_balance_after, receipient_balance + sender_balance);
+        assert_eq!(recipient_balance_after, recipient_balance + sender_balance);
     }
 
     Ok(())

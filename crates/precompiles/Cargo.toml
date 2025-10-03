@@ -1,22 +1,22 @@
 [package]
 name = "tempo-precompiles"
+description = "TODO:"
+
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "TODO:"
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
 tempo-contracts.workspace = true
-reth-evm.workspace = true
 reth-storage-api.workspace = true
-alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
+alloy = { workspace = true, default-features = false }
 alloy-evm.workspace = true
-alloy-consensus.workspace = true
-alloy-primitives.workspace = true
+revm.workspace = true
 
 tracing.workspace = true
 

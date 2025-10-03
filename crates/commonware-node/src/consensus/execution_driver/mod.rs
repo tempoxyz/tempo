@@ -447,7 +447,7 @@ impl Inner<Init> {
             prev_randao: B256::ZERO,
             // XXX(tempo): empty withdrawals post-shanghai
             withdrawals: Withdrawals::default(),
-            // TODO: tempo does this (why?); but maybe we can
+            // TODO: tempo-malachite did this (why?); but maybe we can
             // use the consensus block' digest for this? alternatively somehow
             // tie this to the threshold simplex view / round / height?;
             parent_beacon_block_root: Some(B256::ZERO),

@@ -57,6 +57,13 @@ sol! {
         function unpause() external;
 
         // EIP-712 Permit
+        struct Permit {
+            address owner;
+            address spender;
+            uint256 value;
+            uint256 nonce;
+            uint256 deadline;
+        }
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
         function DOMAIN_SEPARATOR() external view returns (bytes32);
 
@@ -275,6 +282,8 @@ sol! {
         error InsufficientLiquidity();
         error InsufficientFeeTokenBalance();
         error InternalError();
+        error CannotChangeWithinBlock();
+        error TokenPolicyForbids();
     }
 }
 
@@ -389,6 +398,16 @@ impl FeeManagerError {
     /// Creates an error for only system contract access.
     pub const fn only_system_contract() -> Self {
         Self::OnlySystemContract(IFeeManager::OnlySystemContract {})
+    }
+
+    /// Creates an error for beneficiary cannot set its token.
+    pub const fn cannot_change_within_block() -> Self {
+        Self::CannotChangeWithinBlock(IFeeManager::CannotChangeWithinBlock {})
+    }
+
+    /// Creates an error for token policy forbids.
+    pub const fn token_policy_forbids() -> Self {
+        Self::TokenPolicyForbids(IFeeManager::TokenPolicyForbids {})
     }
 }
 

@@ -314,7 +314,7 @@ mod tests {
     // 3. notarized write -> stable hex (necessary? good to guard against commonware xyz changes?)
     // 4. finalized write -> stable hex (necessary? good to guard against commonware xyz changes?)
 
-    // TODO: Bring back this unit test; preferablly with some flavour of tempo reth block.
+    // TODO: Bring back this unit test; preferably with some flavour of tempo reth block.
     //
     // use commonware_codec::{Read as _, Write as _};
     // use reth_chainspec::ChainSpec;

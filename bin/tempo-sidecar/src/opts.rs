@@ -1,4 +1,6 @@
-use crate::cmd::{monitor::MonitorArgs, synthetic_load::SyntheticLoadArgs};
+use crate::cmd::{
+    monitor::MonitorArgs, simple_arb::SimpleArbArgs, synthetic_load::SyntheticLoadArgs,
+};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
@@ -12,5 +14,6 @@ pub struct TempoSidecar {
 #[derive(Subcommand, Debug)]
 pub enum TempoSidecarSubcommand {
     FeeAMMMonitor(MonitorArgs),
+    SimpleArb(SimpleArbArgs),
     SyntheticLoad(SyntheticLoadArgs),
 }

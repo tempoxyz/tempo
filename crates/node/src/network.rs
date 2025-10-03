@@ -9,7 +9,7 @@ use alloy_network::{
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use tempo_primitives::{
-    TempoReceipt, TempoTxEnvelope, TempoTxType,
+    TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType,
     transaction::{TempoTypedTransaction, UnsupportedTransactionTypeEip4844},
 };
 
@@ -23,13 +23,13 @@ impl Network for TempoNetwork {
     type TxEnvelope = TempoTxEnvelope;
     type UnsignedTx = TempoTypedTransaction;
     type ReceiptEnvelope = TempoReceipt;
-    type Header = alloy::consensus::Header;
+    type Header = TempoHeader;
     type TransactionRequest = TempoTransactionRequest;
     type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
     type ReceiptResponse = alloy_rpc_types_eth::TransactionReceipt<
         ReceiptWithBloom<TempoReceipt<alloy_rpc_types_eth::Log>>,
     >;
-    type HeaderResponse = crate::rpc::Header;
+    type HeaderResponse = alloy_rpc_types_eth::Header<TempoHeader>;
     type BlockResponse = alloy_rpc_types_eth::Block<
         alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
         Self::HeaderResponse,

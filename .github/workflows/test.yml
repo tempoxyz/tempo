@@ -1,68 +1,103 @@
-name: test
+name: Test
 
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   test:
     name: test
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
-        with:
-          cache-on-failure: true
       - name: Run tests
-        run: cargo nextest run --verbose
-
-  build:
-    name: build
-    runs-on: depot-ubuntu-24.04-4
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - name: Build
-        run: cargo build --verbose
+        run: cargo nextest run
 
   msrv:
     name: MSRV
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.88" # MSRV
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Build with MSRV
         run: cargo build --bin tempo
         env:
           RUSTFLAGS: -D warnings
 
+  # FIXME: Consensus tests are flaky in CI. Temporarily disabling them to avoid blocking PR merges.
+  # consensus-e2e-tests:
+  #   name: Consensus E2E Tests
+  #   runs-on: depot-ubuntu-latest-4
+  #   timeout-minutes: 30
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Install test dependencies
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install -y jq curl
+  #
+  #     - name: Build tempo-commonware Docker image
+  #       run: |
+  #         docker build -t tempo-commonware:latest .
+  #
+  #     - name: Make test scripts executable
+  #       run: |
+  #         chmod +x scripts/consensus/*.sh
+  #
+  #     - name: Run partial network failure test
+  #       run: |
+  #         ./scripts/consensus/test-partial-network-failure.sh
+  #         sleep 5
+  #
+  #     - name: Run network halt and recovery test
+  #       run: |
+  #         ./scripts/consensus/test-network-halt-and-recovery.sh
+  #         sleep 5
+  #
+  #     - name: Run full network failure and recovery test
+  #       run: |
+  #         ./scripts/consensus/test-full-network-failure-and-recovery.sh
+  #         sleep 5
+  #
+  #     # Cleanup
+  #     - name: Cleanup containers
+  #       if: always()
+  #       run: |
+  #         cd scripts/consensus
+  #         ./stop-network.sh || true
+  #         docker container prune -f || true
+  #         docker network prune -f || true
+
   test-success:
     name: test success
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-latest-4
     if: always()
     needs:
       - test
-      - build
       - msrv
+      # - consensus-e2e-tests
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed

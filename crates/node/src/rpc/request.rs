@@ -70,6 +70,7 @@ impl TempoTransactionRequest {
             input: self.inner.input.into_input().unwrap_or_default(),
             access_list: self.inner.access_list.unwrap_or_default(),
             authorization_list: self.inner.authorization_list.unwrap_or_default(),
+            fee_payer_signature: None,
         })
     }
 }
@@ -111,6 +112,7 @@ impl TryIntoTxEnv<TempoTxEnv> for TempoTransactionRequest {
             inner: self.inner.try_into_tx_env(cfg_env, block_env)?,
             fee_token: self.fee_token,
             is_system_tx: false,
+            fee_payer: None,
         })
     }
 }
