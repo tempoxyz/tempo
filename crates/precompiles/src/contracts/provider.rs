@@ -1,4 +1,5 @@
 use alloy::primitives::{Address, U256};
+#[cfg(feature = "reth")]
 use reth_storage_api::{StateProvider, errors::ProviderResult};
 use revm::{Database, interpreter::instructions::utility::IntoAddress};
 
@@ -12,6 +13,7 @@ use crate::{
 };
 
 /// Trait to provide [`StateProvider`] access to TIPFeeManager storage to fetch fee token data and balances
+#[cfg(feature = "reth")]
 pub trait TIPFeeStateProviderExt: StateProvider {
     /// Get fee token balance for a user.
     ///
@@ -49,6 +51,7 @@ pub trait TIPFeeStateProviderExt: StateProvider {
     }
 }
 
+#[cfg(feature = "reth")]
 impl<T: StateProvider> TIPFeeStateProviderExt for T {}
 
 /// Trait to provide [`Database`] access to TIPFeeManager storage to fetch fee token data and balances

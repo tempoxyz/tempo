@@ -12,7 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["reth"] }
 tempo-primitives.workspace = true
 
 reth-transaction-pool.workspace = true
