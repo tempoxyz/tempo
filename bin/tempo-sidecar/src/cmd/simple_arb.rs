@@ -1,7 +1,7 @@
 use alloy::{
     network::{EthereumWallet, TxSigner},
     primitives::{Address, U256, uint},
-    providers::ProviderBuilder,
+    providers::{Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
 use clap::Parser;
@@ -30,15 +30,8 @@ pub struct SimpleArbArgs {
     poll_interval_ms: u64,
 }
 
-#[instrument(skip(signer))]
-async fn fetch_all_tokens(
-    rpc_url: &str,
-    signer: Arc<EthereumWallet>,
-) -> eyre::Result<HashSet<Address>> {
-    let provider = ProviderBuilder::new()
-        .wallet(signer)
-        .connect_http(rpc_url.parse()?);
-
+#[instrument(skip(provider))]
+async fn fetch_all_tokens<P: Provider + Clone>(provider: P) -> eyre::Result<HashSet<Address>> {
     let tip20_factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider);
     let last_token_id = tip20_factory.tokenIdCounter().call().await?.to::<u64>();
 
@@ -51,16 +44,11 @@ async fn fetch_all_tokens(
     Ok(tokens)
 }
 
-#[instrument(skip(signer, tokens))]
-async fn fetch_all_pools(
-    rpc_url: &str,
-    signer: Arc<EthereumWallet>,
+#[instrument(skip(provider, tokens))]
+async fn fetch_all_pools<P: Provider + Clone>(
+    provider: P,
     tokens: &HashSet<Address>,
 ) -> eyre::Result<DashMap<(Address, Address), Pool>> {
-    let provider = ProviderBuilder::new()
-        .wallet(signer)
-        .connect_http(rpc_url.parse().context("failed to parse RPC URL")?);
-
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
     let pools = DashMap::new();
     let token_vec: Vec<Address> = tokens.iter().copied().collect();
@@ -86,18 +74,14 @@ async fn fetch_all_pools(
     Ok(pools)
 }
 
-#[instrument(skip(signer, pools))]
-async fn rebalance_pool(
-    rpc_url: &str,
+#[instrument(skip(provider, pools))]
+async fn rebalance_pool<P: Provider + Clone>(
+    provider: P,
     signer: Arc<EthereumWallet>,
     token_a: Address,
     token_b: Address,
     pools: &DashMap<(Address, Address), Pool>,
 ) -> eyre::Result<()> {
-    let provider = ProviderBuilder::new()
-        .wallet(signer.clone())
-        .connect_http(rpc_url.parse().context("failed to parse RPC URL")?);
-
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
     // Get current pool state
@@ -116,13 +100,7 @@ async fn rebalance_pool(
         return Ok(());
     }
 
-    // Calculate if rebalance is needed - check if user reserves are significantly higher
     let total_reserve = user_reserve + validator_reserve;
-    if total_reserve.is_zero() {
-        debug!("Total reserves are zero, skipping rebalance");
-        return Ok(());
-    }
-
     let user_ratio = user_reserve * uint!(100_U256) / total_reserve;
     let threshold = uint!(60_U256); // If user reserves > 60% of total, rebalance
 
@@ -178,18 +156,14 @@ async fn rebalance_pool(
     Ok(())
 }
 
-#[instrument(skip(signer, pools))]
-async fn listen_for_feeswaps(
-    rpc_url: &str,
+#[instrument(skip(provider, signer, pools))]
+async fn listen_for_feeswaps<P: Provider + Clone>(
+    provider: P,
     signer: Arc<EthereumWallet>,
     pools: Arc<DashMap<(Address, Address), Pool>>,
     poll_interval: Duration,
 ) -> eyre::Result<()> {
-    let provider = ProviderBuilder::new()
-        .wallet(signer.clone())
-        .connect_http(rpc_url.parse().context("failed to parse RPC URL")?);
-
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     let mut filter = fee_amm
         .FeeSwap_filter()
@@ -213,7 +187,7 @@ async fn listen_for_feeswaps(
                 );
 
                 if let Err(e) = rebalance_pool(
-                    rpc_url,
+                    provider.clone(),
                     signer.clone(),
                     log.userToken,
                     log.validatorToken,
@@ -238,8 +212,8 @@ async fn listen_for_feeswaps(
     Ok(())
 }
 
-async fn check_and_rebalance_all_pools(
-    rpc_url: &str,
+async fn check_and_rebalance_all_pools<P: Provider + Clone>(
+    provider: P,
     signer: Arc<EthereumWallet>,
     pools: &DashMap<(Address, Address), Pool>,
 ) -> eyre::Result<()> {
@@ -249,7 +223,9 @@ async fn check_and_rebalance_all_pools(
     for entry in pools.iter() {
         let ((token_a, token_b), _) = entry.pair();
 
-        if let Err(e) = rebalance_pool(rpc_url, signer.clone(), *token_a, *token_b, pools).await {
+        if let Err(e) =
+            rebalance_pool(provider.clone(), signer.clone(), *token_a, *token_b, pools).await
+        {
             warn!(
                 %token_a,
                 %token_b,
@@ -265,41 +241,37 @@ async fn check_and_rebalance_all_pools(
     Ok(())
 }
 
-async fn run_simple_arb(
-    rpc_url: String,
-    private_key: String,
-    poll_interval_ms: u64,
-) -> eyre::Result<()> {
-    let signer = PrivateKeySigner::from_slice(
-        &hex::decode(&private_key).context("failed to decode private key")?,
-    )
-    .context("failed to parse private key")?;
-    let wallet = EthereumWallet::from(signer);
-    let wallet = Arc::new(wallet);
-    let poll_interval = Duration::from_millis(poll_interval_ms);
-
-    info!("Fetching all tokens...");
-    let tokens = fetch_all_tokens(&rpc_url, wallet.clone()).await?;
-
-    info!("Fetching all pools...");
-    let pools = fetch_all_pools(&rpc_url, wallet.clone(), &tokens).await?;
-    let pools = Arc::new(pools);
-
-    info!("Checking existing pools for imbalances...");
-    check_and_rebalance_all_pools(&rpc_url, wallet.clone(), &pools).await?;
-
-    info!("Starting event listener...");
-    listen_for_feeswaps(&rpc_url, wallet, pools, poll_interval).await?;
-
-    Ok(())
-}
-
 impl SimpleArbArgs {
     pub async fn run(self) -> eyre::Result<()> {
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .init();
 
-        run_simple_arb(self.rpc_url, self.private_key, self.poll_interval_ms).await
+        let signer = PrivateKeySigner::from_slice(
+            &hex::decode(&self.private_key).context("failed to decode private key")?,
+        )
+        .context("failed to parse private key")?;
+        let wallet = EthereumWallet::from(signer);
+        let wallet = Arc::new(wallet);
+        let poll_interval = Duration::from_millis(self.poll_interval_ms);
+
+        let provider = ProviderBuilder::new()
+            .wallet(wallet.clone())
+            .connect_http(self.rpc_url.parse().context("failed to parse RPC URL")?);
+
+        info!("Fetching all tokens...");
+        let tokens = fetch_all_tokens(provider.clone()).await?;
+
+        info!("Fetching all pools...");
+        let pools = fetch_all_pools(provider.clone(), &tokens).await?;
+        let pools = Arc::new(pools);
+
+        info!("Checking existing pools for imbalances...");
+        check_and_rebalance_all_pools(provider.clone(), wallet.clone(), &pools).await?;
+
+        info!("Starting event listener...");
+        listen_for_feeswaps(provider, wallet, pools, poll_interval).await?;
+
+        Ok(())
     }
 }
