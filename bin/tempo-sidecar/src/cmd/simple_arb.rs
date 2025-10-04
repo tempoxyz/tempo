@@ -6,7 +6,6 @@ use alloy::{
 };
 use clap::Parser;
 use eyre::Context;
-use futures::StreamExt;
 use itertools::Itertools;
 use std::{collections::HashSet, time::Duration};
 use tempo_precompiles::{
@@ -18,19 +17,22 @@ use tempo_precompiles::{
     },
 };
 use tempo_telemetry_util::error_field;
-use tracing::{debug, error, info, instrument};
+use tracing::{error, info, instrument};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct SimpleArbArgs {
+    /// RPC endpoint for the node
     #[arg(short, long, required = true)]
     rpc_url: String,
 
+    /// Private key of the tx sender
     #[arg(short, long, required = true)]
     private_key: String,
 
-    #[arg(long, default_value_t = 200)]
-    poll_interval_ms: u64,
+    /// Interval between checking pools for rebalancing
+    #[arg(long, default_value_t = 2)]
+    poll_interval: u64,
 }
 
 #[instrument(skip(provider))]
@@ -146,7 +148,7 @@ impl SimpleArbArgs {
                 }
             }
 
-            tokio::time::sleep(Duration::from_millis(self.poll_interval_ms)).await;
+            tokio::time::sleep(Duration::from_secs(self.poll_interval)).await;
         }
     }
 }
