@@ -203,9 +203,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        if !self.can_support_pending_swaps(&pool_id, U256::from(pool.reserve_validator_token)) {
-            return Err(TIPFeeAMMError::insufficient_liquidity_for_pending());
-        }
         self.set_pool(&pool_id, &pool);
 
         let validator_token_id = address_to_token_id_unchecked(&validator_token);
@@ -550,14 +547,6 @@ impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
     fn set_pending_fee_swap_in(&mut self, pool_id: &B256, amount: U256) {
         let slot = slots::pending_fee_swap_in_slot(pool_id);
         self.sstore(slot, amount);
-    }
-
-    /// Check if new validator reserve can support pending swaps
-    fn can_support_pending_swaps(&mut self, pool_id: &B256, new_validator_reserve: U256) -> bool {
-        let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id);
-        let pending_out = (pending_fee_swap_in * M) / SCALE;
-
-        new_validator_reserve >= pending_out
     }
 }
 
