@@ -4,6 +4,8 @@
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
 
+use std::sync::Arc;
+
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use commonware_consensus::{Block as _, marshal, types::Round};
 use eyre::{WrapErr as _, ensure};
@@ -15,7 +17,7 @@ use futures_util::StreamExt as _;
 use reth_provider::BlockNumReader as _;
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, instrument, warn};
+use tracing::{Level, Span, info, instrument, warn};
 
 use crate::consensus::block::Block;
 
@@ -24,10 +26,16 @@ pub(super) struct Builder {
     /// and to update the canonical chain by sending forkchoice updates.
     pub(super) execution_node: TempoFullNode,
 
+    /// The genesis block of the network. This is critically important when
+    /// backfilling: since marshal does not know about genesis, subscribing to
+    /// it with a round and the genesis digest will cause it to never resolve.
+    pub(super) genesis_block: Arc<Block>,
+
     /// The last digest that the consensus layer has finalized. The agent
     /// will send this as the first finalized head to the execution layer.
     pub(super) latest_finalized_digest: Digest,
 
+    /// The mailbox of the marshal actor. Used to backfill blocks.
     pub(super) marshal: marshal::Mailbox<BlsScheme, Block>,
 }
 
@@ -36,6 +44,7 @@ impl Builder {
     pub(super) fn build(self) -> Executor {
         let Self {
             execution_node,
+            genesis_block,
             latest_finalized_digest,
             marshal,
         } = self;
@@ -58,6 +67,7 @@ impl Builder {
 
         Executor {
             execution_node,
+            genesis_block,
             mailbox: from_execution_driver,
             latest_finalized_digest,
             marshal,
@@ -71,10 +81,16 @@ pub(super) struct Executor {
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: TempoFullNode,
 
+    /// The genesis block of the network. This is critically important when
+    /// backfilling: since marshal does not know about genesis, subscribing to
+    /// it with a round and the genesis digest will cause it to never resolve.
+    genesis_block: Arc<Block>,
+
     /// The channel over which the agent will receive new commands from the
     /// execution driver.
     mailbox: UnboundedReceiver<Message>,
 
+    /// The mailbox of the marshal actor. Used to backfill blocks.
     marshal: marshal::Mailbox<BlsScheme, Block>,
 
     /// The latest finalized digest of the block that the agent has sent to the
@@ -130,18 +146,18 @@ impl Executor {
     )]
     async fn canonicalize(
         &self,
-        cause: tracing::Span,
+        cause: Span,
         round: Option<Round>,
         digest: Digest,
     ) -> eyre::Result<PayloadStatus> {
-        tracing::info!("canonicalizing");
+        info!("canonicalizing");
         let finalized_block_hash = self.latest_finalized_digest.0;
         let forkchoice_state = ForkchoiceState {
             head_block_hash: digest.0,
             safe_block_hash: finalized_block_hash,
             finalized_block_hash,
         };
-        tracing::info!(
+        info!(
             head_block_hash = %forkchoice_state.head_block_hash,
             finalized_block_hash = %forkchoice_state.finalized_block_hash,
             "sending forkchoice-update",
@@ -193,11 +209,15 @@ impl Executor {
     )]
     async fn backfill(
         &mut self,
-        cause: tracing::Span,
+        cause: Span,
         round: Option<Round>,
         digest: Digest,
     ) -> eyre::Result<()> {
-        tracing::info!("backfilling");
+        if digest == self.genesis_block.digest() {
+            info!("genesis digest supplied; stopping backfill");
+            return Ok(());
+        }
+
         let block = self
             .marshal
             .subscribe(round, digest)
@@ -208,9 +228,8 @@ impl Executor {
         let height = block.height();
         let parent = block.parent();
 
-        // TODO(janis): should best_block_number be used instead?
-        // last_block_number feels more conservative, but the difference is
-        // unclear to me.
+        // XXX: last_block_number returns that block number that is guaranteed
+        // to exist in the execution layer's database.
         let last_execution_height = self
             .execution_node
             .provider
@@ -222,6 +241,10 @@ impl Executor {
             .expect("mailbox must be open because this was called from inside the actor");
 
         if height.saturating_sub(1) > last_execution_height {
+            info!(
+                last_execution_height,
+                "reached the last block number of the execution layer; aborting backfill"
+            );
             self.my_mailbox
                 .backfill(None, parent)
                 .expect("mailbox must be open because this was called from inside the actor");
@@ -250,7 +273,7 @@ impl Executor {
         &mut self,
         block: Block,
         response: Option<oneshot::Sender<()>>,
-        cause: tracing::Span,
+        cause: Span,
     ) -> eyre::Result<()> {
         let digest = block.digest();
         let block = block.into_inner();
@@ -298,7 +321,7 @@ impl ExecutorMailbox {
     fn backfill(&self, round: Option<Round>, digest: Digest) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
-                cause: tracing::Span::current(),
+                cause: Span::current(),
                 command: Command::Backfill { round, digest },
             })
             .wrap_err("failed sending backfill request to finalizer, this means it exited")
@@ -308,7 +331,7 @@ impl ExecutorMailbox {
     pub(super) fn canonicalize(&self, round: Option<Round>, digest: Digest) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
-                cause: tracing::Span::current(),
+                cause: Span::current(),
                 command: Command::Canonicalize { round, digest },
             })
             .wrap_err("failed sending canonicalize request to agent, this means it exited")
@@ -318,7 +341,7 @@ impl ExecutorMailbox {
     pub(super) fn forward_block(&self, block: Block) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
-                cause: tracing::Span::current(),
+                cause: Span::current(),
                 command: Command::ForwardBlock {
                     block: Box::new(block),
                     response: None,
@@ -331,7 +354,7 @@ impl ExecutorMailbox {
     pub(super) fn forward_finalized(&self, finalized: super::Finalized) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
-                cause: tracing::Span::current(),
+                cause: Span::current(),
                 command: Command::ForwardBlock {
                     block: Box::new(finalized.block),
                     response: Some(finalized.response),
@@ -343,7 +366,7 @@ impl ExecutorMailbox {
 
 #[derive(Debug)]
 struct Message {
-    cause: tracing::Span,
+    cause: Span,
     command: Command,
 }
 

@@ -602,6 +602,7 @@ impl Inner<Uninit> {
 
         let executor = executor::Builder {
             execution_node: self.execution_node.clone(),
+            genesis_block: self.genesis_block.clone(),
             latest_finalized_digest: finalized_consensus_digest,
             marshal: self.syncer.clone(),
         }
