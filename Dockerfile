@@ -21,7 +21,7 @@ RUN sed -i '/xtask/d' Cargo.toml
 
 # Install nightly Rust and build the tempo binary
 RUN rustup toolchain install nightly && rustup default nightly
-RUN cargo build --bin tempo-commonware
+RUN cargo build --bin tempo
 
 FROM debian:bookworm-slim
 
@@ -31,11 +31,11 @@ RUN apt-get update && apt-get install -y \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary
-COPY --from=builder /app/target/debug/tempo-commonware /usr/local/bin/tempo-commonware
+COPY --from=builder /app/target/debug/tempo /usr/local/bin/tempo
 
 WORKDIR /data
 
 # Expose default ports
 EXPOSE 8000 8545 8546 30303 30303/udp
 
-ENTRYPOINT ["tempo-commonware"]
+ENTRYPOINT ["tempo"]
