@@ -53,7 +53,7 @@ impl Builder {
 
         let my_mailbox = ExecutorMailbox { inner: to_me };
 
-        // XXX: canonicalizing the latest finalizad digest && starting a backfill
+        // XXX: canonicalizing the latest finalized digest && starting a backfill
         // ensures that a) executor sends head = safe = finalized = latest_finalized
         // as its first operation, and b) that it immediately triggers a backfill
         // from the last finalized block to the latest execution layer block.
@@ -150,7 +150,6 @@ impl Executor {
         round: Option<Round>,
         digest: Digest,
     ) -> eyre::Result<PayloadStatus> {
-        info!("canonicalizing");
         let finalized_block_hash = self.latest_finalized_digest.0;
         let forkchoice_state = ForkchoiceState {
             head_block_hash: digest.0,
