@@ -317,7 +317,7 @@ impl Inner<Init> {
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize(proposed_block_digest)
+            .canonicalize(None, proposed_block_digest)
         {
             tracing::warn!(
                 %error,
@@ -376,7 +376,7 @@ impl Inner<Init> {
 
         // 2. make the forkchoice state available && cache the block
         if let Ok((block, true)) = result {
-            if let Err(error) = self.state.executor_mailbox.canonicalize(payload) {
+            if let Err(error) = self.state.executor_mailbox.canonicalize(None, payload) {
                 tracing::warn!(
                     %error,
                     "failed making the verified proposal the head of the canonical chain",
@@ -395,7 +395,11 @@ impl Inner<Init> {
     where
         TContext: Clock,
     {
-        if let Err(error) = self.state.executor_mailbox.canonicalize(parent.1) {
+        if let Err(error) = self
+            .state
+            .executor_mailbox
+            .canonicalize(Some(Round::new(round.epoch(), parent.0)), parent.1)
+        {
             tracing::warn!(
                 %error,
                 "failed making the proposal's parent the head of the canonical chain",
@@ -498,56 +502,17 @@ impl Inner<Init> {
         Ok(payload)
     }
 
-    /// Forwards already finalized blocks from the consensus layer to the execution
-    /// layer.
-    ///
-    /// This function is meant to only run at start. If consensus is ahead of
-    /// the execution layer (this can happen when the node was shut down without
-    /// the execution layer having flushed all its blocks to disk), then we can
-    /// catch up the node quickly from local storage.
-    ///
-    /// Blocks will be forwarded in reverse order, starting from the newest first.
-    /// This is to allow the node to participate in consensus as fast as possible.
-    #[instrument(
-        skip_all,
-        follows_from = [cause],
-        fields(latest_consensus_finalized_height, latest_execution_block_number),
-        err
-    )]
-    async fn replay_missing_finalized(
-        mut self,
-        cause: tracing::Span,
-        latest_consensus_finalized_height: u64,
-        latest_execution_block_number: u64,
-    ) -> eyre::Result<()> {
-        let mut next_height = latest_consensus_finalized_height;
-        // NOTE: this is done sequentially because this data is read from local
-        // storage or from memory and likely for small numbers only. So concurrency
-        // likely really doesn't matter.
-        while next_height > latest_execution_block_number {
-            let block = self.syncer.get_block(next_height).await.ok_or_else(|| {
-                eyre!(
-                    "consensus returned that no block for height \
-                    `{next_height}` exists, even though it is at or below its \
-                    latest finalized height"
-                )
-            })?;
-            self.state
-                .executor_mailbox
-                .backfill(block)
-                .wrap_err("failed sending catch-up block to finalizer")?;
-            next_height = next_height.saturating_sub(1);
-        }
-        Ok(())
-    }
-
     async fn verify(
         mut self,
         parent: (View, Digest),
         payload: Digest,
         round: Round,
     ) -> eyre::Result<(Block, bool)> {
-        if let Err(error) = self.state.executor_mailbox.canonicalize(parent.1) {
+        if let Err(error) = self
+            .state
+            .executor_mailbox
+            .canonicalize(Some(Round::new(round.epoch(), parent.0)), parent.1)
+        {
             tracing::warn!(
                 %error,
                 "failed setting the proposal's parent as the head of the canonical chain",
@@ -599,8 +564,6 @@ impl Inner<Uninit> {
     ///
     /// 1. reading the last finalized digest from the consensus marshaller.
     /// 2. starting the canonical chain engine and storing its handle.
-    /// 3. starting a backfill task to catch the execution layer up to the
-    ///    consensus finalize block (if necessary).
     #[instrument(skip_all, err)]
     async fn into_initialized<TContext>(mut self, context: TContext) -> eyre::Result<Inner<Init>>
     where
@@ -640,6 +603,7 @@ impl Inner<Uninit> {
         let executor = executor::Builder {
             execution_node: self.execution_node.clone(),
             latest_finalized_digest: finalized_consensus_digest,
+            marshal: self.syncer.clone(),
         }
         .build();
 
@@ -655,18 +619,6 @@ impl Inner<Uninit> {
                 executor_mailbox: executor.mailbox().clone(),
             },
         };
-
-        context.with_label("replay missing finalized").spawn({
-            let current_span = tracing::Span::current();
-            let inner = initialized.clone();
-            move |_| {
-                inner.replay_missing_finalized(
-                    current_span,
-                    finalized_consensus_height,
-                    latest_execution_block_number,
-                )
-            }
-        });
 
         context
             .with_label("executor")
