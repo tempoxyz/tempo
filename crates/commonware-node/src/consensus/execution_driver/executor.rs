@@ -7,7 +7,7 @@
 //! If the agent detects that the execution layer is missing blocks it attempts
 //! to backfill them from the consensus layer.
 
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use commonware_consensus::{Block as _, marshal, types::Round};
@@ -16,7 +16,7 @@ use futures_channel::{
     mpsc::{UnboundedReceiver, UnboundedSender},
     oneshot,
 };
-use futures_util::StreamExt as _;
+use futures_util::{FutureExt as _, StreamExt as _, select_biased, stream::FuturesUnordered};
 use reth_provider::BlockNumReader as _;
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_node::{TempoExecutionData, TempoFullNode};
@@ -75,6 +75,7 @@ impl Builder {
             latest_finalized_digest,
             marshal,
             my_mailbox,
+            running_backfills: FuturesUnordered::new(),
         }
     }
 }
@@ -105,6 +106,9 @@ pub(super) struct Executor {
     /// The mailbox passed to other parts of the system to forward messages to
     /// the agent.
     my_mailbox: ExecutorMailbox,
+
+    running_backfills:
+        FuturesUnordered<Pin<Box<dyn Future<Output = eyre::Result<()>> + Send + Sync + 'static>>>,
 }
 
 impl Executor {
@@ -113,20 +117,30 @@ impl Executor {
     }
 
     pub(super) async fn run(mut self) {
-        while let Some(msg) = self.mailbox.next().await {
-            // XXX: finalizations must happen strictly sequentially, so blocking
-            // the event loop is desired.
+        loop {
             // TODO: also listen to shutdown signals from the runtime here.
-            self.handle_message(msg).await;
+            select_biased! {
+                msg = self.mailbox.next() => {
+                    let Some(msg) = msg else { break; };
+                    // XXX: updating forkchoice and finalizing blocks must
+                    // happen sequentially, so blocking the event loop on await
+                    // is desired.
+                    //
+                    // Backfills will be put on a queue and can happen anytime
+                    // in between.
+                    self.handle_message(msg).await;
+                }
+
+                // Only exists to drain the queue
+                _backfill = self.running_backfills.next() => {}
+            }
         }
     }
 
     async fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
-            Command::Backfill { round, digest } => {
-                let _ = self.backfill(cause, round, digest).await;
-            }
+            Command::Backfill { round, digest } => self.backfill(cause, round, digest),
             Command::Canonicalize { round, digest } => {
                 let _ = self.canonicalize(cause, round, digest).await;
             }
@@ -140,59 +154,41 @@ impl Executor {
     ///
     /// `round` must only be set if `digest` is a notarized block. If it is not
     /// this function will stall indefinitely.
+    ///
+    /// Note that this function is not async. Backfills are run in an async
+    /// queue and are allowed to finish anytime.
     #[instrument(
         skip_all,
-        follows_from = [cause],
+        parent = &cause,
         fields(
             epoch = round.as_ref().map(Round::epoch),
             view = round.as_ref().map(Round::view),
             %digest,
         ),
-        err(level = Level::WARN),
     )]
-    async fn backfill(
-        &mut self,
-        cause: Span,
-        round: Option<Round>,
-        digest: Digest,
-    ) -> eyre::Result<()> {
-        if digest == self.genesis_block.digest() {
-            info!("genesis digest supplied; stopping backfill");
-            return Ok(());
-        }
-
-        let block = self
-            .marshal
-            .subscribe(round, digest)
-            .await
-            .await
-            .wrap_err("consensus layer did not have block")?;
-
-        let height = block.height();
-        let parent = block.parent();
-
-        // XXX: last_block_number returns that block number that is guaranteed
-        // to exist in the execution layer's database.
-        let last_execution_height = self
-            .execution_node
-            .provider
-            .last_block_number()
-            .wrap_err("failed querying execution layer for its last block number")?;
-
-        self.my_mailbox
-            .forward_block(block)
-            .expect("mailbox must be open because this was called from inside the actor");
-
-        if height.saturating_sub(1) > last_execution_height {
-            info!(
-                last_execution_height,
-                "reached the last block number of the execution layer; aborting backfill"
-            );
-            self.my_mailbox
-                .backfill(None, parent)
-                .expect("mailbox must be open because this was called from inside the actor");
-        }
-        Ok(())
+    fn backfill(&mut self, cause: Span, round: Option<Round>, digest: Digest) {
+        is_send(
+            backfill_from_consensus(
+                cause,
+                digest,
+                self.execution_node.clone(),
+                self.my_mailbox.clone(),
+                self.genesis_block.clone(),
+                self.marshal.clone(),
+                round,
+            )
+            .boxed(),
+        );
+        self.running_backfills
+            .push(Box::pin(backfill_from_consensus(
+                Span::current(),
+                digest,
+                self.execution_node.clone(),
+                self.my_mailbox.clone(),
+                self.genesis_block.clone(),
+                self.marshal.clone(),
+                round,
+            )));
     }
 
     /// Canonicalizes `digest` by setting it as the head of the execution layer.
@@ -257,6 +253,7 @@ impl Executor {
         // If on the other hand `digest` was requested to be canonicalized
         // without round information, then it is not (yet) notarized.
         if round.is_some() && fcu_response.is_syncing() {
+            info!("execution layer reported digest to be syncing; attempting backfill");
             self.my_mailbox
                 .backfill(round, digest)
                 .expect("mailbox must be open because this was called from inside the actor");
@@ -435,3 +432,61 @@ enum Command {
         response: Option<oneshot::Sender<()>>,
     },
 }
+
+#[instrument(
+    skip_all,
+    follows_from = [cause],
+    fields(
+        epoch = round.as_ref().map(Round::epoch),
+        view = round.as_ref().map(Round::view),
+        %digest,
+    ),
+    err(level = Level::WARN),
+)]
+async fn backfill_from_consensus(
+    cause: Span,
+    digest: Digest,
+    execution_node: TempoFullNode,
+    executor_mailbox: ExecutorMailbox,
+    genesis_block: Arc<Block>,
+    mut marshal: marshal::Mailbox<BlsScheme, Block>,
+    round: Option<Round>,
+) -> eyre::Result<()> {
+    if digest == genesis_block.digest() {
+        info!("genesis digest supplied; stopping backfill");
+        return Ok(());
+    }
+
+    let block = marshal
+        .subscribe(round, digest)
+        .await
+        .await
+        .wrap_err("consensus layer did not have block")?;
+
+    let height = block.height();
+    let parent = block.parent();
+
+    // XXX: last_block_number returns that block number that is guaranteed
+    // to exist in the execution layer's database.
+    let last_execution_height = execution_node
+        .provider
+        .last_block_number()
+        .wrap_err("failed querying execution layer for its last block number")?;
+
+    executor_mailbox
+        .forward_block(block)
+        .wrap_err("executor mailbox was already closed")?;
+
+    if height.saturating_sub(1) > last_execution_height {
+        info!(
+            last_execution_height,
+            "reached the last block number of the execution layer; aborting backfill"
+        );
+        executor_mailbox
+            .backfill(None, parent)
+            .wrap_err("executor mailbox was already closed")?;
+    }
+    Ok(())
+}
+
+fn is_send<T: Send>(_: T) {}
