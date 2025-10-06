@@ -1,15 +1,12 @@
 use crate::contracts::{StorageProvider, storage::slots::{double_mapping_slot, mapping_slot}, types::INonce};
-use alloy::primitives::{Address, U256, Uint};
-
-/// U192 type for nonce keys (192 bits = 24 bytes)
-pub type U192 = Uint<192, 3>;
+use alloy::primitives::{Address, U256};
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
 /// Storage Layout (similar to Solidity contract):
 /// ```solidity
 /// contract Nonce {
-///     mapping(address => mapping(uint192 => uint64)) public nonces;      // slot 0
+///     mapping(address => mapping(uint64 => uint64)) public nonces;      // slot 0
 ///     mapping(address => uint256) public activeKeyCount;                  // slot 1
 /// }
 /// ```
@@ -34,10 +31,10 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
         // This will panic if nonce_key is 0, which is caught by the precompile wrapper
-        assert!(!call.nonceKey.is_zero(), "Protocol nonce not supported");
+        assert!(call.nonceKey != 0, "Protocol nonce not supported");
 
         // For user nonce keys, read from precompile storage
-        let slot = self.compute_nonce_slot(&call.account, &call.nonceKey.to_be_bytes::<24>());
+        let slot = self.compute_nonce_slot(&call.account, &call.nonceKey.to_be_bytes());
         let nonce = self.storage
             .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
             .expect("TODO: handle error");
@@ -55,13 +52,13 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
 
     /// Internal: Set nonce for a specific account and nonce key
     /// This is called by the transaction validation logic
-    pub fn set_nonce(&mut self, account: &Address, nonce_key: U192, nonce_sequence: u64) {
-        if nonce_key.is_zero() {
+    pub fn set_nonce(&mut self, account: &Address, nonce_key: u64, nonce_sequence: u64) {
+        if nonce_key == 0 {
             // Protocol nonce is managed by account state, not this precompile
             return;
         }
 
-        let slot = self.compute_nonce_slot(account, &nonce_key.to_be_bytes::<24>());
+        let slot = self.compute_nonce_slot(account, &nonce_key.to_be_bytes());
 
         // If this is a new nonce key (sequence was 0), increment active key count
         let current = self.storage
@@ -82,13 +79,13 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
     }
 
     /// Internal: Increment nonce for a specific account and nonce key
-    pub fn increment_nonce(&mut self, account: &Address, nonce_key: U192) -> u64 {
-        if nonce_key.is_zero() {
+    pub fn increment_nonce(&mut self, account: &Address, nonce_key: u64) -> u64 {
+        if nonce_key == 0 {
             // Protocol nonce is managed by account state, not this precompile
             panic!("Protocol nonce should not be managed by nonce precompile");
         }
 
-        let slot = self.compute_nonce_slot(account, &nonce_key.to_be_bytes::<24>());
+        let slot = self.compute_nonce_slot(account, &nonce_key.to_be_bytes());
         let current = self.storage
             .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
             .expect("TODO: handle error");
@@ -156,7 +153,7 @@ mod tests {
         let account = address!("0x1111111111111111111111111111111111111111");
         let nonce = nonce_mgr.get_nonce(INonce::getNonceCall {
             account,
-            nonceKey: U192::from(5),
+            nonceKey: 5,
         });
 
         assert_eq!(nonce, 0);
@@ -171,7 +168,7 @@ mod tests {
         let account = address!("0x1111111111111111111111111111111111111111");
         nonce_mgr.get_nonce(INonce::getNonceCall {
             account,
-            nonceKey: U192::ZERO,
+            nonceKey: 0,
         });
     }
 
@@ -181,7 +178,7 @@ mod tests {
         let mut nonce_mgr = NonceManager::new(&mut storage);
 
         let account = address!("0x1111111111111111111111111111111111111111");
-        let nonce_key = U192::from(5);
+        let nonce_key = 5;
 
         nonce_mgr.set_nonce(&account, nonce_key, 42);
 
@@ -199,7 +196,7 @@ mod tests {
         let mut nonce_mgr = NonceManager::new(&mut storage);
 
         let account = address!("0x1111111111111111111111111111111111111111");
-        let nonce_key = U192::from(5);
+        let nonce_key = 5;
 
         let new_nonce = nonce_mgr.increment_nonce(&account, nonce_key);
         assert_eq!(new_nonce, 1);
@@ -222,21 +219,21 @@ mod tests {
         assert_eq!(count, U256::ZERO);
 
         // Increment a nonce key - should increase active count
-        nonce_mgr.increment_nonce(&account, U192::from(1));
+        nonce_mgr.increment_nonce(&account, 1);
         let count = nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall {
             account,
         });
         assert_eq!(count, U256::from(1));
 
         // Increment same key again - count should stay the same
-        nonce_mgr.increment_nonce(&account, U192::from(1));
+        nonce_mgr.increment_nonce(&account, 1);
         let count = nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall {
             account,
         });
         assert_eq!(count, U256::from(1));
 
         // Increment a different key - count should increase
-        nonce_mgr.increment_nonce(&account, U192::from(2));
+        nonce_mgr.increment_nonce(&account, 2);
         let count = nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall {
             account,
         });
@@ -250,7 +247,7 @@ mod tests {
 
         let account1 = address!("0x1111111111111111111111111111111111111111");
         let account2 = address!("0x2222222222222222222222222222222222222222");
-        let nonce_key = U192::from(5);
+        let nonce_key = 5;
 
         nonce_mgr.set_nonce(&account1, nonce_key, 10);
         nonce_mgr.set_nonce(&account2, nonce_key, 20);

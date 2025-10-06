@@ -161,10 +161,10 @@ sol! {
     interface INonce {
         /// Get the nonce for a specific account and nonce key
         /// @param account The address to query
-        /// @param nonceKey The 192-bit nonce key (0 for protocol nonce, 1-N for user nonces)
+        /// @param nonceKey The 64-bit nonce key (0 for protocol nonce, 1-N for user nonces)
         /// Note: nonceKey `0` will revert.
         /// @return The current nonce sequence value for the given key
-        function getNonce(address account, uint192 nonceKey) external view returns (uint64);
+        function getNonce(address account, uint64 nonceKey) external view returns (uint64);
 
         /// Get the number of active user nonce keys for an account
         /// @param account The address to query
