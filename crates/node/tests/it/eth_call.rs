@@ -14,10 +14,13 @@ use alloy_rpc_types_eth::TransactionInput;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_precompiles::contracts::{
-    ITIP20::{self, transferCall},
-    storage::slots::mapping_slot,
-    tip20, token_id_to_address,
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN,
+    contracts::{
+        ITIP20::{self, transferCall},
+        storage::slots::mapping_slot,
+        tip20, token_id_to_address,
+    },
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -295,7 +298,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     );
 
     // Supply liquidity to enable fee token swapping
-    let validator_token_address = token_id_to_address(1); // predeployed token
+    let validator_token_address = DEFAULT_FEE_TOKEN;
 
     let fee_amm = tempo_precompiles::contracts::types::ITIPFeeAMM::new(
         tempo_precompiles::TIP_FEE_MANAGER_ADDRESS,

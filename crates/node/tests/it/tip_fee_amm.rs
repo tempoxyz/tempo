@@ -8,7 +8,7 @@ use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
 use std::env;
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         ITIP20::ITIP20Instance,
         tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
@@ -280,7 +280,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     // Create different tokens for user and validator
     let user_token = setup_test_token(provider.clone(), user_address).await?;
     // Use default fee token for validator
-    let validator_token = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+    let validator_token = ITIP20Instance::new(DEFAULT_FEE_TOKEN, provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Mint initial balances
@@ -357,7 +357,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?;
 
     // Transfer using predeployed TIP20
-    let transfer_token = ITIP20::new(token_id_to_address(0), provider.clone());
+    let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
 
     let transfer_receipt = transfer_token
         .transfer(Address::random(), U256::ZERO)

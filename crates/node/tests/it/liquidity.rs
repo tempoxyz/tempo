@@ -1,4 +1,5 @@
 use alloy::{primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder};
+use tempo_precompiles::DEFAULT_FEE_TOKEN;
 
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
 #[tokio::test(flavor = "multi_thread")]
@@ -22,7 +23,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
 
     // Get validator token address (USDC from genesis)
     use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::types::ITIPFeeAMM};
-    let validator_token_addr = tempo_precompiles::contracts::token_id_to_address(1);
+    let validator_token_addr = DEFAULT_FEE_TOKEN;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let validator_token =
