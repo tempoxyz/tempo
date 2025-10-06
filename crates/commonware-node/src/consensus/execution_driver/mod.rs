@@ -32,7 +32,7 @@ use reth_provider::{BlockNumReader as _, BlockReader as _};
 use tempo_primitives::TempoPrimitives;
 use tempo_telemetry_util::display_duration;
 use tokio::sync::RwLock;
-use tracing::{Level, debug, info, instrument};
+use tracing::{Level, info, instrument};
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
