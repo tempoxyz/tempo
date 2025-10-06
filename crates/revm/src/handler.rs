@@ -11,9 +11,9 @@ use reth_evm::{
             Block, Cfg, ContextTr, Host, JournalTr, Transaction,
             result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
         },
-        handler::{EvmTr, FrameTr, Handler, pre_execution::validate_account_nonce_and_code},
+        handler::{EvmTr, FrameTr, Handler, pre_execution::validate_account_nonce_and_code, validation},
         inspector::{Inspector, InspectorHandler},
-        interpreter::{instructions::utility::IntoAddress, interpreter::EthInterpreter},
+        interpreter::{instructions::utility::IntoAddress, interpreter::EthInterpreter, InitialAndFloorGas},
         state::Bytecode,
     },
 };
@@ -33,6 +33,24 @@ use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tracing::trace;
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
+
+/// Additional gas for P256 signature verification
+/// P256 precompile cost (6900 from EIP-7951) + 1100 for extra signature size - ecrecover savings (3000)
+const P256_VERIFY_GAS: u64 = 5_000;
+
+/// Gas cost for using an existing user nonce key (sequence > 0)
+/// Equivalent to cold SSTORE on non-zero slot (2,900 base + 2,100 cold access)
+const COLD_SSTORE_GAS: u64 = 5_000;
+
+/// Gas multiplier for each new nonce key
+/// Progressive pricing to prevent state bloat
+const NEW_NONCE_KEY_MULTIPLIER: u64 = 20_000;
+
+/// Calldata gas cost per zero byte
+const CALLDATA_ZERO_BYTE_GAS: u64 = 4;
+
+/// Calldata gas cost per non-zero byte
+const CALLDATA_NONZERO_BYTE_GAS: u64 = 16;
 
 /// Hashed account code of default 7702 delegate deployment
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
@@ -358,6 +376,177 @@ where
         // The actual swap and transfer to validator happens in executeBlock at the end of block processing
         Ok(())
     }
+
+    /// Validates environment and transaction gas, with custom handling for AA transactions.
+    ///
+    /// Overrides the default validate() to enable state access for calculating exact nonce key gas.
+    /// AA transactions require reading nonce state to determine if a key is new or existing.
+    #[inline]
+    fn validate(&self, evm: &mut Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
+        // First, validate environment (block/tx params)
+        self.validate_env(evm)?;
+
+        // Then validate and calculate intrinsic gas
+        validate_aa_initial_tx_gas(evm)
+    }
+}
+
+/// Validates and calculates initial transaction gas for AA transactions with state access.
+///
+/// For AA transactions (type 0x5), calculates intrinsic gas based on:
+/// - Signature type (secp256k1: 21k, P256: 26k, WebAuthn: 26k + calldata)
+/// - Nonce key usage (protocol: 0, existing: 5k, new: num_active * 20k)
+///
+/// For non-AA transactions, uses the default Ethereum calculation.
+///
+/// See aa-spec.md:353-410 for complete gas schedule pseudocode.
+fn validate_aa_initial_tx_gas<DB, I>(
+    evm: &mut TempoEvm<DB, I>,
+) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
+where
+    DB: reth_evm::Database,
+{
+    let tx_type = evm.ctx_ref().tx().tx_type();
+    let spec = evm.ctx_ref().cfg().spec().into();
+
+    // For non-AA transactions, use default validation
+    if tx_type != AA_TX_TYPE_ID {
+        let tx = evm.ctx_ref().tx();
+        return validation::validate_initial_tx_gas(tx, spec).map_err(From::from);
+    }
+
+    // For AA transactions, extract all needed data first
+    let (nonce_key, nonce_sequence, signature, caller_addr, gas_limit) = {
+        let tx = evm.ctx_ref().tx();
+        (
+            tx.nonce_key.unwrap_or(0),
+            tx.nonce(),
+            tx.signature.clone(),
+            tx.caller(),
+            tx.gas_limit(),
+        )
+    };
+
+    // Get signature bytes
+    let sig_bytes = signature.as_ref().ok_or_else(|| {
+        TempoInvalidTransaction::InvalidWebAuthnSignature {
+            reason: "Missing signature for AA transaction".into(),
+        }
+    })?;
+
+    // Start with the standard intrinsic gas calculation (calldata, access list, etc.)
+    let standard_gas = {
+        let tx = evm.ctx_ref().tx();
+        validation::validate_initial_tx_gas(tx, spec)
+            .map_err(|e: InvalidTransaction| TempoInvalidTransaction::EthInvalidTransaction(e))?
+    };
+
+    // Calculate AA-specific additional gas (signature + nonce key costs)
+
+    // Calculate additional signature verification gas beyond the base 21k
+    // secp256k1 (64 or 65 bytes): 0 additional (already included in base)
+    // P256 (129 bytes): 5,000 additional
+    // WebAuthn (>129 bytes): 5,000 + calldata gas for variable data
+    let additional_signature_gas = match sig_bytes.len() {
+        64 | 65 => {
+            // secp256k1 signature - no additional gas needed
+            0
+        }
+        129 => {
+            // P256 signature - add P256 verification gas
+            P256_VERIFY_GAS
+        }
+        len if len > 129 && len <= 2048 => {
+            // WebAuthn signature format: webauthn_data || r (32) || s (32) || pubKeyX (32) || pubKeyY (32)
+            // Charge calldata gas for variable webauthn_data (everything except last 128 bytes)
+            let webauthn_data = &sig_bytes[..sig_bytes.len() - 128];
+            // Calculate calldata gas inline
+            let mut webauthn_data_gas = 0u64;
+            for &byte in webauthn_data {
+                webauthn_data_gas = webauthn_data_gas.saturating_add(
+                    if byte == 0 { CALLDATA_ZERO_BYTE_GAS } else { CALLDATA_NONZERO_BYTE_GAS }
+                );
+            }
+            P256_VERIFY_GAS + webauthn_data_gas
+        }
+        _ => {
+            return Err(TempoInvalidTransaction::InvalidWebAuthnSignature {
+                reason: format!("Invalid signature length: {}", sig_bytes.len()),
+            }
+            .into());
+        }
+    };
+
+    // Calculate nonce key gas exactly as per spec pseudocode (lines 390-404)
+    let nonce_key_gas = if nonce_key == 0 {
+        // Protocol nonce (backward compatible)
+        0
+    } else {
+        // User nonce key - read from state to determine if new or existing
+        let journal = &mut evm.ctx().journaled_state;
+
+        // Inline implementation from gas::calculate_nonce_key_gas
+        // Ensure nonce precompile is loaded
+        journal.load_account(NONCE_PRECOMPILE_ADDRESS).map_err(EVMError::Database)?;
+
+        // Compute storage slot for nonces[account][nonce_key]
+        let storage_key = nonce::slots::nonce_slot(&caller_addr, nonce_key);
+
+        // Read current sequence from storage (matches spec: current_sequence = get_nonce())
+        let stored_sequence = journal
+            .sload(NONCE_PRECOMPILE_ADDRESS, storage_key.into())
+            .map_err(EVMError::Database)?
+            .data;
+
+        if stored_sequence.is_zero() {
+            // New nonce key (sequence transitioning from 0 to 1)
+            // Progressive pricing based on number of active keys
+            // Inline get_active_nonce_key_count
+            let count_storage_key = nonce::slots::active_key_count_slot(&caller_addr);
+            let num_active_keys = journal
+                .sload(NONCE_PRECOMPILE_ADDRESS, count_storage_key.into())
+                .map_err(EVMError::Database)?
+                .data
+                .to::<u64>();
+
+            num_active_keys * NEW_NONCE_KEY_MULTIPLIER
+        } else {
+            // Existing nonce key (sequence > 0)
+            // Fixed cost for cold SSTORE
+            COLD_SSTORE_GAS
+        }
+    };
+
+    // Total intrinsic gas = standard_gas + additional_signature_gas + nonce_key_gas
+    let total_intrinsic_gas = standard_gas
+        .initial_gas
+        .saturating_add(additional_signature_gas)
+        .saturating_add(nonce_key_gas);
+
+    // Validate gas limit is sufficient
+    if gas_limit < total_intrinsic_gas {
+        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+            gas_limit,
+            intrinsic_gas: total_intrinsic_gas,
+        }
+        .into());
+    }
+
+    trace!(
+        signature_len = sig_bytes.len(),
+        nonce_key,
+        nonce_sequence,
+        additional_signature_gas,
+        nonce_key_gas,
+        standard_gas = standard_gas.initial_gas,
+        total_intrinsic_gas,
+        "Calculated AA transaction intrinsic gas"
+    );
+
+    Ok(InitialAndFloorGas::new(
+        total_intrinsic_gas,
+        standard_gas.floor_gas,
+    ))
 }
 
 /// Looks up the user's fee token in the `TIPFeemanager` contract.
