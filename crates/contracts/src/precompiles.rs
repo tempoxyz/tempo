@@ -158,6 +158,22 @@ sol! {
 
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
+    interface INonce {
+        /// Get the nonce for a specific account and nonce key
+        /// @param account The address to query
+        /// @param nonceKey The 192-bit nonce key (0 for protocol nonce, 1-N for user nonces)
+        /// Note: nonceKey `0` will revert.
+        /// @return The current nonce sequence value for the given key
+        function getNonce(address account, uint192 nonceKey) external view returns (uint64);
+
+        /// Get the number of active user nonce keys for an account
+        /// @param account The address to query
+        /// @return The count of active nonce keys
+        function getActiveNonceKeyCount(address account) external view returns (uint256);
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
     interface ITipAccountRegistrar {
         function delegateToDefault(bytes32 hash, bytes signature) external returns (address authority);
         function getDelegationMessage() external pure returns (string memory);

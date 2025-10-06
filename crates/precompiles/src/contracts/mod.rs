@@ -1,4 +1,5 @@
 pub mod linking_usd;
+pub mod nonce;
 pub mod provider;
 pub mod roles;
 pub mod stablecoin_exchange;
@@ -19,6 +20,7 @@ use crate::TIP20_TOKEN_PREFIX;
 use alloy::primitives::Address;
 pub use linking_usd::LinkingUSD;
 pub use stablecoin_exchange::StablecoinExchange;
+pub use nonce::NonceManager;
 pub use storage::{StorageProvider, evm::EvmStorageProvider, hashmap::HashMapStorageProvider};
 pub use tip_account_registrar::TipAccountRegistrar;
 pub use tip20::TIP20Token;
@@ -26,7 +28,7 @@ pub use tip20_factory::TIP20Factory;
 pub use tip403_registry::TIP403Registry;
 pub use tip4217_registry::TIP4217Registry;
 pub use types::{
-    IFeeManager, ITIP20, ITIP20Factory, ITIP403Registry, ITIP4217Registry, ITIPFeeAMM,
+    IFeeManager, INonce, ITIP20, ITIP20Factory, ITIP403Registry, ITIP4217Registry, ITIPFeeAMM,
     ITipAccountRegistrar,
 };
 

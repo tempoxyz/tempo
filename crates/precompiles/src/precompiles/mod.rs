@@ -10,6 +10,7 @@ use revm::{
 };
 
 pub mod linking_usd;
+pub mod nonce;
 pub mod stablecoin_exchange;
 pub mod tip20;
 pub mod tip20_factory;
@@ -19,10 +20,11 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use crate::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP4217_REGISTRY_ADDRESS,
     contracts::{
-        EvmStorageProvider, LinkingUSD, StablecoinExchange, TIP20Factory, TIP20Token,
+        EvmStorageProvider, LinkingUSD, NonceManager, StablecoinExchange, TIP20Factory, TIP20Token,
         TIP403Registry, TIP4217Registry, TipAccountRegistrar, address_to_token_id_unchecked,
         is_tip20, tip_fee_manager::TipFeeManager,
     },
@@ -57,6 +59,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             Some(TipAccountRegistrarPrecompile::create(chain_id))
         } else if *address == STABLECOIN_EXCHANGE_ADDRESS {
             Some(StablecoinExchangePrecompile::create(chain_id))
+        } else if *address == NONCE_PRECOMPILE_ADDRESS {
+            Some(NoncePrecompile::create(chain_id))
         } else {
             None
         }
@@ -156,6 +160,15 @@ pub struct StablecoinExchangePrecompile;
 impl StablecoinExchangePrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
+            &mut EvmStorageProvider::new(input.internals, chain_id)
+        ))
+    }
+}
+pub struct NoncePrecompile;
+
+impl NoncePrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("NonceManager", |input| NonceManager::new(
             &mut EvmStorageProvider::new(input.internals, chain_id)
         ))
     }
