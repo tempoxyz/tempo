@@ -14,7 +14,7 @@ use reth_rpc_convert::{
 };
 use serde::{Deserialize, Serialize};
 use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{TempoTxEnvelope, TxFeeToken, transaction::TempoTypedTransaction};
+use tempo_primitives::{TempoTxEnvelope, TxAA, TxFeeToken, transaction::TempoTypedTransaction};
 use tempo_revm::TempoTxEnv;
 
 /// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
@@ -114,6 +114,11 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             fee_token: self.fee_token,
             is_system_tx: false,
             fee_payer: None,
+            // RPC transactions are not AA transactions
+            nonce_key: None,
+            signature: None,
+            valid_before: None,
+            valid_after: None,
         })
     }
 }
@@ -162,6 +167,7 @@ impl From<TempoTxEnvelope> for TempoTransactionRequest {
             TempoTxEnvelope::Eip1559(tx) => tx.into(),
             TempoTxEnvelope::Eip7702(tx) => tx.into(),
             TempoTxEnvelope::FeeToken(tx) => tx.into(),
+            TempoTxEnvelope::AA(tx) => tx.into(),
         }
     }
 }
@@ -171,6 +177,12 @@ trait FeeToken {
 }
 
 impl FeeToken for TxFeeToken {
+    fn fee_token(&self) -> Option<Address> {
+        self.fee_token
+    }
+}
+
+impl FeeToken for TxAA {
     fn fee_token(&self) -> Option<Address> {
         self.fee_token
     }
@@ -229,6 +241,10 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
                 fee_token: None,
             },
             TempoTypedTransaction::FeeToken(tx) => Self {
+                fee_token: tx.fee_token,
+                inner: TransactionRequest::from_transaction(tx),
+            },
+            TempoTypedTransaction::AA(tx) => Self {
                 fee_token: tx.fee_token,
                 inner: TransactionRequest::from_transaction(tx),
             },
