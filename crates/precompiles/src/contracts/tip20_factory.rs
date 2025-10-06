@@ -1,6 +1,7 @@
 use crate::{
     TIP20_FACTORY_ADDRESS,
     contracts::{
+        is_tip20,
         storage::StorageProvider,
         tip20::TIP20Token,
         token_id_to_address,
@@ -47,6 +48,10 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
         sender: &Address,
         call: ITIP20Factory::createTokenCall,
     ) -> Result<U256, TIP20Error> {
+        if !is_tip20(&call.linkingToken) {
+            return Err(TIP20Error::invalid_linking_token());
+        }
+
         let token_id = self.token_id_counter();
         trace!(%sender, %token_id, ?call, "Create token");
 
@@ -63,6 +68,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
             &call.name,
             &call.symbol,
             &call.currency,
+            call.linkingToken,
             &call.admin,
         )?;
 

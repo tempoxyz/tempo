@@ -93,6 +93,7 @@ sol! {
         error SaltAlreadyUsed();
         error ContractPaused();
         error InvalidCurrency();
+        error InvalidLinkingToken();
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -104,6 +105,7 @@ sol! {
             string memory name,
             string memory symbol,
             string memory currency,
+            address linkingToken,
             address admin
         ) external returns (uint256);
 
@@ -436,6 +438,11 @@ impl TIP20Error {
     /// Creates an error for invalid payload data.
     pub const fn invalid_payload() -> Self {
         Self::InvalidPayload(ITIP20::InvalidPayload {})
+    }
+
+    /// Creates an error for invalid linking token.
+    pub const fn invalid_linking_token() -> Self {
+        Self::InvalidLinkingToken(ITIP20::InvalidLinkingToken {})
     }
 
     /// Creates an error for invalid or reused nonce.
