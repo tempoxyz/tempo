@@ -22,11 +22,14 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider,
+        nonce,
         storage::slots::mapping_slot,
         tip_fee_manager::{self, TipFeeManager},
         tip20,
     },
 };
+use tempo_primitives::AA_TX_TYPE_ID;
+use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tracing::trace;
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
@@ -116,18 +119,39 @@ where
         let context = evm.ctx();
         let basefee = context.block().basefee() as u128;
         let blob_price = context.block().blob_gasprice().unwrap_or_default();
+        let block_timestamp = context.block().timestamp().to::<u64>();  // Extract timestamp early
         let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
+        let tx_type = context.tx().tx_type();
         let value = context.tx().value();
+        let caller_addr = context.tx().caller();  // Extract caller address early
 
         let (tx, journal) = (&mut context.tx, &mut context.journaled_state);
 
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
 
-        // Load caller's account.
-        let caller_account = journal.load_account_code(tx.caller())?.data;
+        // For AA transactions, handle 2D nonce validation before loading caller account
+        if tx_type == AA_TX_TYPE_ID {
+            // Step 1: 2D Nonce validation for non-protocol nonces
+            let nonce_key = tx.nonce_key.unwrap_or(0);
+            let nonce_sequence = tx.nonce();
+
+            if !is_nonce_check_disabled && nonce_key != 0 {
+                // User nonce (key 1-N): Use 2D nonce from precompile storage
+                // Do this BEFORE loading caller account to avoid borrow conflicts
+                validate_and_increment_2d_nonce(
+                    journal,
+                    caller_addr,
+                    nonce_key,
+                    nonce_sequence,
+                )?;
+            }
+        }
+
+        // Load caller's account after 2D nonce validation
+        let caller_account = journal.load_account_code(caller_addr)?.data;
 
         let account_info = &mut caller_account.info;
         if account_info.has_no_code_and_nonce() {
@@ -137,13 +161,62 @@ where
             );
         }
 
-        validate_account_nonce_and_code(
-            &mut caller_account.info,
-            tx.nonce(),
-            is_eip3607_disabled,
-            is_nonce_check_disabled,
-        )
-        .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
+        // For AA transactions, handle remaining validations
+        // For non-AA transactions, use standard nonce validation
+        if tx_type == AA_TX_TYPE_ID {
+            // AA transactions need special handling for:
+            // 1. 2D nonce system (nonce_key + nonce_sequence)
+            // 2. P256/WebAuthn signature verification
+            // 3. Time window validation (validBefore/validAfter)
+
+            // Step 1: Validate code (EIP-3607 check)
+            if !is_eip3607_disabled {
+                let bytecode = match caller_account.info.code.as_ref() {
+                    Some(code) => code,
+                    None => &Bytecode::default(),
+                };
+                if !bytecode.is_empty() && !bytecode.is_eip7702() {
+                    return Err(EVMError::Transaction(
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::RejectCallerWithCode,
+                        ),
+                    ));
+                }
+            }
+
+            // Step 2: Protocol nonce validation (key 0 only)
+            let nonce_key = tx.nonce_key.unwrap_or(0);
+            let nonce_sequence = tx.nonce();
+
+            if !is_nonce_check_disabled && nonce_key == 0 {
+                // Protocol nonce (key 0): Use standard account nonce validation
+                validate_account_nonce_and_code(
+                    &mut caller_account.info,
+                    nonce_sequence,
+                    is_eip3607_disabled,
+                    is_nonce_check_disabled,
+                )
+                .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
+            }
+
+            // Step 3: Time window validation (using pre-extracted timestamp)
+            if let Some(valid_before) = tx.valid_before {
+                validate_time_window(tx.valid_after, valid_before, block_timestamp)?;
+            }
+
+            // Note: Signature verification for all types (secp256k1, P256, WebAuthn) now happens
+            // during recover_signer() before the transaction enters the pool. This ensures
+            // consistency with secp256k1 flow and prevents unverified signatures from entering mempool.
+        } else {
+            // Standard transaction validation
+            validate_account_nonce_and_code(
+                &mut caller_account.info,
+                tx.nonce(),
+                is_eip3607_disabled,
+                is_nonce_check_disabled,
+            )
+            .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
+        }
 
         let max_balance_spending = tx
             .max_balance_spending()
@@ -153,8 +226,20 @@ where
             .expect("effective balance is always smaller than max balance so it can't overflow");
 
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
+        // For AA transactions with user nonce keys (key != 0), skip protocol nonce increment
+        // since the nonce was already incremented in the precompile storage.
         if tx.kind().is_call() {
-            caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+            let should_increment_protocol_nonce = if tx_type == AA_TX_TYPE_ID {
+                // Only increment protocol nonce if using protocol nonce key (0)
+                tx.nonce_key.unwrap_or(0) == 0
+            } else {
+                // Non-AA transactions always increment protocol nonce
+                true
+            };
+
+            if should_increment_protocol_nonce {
+                caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+            }
         }
         // Ensure caller account is touched.
         caller_account.mark_touch();
@@ -391,6 +476,136 @@ where
             Err(e) => self.catch_error(evm, e),
         }
     }
+}
+
+/// Validates and increments 2D nonce for AA transactions
+///
+/// AA transactions use a 2D nonce system with nonce_key and nonce_sequence:
+/// - nonce_key 0: Protocol nonce (stored in account state, validated above)
+/// - nonce_key 1-N: User nonces (stored in NONCE_PRECOMPILE_ADDRESS)
+///
+/// Storage layout matches Solidity:
+/// ```solidity
+/// contract Nonce {
+///     mapping(address => mapping(uint64 => uint64)) public nonces;      // slot 0
+///     mapping(address => uint256) public activeKeyCount;                  // slot 1
+/// }
+/// ```
+///
+/// This function:
+/// 1. Reads the current sequence for the given nonce_key from precompile storage
+/// 2. Validates it matches the transaction's nonce_sequence
+/// 3. Increments the sequence in storage
+/// 4. If this is a new nonce key (sequence was 0), increments active key count
+pub fn validate_and_increment_2d_nonce<JOURNAL>(
+    journal: &mut JOURNAL,
+    caller: Address,
+    nonce_key: u64,
+    nonce_sequence: u64,
+) -> Result<(), TempoInvalidTransaction>
+where
+    JOURNAL: JournalTr,
+{
+    // Protocol nonce (key 0) is validated through standard nonce check
+    if nonce_key == 0 {
+        return Ok(());
+    }
+
+    // For user nonce keys (1-N), read from nonce precompile storage
+    journal.load_account(NONCE_PRECOMPILE_ADDRESS)
+        .map_err(|e| {
+            TempoInvalidTransaction::InvalidWebAuthnSignature {
+                reason: format!("Failed to load nonce precompile: {e:?}"),
+            }
+        })?;
+
+    // Compute storage slot for nonces[caller][nonce_key]
+    let storage_key = nonce::slots::nonce_slot(&caller, nonce_key);
+
+    let stored_sequence = journal.sload(NONCE_PRECOMPILE_ADDRESS, storage_key.into())
+        .map_err(|e| {
+            TempoInvalidTransaction::InvalidWebAuthnSignature {
+                reason: format!("Failed to read nonce from storage: {e:?}"),
+            }
+        })?
+        .data;
+
+    // Validate sequence matches
+    let expected_sequence = U256::from(nonce_sequence);
+    if stored_sequence != expected_sequence {
+        return Err(TempoInvalidTransaction::Invalid2DNonce {
+            nonce_key,
+            expected: stored_sequence.to::<u64>(),
+            actual: nonce_sequence,
+        });
+    }
+
+    // If this is a new nonce key (transitioning from 0 to 1), increment active key count
+    if stored_sequence.is_zero() {
+        // Compute storage slot for activeKeyCount[caller]
+        let count_storage_key = nonce::slots::active_key_count_slot(&caller);
+
+        let current_count = journal.sload(NONCE_PRECOMPILE_ADDRESS, count_storage_key.into())
+            .map_err(|e| {
+                TempoInvalidTransaction::InvalidWebAuthnSignature {
+                    reason: format!("Failed to read active key count: {e:?}"),
+                }
+            })?
+            .data;
+
+        let new_count = current_count.saturating_add(U256::from(1));
+        journal.sstore(NONCE_PRECOMPILE_ADDRESS, count_storage_key.into(), new_count)
+            .map_err(|e| {
+                TempoInvalidTransaction::InvalidWebAuthnSignature {
+                    reason: format!("Failed to write active key count: {e:?}"),
+                }
+            })?;
+    }
+
+    // Increment the sequence
+    let new_sequence = stored_sequence.saturating_add(U256::from(1));
+    journal.sstore(NONCE_PRECOMPILE_ADDRESS, storage_key.into(), new_sequence)
+        .map_err(|e| {
+            TempoInvalidTransaction::InvalidWebAuthnSignature {
+                reason: format!("Failed to write nonce to storage: {e:?}"),
+            }
+        })?;
+
+    Ok(())
+}
+
+
+/// Validates time window for AA transactions
+///
+/// AA transactions can have optional validBefore and validAfter fields:
+/// - validAfter: Transaction can only be included after this timestamp
+/// - validBefore: Transaction can only be included before this timestamp
+///
+/// This ensures transactions are only valid within a specific time window.
+pub fn validate_time_window(
+    valid_after: Option<u64>,
+    valid_before: u64,
+    block_timestamp: u64,
+) -> Result<(), TempoInvalidTransaction> {
+    // Validate validAfter constraint
+    if let Some(after) = valid_after {
+        if block_timestamp < after {
+            return Err(TempoInvalidTransaction::ValidAfter {
+                current: block_timestamp,
+                valid_after: after,
+            });
+        }
+    }
+
+    // Validate validBefore constraint (0 means no constraint)
+    if valid_before > 0 && block_timestamp >= valid_before {
+        return Err(TempoInvalidTransaction::ValidBefore {
+            current: block_timestamp,
+            valid_before,
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

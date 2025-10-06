@@ -52,6 +52,58 @@ pub enum TempoInvalidTransaction {
     /// signature recovery for the fee payer fails.
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
+
+    // Account Abstraction (AA) transaction errors
+
+    /// Transaction cannot be included before validAfter timestamp.
+    ///
+    /// AA transactions can specify a validAfter field to restrict when they can be included.
+    #[error("transaction not valid yet: current block timestamp {current} < validAfter {valid_after}")]
+    ValidAfter {
+        /// The current block timestamp.
+        current: u64,
+        /// The validAfter constraint from the transaction.
+        valid_after: u64,
+    },
+
+    /// Transaction cannot be included after validBefore timestamp.
+    ///
+    /// AA transactions can specify a validBefore field to restrict when they can be included.
+    #[error("transaction expired: current block timestamp {current} >= validBefore {valid_before}")]
+    ValidBefore {
+        /// The current block timestamp.
+        current: u64,
+        /// The validBefore constraint from the transaction.
+        valid_before: u64,
+    },
+
+    /// Invalid nonce for 2D nonce system.
+    ///
+    /// AA transactions use a 2D nonce system with nonce_key and nonce_sequence.
+    #[error("invalid 2D nonce: expected sequence {expected} for key {nonce_key}, got {actual}")]
+    Invalid2DNonce {
+        /// The nonce key.
+        nonce_key: u64,
+        /// The expected sequence value.
+        expected: u64,
+        /// The actual sequence value from the transaction.
+        actual: u64,
+    },
+
+    /// P256 signature verification failed.
+    ///
+    /// The P256 signature could not be verified against the transaction hash.
+    #[error("P256 signature verification failed")]
+    InvalidP256Signature,
+
+    /// WebAuthn signature verification failed.
+    ///
+    /// The WebAuthn signature validation failed (could be authenticatorData, clientDataJSON, or P256 verification).
+    #[error("WebAuthn signature verification failed: {reason}")]
+    InvalidWebAuthnSignature {
+        /// Specific reason for failure.
+        reason: String,
+    },
 }
 
 impl InvalidTxError for TempoInvalidTransaction {
