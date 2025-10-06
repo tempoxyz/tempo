@@ -3,7 +3,7 @@
 # Stop consensus validator network
 set -euo pipefail
 
-NETWORK_NAME="tempo-commonware"
+NETWORK_NAME="tempo"
 
 echo "=== Stopping Tempo Network ==="
 

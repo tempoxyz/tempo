@@ -9,8 +9,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Source test utilities
 source "$SCRIPT_DIR/test-utils.sh"
 
-DOCKER_IMAGE="tempo-commonware:latest"
-NETWORK_NAME="tempo-commonware"
+DOCKER_IMAGE="tempo:latest"
+NETWORK_NAME="tempo"
 
 echo "=== Starting Tempo Network ==="
 
