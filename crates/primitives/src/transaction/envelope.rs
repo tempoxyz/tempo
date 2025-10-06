@@ -1,4 +1,9 @@
 use super::fee_token::TxFeeToken;
+<<<<<<< HEAD
+=======
+use super::account_abstraction::TxAA;
+use crate::transaction::UnsupportedTransactionTypeEip4844;
+>>>>>>> f174511 (feat(primitives): add AA Tx Type)
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
     TypedTransaction,
@@ -48,6 +53,9 @@ pub enum TempoTxEnvelope {
     #[envelope(ty = 4)]
     Eip7702(Signed<TxEip7702>),
 
+    #[envelope(ty = 5)]
+    AA(Signed<TxAA>),
+
     /// Tempo fee token transaction (type 0x77)
     #[envelope(ty = 0x77)]
     FeeToken(Signed<TxFeeToken>),
@@ -76,9 +84,14 @@ impl TryFrom<TempoTxType> for TxType {
             TempoTxType::Eip2930 => Self::Eip2930,
             TempoTxType::Eip1559 => Self::Eip1559,
             TempoTxType::Eip7702 => Self::Eip7702,
+<<<<<<< HEAD
             TempoTxType::FeeToken => {
                 return Err(UnsupportedTransactionType::new(TempoTxType::FeeToken));
             }
+=======
+            TempoTxType::AA => return Err(UnsupportedTransactionTypeEip4844),
+            TempoTxType::FeeToken => return Err(UnsupportedTransactionTypeEip4844),
+>>>>>>> f174511 (feat(primitives): add AA Tx Type)
         })
     }
 }
@@ -88,6 +101,7 @@ impl TempoTxEnvelope {
     pub fn fee_token(&self) -> Option<Address> {
         match self {
             Self::FeeToken(tx) => tx.tx().fee_token,
+            Self::AA(tx) => tx.tx().fee_token,
             _ => None,
         }
     }
@@ -96,6 +110,14 @@ impl TempoTxEnvelope {
     pub fn fee_payer(&self, sender: Address) -> Result<Address, SignatureError> {
         match self {
             Self::FeeToken(tx) => {
+                if let Some(fee_payer_signature) = tx.tx().fee_payer_signature {
+                    fee_payer_signature
+                        .recover_address_from_prehash(&tx.tx().fee_payer_signature_hash(sender))
+                } else {
+                    Ok(sender)
+                }
+            }
+            Self::AA(tx) => {
                 if let Some(fee_payer_signature) = tx.tx().fee_payer_signature {
                     fee_payer_signature
                         .recover_address_from_prehash(&tx.tx().fee_payer_signature_hash(sender))
@@ -114,13 +136,14 @@ impl TempoTxEnvelope {
             Self::Eip2930(_) => TempoTxType::Eip2930,
             Self::Eip1559(_) => TempoTxType::Eip1559,
             Self::Eip7702(_) => TempoTxType::Eip7702,
+            Self::AA(_) => TempoTxType::AA,
             Self::FeeToken(_) => TempoTxType::FeeToken,
         }
     }
 
     /// Returns true if this is a fee token transaction
     pub fn is_fee_token(&self) -> bool {
-        matches!(self, Self::FeeToken(_))
+        matches!(self, Self::FeeToken(_) | Self::AA(_))
     }
 
     /// Returns the authorization list if present
@@ -169,6 +192,11 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::FeeToken(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
             }
+            Self::AA(tx) => {
+                // AA transactions have custom signature recovery based on signature type
+                tx.tx().recover_signer()
+                    .map_err(|_| alloy_consensus::crypto::RecoveryError::new())
+            }
         }
     }
 
@@ -192,6 +220,11 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::FeeToken(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
             }
+            Self::AA(tx) => {
+                // AA transactions have custom signature recovery based on signature type
+                tx.tx().recover_signer()
+                    .map_err(|_| alloy_consensus::crypto::RecoveryError::new())
+            }
         }
     }
 }
@@ -203,6 +236,7 @@ impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
             Self::Eip2930(tx) => reth_primitives_traits::InMemorySize::size(tx),
             Self::Eip1559(tx) => reth_primitives_traits::InMemorySize::size(tx),
             Self::Eip7702(tx) => reth_primitives_traits::InMemorySize::size(tx),
+            Self::AA(tx) => reth_primitives_traits::InMemorySize::size(tx),
             Self::FeeToken(tx) => reth_primitives_traits::InMemorySize::size(tx),
         }
     }
@@ -215,6 +249,7 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
             Self::Eip2930(tx) => tx.hash(),
             Self::Eip1559(tx) => tx.hash(),
             Self::Eip7702(tx) => tx.hash(),
+            Self::AA(tx) => tx.hash(),
             Self::FeeToken(tx) => tx.hash(),
         }
     }
@@ -235,6 +270,7 @@ impl fmt::Display for TempoTxType {
             Self::Eip2930 => write!(f, "EIP-2930"),
             Self::Eip1559 => write!(f, "EIP-1559"),
             Self::Eip7702 => write!(f, "EIP-7702"),
+            Self::AA => write!(f, "AA"),
             Self::FeeToken => write!(f, "FeeToken"),
         }
     }
@@ -287,13 +323,14 @@ impl From<TempoTxEnvelope> for TempoTypedTransaction {
             TempoTxEnvelope::Eip1559(tx) => Self::Eip1559(tx.into_parts().0),
             TempoTxEnvelope::Eip7702(tx) => Self::Eip7702(tx.into_parts().0),
             TempoTxEnvelope::FeeToken(tx) => Self::FeeToken(tx.into_parts().0),
+            TempoTxEnvelope::AA(tx) => Self::AA(tx.into_parts().0),
         }
     }
 }
 
-impl From<TxFeeToken> for TempoTypedTransaction {
-    fn from(value: TxFeeToken) -> Self {
-        Self::FeeToken(value)
+impl From<Signed<TxAA>> for TempoTxEnvelope {
+    fn from(value: Signed<TxAA>) -> Self {
+        Self::AA(value)
     }
 }
 
@@ -331,7 +368,6 @@ impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelop
 #[cfg(feature = "reth-codec")]
 mod codec {
     use super::*;
-    use crate::FEE_TOKEN_TX_TYPE_ID;
     use alloy_eips::eip2718::EIP7702_TX_TYPE_ID;
     use alloy_primitives::{Signature, bytes, bytes::BufMut};
     use reth_codecs::{
@@ -375,6 +411,11 @@ mod codec {
                     let tx = Signed::new_unhashed(tx, signature);
                     (Self::Eip7702(tx), buf)
                 }
+                TempoTxType::AA => {
+                    let (tx, buf) = TxAA::from_compact(buf, buf.len());
+                    let tx = Signed::new_unhashed(tx, signature);
+                    (Self::AA(tx), buf)
+                }
                 TempoTxType::FeeToken => {
                     let (tx, buf) = TxFeeToken::from_compact(buf, buf.len());
                     let tx = Signed::new_unhashed(tx, signature);
@@ -391,6 +432,7 @@ mod codec {
                 Self::Eip2930(tx) => tx.tx().to_compact(buf),
                 Self::Eip1559(tx) => tx.tx().to_compact(buf),
                 Self::Eip7702(tx) => tx.tx().to_compact(buf),
+                Self::AA(tx) => tx.tx().to_compact(buf),
                 Self::FeeToken(tx) => tx.tx().to_compact(buf),
             };
         }
@@ -403,6 +445,7 @@ mod codec {
                 Self::Eip2930(tx) => tx.signature(),
                 Self::Eip1559(tx) => tx.signature(),
                 Self::Eip7702(tx) => tx.signature(),
+                Self::AA(tx) => tx.signature(),
                 Self::FeeToken(tx) => tx.signature(),
             }
         }
@@ -425,8 +468,12 @@ mod codec {
                     buf.put_u8(EIP7702_TX_TYPE_ID);
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
+                Self::AA => {
+                    buf.put_u8(crate::transaction::AA_TX_TYPE_ID);
+                    COMPACT_EXTENDED_IDENTIFIER_FLAG
+                }
                 Self::FeeToken => {
-                    buf.put_u8(FEE_TOKEN_TX_TYPE_ID);
+                    buf.put_u8(crate::transaction::FEE_TOKEN_TX_TYPE_ID);
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
             }
@@ -446,7 +493,8 @@ mod codec {
                         let extended_identifier = buf.get_u8();
                         match extended_identifier {
                             EIP7702_TX_TYPE_ID => Self::Eip7702,
-                            FEE_TOKEN_TX_TYPE_ID => Self::FeeToken,
+                            crate::transaction::AA_TX_TYPE_ID => Self::AA,
+                            crate::transaction::FEE_TOKEN_TX_TYPE_ID => Self::FeeToken,
                             _ => panic!("Unsupported TxType identifier: {extended_identifier}"),
                         }
                     }
