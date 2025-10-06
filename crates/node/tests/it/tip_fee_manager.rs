@@ -14,7 +14,7 @@ use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use std::env;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{ITIP20, ITIPFeeAMM, token_id_to_address, types::IFeeManager},
+    contracts::{ITIP20, ITIPFeeAMM, types::IFeeManager},
 };
 use tempo_primitives::TxFeeToken;
 
@@ -38,7 +38,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     let initial_token = fee_manager.userTokens(user_address).call().await?;
     // Initial token should be predeployed token
-    assert_eq!(initial_token, token_id_to_address(0));
+    assert_eq!(initial_token, DEFAULT_FEE_TOKEN);
 
     let validator = provider
         .get_block(BlockId::latest())
