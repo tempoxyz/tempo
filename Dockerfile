@@ -12,9 +12,10 @@ RUN apt-get update && apt-get install -y \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files
-COPY Cargo.toml Cargo.lock ./
-COPY bin/ ./bin/
-COPY crates/ ./crates/
+# COPY Cargo.toml Cargo.lock ./
+# COPY bin/ ./bin/
+# COPY crates/ ./crates/
+COPY . .
 
 # NOTE: Remove xtask from workspace to avoid missing dependency error for now
 RUN sed -i '/xtask/d' Cargo.toml
