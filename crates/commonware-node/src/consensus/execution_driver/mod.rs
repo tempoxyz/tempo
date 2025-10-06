@@ -30,8 +30,9 @@ use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::{BlockNumReader as _, BlockReader as _};
 use tempo_primitives::TempoPrimitives;
+use tempo_telemetry_util::display_duration;
 use tokio::sync::RwLock;
-use tracing::{Level, info, instrument};
+use tracing::{Level, debug, info, instrument};
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
@@ -468,13 +469,19 @@ impl Inner<Init> {
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
             .wrap_err("failed requesting new payload from the execution layer")?;
 
-        tracing::debug!(
-            timeout_ms = self.new_payload_wait_time.as_millis(),
-            "sleeping for payload builder timeout"
-        );
-        context.sleep(self.new_payload_wait_time).await;
-
-        interrupt_handle.interrupt();
+        if self.new_payload_wait_time.is_zero() {
+            info!(
+                "interrupt time was set to zero; will nlet the payload build \
+                run until completion (this might not finish in time)"
+            );
+        } else {
+            info!(
+                time_to_interrupt = %display_duration(self.new_payload_wait_time),
+                "giving the execution some time before interruptings its build",
+            );
+            context.sleep(self.new_payload_wait_time).await;
+            interrupt_handle.interrupt();
+        }
 
         // XXX: resolves to a payload with at least one transactions included.
         //

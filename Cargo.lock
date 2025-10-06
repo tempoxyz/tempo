@@ -11363,6 +11363,7 @@ dependencies = [
  "tempo-node",
  "tempo-payload-types",
  "tempo-primitives",
+ "tempo-telemetry-util",
  "tokio",
  "tracing",
 ]
