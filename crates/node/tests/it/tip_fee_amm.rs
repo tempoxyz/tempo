@@ -12,7 +12,6 @@ use tempo_precompiles::{
     contracts::{
         ITIP20::ITIP20Instance,
         tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
-        token_id_to_address,
         types::{
             IFeeManager, ITIP20,
             ITIPFeeAMM::{self},
