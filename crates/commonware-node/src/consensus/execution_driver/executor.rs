@@ -118,12 +118,16 @@ impl Executor {
 
     pub(super) async fn run(mut self) {
         loop {
+            // TODO: also listen to shutdown signals from the runtime here.
             select_biased! {
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else { break; };
-                    // XXX: finalizations must happen strictly sequentially, so blocking
-                    // the event loop is desired.
-                    // TODO: also listen to shutdown signals from the runtime here.
+                    // XXX: updating forkchoice and finalizing blocks must
+                    // happen sequentially, so blocking the event loop on await
+                    // is desired.
+                    //
+                    // Backfills will be put on a queue and can happen anytime
+                    // in between.
                     self.handle_message(msg).await;
                 }
 
@@ -136,9 +140,7 @@ impl Executor {
     async fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
-            Command::Backfill { round, digest } => {
-                let _ = self.backfill(cause, round, digest).await;
-            }
+            Command::Backfill { round, digest } => self.backfill(cause, round, digest),
             Command::Canonicalize { round, digest } => {
                 let _ = self.canonicalize(cause, round, digest).await;
             }
@@ -152,6 +154,9 @@ impl Executor {
     ///
     /// `round` must only be set if `digest` is a notarized block. If it is not
     /// this function will stall indefinitely.
+    ///
+    /// Note that this function is not async. Backfills are run in an async
+    /// queue and are allowed to finish anytime.
     #[instrument(
         skip_all,
         parent = &cause,
@@ -161,7 +166,7 @@ impl Executor {
             %digest,
         ),
     )]
-    async fn backfill(&mut self, cause: Span, round: Option<Round>, digest: Digest) {
+    fn backfill(&mut self, cause: Span, round: Option<Round>, digest: Digest) {
         info!("scheduling backfill");
         is_send(
             backfill_from_consensus(
