@@ -47,6 +47,9 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::saltsCall::SELECTOR => {
                 view::<ITIP20::saltsCall>(calldata, |call| self.salts(call))
             }
+            ITIP20::linkingTokenCall::SELECTOR => {
+                view::<ITIP20::linkingTokenCall>(calldata, |_| self.linking_token())
+            }
 
             // State changing functions
             ITIP20::transferFromCall::SELECTOR => {

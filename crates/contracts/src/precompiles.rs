@@ -29,6 +29,7 @@ sol! {
         function symbol() external view returns (string);
         function decimals() external view returns (uint8);
         function totalSupply() external view returns (uint256);
+        function linkingToken() external view returns (address);
         function balanceOf(address account) external view returns (uint256);
         function transfer(address to, uint256 amount) external returns (bool);
         function approve(address spender, uint256 amount) external returns (bool);
