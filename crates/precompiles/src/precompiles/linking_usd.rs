@@ -1,5 +1,8 @@
 use crate::{
-    contracts::{LinkingUSD, StorageProvider, types::{ITIP20, TIP20Error}},
+    contracts::{
+        LinkingUSD, StorageProvider,
+        types::{ITIP20, TIP20Error},
+    },
     precompiles::{Precompile, metadata, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -20,7 +23,9 @@ impl<S: StorageProvider> Precompile for LinkingUSD<'_, S> {
             ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(self.name()),
             ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(self.symbol()),
             ITIP20::decimalsCall::SELECTOR => metadata::<ITIP20::decimalsCall>(self.decimals()),
-            ITIP20::totalSupplyCall::SELECTOR => metadata::<ITIP20::totalSupplyCall>(self.total_supply()),
+            ITIP20::totalSupplyCall::SELECTOR => {
+                metadata::<ITIP20::totalSupplyCall>(self.total_supply())
+            }
 
             // View functions
             ITIP20::balanceOfCall::SELECTOR => {
@@ -53,15 +58,17 @@ impl<S: StorageProvider> Precompile for LinkingUSD<'_, S> {
                     self.transfer(call.to, call.amount)
                 })
             }
-            ITIP20::transferFromCall::SELECTOR => {
-                mutate::<ITIP20::transferFromCall, TIP20Error>(calldata, msg_sender, |_sender, call| {
-                    self.transfer_from(call.from, call.to, call.amount)
-                })
-            }
+            ITIP20::transferFromCall::SELECTOR => mutate::<ITIP20::transferFromCall, TIP20Error>(
+                calldata,
+                msg_sender,
+                |_sender, call| self.transfer_from(call.from, call.to, call.amount),
+            ),
             ITIP20::transferWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::transferWithMemoCall, TIP20Error>(calldata, msg_sender, |_sender, call| {
-                    self.transfer_with_memo(call.to, call.amount, *call.memo)
-                })
+                mutate_void::<ITIP20::transferWithMemoCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |_sender, call| self.transfer_with_memo(call.to, call.amount, *call.memo),
+                )
             }
 
             _ => Err(PrecompileError::Other("Unknown selector".to_string())),

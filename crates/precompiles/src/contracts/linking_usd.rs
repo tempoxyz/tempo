@@ -19,9 +19,9 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
     pub fn initialize(&mut self) -> Result<(), TIP20Error> {
         self.token.initialize(
             "LinkingUSD",
-            "LUSD", 
+            "LUSD",
             "USD",
-            Address::ZERO, // No linking token for LinkingUSD
+            Address::ZERO,  // No linking token for LinkingUSD
             &Address::ZERO, // No admin
         )
     }
@@ -34,15 +34,31 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         Err(TIP20Error::transfers_disabled())
     }
 
-    pub fn transfer_from(&mut self, _from: Address, _to: Address, _amount: U256) -> Result<bool, TIP20Error> {
+    pub fn transfer_from(
+        &mut self,
+        _from: Address,
+        _to: Address,
+        _amount: U256,
+    ) -> Result<bool, TIP20Error> {
         Err(TIP20Error::transfers_disabled())
     }
 
-    pub fn transfer_with_memo(&mut self, _to: Address, _amount: U256, _memo: [u8; 32]) -> Result<(), TIP20Error> {
+    pub fn transfer_with_memo(
+        &mut self,
+        _to: Address,
+        _amount: U256,
+        _memo: [u8; 32],
+    ) -> Result<(), TIP20Error> {
         Err(TIP20Error::transfers_disabled())
     }
 
-    pub fn transfer_from_with_memo(&mut self, _from: Address, _to: Address, _amount: U256, _memo: [u8; 32]) -> Result<bool, TIP20Error> {
+    pub fn transfer_from_with_memo(
+        &mut self,
+        _from: Address,
+        _to: Address,
+        _amount: U256,
+        _memo: [u8; 32],
+    ) -> Result<bool, TIP20Error> {
         Err(TIP20Error::transfers_disabled())
     }
 
@@ -71,7 +87,11 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         self.token.allowance(call)
     }
 
-    pub fn approve(&mut self, sender: &Address, call: ITIP20::approveCall) -> Result<bool, TIP20Error> {
+    pub fn approve(
+        &mut self,
+        sender: &Address,
+        call: ITIP20::approveCall,
+    ) -> Result<bool, TIP20Error> {
         self.token.approve(sender, call)
     }
 
@@ -93,9 +113,11 @@ mod tests {
     fn test_linking_usd_initialization() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut linking_usd = LinkingUSD::new(&mut storage);
-        
-        linking_usd.initialize().expect("LinkingUSD initialization should succeed");
-        
+
+        linking_usd
+            .initialize()
+            .expect("LinkingUSD initialization should succeed");
+
         assert_eq!(linking_usd.name(), "LinkingUSD");
         assert_eq!(linking_usd.symbol(), "LUSD");
         assert_eq!(linking_usd.depth(), 0);
@@ -105,16 +127,26 @@ mod tests {
     fn test_transfers_disabled() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut linking_usd = LinkingUSD::new(&mut storage);
-        
-        linking_usd.initialize().expect("LinkingUSD initialization should succeed");
-        
+
+        linking_usd
+            .initialize()
+            .expect("LinkingUSD initialization should succeed");
+
         let account = Address::random();
         let amount = U256::from(100);
         let memo = [0u8; 32];
-        
+
         assert!(linking_usd.transfer(account, amount).is_err());
         assert!(linking_usd.transfer_from(account, account, amount).is_err());
-        assert!(linking_usd.transfer_with_memo(account, amount, memo).is_err());
-        assert!(linking_usd.transfer_from_with_memo(account, account, amount, memo).is_err());
+        assert!(
+            linking_usd
+                .transfer_with_memo(account, amount, memo)
+                .is_err()
+        );
+        assert!(
+            linking_usd
+                .transfer_from_with_memo(account, account, amount, memo)
+                .is_err()
+        );
     }
 }

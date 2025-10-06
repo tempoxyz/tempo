@@ -22,7 +22,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
 
     // Get validator token address (USDC from genesis)
     use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::types::ITIPFeeAMM};
-    let validator_token_addr = tempo_precompiles::contracts::token_id_to_address(0);
+    let validator_token_addr = tempo_precompiles::contracts::token_id_to_address(1);
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let validator_token =
