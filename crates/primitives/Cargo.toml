@@ -35,6 +35,10 @@ arbitrary = { workspace = true, features = ["derive"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 modular-bitfield = { version = "0.11.2", optional = true }
 
+# Cryptography for P256 and WebAuthn signature verification
+p256 = { version = "0.13", features = ["ecdsa"] }
+sha2 = "0.10"
+
 [dev-dependencies]
 arbitrary.workspace = true
 reth-codecs.workspace = true
