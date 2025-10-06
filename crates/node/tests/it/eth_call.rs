@@ -295,7 +295,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     );
 
     // Supply liquidity to enable fee token swapping
-    let validator_token_address = token_id_to_address(0); // predeployed token
+    let validator_token_address = token_id_to_address(1); // predeployed token
 
     let fee_amm = tempo_precompiles::contracts::types::ITIPFeeAMM::new(
         tempo_precompiles::TIP_FEE_MANAGER_ADDRESS,
