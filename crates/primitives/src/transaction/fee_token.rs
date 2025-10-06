@@ -10,6 +10,9 @@ use core::mem;
 /// Fee token transaction type byte (0x77)
 pub const FEE_TOKEN_TX_TYPE_ID: u8 = 0x77;
 
+/// Magic byte for the fee payer signature
+pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
+
 /// A transaction with fee token preference following the Tempo spec.
 ///
 /// This transaction type supports:
@@ -182,6 +185,7 @@ impl TxFeeToken {
             payload_length: self.rlp_encoded_fields_length(|_| sender.length(), false),
         };
         let mut buf = Vec::with_capacity(rlp_header.length_with_payload());
+        buf.put_u8(FEE_PAYER_SIGNATURE_MAGIC_BYTE);
         rlp_header.encode(&mut buf);
         self.rlp_encode_fields(
             &mut buf,
