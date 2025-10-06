@@ -31,7 +31,8 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
 
     /// Initializes the TIP20 factory contract.
     ///
-    /// This ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
+    /// Sets the initial token counter to 1, reserving token ID 0 for the LinkingUSD precompile.
+    /// Also ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<(), TIP20Error> {
         // must ensure the account is not empty, by setting some code
         self.storage
@@ -40,6 +41,12 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
                 Bytecode::new_legacy(Bytes::from_static(&[0xef])),
             )
             .expect("TODO: handle error");
+
+        // Initialize token counter to 1, reserving token ID 0 for LinkingUSD precompile
+        self.storage
+            .sstore(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER, U256::ONE)
+            .expect("TODO: handle error");
+
         Ok(())
     }
 
@@ -116,6 +123,7 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
+            linkingToken: crate::LINKING_USD_ADDRESS,
             admin: sender,
         };
 

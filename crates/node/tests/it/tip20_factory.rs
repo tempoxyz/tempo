@@ -7,7 +7,7 @@ use alloy::{
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
-    TIP20_FACTORY_ADDRESS,
+    LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     contracts::{ITIP20, ITIP20Factory, token_id_to_address},
 };
 
@@ -38,6 +38,7 @@ async fn test_create_token() -> eyre::Result<()> {
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
+            LINKING_USD_ADDRESS,
             caller,
         )
         .gas_price(TEMPO_BASE_FEE as u128)

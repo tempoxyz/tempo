@@ -13,7 +13,7 @@ use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::transaction::TransactionTestContext;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    TIP20_FACTORY_ADDRESS,
+    LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     contracts::{
         ITIP20, ITIP20Factory, tip20::ISSUER_ROLE, token_id_to_address, types::IRolesAuth,
     },
@@ -57,6 +57,7 @@ where
         "Test".to_string(),
         "TEST".to_string(),
         "USD".to_string(),
+        LINKING_USD_ADDRESS,
         sender_address,
     );
     let create_bytes = sign_and_encode(create_tx.into_transaction_request(), 0).await?;

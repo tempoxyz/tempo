@@ -1,12 +1,15 @@
 use alloy::primitives::{Address, FixedBytes, U256};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
-use tempo_precompiles::contracts::{
-    storage::hashmap::HashMapStorageProvider,
-    tip20::{ISSUER_ROLE, TIP20Token},
-    tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry,
-    types::{ITIP20, ITIP20Factory, ITIP403Registry},
+use tempo_precompiles::{
+    LINKING_USD_ADDRESS,
+    contracts::{
+        storage::hashmap::HashMapStorageProvider,
+        tip20::{ISSUER_ROLE, TIP20Token},
+        tip20_factory::TIP20Factory,
+        tip403_registry::TIP403Registry,
+        types::{ITIP20, ITIP20Factory, ITIP403Registry},
+    },
 };
 
 fn tip20_metadata(c: &mut Criterion) {
@@ -14,7 +17,9 @@ fn tip20_metadata(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -27,7 +32,9 @@ fn tip20_metadata(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -40,7 +47,9 @@ fn tip20_metadata(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -53,7 +62,9 @@ fn tip20_metadata(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -67,7 +78,9 @@ fn tip20_metadata(c: &mut Criterion) {
         let user = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
         token
@@ -94,7 +107,9 @@ fn tip20_view(c: &mut Criterion) {
         let user = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
         token
@@ -121,7 +136,9 @@ fn tip20_view(c: &mut Criterion) {
         let spender = Address::from([2u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         token
             .approve(
                 &owner,
@@ -145,7 +162,9 @@ fn tip20_view(c: &mut Criterion) {
         let owner = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -161,7 +180,9 @@ fn tip20_view(c: &mut Criterion) {
         let salt = FixedBytes::<4>::random();
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -175,7 +196,9 @@ fn tip20_view(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -188,7 +211,9 @@ fn tip20_view(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -201,7 +226,9 @@ fn tip20_view(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -214,7 +241,9 @@ fn tip20_view(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -230,7 +259,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let user = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
 
@@ -247,7 +278,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
         // Pre-mint tokens for burning
@@ -276,7 +309,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let spender = Address::from([2u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         let amount = U256::from(500);
         b.iter(|| {
@@ -294,7 +329,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let to = Address::from([2u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
         // Pre-mint tokens for transfers
@@ -325,7 +362,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let recipient = Address::from([3u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
         // Pre-mint tokens and set allowance
@@ -370,7 +409,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let memo = FixedBytes::<32>::random();
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
         // Pre-mint tokens for transfers
@@ -398,7 +439,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *PAUSE_ROLE);
 
@@ -415,7 +458,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *UNPAUSE_ROLE);
 
@@ -431,7 +476,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let counter = U256::from(10000);
 
         b.iter(|| {
@@ -448,7 +495,9 @@ fn tip20_mutate(c: &mut Criterion) {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "T", "USD", &admin).unwrap();
+        token
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let policy_id = 2;
 
         b.iter(|| {
@@ -485,6 +534,7 @@ fn tip20_factory_mutate(c: &mut Criterion) {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
+            linkingToken: LINKING_USD_ADDRESS,
             admin: sender,
         };
 

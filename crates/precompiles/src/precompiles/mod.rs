@@ -9,6 +9,7 @@ use revm::{
     precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
+pub mod linking_usd;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
@@ -20,9 +21,9 @@ use crate::{
     TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     TIP4217_REGISTRY_ADDRESS,
     contracts::{
-        EvmStorageProvider, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
+        EvmStorageProvider, LinkingUSD, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
         TipAccountRegistrar, address_is_token_address, address_to_token_id_unchecked,
-        tip_fee_manager::TipFeeManager,
+        tip_fee_manager::TipFeeManager, token_id_to_address,
     },
 };
 
@@ -37,7 +38,12 @@ pub trait Precompile {
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64) {
     precompiles.set_precompile_lookup(move |address: &Address| {
         if address_is_token_address(address) {
-            Some(TIP20Precompile::create(address, chain_id))
+            let token_id = address_to_token_id_unchecked(address);
+            if token_id == 0 {
+                Some(LinkingUSDPrecompile::create(chain_id))
+            } else {
+                Some(TIP20Precompile::create(address, chain_id))
+            }
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id))
         } else if *address == TIP403_REGISTRY_ADDRESS {
@@ -70,6 +76,15 @@ macro_rules! tempo_precompile {
             $impl.call($input.data, &$input.caller)
         })
     };
+}
+
+pub struct LinkingUSDPrecompile;
+impl LinkingUSDPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
+            &mut EvmStorageProvider::new(input.internals, chain_id),
+        ))
+    }
 }
 
 pub struct TIP20Precompile;

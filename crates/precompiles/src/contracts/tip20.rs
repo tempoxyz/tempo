@@ -968,7 +968,7 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
-    use crate::contracts::storage::hashmap::HashMapStorageProvider;
+    use crate::{LINKING_USD_ADDRESS, contracts::storage::hashmap::HashMapStorageProvider};
 
     #[test]
     fn test_permit_sets_allowance_and_increments_nonce() {
@@ -977,7 +977,9 @@ mod tests {
         let admin = Address::from([0u8; 20]);
         let token_id = 1u64;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Owner keypair
         let signer = PrivateKeySigner::random();
@@ -1057,7 +1059,9 @@ mod tests {
         let admin = Address::from([0u8; 20]);
         let token_id = 2u64;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Owner keypair
         let signer = PrivateKeySigner::random();
@@ -1130,7 +1134,9 @@ mod tests {
         {
             let mut token = TIP20Token::new(token_id, &mut storage);
             // Initialize with admin
-            token.initialize("Test", "TST", "USD", &admin).unwrap();
+            token
+                .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+                .unwrap();
 
             // Grant issuer role to admin
             let mut roles = token.get_roles_contract();
@@ -1169,7 +1175,9 @@ mod tests {
         let token_id = 1;
         {
             let mut token = TIP20Token::new(token_id, &mut storage);
-            token.initialize("Test", "TST", "USD", &admin).unwrap();
+            token
+                .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+                .unwrap();
             let mut roles = token.get_roles_contract();
             roles.grant_role_internal(&admin, *ISSUER_ROLE);
 
@@ -1209,7 +1217,9 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
         let from = Address::from([1u8; 20]);
         let to = Address::from([2u8; 20]);
         let amount = U256::from(100);
@@ -1224,7 +1234,9 @@ mod tests {
         let admin = Address::random();
         let token_id = 1;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
@@ -1272,7 +1284,9 @@ mod tests {
         let admin = Address::random();
         let token_id = 1;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
@@ -1327,7 +1341,9 @@ mod tests {
         let admin = Address::random();
         let token_id = 1;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
@@ -1391,7 +1407,9 @@ mod tests {
         let user = Address::random();
         let token_id = 1;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
@@ -1417,7 +1435,9 @@ mod tests {
         let user = Address::random();
         let token_id = 1;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         let fee_amount = U256::from(50);
         let result = token.transfer_fee_pre_tx(&user, fee_amount);
@@ -1431,7 +1451,9 @@ mod tests {
         let user = Address::random();
         let token_id = 1;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         let initial_fee = U256::from(100);
         token.set_balance(&TIP_FEE_MANAGER_ADDRESS, initial_fee);
@@ -1467,7 +1489,9 @@ mod tests {
         let amount = U256::from(100);
         let token_id = 1;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
@@ -1489,7 +1513,9 @@ mod tests {
         let amount = U256::from(100);
         let token_id = 1;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);

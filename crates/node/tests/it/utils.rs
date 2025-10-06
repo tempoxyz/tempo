@@ -27,7 +27,7 @@ use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
-    TIP20_FACTORY_ADDRESS,
+    LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     contracts::{
         ITIP20::ITIP20Instance, ITIP20Factory, tip20::ISSUER_ROLE, token_id_to_address,
         types::IRolesAuth,
@@ -48,6 +48,7 @@ where
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
+            LINKING_USD_ADDRESS,
             caller,
         )
         .send()

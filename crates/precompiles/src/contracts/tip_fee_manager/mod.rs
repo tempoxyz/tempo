@@ -548,7 +548,7 @@ impl<'a, S: StorageProvider> StorageOps for TipFeeManager<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        TIP_FEE_MANAGER_ADDRESS,
+        LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE, token_id_to_address},
     };
 
@@ -563,7 +563,7 @@ mod tests {
 
         // Initialize token
         tip20_token
-            .initialize("TestToken", "TEST", "USD", &user)
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, &user)
             .unwrap();
 
         // Grant issuer role to user and mint tokens
@@ -682,7 +682,7 @@ mod tests {
         {
             let mut tip20_token = TIP20Token::new(token_id, &mut storage);
             tip20_token
-                .initialize("TestToken", "TEST", "USD", &admin)
+                .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, &admin)
                 .unwrap();
 
             let mut roles = tip20_token.get_roles_contract();

@@ -94,6 +94,7 @@ sol! {
         error ContractPaused();
         error InvalidCurrency();
         error InvalidLinkingToken();
+        error TransfersDisabled();
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -483,6 +484,11 @@ impl TIP20Error {
     /// Creates an error for invalid currency.
     pub const fn invalid_currency() -> Self {
         Self::InvalidCurrency(ITIP20::InvalidCurrency {})
+    }
+
+    /// Creates an error for transfers being disabled.
+    pub const fn transfers_disabled() -> Self {
+        Self::TransfersDisabled(ITIP20::TransfersDisabled {})
     }
 }
 

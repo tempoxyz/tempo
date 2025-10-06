@@ -105,7 +105,7 @@ impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        TIP_FEE_MANAGER_ADDRESS,
+        LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         contracts::{
             HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked, fee_manager_err,
             tip_fee_manager::amm::PoolKey,
@@ -133,7 +133,7 @@ mod tests {
 
         // Initialize token
         tip20_token
-            .initialize("TestToken", "TEST", "USD", &user)
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, &user)
             .unwrap();
 
         // Grant issuer role to user and mint tokens

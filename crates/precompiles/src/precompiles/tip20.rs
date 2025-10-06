@@ -171,6 +171,7 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
 #[cfg(test)]
 mod tests {
     use crate::{
+        LINKING_USD_ADDRESS,
         contracts::{
             HashMapStorageProvider,
             types::{IRolesAuth, TIP20Error},
@@ -207,7 +208,9 @@ mod tests {
         let account = Address::from([2u8; 20]);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
@@ -257,7 +260,9 @@ mod tests {
         let mint_amount = U256::from(500);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Grant ISSUER_ROLE to sender
         use alloy::primitives::keccak256;
@@ -304,7 +309,9 @@ mod tests {
         let initial_sender_balance = U256::from(1000);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
@@ -381,7 +388,9 @@ mod tests {
         let initial_owner_balance = U256::from(1000);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin
         let issuer_role = keccak256(b"ISSUER_ROLE");
@@ -458,7 +467,9 @@ mod tests {
         let unpauser = Address::from([2u8; 20]);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Grant PAUSE_ROLE to pauser and UNPAUSE_ROLE to unpauser
         use alloy::primitives::keccak256;
@@ -519,7 +530,9 @@ mod tests {
         let burn_amount = U256::from(300);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin and burner
         use alloy::primitives::keccak256;
@@ -590,7 +603,7 @@ mod tests {
 
         // Initialize token
         token
-            .initialize("Test Token", "TEST", "USD", &admin)
+            .initialize("Test Token", "TEST", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
 
         // Test name()
@@ -644,7 +657,9 @@ mod tests {
         let mint_amount = U256::from(1001);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
@@ -690,7 +705,9 @@ mod tests {
         let unauthorized = Address::from([3u8; 20]);
 
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Grant a role to user1
         use alloy::primitives::keccak256;
@@ -750,7 +767,9 @@ mod tests {
         let initial_balance = U256::from(500);
 
         // Initialize and setup
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
@@ -806,7 +825,9 @@ mod tests {
         let user = Address::from([1u8; 20]);
 
         // Initialize token
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Test nonces (should start at 0)
         let nonces_call = ITIP20::noncesCall { owner: user };
@@ -835,7 +856,9 @@ mod tests {
         let new_policy_id = 42u64;
 
         // Initialize token
-        token.initialize("Test", "TST", "USD", &admin).unwrap();
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
 
         // Admin can change transfer policy ID
         let change_policy_call = ITIP20::changeTransferPolicyIdCall {
