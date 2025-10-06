@@ -42,11 +42,6 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
             )
             .expect("TODO: handle error");
 
-        // Initialize token counter to 1, reserving token ID 0 for LinkingUSD precompile
-        self.storage
-            .sstore(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER, U256::ONE)
-            .expect("TODO: handle error");
-
         Ok(())
     }
 
@@ -98,9 +93,16 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
     }
 
     pub fn token_id_counter(&mut self) -> U256 {
-        self.storage
+        let counter = self
+            .storage
             .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)
-            .expect("TODO: handle error")
+            .expect("TODO: handle error");
+
+        if counter.is_zero() {
+            U256::ONE
+        } else {
+            counter
+        }
     }
 }
 

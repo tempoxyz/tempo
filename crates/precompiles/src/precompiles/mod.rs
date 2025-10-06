@@ -23,7 +23,7 @@ use crate::{
     contracts::{
         EvmStorageProvider, LinkingUSD, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
         TipAccountRegistrar, address_is_token_address, address_to_token_id_unchecked,
-        tip_fee_manager::TipFeeManager, token_id_to_address,
+        tip_fee_manager::TipFeeManager,
     },
 };
 
