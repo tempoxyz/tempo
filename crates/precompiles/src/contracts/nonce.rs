@@ -1,5 +1,26 @@
-use crate::contracts::{StorageProvider, storage::slots::{double_mapping_slot, mapping_slot}, types::INonce};
+use crate::contracts::{StorageProvider, types::INonce};
 use alloy::primitives::{Address, U256};
+
+/// Storage slots for Nonce precompile data
+pub mod slots {
+    use alloy::primitives::{Address, U256};
+    use crate::contracts::storage::slots::{double_mapping_slot, mapping_slot};
+
+    /// Base slot for nonces mapping: nonces[account][nonce_key]
+    pub const NONCES: U256 = U256::ZERO;
+    /// Base slot for active key count mapping: activeKeyCount[account]
+    pub const ACTIVE_KEY_COUNT: U256 = U256::from_limbs([1, 0, 0, 0]);
+
+    /// Compute storage slot for nonces[account][nonce_key]
+    pub fn nonce_slot(account: &Address, nonce_key: u64) -> U256 {
+        double_mapping_slot(account, &nonce_key.to_be_bytes(), NONCES)
+    }
+
+    /// Compute storage slot for activeKeyCount[account]
+    pub fn active_key_count_slot(account: &Address) -> U256 {
+        mapping_slot(account, ACTIVE_KEY_COUNT)
+    }
+}
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
@@ -34,7 +55,7 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
         assert!(call.nonceKey != 0, "Protocol nonce not supported");
 
         // For user nonce keys, read from precompile storage
-        let slot = self.compute_nonce_slot(&call.account, &call.nonceKey.to_be_bytes());
+        let slot = slots::nonce_slot(&call.account, call.nonceKey);
         let nonce = self.storage
             .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
             .expect("TODO: handle error");
@@ -44,7 +65,7 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
 
     /// Get the number of active user nonce keys for an account
     pub fn get_active_nonce_key_count(&mut self, call: INonce::getActiveNonceKeyCountCall) -> U256 {
-        let slot = self.compute_active_key_count_slot(&call.account);
+        let slot = slots::active_key_count_slot(&call.account);
         self.storage
             .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
             .expect("TODO: handle error")
@@ -58,7 +79,7 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
             return;
         }
 
-        let slot = self.compute_nonce_slot(account, &nonce_key.to_be_bytes());
+        let slot = slots::nonce_slot(account, nonce_key);
 
         // If this is a new nonce key (sequence was 0), increment active key count
         let current = self.storage
@@ -85,7 +106,7 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
             panic!("Protocol nonce should not be managed by nonce precompile");
         }
 
-        let slot = self.compute_nonce_slot(account, &nonce_key.to_be_bytes());
+        let slot = slots::nonce_slot(account, nonce_key);
         let current = self.storage
             .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
             .expect("TODO: handle error");
@@ -106,25 +127,9 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
         new_nonce.to::<u64>()
     }
 
-    /// Compute storage slot for nonce mapping
-    /// Solidity equivalent: nonces[account][nonce_key]
-    /// Storage slot: keccak256(abi.encode(nonce_key, keccak256(abi.encode(account, NONCES_SLOT))))
-    fn compute_nonce_slot<T: AsRef<[u8]>>(&self, account: &Address, nonce_key: &T) -> U256 {
-        const NONCES_SLOT: U256 = U256::ZERO; // Base slot 0
-        double_mapping_slot(account, nonce_key, NONCES_SLOT)
-    }
-
-    /// Compute storage slot for active key count mapping
-    /// Solidity equivalent: activeKeyCount[account]
-    /// Storage slot: keccak256(abi.encode(account, ACTIVE_KEY_COUNT_SLOT))
-    fn compute_active_key_count_slot(&self, account: &Address) -> U256 {
-        const ACTIVE_KEY_COUNT_SLOT: U256 = U256::from_limbs([1, 0, 0, 0]); // Base slot 1
-        mapping_slot(account, ACTIVE_KEY_COUNT_SLOT)
-    }
-
     /// Increment the active key count for an account
     fn increment_active_key_count(&mut self, account: &Address) {
-        let slot = self.compute_active_key_count_slot(account);
+        let slot = slots::active_key_count_slot(account);
         let current = self.storage
             .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
             .expect("TODO: handle error");
