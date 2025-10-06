@@ -829,8 +829,6 @@ impl reth_codecs::Compact for TxAA {
     where
         B: alloy_rlp::BufMut + AsMut<[u8]>,
     {
-        use reth_codecs::Compact;
-
         let mut total_length = 0;
 
         // Encode all fixed-size and known-size fields
@@ -859,8 +857,6 @@ impl reth_codecs::Compact for TxAA {
     }
 
     fn from_compact(mut buf: &[u8], _len: usize) -> (Self, &[u8]) {
-        use reth_codecs::Compact;
-
         // Decode all fixed-size and known-size fields
         let (chain_id, new_buf) = ChainId::from_compact(buf, 0);
         buf = new_buf;
