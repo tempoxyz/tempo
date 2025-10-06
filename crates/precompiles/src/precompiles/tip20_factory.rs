@@ -156,7 +156,7 @@ mod tests {
         let calldata = create_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &admin1).unwrap();
         let token_id1 = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id1, U256::ZERO);
+        assert_eq!(token_id1, U256::ONE);
 
         // Create token with unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
