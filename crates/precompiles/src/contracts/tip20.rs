@@ -16,7 +16,10 @@ use alloy::{
     primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
     sol_types::SolStruct,
 };
-use revm::state::Bytecode;
+use revm::{
+    interpreter::instructions::utility::{IntoAddress, IntoU256},
+    state::Bytecode,
+};
 use tracing::trace;
 
 pub mod slots {
@@ -31,6 +34,10 @@ pub mod slots {
     pub const TRANSFER_POLICY_ID: U256 = uint!(6_U256);
     pub const SUPPLY_CAP: U256 = uint!(7_U256);
     pub const PAUSED: U256 = uint!(8_U256);
+
+    // TODO: we should unify the storage slots with the reference implementation
+    pub const LINKING_TOKEN: U256 = uint!(9_U256);
+
     // Mappings
     pub const BALANCES: U256 = uint!(10_U256);
     pub const ALLOWANCES: U256 = uint!(11_U256);
@@ -76,6 +83,13 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.storage
             .sload(self.token_address, slots::TOTAL_SUPPLY)
             .expect("TODO: handle error")
+    }
+
+    pub fn linking_token(&mut self) -> Address {
+        self.storage
+            .sload(self.token_address, slots::LINKING_TOKEN)
+            .expect("TODO: handle error")
+            .into_address()
     }
 
     pub fn supply_cap(&mut self) -> U256 {
@@ -631,6 +645,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         name: &str,
         symbol: &str,
         currency: &str,
+        linking_token: Address,
         admin: &Address,
     ) -> Result<(), TIP20Error> {
         trace!(%name, address=%self.token_address, "Initializing token");
@@ -646,6 +661,13 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.write_string(slots::NAME, name.to_string())?;
         self.write_string(slots::SYMBOL, symbol.to_string())?;
         self.write_string(slots::CURRENCY, currency.to_string())?;
+        self.storage
+            .sstore(
+                self.token_address,
+                slots::LINKING_TOKEN,
+                linking_token.into_u256(),
+            )
+            .expect("TODO: handle error");
 
         // Validate currency via TIP4217 registry
         if self.decimals() == 0 {
