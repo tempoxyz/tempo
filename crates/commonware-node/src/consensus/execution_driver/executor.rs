@@ -167,7 +167,6 @@ impl Executor {
         ),
     )]
     fn backfill(&mut self, cause: Span, round: Option<Round>, digest: Digest) {
-        info!("scheduling backfill");
         is_send(
             backfill_from_consensus(
                 cause,
