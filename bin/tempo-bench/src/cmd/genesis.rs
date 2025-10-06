@@ -20,7 +20,7 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
         tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE, types::ITIPFeeAMM,
@@ -256,6 +256,7 @@ fn create_and_mint_token(
                     name: name.into(),
                     symbol: symbol.into(),
                     currency: currency.into(),
+                    linkingToken: LINKING_USD_ADDRESS,
                     admin,
                 },
             )
