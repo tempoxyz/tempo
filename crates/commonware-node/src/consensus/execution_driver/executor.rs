@@ -249,6 +249,7 @@ impl Executor {
         // If on the other hand `digest` was requested to be canonicalized
         // without round information, then it is not (yet) notarized.
         if round.is_some() && fcu_response.is_syncing() {
+            info!("execution layer reported digest to be syncing; attempting backfill");
             self.my_mailbox
                 .backfill(round, digest)
                 .expect("mailbox must be open because this was called from inside the actor");
