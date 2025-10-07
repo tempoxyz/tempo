@@ -92,13 +92,13 @@ mod tests {
         let mut factory = TIP20Factory::new(&mut factory_storage);
         let sender = Address::from([1u8; 20]);
 
-        // Get initial counter
+        // Get initial counter (starts at 1, since 0 is reserved for LinkingUSD)
         let counter_call = ITIP20Factory::tokenIdCounterCall {};
         let calldata = counter_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let initial_counter = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(initial_counter, U256::ZERO);
+        assert_eq!(initial_counter, U256::from(1));
 
         // Create first token (USD supported)
         let create_call = ITIP20Factory::createTokenCall {
@@ -111,12 +111,12 @@ mod tests {
         let calldata = create_call.abi_encode();
         factory.call(&Bytes::from(calldata), &sender).unwrap();
 
-        // Check counter increased
+        // Check counter increased (now 2, for the next token)
         let counter_call = ITIP20Factory::tokenIdCounterCall {};
         let calldata = counter_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
         let new_counter = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(new_counter, U256::from(1));
+        assert_eq!(new_counter, U256::from(2));
 
         // Create second token with unsupported currency should fail
         let create_call = ITIP20Factory::createTokenCall {
@@ -135,7 +135,7 @@ mod tests {
         let calldata = counter_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
         let final_counter = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(final_counter, U256::from(2));
+        assert_eq!(final_counter, U256::from(3));
     }
 
     #[test]
@@ -271,7 +271,7 @@ mod tests {
         let result = factory.call(&Bytes::from(calldata), &caller3);
         expect_precompile_error(&result, TIP20Error::invalid_currency());
 
-        // Verify only first token was created
-        assert_eq!(token_id1, U256::ZERO);
+        // Verify only first token was created (ID 1, since ID 0 reserved for LinkingUSD)
+        assert_eq!(token_id1, U256::from(1));
     }
 }
