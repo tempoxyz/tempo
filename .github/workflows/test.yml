@@ -27,7 +27,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Run tests
-        run: cargo nextest run --exclude tempo-e2e-tests --no-fail-fast
+        run: cargo nextest run --exclude tempo-e2e-tests --no-fail-fast --workspace
   msrv:
     name: MSRV
     runs-on: depot-ubuntu-latest-4
