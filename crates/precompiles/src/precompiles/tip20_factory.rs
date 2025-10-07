@@ -130,12 +130,12 @@ mod tests {
         let result = factory.call(&Bytes::from(calldata), &sender);
         expect_precompile_error(&result, TIP20Error::invalid_currency());
 
-        // Check counter increased again
+        // Check counter did not increase
         let counter_call = ITIP20Factory::tokenIdCounterCall {};
         let calldata = counter_call.abi_encode();
         let result = factory.call(&Bytes::from(calldata), &sender).unwrap();
         let final_counter = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(final_counter, U256::from(3));
+        assert_eq!(final_counter, U256::from(2));
     }
 
     #[test]
