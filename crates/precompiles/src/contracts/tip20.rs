@@ -3,8 +3,8 @@ use std::sync::LazyLock;
 use crate::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
-        ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP403Registry,
-        TIP4217Registry, address_is_token_address,
+        ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP20Factory, TIP403Registry,
+        TIP4217Registry, address_is_token_address, address_to_token_id_unchecked,
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
         token_id_to_address,
@@ -37,6 +37,7 @@ pub mod slots {
 
     // TODO: we should unify the storage slots with the reference implementation
     pub const LINKING_TOKEN: U256 = uint!(9_U256);
+    pub const NEXT_LINKING_TOKEN: U256 = uint!(16_U256);
 
     // Mappings
     pub const BALANCES: U256 = uint!(10_U256);
@@ -88,6 +89,13 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
     pub fn linking_token(&mut self) -> Address {
         self.storage
             .sload(self.token_address, slots::LINKING_TOKEN)
+            .expect("TODO: handle error")
+            .into_address()
+    }
+
+    pub fn next_linking_token(&mut self) -> Address {
+        self.storage
+            .sload(self.token_address, slots::NEXT_LINKING_TOKEN)
             .expect("TODO: handle error")
             .into_address()
     }
@@ -237,6 +245,105 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 TIP20Event::PauseStateUpdate(ITIP20::PauseStateUpdate {
                     updater: *msg_sender,
                     isPaused: false,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
+        Ok(())
+    }
+
+    pub fn set_next_linking_token(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::setNextLinkingTokenCall,
+    ) -> Result<(), TIP20Error> {
+        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
+
+        // Verify the new linking token is a valid TIP20 token that has been deployed
+        if !address_is_token_address(&call.newLinkingToken) {
+            return Err(TIP20Error::invalid_linking_token());
+        }
+
+        let new_token_id = address_to_token_id_unchecked(&call.newLinkingToken);
+        let factory_token_id_counter = TIP20Factory::new(self.storage)
+            .token_id_counter()
+            .to::<u64>();
+
+        // Ensure the linking token has been deployed (token_id < counter)
+        if new_token_id >= factory_token_id_counter {
+            return Err(TIP20Error::invalid_linking_token());
+        }
+
+        self.storage
+            .sstore(
+                self.token_address,
+                slots::NEXT_LINKING_TOKEN,
+                call.newLinkingToken.into_u256(),
+            )
+            .expect("TODO: handle error");
+
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::NextLinkingTokenSet(ITIP20::NextLinkingTokenSet {
+                    updater: *msg_sender,
+                    newLinkingToken: call.newLinkingToken,
+                })
+                .into_log_data(),
+            )
+            .expect("TODO: handle error");
+        Ok(())
+    }
+
+    pub fn complete_linking_token_update(
+        &mut self,
+        msg_sender: &Address,
+        _call: ITIP20::completeLinkingTokenUpdateCall,
+    ) -> Result<(), TIP20Error> {
+        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
+
+        let next_linking_token = self.next_linking_token();
+
+        // Check that this does not create a loop
+        // Loop through linking tokens until we reach the root (LinkingUSD at 0x20C0...)
+        const LINKING_USD_ROOT: Address = Address::new([
+            0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+
+        let mut current = next_linking_token;
+        while current != LINKING_USD_ROOT && current != Address::ZERO {
+            // If we encounter this token in the chain, there's a loop
+            if current == self.token_address {
+                return Err(TIP20Error::invalid_linking_token());
+            }
+
+            // Get the linking token of the current token
+            if address_is_token_address(&current) {
+                let token_id = address_to_token_id_unchecked(&current);
+                let mut current_token = TIP20Token::new(token_id, self.storage);
+                current = current_token.linking_token();
+            } else {
+                // If it's not a token address, break (shouldn't happen but safety check)
+                break;
+            }
+        }
+
+        // Update the linking token
+        self.storage
+            .sstore(
+                self.token_address,
+                slots::LINKING_TOKEN,
+                next_linking_token.into_u256(),
+            )
+            .expect("TODO: handle error");
+
+        self.storage
+            .emit_event(
+                self.token_address,
+                TIP20Event::LinkingTokenUpdate(ITIP20::LinkingTokenUpdate {
+                    updater: *msg_sender,
+                    newLinkingToken: next_linking_token,
                 })
                 .into_log_data(),
             )
@@ -668,6 +775,14 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
                 linking_token.into_u256(),
             )
             .expect("TODO: handle error");
+        // Initialize nextLinkingToken to the same value as linkingToken
+        self.storage
+            .sstore(
+                self.token_address,
+                slots::NEXT_LINKING_TOKEN,
+                linking_token.into_u256(),
+            )
+            .expect("TODO: handle error");
 
         // Validate currency via TIP4217 registry
         if self.decimals() == 0 {
@@ -968,7 +1083,13 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
-    use crate::{LINKING_USD_ADDRESS, contracts::storage::hashmap::HashMapStorageProvider};
+    use crate::{
+        LINKING_USD_ADDRESS,
+        contracts::{
+            ITIP20Factory, TIP20Factory, storage::hashmap::HashMapStorageProvider,
+            token_id_to_address,
+        },
+    };
 
     #[test]
     fn test_permit_sets_allowance_and_increments_nonce() {
@@ -1531,5 +1652,322 @@ mod tests {
             storage.events[&token_id_to_address(token_id)].last(),
             Some(&TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data())
         );
+    }
+
+    #[test]
+    fn test_initialize_sets_next_linking_token() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        // Initialize the factory
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        // Create a token
+        let token_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Test".to_string(),
+                    symbol: "TST".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        // Verify both linkingToken and nextLinkingToken are set to the same value
+        assert_eq!(token.linking_token(), LINKING_USD_ADDRESS);
+        assert_eq!(token.next_linking_token(), LINKING_USD_ADDRESS);
+    }
+
+    #[test]
+    fn test_set_next_linking_token() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        // Initialize the factory
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        // Create two tokens through the factory
+        let token_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Test".to_string(),
+                    symbol: "TST".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let linking_token_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Linking".to_string(),
+                    symbol: "LINK".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let linking_token_address = token_id_to_address(linking_token_id);
+
+        // Now get the main token
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        // Set next linking token
+        token
+            .set_next_linking_token(
+                &admin,
+                ITIP20::setNextLinkingTokenCall {
+                    newLinkingToken: linking_token_address,
+                },
+            )
+            .unwrap();
+
+        // Verify next linking token was set
+        assert_eq!(token.next_linking_token(), linking_token_address);
+
+        // Verify event was emitted
+        let events = &storage.events[&token_id_to_address(token_id)];
+        assert_eq!(
+            events.last().unwrap(),
+            &TIP20Event::NextLinkingTokenSet(ITIP20::NextLinkingTokenSet {
+                updater: admin,
+                newLinkingToken: linking_token_address,
+            })
+            .into_log_data()
+        );
+    }
+
+    #[test]
+    fn test_set_next_linking_token_requires_admin() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let non_admin = Address::random();
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .unwrap();
+
+        let linking_token_address = token_id_to_address(2);
+
+        // Try to set next linking token as non-admin
+        let result = token.set_next_linking_token(
+            &non_admin,
+            ITIP20::setNextLinkingTokenCall {
+                newLinkingToken: linking_token_address,
+            },
+        );
+
+        assert!(matches!(result, Err(TIP20Error::PolicyForbids(_))));
+    }
+
+    #[test]
+    fn test_complete_linking_token_update() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        // Initialize the factory
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        // Create two tokens through the factory
+        let token_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Test".to_string(),
+                    symbol: "TST".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let linking_token_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Linking".to_string(),
+                    symbol: "LINK".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let linking_token_address = token_id_to_address(linking_token_id);
+
+        // Now get the main token
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        // Set next linking token
+        token
+            .set_next_linking_token(
+                &admin,
+                ITIP20::setNextLinkingTokenCall {
+                    newLinkingToken: linking_token_address,
+                },
+            )
+            .unwrap();
+
+        // Complete the update
+        token
+            .complete_linking_token_update(&admin, ITIP20::completeLinkingTokenUpdateCall {})
+            .unwrap();
+
+        // Verify linking token was updated
+        assert_eq!(token.linking_token(), linking_token_address);
+
+        // Verify event was emitted
+        let events = &storage.events[&token_id_to_address(token_id)];
+        assert_eq!(
+            events.last().unwrap(),
+            &TIP20Event::LinkingTokenUpdate(ITIP20::LinkingTokenUpdate {
+                updater: admin,
+                newLinkingToken: linking_token_address,
+            })
+            .into_log_data()
+        );
+    }
+
+    #[test]
+    fn test_complete_linking_token_update_detects_loop() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        // Initialize the factory
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        // Create token_b first (links to LINKING_USD)
+        let token_b_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Token B".to_string(),
+                    symbol: "TKB".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let token_b_address = token_id_to_address(token_b_id);
+
+        // Create token_a (links to token_b)
+        let token_a_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Token A".to_string(),
+                    symbol: "TKA".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: token_b_address,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let token_a_address = token_id_to_address(token_a_id);
+
+        // Now try to set token_a as the next linking token for token_b (would create A -> B -> A loop)
+        let mut token_b = TIP20Token::new(token_b_id, &mut storage);
+        token_b
+            .set_next_linking_token(
+                &admin,
+                ITIP20::setNextLinkingTokenCall {
+                    newLinkingToken: token_a_address,
+                },
+            )
+            .unwrap();
+
+        // Try to complete the update - should fail due to loop detection
+        let result = token_b
+            .complete_linking_token_update(&admin, ITIP20::completeLinkingTokenUpdateCall {});
+
+        assert!(matches!(result, Err(TIP20Error::InvalidLinkingToken(_))));
+    }
+
+    #[test]
+    fn test_complete_linking_token_update_requires_admin() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let non_admin = Address::random();
+
+        // Initialize the factory
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        // Create two tokens through the factory
+        let token_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Test".to_string(),
+                    symbol: "TST".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let linking_token_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Linking".to_string(),
+                    symbol: "LINK".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let linking_token_address = token_id_to_address(linking_token_id);
+
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        // Set next linking token as admin
+        token
+            .set_next_linking_token(
+                &admin,
+                ITIP20::setNextLinkingTokenCall {
+                    newLinkingToken: linking_token_address,
+                },
+            )
+            .unwrap();
+
+        // Try to complete update as non-admin
+        let result = token
+            .complete_linking_token_update(&non_admin, ITIP20::completeLinkingTokenUpdateCall {});
+
+        assert!(matches!(result, Err(TIP20Error::PolicyForbids(_))));
     }
 }

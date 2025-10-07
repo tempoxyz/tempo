@@ -30,6 +30,7 @@ sol! {
         function decimals() external view returns (uint8);
         function totalSupply() external view returns (uint256);
         function linkingToken() external view returns (address);
+        function nextLinkingToken() external view returns (address);
         function balanceOf(address account) external view returns (uint256);
         function transfer(address to, uint256 amount) external returns (bool);
         function approve(address spender, uint256 amount) external returns (bool);
@@ -56,6 +57,8 @@ sol! {
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
+        function setNextLinkingToken(address newLinkingToken) external;
+        function completeLinkingTokenUpdate() external;
 
         // EIP-712 Permit
         struct Permit {
@@ -78,6 +81,8 @@ sol! {
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
+        event NextLinkingTokenSet(address indexed updater, address indexed newLinkingToken);
+        event LinkingTokenUpdate(address indexed updater, address indexed newLinkingToken);
 
         // Errors
         error InsufficientBalance();

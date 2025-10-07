@@ -50,6 +50,9 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::linkingTokenCall::SELECTOR => {
                 view::<ITIP20::linkingTokenCall>(calldata, |_| self.linking_token())
             }
+            ITIP20::nextLinkingTokenCall::SELECTOR => {
+                view::<ITIP20::nextLinkingTokenCall>(calldata, |_| self.next_linking_token())
+            }
 
             // State changing functions
             ITIP20::transferFromCall::SELECTOR => {
@@ -95,6 +98,20 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
                 mutate_void::<ITIP20::unpauseCall, TIP20Error>(calldata, msg_sender, |s, call| {
                     self.unpause(s, call)
                 })
+            }
+            ITIP20::setNextLinkingTokenCall::SELECTOR => {
+                mutate_void::<ITIP20::setNextLinkingTokenCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.set_next_linking_token(s, call),
+                )
+            }
+            ITIP20::completeLinkingTokenUpdateCall::SELECTOR => {
+                mutate_void::<ITIP20::completeLinkingTokenUpdateCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.complete_linking_token_update(s, call),
+                )
             }
             ITIP20::mintCall::SELECTOR => {
                 mutate_void::<ITIP20::mintCall, _>(calldata, msg_sender, |s, call| {
