@@ -5,6 +5,7 @@ use alloy::{
     },
     rpc::types::TransactionTrait,
 };
+use alloy_eips::Typed2718;
 use alloy_network::TxSigner;
 use alloy_primitives::{Address, Signature};
 use alloy_rpc_types_eth::TransactionRequest;
@@ -119,6 +120,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             signature: None,
             valid_before: None,
             valid_after: None,
+            aa_calls: None,
         })
     }
 }
@@ -217,6 +219,33 @@ impl<T: TransactionTrait + FeeToken> From<Signed<T>> for TempoTransactionRequest
         Self {
             fee_token: value.tx().fee_token(),
             inner: TransactionRequest::from_transaction(value),
+        }
+    }
+}
+
+impl From<tempo_primitives::AASigned> for TempoTransactionRequest {
+    // TODO: How to deal with this TempoTransactionRequest struct, when it is a AA transaction?
+    fn from(value: tempo_primitives::AASigned) -> Self {
+        Self {
+            fee_token: value.tx().fee_token,
+            inner: TransactionRequest {
+                from: None,
+                to: Some(value.kind()),
+                gas: Some(value.gas_limit()),
+                gas_price: value.gas_price(),
+                max_fee_per_gas: Some(value.max_fee_per_gas()),
+                max_priority_fee_per_gas: value.max_priority_fee_per_gas(),
+                value: Some(value.value()),
+                input: alloy_rpc_types_eth::TransactionInput::new(value.input().clone()),
+                nonce: Some(value.nonce()),
+                chain_id: value.chain_id(),
+                access_list: value.access_list().cloned(),
+                max_fee_per_blob_gas: None,
+                blob_versioned_hashes: None,
+                sidecar: None,
+                authorization_list: None,
+                transaction_type: Some(value.ty()),
+            },
         }
     }
 }
