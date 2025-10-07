@@ -49,7 +49,7 @@ sol! {
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
-        function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external;
+        function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external bool;
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;

@@ -83,7 +83,7 @@ mod tests {
 
         // Decode the return value (should be token_id)
         let token_id = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id, U256::ZERO);
+        assert_eq!(token_id, U256::ONE);
     }
 
     #[test]
@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         let token_id = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(token_id, U256::ZERO);
+        assert_eq!(token_id, U256::ONE);
     }
 
     #[test]
