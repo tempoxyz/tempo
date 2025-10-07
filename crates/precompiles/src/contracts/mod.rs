@@ -1,6 +1,7 @@
 pub mod linking_usd;
 pub mod provider;
 pub mod roles;
+pub mod stablecoin_dex;
 pub mod storage;
 pub mod tip20;
 pub mod tip20_factory;
