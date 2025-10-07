@@ -27,7 +27,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Run tests
-        run: cargo nextest run
+        run: cargo nextest run --no-fail-fast
 
   msrv:
     name: MSRV
