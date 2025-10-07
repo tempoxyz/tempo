@@ -1,6 +1,6 @@
 use crate::rpc::TempoTransactionRequest;
 use alloy::{
-    consensus::{ReceiptWithBloom, TxType},
+    consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType},
     rpc::types::AccessList,
 };
 use alloy_network::{
@@ -9,8 +9,7 @@ use alloy_network::{
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use tempo_primitives::{
-    TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType,
-    transaction::{TempoTypedTransaction, UnsupportedTransactionTypeEip4844},
+    TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
@@ -209,7 +208,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
                     return Err(UnbuiltTransactionError {
                         request: self,
                         error: TransactionBuilderError::Custom(Box::new(
-                            UnsupportedTransactionTypeEip4844,
+                            UnsupportedTransactionType::new(TxType::Eip4844),
                         )),
                     });
                 }

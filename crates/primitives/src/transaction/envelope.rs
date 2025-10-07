@@ -1,8 +1,7 @@
 use super::fee_token::TxFeeToken;
-use crate::transaction::UnsupportedTransactionTypeEip4844;
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
-    error::ValueError,
+    error::{UnsupportedTransactionType, ValueError},
 };
 use alloy_primitives::{Address, B256, Signature, SignatureError, U256};
 use core::fmt;
@@ -48,21 +47,21 @@ pub enum TempoTxEnvelope {
 }
 
 impl TryFrom<TxType> for TempoTxType {
-    type Error = UnsupportedTransactionTypeEip4844;
+    type Error = UnsupportedTransactionType<TxType>;
 
     fn try_from(value: TxType) -> Result<Self, Self::Error> {
         Ok(match value {
             TxType::Legacy => Self::Legacy,
             TxType::Eip2930 => Self::Eip2930,
             TxType::Eip1559 => Self::Eip1559,
-            TxType::Eip4844 => return Err(UnsupportedTransactionTypeEip4844),
+            TxType::Eip4844 => return Err(UnsupportedTransactionType::new(TxType::Eip4844)),
             TxType::Eip7702 => Self::Eip7702,
         })
     }
 }
 
 impl TryFrom<TempoTxType> for TxType {
-    type Error = UnsupportedTransactionTypeEip4844;
+    type Error = UnsupportedTransactionType<TempoTxType>;
 
     fn try_from(value: TempoTxType) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -70,7 +69,9 @@ impl TryFrom<TempoTxType> for TxType {
             TempoTxType::Eip2930 => Self::Eip2930,
             TempoTxType::Eip1559 => Self::Eip1559,
             TempoTxType::Eip7702 => Self::Eip7702,
-            TempoTxType::FeeToken => return Err(UnsupportedTransactionTypeEip4844),
+            TempoTxType::FeeToken => {
+                return Err(UnsupportedTransactionType::new(TempoTxType::FeeToken));
+            }
         })
     }
 }
