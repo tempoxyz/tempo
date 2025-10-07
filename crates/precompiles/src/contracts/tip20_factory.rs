@@ -1,7 +1,7 @@
 use crate::{
     TIP20_FACTORY_ADDRESS,
     contracts::{
-        is_tip20,
+        address_to_token_id_unchecked, is_tip20,
         storage::StorageProvider,
         tip20::TIP20Token,
         token_id_to_address,
@@ -50,23 +50,17 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
         sender: &Address,
         call: ITIP20Factory::createTokenCall,
     ) -> Result<U256, TIP20Error> {
-        if !is_tip20(&call.linkingToken) {
+        let token_id = self.token_id_counter().to::<u64>();
+
+        if !is_tip20(&call.linkingToken)
+            || address_to_token_id_unchecked(&call.linkingToken) > token_id
+        {
             return Err(TIP20Error::invalid_linking_token());
         }
 
-        let token_id = self.token_id_counter();
         trace!(%sender, %token_id, ?call, "Create token");
 
-        // increase the token counter
-        self.storage
-            .sstore(
-                TIP20_FACTORY_ADDRESS,
-                slots::TOKEN_ID_COUNTER,
-                token_id + U256::ONE,
-            )
-            .expect("TODO: handle error");
-
-        TIP20Token::new(token_id.try_into().unwrap(), self.storage).initialize(
+        TIP20Token::new(token_id, self.storage).initialize(
             &call.name,
             &call.symbol,
             &call.currency,
@@ -74,6 +68,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
             &call.admin,
         )?;
 
+        let token_id = U256::from(token_id);
         self.storage
             .emit_event(
                 TIP20_FACTORY_ADDRESS,
@@ -86,6 +81,15 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
                     admin: call.admin,
                 })
                 .into_log_data(),
+            )
+            .expect("TODO: handle error");
+
+        // increase the token counter
+        self.storage
+            .sstore(
+                TIP20_FACTORY_ADDRESS,
+                slots::TOKEN_ID_COUNTER,
+                token_id + U256::ONE,
             )
             .expect("TODO: handle error");
 
