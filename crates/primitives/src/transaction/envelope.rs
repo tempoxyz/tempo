@@ -454,7 +454,7 @@ mod codec {
                 Self::Eip2930(tx) => tx.signature(),
                 Self::Eip1559(tx) => tx.signature(),
                 Self::Eip7702(tx) => tx.signature(),
-                Self::AA(tx) => {
+                Self::AA(_tx) => {
                     // TODO: Will this work?
                     &TEMPO_SYSTEM_TX_SIGNATURE
                 },

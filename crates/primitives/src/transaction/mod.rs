@@ -7,7 +7,7 @@ pub mod aa_signed;
 pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use fee_token::{FEE_TOKEN_TX_TYPE_ID, TxFeeToken};
 pub use account_abstraction::{
-    AA_TX_TYPE_ID, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,
+    AA_TX_TYPE_ID, Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,
     SECP256K1_SIGNATURE_LENGTH, SignatureType, TxAA,
 };
 pub use aa_signature::{AASignature, derive_p256_address};
