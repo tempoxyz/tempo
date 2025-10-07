@@ -53,6 +53,9 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
         let token_id = self.token_id_counter().to::<u64>();
         trace!(%sender, %token_id, ?call, "Create token");
 
+        // Ensure that the linking token is a valid TIP20 that is currently deployed.
+        // Note that the token Id increments on each deployment which ensures that the linking
+        // token id must always be <= the current token_id
         if !is_tip20(&call.linkingToken)
             || address_to_token_id_unchecked(&call.linkingToken) > token_id
         {
