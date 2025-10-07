@@ -71,6 +71,14 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         self.token.symbol()
     }
 
+    pub fn currency(&mut self) -> String {
+        self.token.currency()
+    }
+
+    pub fn linking_token(&mut self) -> Address {
+        self.token.linking_token()
+    }
+
     pub fn decimals(&mut self) -> u8 {
         self.token.decimals()
     }
