@@ -16,13 +16,13 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         }
     }
 
-    pub fn initialize(&mut self) -> Result<(), TIP20Error> {
+    pub fn initialize(&mut self, admin: &Address) -> Result<(), TIP20Error> {
         self.token.initialize(
             "LinkingUSD",
             "LUSD",
             "USD",
-            Address::ZERO,  // No linking token for LinkingUSD
-            &Address::ZERO, // No admin
+            Address::ZERO, // No linking token for LinkingUSD
+            admin,
         )
     }
 
@@ -123,7 +123,7 @@ mod tests {
         let mut linking_usd = LinkingUSD::new(&mut storage);
 
         linking_usd
-            .initialize()
+            .initialize(&Address::random())
             .expect("LinkingUSD initialization should succeed");
 
         assert_eq!(linking_usd.name(), "LinkingUSD");
@@ -137,7 +137,7 @@ mod tests {
         let mut linking_usd = LinkingUSD::new(&mut storage);
 
         linking_usd
-            .initialize()
+            .initialize(&Address::random())
             .expect("LinkingUSD initialization should succeed");
 
         let account = Address::random();
