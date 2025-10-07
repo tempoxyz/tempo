@@ -77,6 +77,8 @@ impl GenesisArgs {
             .collect::<eyre::Result<Vec<Address>>>()?;
 
         // Deploy TestUSD fee token
+        // TODO: admin should be updated to be a cli arg so we can specify that 
+        // linkingUSD admin for persistent testnet deployments
         let admin = addresses[0];
         let mut evm = setup_tempo_evm();
         let (_, alpha_token_address) = create_and_mint_token(
