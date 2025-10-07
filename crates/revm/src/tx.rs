@@ -12,7 +12,7 @@ use reth_evm::{
         },
     },
 };
-use tempo_primitives::{TempoTxEnvelope, TxFeeToken, TxAA};
+use tempo_primitives::{AASigned, TempoTxEnvelope, TxAA, TxFeeToken, transaction::Call};
 
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -40,7 +40,7 @@ pub struct TempoTxEnv {
     /// Nonce key for 2D nonce system (None for non-AA transactions)
     pub nonce_key: Option<u64>,
 
-    /// Signature bytes for AA transactions (used for P256/WebAuthn verification)
+    /// Signature bytes for AA transactions (used for P256/WebAuthn gas calculation)
     pub signature: Option<Bytes>,
 
     /// validBefore timestamp for AA transactions
@@ -48,6 +48,9 @@ pub struct TempoTxEnv {
 
     /// validAfter timestamp for AA transactions
     pub valid_after: Option<u64>,
+
+    /// Multiple calls for AA transactions (None for non-AA transactions)
+    pub aa_calls: Option<Vec<Call>>,
 }
 
 impl TempoTxEnv {
@@ -73,6 +76,7 @@ impl From<TxEnv> for TempoTxEnv {
             signature: None,
             valid_before: None,
             valid_after: None,
+            aa_calls: None,
         }
     }
 }
@@ -233,29 +237,37 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
             signature: None,
             valid_before: None,
             valid_after: None,
+            aa_calls: None,
         }
     }
 }
 
-impl FromRecoveredTx<TxAA> for TempoTxEnv {
-    fn from_recovered_tx(tx: &TxAA, caller: Address) -> Self {
+impl FromRecoveredTx<AASigned> for TempoTxEnv {
+    fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
+        let tx = aa_signed.tx();
+        let signature = aa_signed.signature();
+
         let TxAA {
             chain_id,
             fee_token,
             max_priority_fee_per_gas,
             max_fee_per_gas,
             gas_limit,
-            to,
-            value,
+            calls,
             access_list,
             nonce_key,
             nonce_sequence,
             fee_payer_signature,
             valid_before,
             valid_after,
-            input,
-            signature,
         } = tx;
+
+        // Extract to/value/input from calls (use first call or defaults)
+        let (to, value, input) = if let Some(first_call) = calls.first() {
+            (first_call.to, first_call.value, first_call.input.clone())
+        } else {
+            (alloy_primitives::TxKind::Create, alloy_primitives::U256::ZERO, alloy_primitives::Bytes::new())
+        };
 
         Self {
             inner: TxEnv {
@@ -263,9 +275,9 @@ impl FromRecoveredTx<TxAA> for TempoTxEnv {
                 caller,
                 gas_limit: *gas_limit,
                 gas_price: *max_fee_per_gas,
-                kind: *to,
-                value: *value,
-                data: input.clone(),
+                kind: to,
+                value,
+                data: input,
                 nonce: *nonce_sequence,  // AA: nonce_sequence maps to TxEnv.nonce
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
@@ -282,9 +294,10 @@ impl FromRecoveredTx<TxAA> for TempoTxEnv {
             }),
             // AA-specific fields
             nonce_key: Some(*nonce_key),
-            signature: Some(signature.clone()),
+            signature: Some(signature.to_bytes()), // Store signature bytes for gas calculation
             valid_before: Some(*valid_before),
             valid_after: *valid_after,
+            aa_calls: Some(calls.clone()),
         }
     }
 }
@@ -302,11 +315,12 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 signature: None,
                 valid_before: None,
                 valid_after: None,
+                aa_calls: None,
             },
             TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
-            TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx.tx(), sender),
+            TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
             TempoTxEnvelope::FeeToken(tx) => Self::from_recovered_tx(tx.tx(), sender),
         }
     }
@@ -328,8 +342,8 @@ impl FromTxWithEncoded<TxFeeToken> for TempoTxEnv {
     }
 }
 
-impl FromTxWithEncoded<TxAA> for TempoTxEnv {
-    fn from_encoded_tx(tx: &TxAA, sender: Address, _encoded: Bytes) -> Self {
+impl FromTxWithEncoded<AASigned> for TempoTxEnv {
+    fn from_encoded_tx(tx: &AASigned, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
     }
 }
@@ -361,6 +375,7 @@ impl reth_rpc_convert::transaction::TryIntoTxEnv<TempoTxEnv>
             signature: None,
             valid_before: None,
             valid_after: None,
+            aa_calls: None,
         })
     }
 }

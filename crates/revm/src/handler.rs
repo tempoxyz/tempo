@@ -11,25 +11,28 @@ use reth_evm::{
             Block, Cfg, ContextTr, Host, JournalTr, Transaction,
             result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
         },
-        handler::{EvmTr, FrameTr, Handler, pre_execution::validate_account_nonce_and_code, validation},
+        handler::{
+            EvmTr, FrameTr, Handler, pre_execution::validate_account_nonce_and_code, validation,
+        },
         inspector::{Inspector, InspectorHandler},
-        interpreter::{instructions::utility::IntoAddress, interpreter::EthInterpreter, InitialAndFloorGas},
+        interpreter::{
+            InitialAndFloorGas, instructions::utility::IntoAddress, interpreter::EthInterpreter,
+        },
         state::Bytecode,
     },
 };
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
-        EvmStorageProvider,
-        nonce,
+        EvmStorageProvider, nonce,
         storage::slots::mapping_slot,
         tip_fee_manager::{self, TipFeeManager},
         tip20,
     },
 };
 use tempo_primitives::AA_TX_TYPE_ID;
-use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tracing::trace;
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
@@ -93,6 +96,159 @@ impl<DB: reth_evm::Database, I> TempoEvmHandler<DB, I> {
     }
 }
 
+impl<DB, I> TempoEvmHandler<DB, I>
+where
+    DB: reth_evm::Database,
+{
+    /// Executes a multi-call AA transaction atomically by iterating through calls.
+    ///
+    /// Flow:
+    /// 1. Validate once (for entire transaction)
+    /// 2. Pre-execute once (deduct max fee, apply auth list)
+    /// 3. Create checkpoint for atomicity
+    /// 4. Execute each call sequentially with remaining gas
+    /// 5. If any call fails, revert all state changes
+    /// 6. If all succeed, commit state and post-execute (reimburse, reward)
+    fn run_multi_call_aa(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+    ) -> Result<ExecutionResult<HaltReason>, EVMError<DB::Error, TempoInvalidTransaction>> {
+        // Step 1: Validate transaction (env + intrinsic gas)
+        let init_and_floor_gas = self.validate(evm)?;
+
+        // Step 2: Pre-execution (load accounts, deduct caller, apply EIP-7702)
+        let eip7702_refund = self.pre_execution(evm)? as i64;
+
+        // Step 3: Get calls to execute
+        let calls = evm
+            .ctx()
+            .tx()
+            .aa_calls
+            .clone()
+            .ok_or_else(|| EVMError::Custom("AA calls not found".into()))?;
+
+        trace!(
+            num_calls = calls.len(),
+            "executing multi-call AA transaction"
+        );
+
+        // Step 4: Create checkpoint for atomic execution
+        let checkpoint = evm.ctx().journal_mut().checkpoint();
+
+        // Step 5: Execute each call sequentially
+        let gas_limit = evm.ctx().tx().gas_limit();
+        let mut remaining_gas = gas_limit.saturating_sub(init_and_floor_gas.initial_gas);
+        let mut accumulated_gas_refund = eip7702_refund;
+
+        // Store original TxEnv values to restore later
+        let original_kind = evm.ctx().tx().kind();
+        let original_value = evm.ctx().tx().value();
+        let original_data = evm.ctx().tx().input().clone();
+
+        let mut last_frame_result = None;
+
+        for (idx, call) in calls.iter().enumerate() {
+            trace!(
+                call_idx = idx,
+                to = ?call.to,
+                value = ?call.value,
+                input_len = call.input.len(),
+                remaining_gas,
+                "executing call"
+            );
+
+            // Update TxEnv to point to this specific call
+            {
+                let tx = &mut evm.ctx().tx;
+                tx.inner.kind = call.to;
+                tx.inner.value = call.value;
+                tx.inner.data = call.input.clone();
+                tx.inner.gas_limit = remaining_gas.saturating_add(init_and_floor_gas.initial_gas);
+            }
+
+            // Execute this call
+            let mut frame_result = self.execution(evm, &init_and_floor_gas)?;
+
+            // Check if call succeeded by examining the instruction result
+            let instruction_result = frame_result.instruction_result();
+            if !instruction_result.is_ok() {
+                trace!(
+                    call_idx = idx,
+                    result = ?instruction_result,
+                    gas_used = frame_result.gas().used(),
+                    "call failed, reverting all state changes"
+                );
+
+                // Revert checkpoint - rolls back ALL state changes
+                evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+
+                // Restore original TxEnv
+                {
+                    let tx = &mut evm.ctx().tx;
+                    tx.inner.kind = original_kind;
+                    tx.inner.value = original_value;
+                    tx.inner.data = original_data;
+                    tx.inner.gas_limit = gas_limit;
+                }
+
+                // Post-execution for cleanup (reimburse, reward)
+                self.post_execution(evm, &mut frame_result, init_and_floor_gas, eip7702_refund)?;
+
+                // Return result
+                return self.execution_result(evm, frame_result);
+            }
+
+            // Call succeeded - accumulate gas refund and update remaining gas
+            let gas_used = frame_result.gas().used();
+            let gas_refunded = frame_result.gas().refunded();
+
+            accumulated_gas_refund = accumulated_gas_refund.saturating_add(gas_refunded);
+            remaining_gas = remaining_gas.saturating_sub(gas_used);
+
+            trace!(
+                call_idx = idx,
+                gas_used, gas_refunded, remaining_gas, accumulated_gas_refund, "call succeeded"
+            );
+
+            last_frame_result = Some(frame_result);
+        }
+
+        // Step 6: All calls succeeded - commit checkpoint
+        evm.ctx().journal_mut().checkpoint_commit();
+
+        trace!(
+            remaining_gas,
+            accumulated_gas_refund, "all calls succeeded, committing state"
+        );
+
+        // Step 7: Restore original TxEnv and fix gas tracking
+        {
+            let tx = &mut evm.ctx().tx;
+            tx.inner.kind = original_kind;
+            tx.inner.value = original_value;
+            tx.inner.data = original_data;
+            tx.inner.gas_limit = gas_limit;
+        }
+
+        // Use the last frame result and update its gas to reflect total usage
+        let mut final_result =
+            last_frame_result.ok_or_else(|| EVMError::Custom("No frame result".into()))?;
+
+        // Fix gas: total spent = gas_limit - remaining_gas
+        // We need to update the gas in the InterpreterResult within the FrameResult
+        let total_gas_used = gas_limit.saturating_sub(remaining_gas);
+        let gas = final_result.gas_mut();
+        gas.set_spent(total_gas_used);
+        gas.set_refund(accumulated_gas_refund);
+
+        // Step 8: Post-execution (reimburse caller, reward beneficiary)
+        self.post_execution(evm, &mut final_result, init_and_floor_gas, eip7702_refund)?;
+
+        // Step 9: Return final result
+        self.execution_result(evm, final_result)
+    }
+}
+
 impl<DB, I> Default for TempoEvmHandler<DB, I> {
     fn default() -> Self {
         Self::new()
@@ -114,12 +270,30 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         self.load_fee_fields(evm)?;
 
-        // Run inner handler and catch all errors to handle cleanup.
-        match self.run_without_catch_error(evm) {
-            Ok(output) => Ok(output),
-            Err(err) => {
-                trace!(?err, caller=%evm.ctx().caller(),  "failed to transact");
-                self.catch_error(evm, err)
+        // Check if this is a multi-call AA transaction
+        let is_multi_call_aa = if let Some(calls) = &evm.ctx().tx().aa_calls {
+            calls.len() > 1
+        } else {
+            false
+        };
+
+        if is_multi_call_aa {
+            // Execute multi-call AA transaction atomically
+            match self.run_multi_call_aa(evm) {
+                Ok(output) => Ok(output),
+                Err(err) => {
+                    trace!(?err, caller=%evm.ctx().caller(), "failed to transact multi-call AA");
+                    self.catch_error(evm, err)
+                }
+            }
+        } else {
+            // Run standard single-call execution
+            match self.run_without_catch_error(evm) {
+                Ok(output) => Ok(output),
+                Err(err) => {
+                    trace!(?err, caller=%evm.ctx().caller(),  "failed to transact");
+                    self.catch_error(evm, err)
+                }
             }
         }
     }
@@ -137,13 +311,13 @@ where
         let context = evm.ctx();
         let basefee = context.block().basefee() as u128;
         let blob_price = context.block().blob_gasprice().unwrap_or_default();
-        let block_timestamp = context.block().timestamp().to::<u64>();  // Extract timestamp early
+        let block_timestamp = context.block().timestamp().to::<u64>(); // Extract timestamp early
         let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
         let tx_type = context.tx().tx_type();
         let value = context.tx().value();
-        let caller_addr = context.tx().caller();  // Extract caller address early
+        let caller_addr = context.tx().caller(); // Extract caller address early
 
         let (tx, journal) = (&mut context.tx, &mut context.journaled_state);
 
@@ -159,12 +333,7 @@ where
             if !is_nonce_check_disabled && nonce_key != 0 {
                 // User nonce (key 1-N): Use 2D nonce from precompile storage
                 // Do this BEFORE loading caller account to avoid borrow conflicts
-                validate_and_increment_2d_nonce(
-                    journal,
-                    caller_addr,
-                    nonce_key,
-                    nonce_sequence,
-                )?;
+                validate_and_increment_2d_nonce(journal, caller_addr, nonce_key, nonce_sequence)?;
             }
         }
 
@@ -428,11 +597,12 @@ where
     };
 
     // Get signature bytes
-    let sig_bytes = signature.as_ref().ok_or_else(|| {
-        TempoInvalidTransaction::InvalidWebAuthnSignature {
-            reason: "Missing signature for AA transaction".into(),
-        }
-    })?;
+    let sig_bytes =
+        signature
+            .as_ref()
+            .ok_or_else(|| TempoInvalidTransaction::InvalidWebAuthnSignature {
+                reason: "Missing signature for AA transaction".into(),
+            })?;
 
     // Start with the standard intrinsic gas calculation (calldata, access list, etc.)
     let standard_gas = {
@@ -463,9 +633,11 @@ where
             // Calculate calldata gas inline
             let mut webauthn_data_gas = 0u64;
             for &byte in webauthn_data {
-                webauthn_data_gas = webauthn_data_gas.saturating_add(
-                    if byte == 0 { CALLDATA_ZERO_BYTE_GAS } else { CALLDATA_NONZERO_BYTE_GAS }
-                );
+                webauthn_data_gas = webauthn_data_gas.saturating_add(if byte == 0 {
+                    CALLDATA_ZERO_BYTE_GAS
+                } else {
+                    CALLDATA_NONZERO_BYTE_GAS
+                });
             }
             P256_VERIFY_GAS + webauthn_data_gas
         }
@@ -487,7 +659,9 @@ where
 
         // Inline implementation from gas::calculate_nonce_key_gas
         // Ensure nonce precompile is loaded
-        journal.load_account(NONCE_PRECOMPILE_ADDRESS).map_err(EVMError::Database)?;
+        journal
+            .load_account(NONCE_PRECOMPILE_ADDRESS)
+            .map_err(EVMError::Database)?;
 
         // Compute storage slot for nonces[account][nonce_key]
         let storage_key = nonce::slots::nonce_slot(&caller_addr, nonce_key);
@@ -701,21 +875,19 @@ where
     }
 
     // For user nonce keys (1-N), read from nonce precompile storage
-    journal.load_account(NONCE_PRECOMPILE_ADDRESS)
-        .map_err(|e| {
-            TempoInvalidTransaction::InvalidWebAuthnSignature {
-                reason: format!("Failed to load nonce precompile: {e:?}"),
-            }
+    journal
+        .load_account(NONCE_PRECOMPILE_ADDRESS)
+        .map_err(|e| TempoInvalidTransaction::InvalidWebAuthnSignature {
+            reason: format!("Failed to load nonce precompile: {e:?}"),
         })?;
 
     // Compute storage slot for nonces[caller][nonce_key]
     let storage_key = nonce::slots::nonce_slot(&caller, nonce_key);
 
-    let stored_sequence = journal.sload(NONCE_PRECOMPILE_ADDRESS, storage_key.into())
-        .map_err(|e| {
-            TempoInvalidTransaction::InvalidWebAuthnSignature {
-                reason: format!("Failed to read nonce from storage: {e:?}"),
-            }
+    let stored_sequence = journal
+        .sload(NONCE_PRECOMPILE_ADDRESS, storage_key.into())
+        .map_err(|e| TempoInvalidTransaction::InvalidWebAuthnSignature {
+            reason: format!("Failed to read nonce from storage: {e:?}"),
         })?
         .data;
 
@@ -734,35 +906,35 @@ where
         // Compute storage slot for activeKeyCount[caller]
         let count_storage_key = nonce::slots::active_key_count_slot(&caller);
 
-        let current_count = journal.sload(NONCE_PRECOMPILE_ADDRESS, count_storage_key.into())
-            .map_err(|e| {
-                TempoInvalidTransaction::InvalidWebAuthnSignature {
-                    reason: format!("Failed to read active key count: {e:?}"),
-                }
+        let current_count = journal
+            .sload(NONCE_PRECOMPILE_ADDRESS, count_storage_key.into())
+            .map_err(|e| TempoInvalidTransaction::InvalidWebAuthnSignature {
+                reason: format!("Failed to read active key count: {e:?}"),
             })?
             .data;
 
         let new_count = current_count.saturating_add(U256::from(1));
-        journal.sstore(NONCE_PRECOMPILE_ADDRESS, count_storage_key.into(), new_count)
-            .map_err(|e| {
-                TempoInvalidTransaction::InvalidWebAuthnSignature {
-                    reason: format!("Failed to write active key count: {e:?}"),
-                }
+        journal
+            .sstore(
+                NONCE_PRECOMPILE_ADDRESS,
+                count_storage_key.into(),
+                new_count,
+            )
+            .map_err(|e| TempoInvalidTransaction::InvalidWebAuthnSignature {
+                reason: format!("Failed to write active key count: {e:?}"),
             })?;
     }
 
     // Increment the sequence
     let new_sequence = stored_sequence.saturating_add(U256::from(1));
-    journal.sstore(NONCE_PRECOMPILE_ADDRESS, storage_key.into(), new_sequence)
-        .map_err(|e| {
-            TempoInvalidTransaction::InvalidWebAuthnSignature {
-                reason: format!("Failed to write nonce to storage: {e:?}"),
-            }
+    journal
+        .sstore(NONCE_PRECOMPILE_ADDRESS, storage_key.into(), new_sequence)
+        .map_err(|e| TempoInvalidTransaction::InvalidWebAuthnSignature {
+            reason: format!("Failed to write nonce to storage: {e:?}"),
         })?;
 
     Ok(())
 }
-
 
 /// Validates time window for AA transactions
 ///
