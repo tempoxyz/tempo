@@ -23,8 +23,8 @@ use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
-        tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE, types::ITIPFeeAMM,
-        linking_usd::LinkingUSD,
+        linking_usd::LinkingUSD, tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE,
+        types::ITIPFeeAMM,
     },
 };
 
@@ -77,7 +77,7 @@ impl GenesisArgs {
             .collect::<eyre::Result<Vec<Address>>>()?;
 
         // Deploy TestUSD fee token
-        // TODO: admin should be updated to be a cli arg so we can specify that 
+        // TODO: admin should be updated to be a cli arg so we can specify that
         // linkingUSD admin for persistent testnet deployments
         let admin = addresses[0];
         let mut evm = setup_tempo_evm();
@@ -113,7 +113,7 @@ impl GenesisArgs {
 
         println!("Initializing LinkingUSD");
         initialize_linking_usd(admin, &mut evm)?;
-        
+
         println!("Initializing fee manager");
         initialize_fee_manager(alpha_token_address, addresses, &mut evm);
         println!("Minting pairwise FeeAMM liquidity");
@@ -315,12 +315,12 @@ fn initialize_linking_usd(
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmStorageProvider::new(evm_internals, 1);
-    
+
     let mut linking_usd = LinkingUSD::new(&mut provider);
     linking_usd
         .initialize(&admin)
         .expect("LinkingUSD initialization should succeed");
-    
+
     Ok(())
 }
 
