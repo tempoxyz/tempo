@@ -4,7 +4,7 @@ pub mod error;
 pub mod order;
 
 pub use error::OrderError;
-pub use order::Order;
+pub use order::LimitOrder;
 
 use alloy::primitives::{Address, Bytes, U256};
 use revm::state::Bytecode;
