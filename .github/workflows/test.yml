@@ -49,20 +49,20 @@ jobs:
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v5
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: rui314/setup-mold@v1
-    - uses: mozilla-actions/sccache-action@v0.0.9
-    - uses: taiki-e/install-action@nextest
-    - name: Build and push
-      uses: depot/build-push-action@v1
-      with:
-        project: 0c6tg19qsp
-        context: .
-        platforms: linux/amd64
-        tags: tempo-node:latest
-    - name: Run tests
-      run: cargo nextest run --exclude tempo-e2e-tests --no-fail-fast --workspace
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: taiki-e/install-action@nextest
+      - name: Build and push
+        uses: depot/build-push-action@v1
+        with:
+          project: 0c6tg19qsp
+          context: .
+          platforms: linux/amd64
+          tags: tempo-node:latest
+      - name: Run tests
+        run: cargo nextest run --exclude tempo-e2e-tests --no-fail-fast --workspace
 
   test-success:
     name: test success
