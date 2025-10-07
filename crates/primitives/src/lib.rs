@@ -10,7 +10,11 @@ use reth_primitives_traits::NodePrimitives;
 
 pub mod transaction;
 pub use transaction::{FEE_TOKEN_TX_TYPE_ID, TempoTxEnvelope, TempoTxType, TxFeeToken};
-pub use transaction::{AA_TX_TYPE_ID, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType, TxAA};
+pub use transaction::{
+    AA_TX_TYPE_ID, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,
+    SECP256K1_SIGNATURE_LENGTH, SignatureType, TxAA, AASigned, AASignature,
+    derive_p256_address,
+};
 
 mod header;
 pub use header::TempoHeader;

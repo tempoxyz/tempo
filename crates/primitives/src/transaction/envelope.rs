@@ -1,15 +1,16 @@
+
 use super::fee_token::TxFeeToken;
-<<<<<<< HEAD
-=======
+use super::aa_signature::AASignature;
+use super::aa_signed::AASigned;
 use super::account_abstraction::TxAA;
 use crate::transaction::UnsupportedTransactionTypeEip4844;
->>>>>>> f174511 (feat(primitives): add AA Tx Type)
+
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
     TypedTransaction,
     error::{UnsupportedTransactionType, ValueError},
 };
-use alloy_primitives::{Address, B256, Signature, SignatureError, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, SignatureError, U256};
 use core::fmt;
 use reth_primitives_traits::InMemorySize;
 use tempo_precompiles::TIP20_PAYMENT_PREFIX;
@@ -54,7 +55,7 @@ pub enum TempoTxEnvelope {
     Eip7702(Signed<TxEip7702>),
 
     #[envelope(ty = 5)]
-    AA(Signed<TxAA>),
+    AA(AASigned),
 
     /// Tempo fee token transaction (type 0x77)
     #[envelope(ty = 0x77)]
@@ -84,14 +85,12 @@ impl TryFrom<TempoTxType> for TxType {
             TempoTxType::Eip2930 => Self::Eip2930,
             TempoTxType::Eip1559 => Self::Eip1559,
             TempoTxType::Eip7702 => Self::Eip7702,
-<<<<<<< HEAD
             TempoTxType::FeeToken => {
                 return Err(UnsupportedTransactionType::new(TempoTxType::FeeToken));
             }
-=======
-            TempoTxType::AA => return Err(UnsupportedTransactionTypeEip4844),
-            TempoTxType::FeeToken => return Err(UnsupportedTransactionTypeEip4844),
->>>>>>> f174511 (feat(primitives): add AA Tx Type)
+            TempoTxType::AA => {
+                return Err(UnsupportedTransactionType::new(TempoTxType::AA));
+            }
         })
     }
 }
@@ -194,7 +193,7 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             }
             Self::AA(tx) => {
                 // AA transactions have custom signature recovery based on signature type
-                tx.tx().recover_signer()
+                tx.recover_signer()
                     .map_err(|_| alloy_consensus::crypto::RecoveryError::new())
             }
         }
@@ -222,7 +221,7 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             }
             Self::AA(tx) => {
                 // AA transactions have custom signature recovery based on signature type
-                tx.tx().recover_signer()
+                tx.recover_signer()
                     .map_err(|_| alloy_consensus::crypto::RecoveryError::new())
             }
         }
@@ -328,8 +327,8 @@ impl From<TempoTxEnvelope> for TempoTypedTransaction {
     }
 }
 
-impl From<Signed<TxAA>> for TempoTxEnvelope {
-    fn from(value: Signed<TxAA>) -> Self {
+impl From<AASigned> for TempoTxEnvelope {
+    fn from(value: AASigned) -> Self {
         Self::AA(value)
     }
 }
@@ -413,7 +412,12 @@ mod codec {
                 }
                 TempoTxType::AA => {
                     let (tx, buf) = TxAA::from_compact(buf, buf.len());
-                    let tx = Signed::new_unhashed(tx, signature);
+                    // For AA transactions, we need to decode the signature bytes as AASignature
+                    let (sig_bytes, buf) = Bytes::from_compact(buf, buf.len());
+                    let aa_sig = AASignature::from_bytes(&sig_bytes)
+                        .map_err(|e| panic!("Failed to decode AA signature: {}", e))
+                        .unwrap();
+                    let tx = AASigned::new_unhashed(tx, aa_sig);
                     (Self::AA(tx), buf)
                 }
                 TempoTxType::FeeToken => {
@@ -432,7 +436,12 @@ mod codec {
                 Self::Eip2930(tx) => tx.tx().to_compact(buf),
                 Self::Eip1559(tx) => tx.tx().to_compact(buf),
                 Self::Eip7702(tx) => tx.tx().to_compact(buf),
-                Self::AA(tx) => tx.tx().to_compact(buf),
+                Self::AA(tx) => {
+                    let mut len = tx.tx().to_compact(buf);
+                    // Also encode the AASignature as Bytes
+                    len += tx.signature().to_bytes().to_compact(buf);
+                    len
+                }
                 Self::FeeToken(tx) => tx.tx().to_compact(buf),
             };
         }
@@ -445,7 +454,10 @@ mod codec {
                 Self::Eip2930(tx) => tx.signature(),
                 Self::Eip1559(tx) => tx.signature(),
                 Self::Eip7702(tx) => tx.signature(),
-                Self::AA(tx) => tx.signature(),
+                Self::AA(tx) => {
+                    // TODO: Will this work?
+                    &TEMPO_SYSTEM_TX_SIGNATURE
+                },
                 Self::FeeToken(tx) => tx.signature(),
             }
         }
