@@ -24,6 +24,7 @@ use tempo_precompiles::{
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
         tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE, types::ITIPFeeAMM,
+        linking_usd::LinkingUSD,
     },
 };
 
@@ -108,6 +109,9 @@ impl GenesisArgs {
             &mut evm,
         )?;
 
+        println!("Initializing LinkingUSD");
+        initialize_linking_usd(admin, &mut evm)?;
+        
         println!("Initializing fee manager");
         initialize_fee_manager(alpha_token_address, addresses, &mut evm);
         println!("Minting pairwise FeeAMM liquidity");
@@ -300,6 +304,22 @@ fn create_and_mint_token(
     }
 
     Ok((token_id, token.token_address))
+}
+
+fn initialize_linking_usd(
+    admin: Address,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+) -> eyre::Result<()> {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    
+    let mut linking_usd = LinkingUSD::new(&mut provider);
+    linking_usd
+        .initialize(&admin)
+        .expect("LinkingUSD initialization should succeed");
+    
+    Ok(())
 }
 
 fn initialize_fee_manager(
