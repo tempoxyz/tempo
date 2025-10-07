@@ -6,7 +6,7 @@ use reth_chainspec::{
     EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks, Head,
 };
 use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
-use reth_ethereum::{evm::primitives::eth::spec::EthExecutorSpec, primitives::SealedHeader};
+use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
@@ -63,14 +63,11 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .alloc
         .insert(DEFAULT_7702_DELEGATE_ADDRESS, default_7702_alloc.clone());
 
-    let genesis_header = SealedHeader::new_unhashed(TempoHeader {
-        inner: spec.genesis_header.clone().into_header(),
-        general_gas_limit: 0,
-    });
-
     TempoChainSpec {
-        inner: spec,
-        genesis_header,
+        inner: spec.map_header(|inner| TempoHeader {
+            general_gas_limit: 0,
+            inner,
+        }),
     }
     .into()
 });
@@ -79,23 +76,17 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TempoChainSpec {
     /// [`ChainSpec`].
-    pub inner: ChainSpec,
-    /// Genesis header.
-    pub genesis_header: SealedHeader<TempoHeader>,
+    pub inner: ChainSpec<TempoHeader>,
 }
 
 impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
-        let inner: ChainSpec = genesis.into();
-        let header = inner.genesis_header.clone().into_header();
-        let header = TempoHeader {
-            general_gas_limit: header.gas_limit,
-            inner: header,
-        };
         Self {
-            inner,
-            genesis_header: SealedHeader::new_unhashed(header),
+            inner: ChainSpec::from_genesis(genesis).map_header(|inner| TempoHeader {
+                general_gas_limit: inner.gas_limit,
+                inner,
+            }),
         }
     }
 }
@@ -158,11 +149,11 @@ impl EthChainSpec for TempoChainSpec {
     }
 
     fn genesis_hash(&self) -> B256 {
-        self.genesis_header.hash()
+        self.inner.genesis_hash()
     }
 
     fn genesis_header(&self) -> &Self::Header {
-        &self.genesis_header
+        self.inner.genesis_header()
     }
 
     fn final_paris_total_difficulty(&self) -> Option<U256> {
