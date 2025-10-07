@@ -289,6 +289,31 @@ sol! {
         error CannotChangeWithinBlock();
         error TokenPolicyForbids();
     }
+
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
+    interface IStablecoinDex {
+        // View functions
+        function balanceOf(address user, address token) external view returns (uint128);
+        function quoteBuy(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
+        function quoteSell(address tokenIn, address tokenOut, uint128 amountIn) external view returns (uint128 amountOut);
+
+        // Taker functions
+        function sell(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
+        function buy(address tokenIn, address tokenOut, uint128 amountOut, uint128 maxAmountIn) external returns (uint128 amountIn);
+
+        // Maker functions
+        function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
+        function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick) external returns (uint128 orderId);
+        function cancel(uint128 orderId) external;
+
+        // Balance management
+        function withdraw(address token, uint128 amount) external;
+
+        // TODO: Events
+
+        // TODO: Errors
+    }
 }
 
 impl TIPFeeAMMError {
@@ -520,3 +545,4 @@ pub use ITIP403Registry::{
 };
 pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
 pub use ITipAccountRegistrar::ITipAccountRegistrarErrors as TipAccountRegistrarError;
+pub use IStablecoinDex::{IStablecoinDexErrors as StablecoinDexError, IStablecoinDexEvents as StablecoinDexEvent};
