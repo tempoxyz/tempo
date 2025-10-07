@@ -1,9 +1,17 @@
+//! Stablecoin DEX types and utilities.
+
+pub mod error;
+pub mod order;
+
+pub use error::OrderError;
+pub use order::Order;
+
 use alloy::primitives::{Address, Bytes, U256};
 use revm::state::Bytecode;
 
 use crate::{
-    STABLECOIN_DEX_ADDRESS,
     contracts::{StorageProvider, storage::StorageOps},
+    STABLECOIN_DEX_ADDRESS,
 };
 
 pub struct StablecoinDex<'a, S: StorageProvider> {

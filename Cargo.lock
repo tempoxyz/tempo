@@ -11579,6 +11579,7 @@ dependencies = [
  "reth-storage-api",
  "revm",
  "tempo-contracts",
+ "thiserror 2.0.17",
  "tracing",
 ]
 
