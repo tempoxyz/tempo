@@ -32,6 +32,7 @@
     "pragueTime": 0
   },
   "baseFeePerGas": "0x2c",
+  "gasLimit": 50000000,
   "alloc": {
     "0x7702c00000000000000000000000000000000000": {
       "nonce": "0x1",
