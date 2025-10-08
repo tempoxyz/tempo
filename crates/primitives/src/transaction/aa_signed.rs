@@ -92,11 +92,8 @@ impl AASigned {
         self.tx.signature_hash()
     }
 
-    /// Encode the transaction with signature for hashing
-    fn encode_inner(&self, out: &mut dyn BufMut) {
-        // Type byte
-        out.put_u8(AA_TX_TYPE_ID);
-
+    /// Encode the transaction fields and signature as RLP list (without type byte)
+    fn encode_rlp_fields(&self, out: &mut dyn BufMut) {
         // RLP encode the transaction fields + signature
         let sig_bytes = self.signature.to_bytes();
         let payload_length = self.tx.rlp_encoded_fields_length() + Encodable::length(&sig_bytes);
@@ -110,6 +107,14 @@ impl AASigned {
         Encodable::encode(&sig_bytes, out);
     }
 
+    /// Encode the transaction with signature for hashing (EIP-2718 format with type byte)
+    fn encode_inner(&self, out: &mut dyn BufMut) {
+        // Type byte
+        out.put_u8(AA_TX_TYPE_ID);
+        // RLP fields
+        self.encode_rlp_fields(out);
+    }
+
     /// Splits the transaction into parts.
     pub fn into_parts(self) -> (TxAA, AASignature, B256) {
         let hash = *self.hash();
@@ -118,19 +123,19 @@ impl AASigned {
 
     /// Get the length of the transaction when RLP encoded.
     pub fn rlp_encoded_length(&self) -> usize {
-        let sig_bytes = self.signature.to_bytes();
-        let payload_length = self.tx.rlp_encoded_fields_length() + Encodable::length(&sig_bytes);
-        1 + alloy_rlp::Header { list: true, payload_length }.length_with_payload()
+        let sig_length = self.signature.length();
+        let payload_length = self.tx.rlp_encoded_fields_length() + alloy_rlp::length_of_length(sig_length) + sig_length;
+        alloy_rlp::Header { list: true, payload_length }.length_with_payload()
     }
 
-    /// RLP encode the signed transaction.
+    /// RLP encode the signed transaction (without type byte).
     pub fn rlp_encode(&self, out: &mut dyn BufMut) {
-        self.encode_inner(out);
+        self.encode_rlp_fields(out);
     }
 
-    /// Get the length of the transaction when EIP-2718 encoded.
+    /// Get the length of the transaction when EIP-2718 encoded (includes type byte).
     pub fn eip2718_encoded_length(&self) -> usize {
-        self.rlp_encoded_length()
+        1 + self.rlp_encoded_length()
     }
 
     /// EIP-2718 encode the signed transaction.
@@ -140,27 +145,20 @@ impl AASigned {
 
     /// Get the length of the transaction when network encoded.
     pub fn network_encoded_length(&self) -> usize {
-        self.rlp_encoded_length()
+        let inner_length = self.eip2718_encoded_length();
+        alloy_rlp::length_of_length(inner_length) + inner_length
     }
 
-    /// Network encode the signed transaction.
+    /// Network encode the signed transaction (wrapped in outer RLP header).
     pub fn network_encode(&self, out: &mut dyn BufMut) {
+        let inner_length = self.eip2718_encoded_length();
+        alloy_rlp::Header { list: false, payload_length: inner_length }.encode(out);
         self.encode_inner(out);
     }
 
-    /// RLP decode the signed transaction.
-    pub fn rlp_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+    /// Decode the RLP fields (without type byte).
+    fn decode_rlp_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         use alloy_rlp::Decodable;
-
-        // Decode type byte
-        if buf.is_empty() {
-            return Err(alloy_rlp::Error::InputTooShort);
-        }
-        let tx_type = buf[0];
-        if tx_type != AA_TX_TYPE_ID {
-            return Err(alloy_rlp::Error::Custom("Invalid transaction type"));
-        }
-        alloy_rlp::Buf::advance(buf, 1);
 
         // Decode RLP header
         let header = alloy_rlp::Header::decode(buf)?;
@@ -181,14 +179,38 @@ impl AASigned {
         Ok(Self::new_unhashed(tx, signature))
     }
 
-    /// EIP-2718 decode the signed transaction.
-    pub fn eip2718_decode(buf: &mut &[u8]) -> Result<Self, alloy_eips::eip2718::Eip2718Error> {
-        Self::rlp_decode(buf).map_err(Into::into)
+    /// RLP decode the signed transaction (without type byte).
+    pub fn rlp_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        Self::decode_rlp_fields(buf)
     }
 
-    /// Network decode the signed transaction.
+    /// EIP-2718 decode the signed transaction (with type byte).
+    pub fn eip2718_decode(buf: &mut &[u8]) -> Result<Self, alloy_eips::eip2718::Eip2718Error> {
+        // Decode type byte
+        if buf.is_empty() {
+            return Err(alloy_eips::eip2718::Eip2718Error::RlpError(alloy_rlp::Error::InputTooShort));
+        }
+        let tx_type = buf[0];
+        if tx_type != AA_TX_TYPE_ID {
+            return Err(alloy_eips::eip2718::Eip2718Error::UnexpectedType(tx_type));
+        }
+        alloy_rlp::Buf::advance(buf, 1);
+
+        Self::decode_rlp_fields(buf).map_err(Into::into)
+    }
+
+    /// Network decode the signed transaction (unwraps outer RLP header then decodes EIP-2718).
     pub fn network_decode(buf: &mut &[u8]) -> Result<Self, alloy_eips::eip2718::Eip2718Error> {
-        Self::rlp_decode(buf).map_err(Into::into)
+        // Decode outer RLP header
+        let header = alloy_rlp::Header::decode(buf)
+            .map_err(alloy_eips::eip2718::Eip2718Error::RlpError)?;
+        if header.list {
+            return Err(alloy_eips::eip2718::Eip2718Error::RlpError(
+                alloy_rlp::Error::UnexpectedList
+            ));
+        }
+
+        Self::eip2718_decode(buf)
     }
 }
 

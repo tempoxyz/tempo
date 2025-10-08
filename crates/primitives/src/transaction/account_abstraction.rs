@@ -32,18 +32,34 @@ pub struct Call {
 
 impl Encodable for Call {
     fn encode(&self, out: &mut dyn BufMut) {
+        let payload_length = self.to.length() + self.value.length() + self.input.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(out);
         self.to.encode(out);
         self.value.encode(out);
         self.input.encode(out);
     }
 
     fn length(&self) -> usize {
-        self.to.length() + self.value.length() + self.input.length()
+        let payload_length = self.to.length() + self.value.length() + self.input.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .length_with_payload()
     }
 }
 
 impl Decodable for Call {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+
         Ok(Self {
             to: Decodable::decode(buf)?,
             value: Decodable::decode(buf)?,
@@ -62,6 +78,7 @@ impl Decodable for Call {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[doc(alias = "AATransaction", alias = "TransactionAA")]
 pub struct TxAA {
     /// EIP-155: Simple replay attack protection
@@ -144,6 +161,11 @@ impl TxAA {
 
     /// Validates the transaction according to the spec rules
     pub fn validate(&self) -> Result<(), &'static str> {
+        // calls must not be empty (similar to EIP-7702 rejecting empty auth lists)
+        if self.calls.is_empty() {
+            return Err("calls list cannot be empty");
+        }
+
         // validBefore must be greater than validAfter if both are set
         if let Some(valid_after) = self.valid_after {
             if self.valid_before > 0 && self.valid_before <= valid_after {
@@ -658,98 +680,10 @@ impl reth_primitives_traits::InMemorySize for TxAA {
 #[cfg(feature = "serde-bincode-compat")]
 impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TxAA {}
 
-// TxAA Compact encoding - handles calls vector instead of to/value/input
-#[cfg(feature = "reth-codec")]
-impl reth_codecs::Compact for TxAA {
-    fn to_compact<B>(&self, buf: &mut B) -> usize
-    where
-        B: alloy_rlp::BufMut + AsMut<[u8]>,
-    {
-        let mut total_length = 0;
-
-        // Encode all fixed-size and known-size fields
-        total_length += self.chain_id.to_compact(buf);
-        total_length += self.fee_token.to_compact(buf);
-        total_length += self.max_priority_fee_per_gas.to_compact(buf);
-        total_length += self.max_fee_per_gas.to_compact(buf);
-        total_length += self.gas_limit.to_compact(buf);
-
-        // Encode calls vector
-        total_length += self.calls.to_compact(buf);
-
-        total_length += self.access_list.to_compact(buf);
-        total_length += self.nonce_key.to_compact(buf);
-        total_length += self.nonce_sequence.to_compact(buf);
-        total_length += self.fee_payer_signature.to_compact(buf);
-        total_length += self.valid_before.to_compact(buf);
-        total_length += self.valid_after.to_compact(buf);
-
-        total_length
-    }
-
-    fn from_compact(mut buf: &[u8], _len: usize) -> (Self, &[u8]) {
-        // Decode all fixed-size and known-size fields
-        let (chain_id, new_buf) = ChainId::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (fee_token, new_buf) = Option::<Address>::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (max_priority_fee_per_gas, new_buf) = u128::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (max_fee_per_gas, new_buf) = u128::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (gas_limit, new_buf) = u64::from_compact(buf, 0);
-        buf = new_buf;
-
-        // Decode calls vector
-        let (calls, new_buf) = Vec::<Call>::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (access_list, new_buf) = AccessList::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (nonce_key, new_buf) = u64::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (nonce_sequence, new_buf) = u64::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (fee_payer_signature, new_buf) = Option::<Signature>::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (valid_before, new_buf) = u64::from_compact(buf, 0);
-        buf = new_buf;
-
-        let (valid_after, new_buf) = Option::<u64>::from_compact(buf, 0);
-        buf = new_buf;
-
-        let tx = Self {
-            chain_id,
-            fee_token,
-            max_priority_fee_per_gas,
-            max_fee_per_gas,
-            gas_limit,
-            calls,
-            access_list,
-            nonce_key,
-            nonce_sequence,
-            fee_payer_signature,
-            valid_before,
-            valid_after,
-        };
-
-        (tx, buf)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::transaction::aa_signature::{AASignature, derive_p256_address};
-    use crate::transaction::aa_signed::AASigned;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, hex};
     use alloy_rlp::{Decodable, Encodable};
 
