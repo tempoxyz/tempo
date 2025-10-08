@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 
-use alloy_primitives::{Address, B256, U256, b256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, b256};
 use reth_evm::{
     EvmInternals,
     revm::{
@@ -11,9 +11,7 @@ use reth_evm::{
             Block, Cfg, ContextTr, Host, JournalTr, Transaction,
             result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
         },
-        handler::{
-            EvmTr, FrameTr, Handler, pre_execution::validate_account_nonce_and_code, validation,
-        },
+        handler::{EvmTr, FrameResult, FrameTr, Handler, pre_execution::validate_account_nonce_and_code, validation},
         inspector::{Inspector, InspectorHandler},
         interpreter::{
             InitialAndFloorGas, instructions::utility::IntoAddress, interpreter::EthInterpreter,
@@ -36,6 +34,25 @@ use tempo_primitives::AA_TX_TYPE_ID;
 use tracing::trace;
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
+
+/// Restores the transaction environment to its original state.
+///
+/// Used in multi-call execution to reset TxEnv after batch processing.
+fn restore_tx_env<DB, I>(
+    evm: &mut TempoEvm<DB, I>,
+    kind: TxKind,
+    value: U256,
+    data: Bytes,
+    gas_limit: u64,
+) where
+    DB: reth_evm::Database,
+{
+    let tx = &mut evm.ctx().tx;
+    tx.inner.kind = kind;
+    tx.inner.value = value;
+    tx.inner.data = data;
+    tx.inner.gas_limit = gas_limit;
+}
 
 /// Additional gas for P256 signature verification
 /// P256 precompile cost (6900 from EIP-7951) + 1100 for extra signature size - ecrecover savings (3000)
@@ -100,52 +117,60 @@ impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: reth_evm::Database,
 {
-    /// Executes a multi-call AA transaction atomically by iterating through calls.
+    /// Executes a standard single-call transaction using the default handler logic.
     ///
-    /// Flow:
-    /// 1. Validate once (for entire transaction)
-    /// 2. Pre-execute once (deduct max fee, apply auth list)
-    /// 3. Create checkpoint for atomicity
-    /// 4. Execute each call sequentially with remaining gas
-    /// 5. If any call fails, revert all state changes
-    /// 6. If all succeed, commit state and post-execute (reimburse, reward)
-    fn run_multi_call_aa(
+    /// This calls the same helper methods used by the default Handler::execution() implementation.
+    fn execute_single_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
-    ) -> Result<ExecutionResult<HaltReason>, EVMError<DB::Error, TempoInvalidTransaction>> {
-        // Step 1: Validate transaction (env + intrinsic gas)
-        let init_and_floor_gas = self.validate(evm)?;
+        init_and_floor_gas: &InitialAndFloorGas,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
+        // Standard execution flow from Handler::execution() default impl
+        let gas_limit = evm.ctx().tx().gas_limit() - init_and_floor_gas.initial_gas;
 
-        // Step 2: Pre-execution (load accounts, deduct caller, apply EIP-7702)
-        let eip7702_refund = self.pre_execution(evm)? as i64;
+        // Create first frame action
+        let first_frame_input = self.first_frame_input(evm, gas_limit)?;
 
-        // Step 3: Get calls to execute
-        let calls = evm
-            .ctx()
-            .tx()
-            .aa_calls
-            .clone()
-            .ok_or_else(|| EVMError::Custom("AA calls not found".into()))?;
+        // Run execution loop
+        let mut frame_result = self.run_exec_loop(evm, first_frame_input)?;
 
-        trace!(
-            num_calls = calls.len(),
-            "executing multi-call AA transaction"
-        );
+        // Handle last frame result
+        self.last_frame_result(evm, &mut frame_result)?;
 
-        // Step 4: Create checkpoint for atomic execution
+        Ok(frame_result)
+    }
+
+    /// Executes a multi-call AA transaction atomically.
+    ///
+    /// This method provides atomic batch execution for AA transactions with multiple calls:
+    /// 1. Creates a checkpoint before executing any calls
+    /// 2. Executes each call sequentially, updating gas tracking
+    /// 3. If ANY call fails, reverts ALL state changes atomically
+    /// 4. If all calls succeed, commits ALL state changes atomically
+    ///
+    /// The atomicity is guaranteed by the checkpoint/revert/commit mechanism:
+    /// - Each individual call creates its own internal checkpoint
+    /// - The outer checkpoint (created here) captures state before any calls execute
+    /// - Reverting the outer checkpoint undoes all nested changes
+    fn execute_multi_call(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        init_and_floor_gas: &InitialAndFloorGas,
+        calls: Vec<tempo_primitives::transaction::Call>,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
+        // Create checkpoint for atomic execution - captures state before any calls
         let checkpoint = evm.ctx().journal_mut().checkpoint();
 
-        // Step 5: Execute each call sequentially
         let gas_limit = evm.ctx().tx().gas_limit();
-        let mut remaining_gas = gas_limit.saturating_sub(init_and_floor_gas.initial_gas);
-        let mut accumulated_gas_refund = eip7702_refund;
+        let mut remaining_gas = gas_limit - init_and_floor_gas.initial_gas;
+        let mut accumulated_gas_refund = 0i64;
 
-        // Store original TxEnv values to restore later
+        // Store original TxEnv values to restore after batch execution
         let original_kind = evm.ctx().tx().kind();
         let original_value = evm.ctx().tx().value();
         let original_data = evm.ctx().tx().input().clone();
 
-        let mut last_frame_result = None;
+        let mut final_result = None;
 
         for (idx, call) in calls.iter().enumerate() {
             trace!(
@@ -163,13 +188,13 @@ where
                 tx.inner.kind = call.to;
                 tx.inner.value = call.value;
                 tx.inner.data = call.input.clone();
-                tx.inner.gas_limit = remaining_gas.saturating_add(init_and_floor_gas.initial_gas);
+                tx.inner.gas_limit = remaining_gas + init_and_floor_gas.initial_gas;
             }
 
-            // Execute this call
-            let mut frame_result = self.execution(evm, &init_and_floor_gas)?;
+            // Execute this call using standard single-call execution
+            let frame_result = self.execute_single_call(evm, init_and_floor_gas)?;
 
-            // Check if call succeeded by examining the instruction result
+            // Check if call succeeded
             let instruction_result = frame_result.instruction_result();
             if !instruction_result.is_ok() {
                 trace!(
@@ -179,26 +204,17 @@ where
                     "call failed, reverting all state changes"
                 );
 
-                // Revert checkpoint - rolls back ALL state changes
+                // Revert checkpoint - rolls back ALL state changes from ALL calls
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
                 // Restore original TxEnv
-                {
-                    let tx = &mut evm.ctx().tx;
-                    tx.inner.kind = original_kind;
-                    tx.inner.value = original_value;
-                    tx.inner.data = original_data;
-                    tx.inner.gas_limit = gas_limit;
-                }
+                restore_tx_env(evm, original_kind, original_value, original_data, gas_limit);
 
-                // Post-execution for cleanup (reimburse, reward)
-                self.post_execution(evm, &mut frame_result, init_and_floor_gas, eip7702_refund)?;
-
-                // Return result
-                return self.execution_result(evm, frame_result);
+                // Return the failure result (gas accounting already correct for failed call)
+                return Ok(frame_result);
             }
 
-            // Call succeeded - accumulate gas refund and update remaining gas
+            // Call succeeded - accumulate gas usage and refunds
             let gas_used = frame_result.gas().used();
             let gas_refunded = frame_result.gas().refunded();
 
@@ -210,10 +226,10 @@ where
                 gas_used, gas_refunded, remaining_gas, accumulated_gas_refund, "call succeeded"
             );
 
-            last_frame_result = Some(frame_result);
+            final_result = Some(frame_result);
         }
 
-        // Step 6: All calls succeeded - commit checkpoint
+        // All calls succeeded - commit checkpoint to finalize ALL state changes
         evm.ctx().journal_mut().checkpoint_commit();
 
         trace!(
@@ -221,31 +237,19 @@ where
             accumulated_gas_refund, "all calls succeeded, committing state"
         );
 
-        // Step 7: Restore original TxEnv and fix gas tracking
-        {
-            let tx = &mut evm.ctx().tx;
-            tx.inner.kind = original_kind;
-            tx.inner.value = original_value;
-            tx.inner.data = original_data;
-            tx.inner.gas_limit = gas_limit;
-        }
+        // Restore original TxEnv
+        restore_tx_env(evm, original_kind, original_value, original_data, gas_limit);
 
-        // Use the last frame result and update its gas to reflect total usage
-        let mut final_result =
-            last_frame_result.ok_or_else(|| EVMError::Custom("No frame result".into()))?;
+        // Fix gas accounting for the entire batch
+        let mut result = final_result
+            .ok_or_else(|| EVMError::Custom("No calls executed".into()))?;
 
-        // Fix gas: total spent = gas_limit - remaining_gas
-        // We need to update the gas in the InterpreterResult within the FrameResult
-        let total_gas_used = gas_limit.saturating_sub(remaining_gas);
-        let gas = final_result.gas_mut();
+        let total_gas_used = gas_limit - remaining_gas;
+        let gas = result.gas_mut();
         gas.set_spent(total_gas_used);
         gas.set_refund(accumulated_gas_refund);
 
-        // Step 8: Post-execution (reimburse caller, reward beneficiary)
-        self.post_execution(evm, &mut final_result, init_and_floor_gas, eip7702_refund)?;
-
-        // Step 9: Return final result
-        self.execution_result(evm, final_result)
+        Ok(result)
     }
 }
 
@@ -270,31 +274,40 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         self.load_fee_fields(evm)?;
 
-        // Check if this is a multi-call AA transaction
-        let is_multi_call_aa = if let Some(calls) = &evm.ctx().tx().aa_calls {
-            calls.len() > 1
-        } else {
-            false
-        };
+        // Standard handler flow - execution() handles single vs multi-call dispatch
+        match self.run_without_catch_error(evm) {
+            Ok(output) => Ok(output),
+            Err(err) => {
+                trace!(?err, caller=%evm.ctx().caller(), "failed to transact");
+                self.catch_error(evm, err)
+            }
+        }
+    }
 
-        if is_multi_call_aa {
-            // Execute multi-call AA transaction atomically
-            match self.run_multi_call_aa(evm) {
-                Ok(output) => Ok(output),
-                Err(err) => {
-                    trace!(?err, caller=%evm.ctx().caller(), "failed to transact multi-call AA");
-                    self.catch_error(evm, err)
-                }
-            }
+    /// Overridden execution method that handles AA vs standard transactions.
+    ///
+    /// Dispatches based on transaction type:
+    /// - AA transactions (type 0x5): Use batch execution path with calls field
+    /// - All other transactions: Use standard single-call execution
+    #[inline]
+    fn execution(
+        &mut self,
+        evm: &mut Self::Evm,
+        init_and_floor_gas: &InitialAndFloorGas,
+    ) -> Result<FrameResult, Self::Error> {
+        // Check transaction type to determine execution path
+        let tx_type = evm.ctx().tx().tx_type();
+
+        if tx_type == AA_TX_TYPE_ID {
+            // AA transaction - use batch execution with calls field
+            let calls = evm.ctx().tx().aa_calls.clone()
+                .ok_or_else(|| EVMError::Custom("AA transaction missing calls field".into()))?;
+
+            trace!(num_calls = calls.len(), "executing AA transaction");
+            self.execute_multi_call(evm, init_and_floor_gas, calls)
         } else {
-            // Run standard single-call execution
-            match self.run_without_catch_error(evm) {
-                Ok(output) => Ok(output),
-                Err(err) => {
-                    trace!(?err, caller=%evm.ctx().caller(),  "failed to transact");
-                    self.catch_error(evm, err)
-                }
-            }
+            // Standard transaction - use single-call execution
+            self.execute_single_call(evm, init_and_floor_gas)
         }
     }
 
@@ -326,14 +339,40 @@ where
 
         // For AA transactions, handle 2D nonce validation before loading caller account
         if tx_type == AA_TX_TYPE_ID {
+            // DEBUG: Log AA transaction entry to REVM handler
+            tracing::info!(
+                caller = %caller_addr,
+                nonce_key = tx.nonce_key.unwrap_or(0),
+                nonce_sequence = tx.nonce(),
+                fee_payer = %self.fee_payer,
+                fee_token = ?self.fee_token,
+                "REVM handler processing AA transaction"
+            );
+
             // Step 1: 2D Nonce validation for non-protocol nonces
             let nonce_key = tx.nonce_key.unwrap_or(0);
             let nonce_sequence = tx.nonce();
 
             if !is_nonce_check_disabled && nonce_key != 0 {
+                tracing::info!(
+                    nonce_key = nonce_key,
+                    nonce_sequence = nonce_sequence,
+                    "Validating 2D nonce for AA transaction"
+                );
                 // User nonce (key 1-N): Use 2D nonce from precompile storage
                 // Do this BEFORE loading caller account to avoid borrow conflicts
-                validate_and_increment_2d_nonce(journal, caller_addr, nonce_key, nonce_sequence)?;
+                validate_and_increment_2d_nonce(
+                    journal,
+                    caller_addr,
+                    nonce_key,
+                    nonce_sequence,
+                )?;
+                tracing::info!("2D nonce validation passed");
+            } else {
+                tracing::info!(
+                    nonce_key = nonce_key,
+                    "Using protocol nonce (skipping 2D nonce validation)"
+                );
             }
         }
 
