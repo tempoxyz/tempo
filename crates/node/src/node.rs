@@ -333,6 +333,7 @@ where
             .disable_balance_check()
             .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
             .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
+            .with_custom_tx_type(TempoTxType::AA as u8)
             .with_custom_tx_type(TempoTxType::FeeToken as u8)
             .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
 
