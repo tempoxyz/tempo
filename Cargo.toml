@@ -161,26 +161,26 @@ reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "319a8dc" }
 reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "319a8dc" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "319a8dc" }
 
-alloy-network = { version = "1.0.35" }
-alloy-rpc-types-eth = { version = "1.0.35" }
+alloy-network = { version = "1.0.38" }
+alloy-rpc-types-eth = { version = "1.0.38" }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "319a8dc", features = [
   "std",
   "optional-checks",
 ] }
 revm = "29"
 
-alloy = { version = "1.0.35", default-features = false }
+alloy = { version = "1.0.38", default-features = false }
 alloy-evm = "0.21.2"
-alloy-consensus = "1.0.35"
-alloy-eips = "1.0.35"
-alloy-genesis = "1.0.35"
+alloy-consensus = "1.0.38"
+alloy-eips = "1.0.38"
+alloy-genesis = "1.0.38"
 alloy-primitives = "1.3.1"
-alloy-sol-types = "1.0.35"
+alloy-sol-types = "1.0.38"
 alloy-rlp = "0.3.12"
-alloy-rpc-types-engine = "1.0.35"
-alloy-serde = "1.0.35"
-alloy-signer = "1.0.35"
-alloy-signer-local = "1.0.35"
+alloy-rpc-types-engine = "1.0.38"
+alloy-serde = "1.0.38"
+alloy-signer = "1.0.38"
+alloy-signer-local = "1.0.38"
 alloy-trie = "0.9.1"
 arbitrary = { version = "1.3", features = ["derive"] }
 
