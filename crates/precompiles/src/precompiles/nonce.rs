@@ -1,7 +1,6 @@
 use crate::precompiles::{Precompile, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::contracts::{nonce::NonceManager, types::INonce};
 
@@ -20,12 +19,9 @@ impl<S: crate::contracts::StorageProvider> Precompile for NonceManager<'_, S> {
                 let call = INonce::getNonceCall::abi_decode(calldata)
                     .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
 
-                // Catch panic from assert in get_nonce
-                let result = catch_unwind(AssertUnwindSafe(|| self.get_nonce(call)));
-
-                match result {
+                match self.get_nonce(call) {
                     Ok(nonce) => view::<INonce::getNonceCall>(calldata, |_| nonce),
-                    Err(_) => Err(PrecompileError::Other("Protocol nonce not supported".to_string())),
+                    Err(e) => Err(PrecompileError::Other(e)),
                 }
             }
             INonce::getActiveNonceKeyCountCall::SELECTOR => {

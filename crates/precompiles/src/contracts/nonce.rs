@@ -48,19 +48,20 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
     }
 
     /// Get the nonce for a specific account and nonce key
-    pub fn get_nonce(&mut self, call: INonce::getNonceCall) -> u64 {
+    pub fn get_nonce(&mut self, call: INonce::getNonceCall) -> Result<u64, String> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
-        // This will panic if nonce_key is 0, which is caught by the precompile wrapper
-        assert!(call.nonceKey != 0, "Protocol nonce not supported");
+        if call.nonceKey == 0 {
+            return Err("Protocol nonce not supported".to_string());
+        }
 
         // For user nonce keys, read from precompile storage
         let slot = slots::nonce_slot(&call.account, call.nonceKey);
         let nonce = self.storage
             .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .expect("TODO: handle error");
+            .map_err(|e| format!("Failed to read nonce from storage: {:?}", e))?;
 
-        nonce.to::<u64>()
+        Ok(nonce.to::<u64>())
     }
 
     /// Get the number of active user nonce keys for an account
@@ -159,22 +160,24 @@ mod tests {
         let nonce = nonce_mgr.get_nonce(INonce::getNonceCall {
             account,
             nonceKey: 5,
-        });
+        }).unwrap();
 
         assert_eq!(nonce, 0);
     }
 
     #[test]
-    #[should_panic(expected = "Protocol nonce not supported")]
     fn test_get_nonce_rejects_protocol_nonce() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut nonce_mgr = NonceManager::new(&mut storage);
 
         let account = address!("0x1111111111111111111111111111111111111111");
-        nonce_mgr.get_nonce(INonce::getNonceCall {
+        let result = nonce_mgr.get_nonce(INonce::getNonceCall {
             account,
             nonceKey: 0,
         });
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Protocol nonce not supported");
     }
 
     #[test]
@@ -190,7 +193,7 @@ mod tests {
         let nonce = nonce_mgr.get_nonce(INonce::getNonceCall {
             account,
             nonceKey: nonce_key,
-        });
+        }).unwrap();
 
         assert_eq!(nonce, 42);
     }
@@ -260,11 +263,11 @@ mod tests {
         let nonce1 = nonce_mgr.get_nonce(INonce::getNonceCall {
             account: account1,
             nonceKey: nonce_key,
-        });
+        }).unwrap();
         let nonce2 = nonce_mgr.get_nonce(INonce::getNonceCall {
             account: account2,
             nonceKey: nonce_key,
-        });
+        }).unwrap();
 
         assert_eq!(nonce1, 10);
         assert_eq!(nonce2, 20);
