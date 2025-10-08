@@ -57,8 +57,8 @@ sol! {
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
-        function setNextLinkingToken(address newLinkingToken) external;
-        function completeLinkingTokenUpdate() external;
+        function updateLinkingToken(address newLinkingToken) external;
+        function finalizeLinkingTokenUpdate() external;
 
         // EIP-712 Permit
         struct Permit {

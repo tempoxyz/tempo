@@ -99,18 +99,18 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
                     self.unpause(s, call)
                 })
             }
-            ITIP20::setNextLinkingTokenCall::SELECTOR => {
-                mutate_void::<ITIP20::setNextLinkingTokenCall, TIP20Error>(
+            ITIP20::updateLinkingTokenCall::SELECTOR => {
+                mutate_void::<ITIP20::updateLinkingTokenCall, TIP20Error>(
                     calldata,
                     msg_sender,
-                    |s, call| self.set_next_linking_token(s, call),
+                    |s, call| self.update_linking_token(s, call),
                 )
             }
-            ITIP20::completeLinkingTokenUpdateCall::SELECTOR => {
-                mutate_void::<ITIP20::completeLinkingTokenUpdateCall, TIP20Error>(
+            ITIP20::finalizeLinkingTokenUpdateCall::SELECTOR => {
+                mutate_void::<ITIP20::finalizeLinkingTokenUpdateCall, TIP20Error>(
                     calldata,
                     msg_sender,
-                    |s, call| self.complete_linking_token_update(s, call),
+                    |s, call| self.finalize_linking_token_update(s, call),
                 )
             }
             ITIP20::mintCall::SELECTOR => {

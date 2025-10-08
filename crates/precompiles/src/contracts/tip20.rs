@@ -252,10 +252,10 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    pub fn set_next_linking_token(
+    pub fn update_linking_token(
         &mut self,
         msg_sender: &Address,
-        call: ITIP20::setNextLinkingTokenCall,
+        call: ITIP20::updateLinkingTokenCall,
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
@@ -295,10 +295,10 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    pub fn complete_linking_token_update(
+    pub fn finalize_linking_token_update(
         &mut self,
         msg_sender: &Address,
-        _call: ITIP20::completeLinkingTokenUpdateCall,
+        _call: ITIP20::finalizeLinkingTokenUpdateCall,
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
@@ -1686,7 +1686,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_next_linking_token() {
+    fn test_update_linking_token() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1730,9 +1730,9 @@ mod tests {
 
         // Set next linking token
         token
-            .set_next_linking_token(
+            .update_linking_token(
                 &admin,
-                ITIP20::setNextLinkingTokenCall {
+                ITIP20::updateLinkingTokenCall {
                     newLinkingToken: linking_token_address,
                 },
             )
@@ -1754,7 +1754,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_next_linking_token_requires_admin() {
+    fn test_update_linking_token_requires_admin() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let non_admin = Address::random();
@@ -1767,9 +1767,9 @@ mod tests {
         let linking_token_address = token_id_to_address(2);
 
         // Try to set next linking token as non-admin
-        let result = token.set_next_linking_token(
+        let result = token.update_linking_token(
             &non_admin,
-            ITIP20::setNextLinkingTokenCall {
+            ITIP20::updateLinkingTokenCall {
                 newLinkingToken: linking_token_address,
             },
         );
@@ -1778,7 +1778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_complete_linking_token_update() {
+    fn test_finalize_linking_token_update() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1822,9 +1822,9 @@ mod tests {
 
         // Set next linking token
         token
-            .set_next_linking_token(
+            .update_linking_token(
                 &admin,
-                ITIP20::setNextLinkingTokenCall {
+                ITIP20::updateLinkingTokenCall {
                     newLinkingToken: linking_token_address,
                 },
             )
@@ -1832,7 +1832,7 @@ mod tests {
 
         // Complete the update
         token
-            .complete_linking_token_update(&admin, ITIP20::completeLinkingTokenUpdateCall {})
+            .finalize_linking_token_update(&admin, ITIP20::finalizeLinkingTokenUpdateCall {})
             .unwrap();
 
         // Verify linking token was updated
@@ -1851,7 +1851,7 @@ mod tests {
     }
 
     #[test]
-    fn test_complete_linking_token_update_detects_loop() {
+    fn test_finalize_linking_token_update_detects_loop() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1896,9 +1896,9 @@ mod tests {
         // Now try to set token_a as the next linking token for token_b (would create A -> B -> A loop)
         let mut token_b = TIP20Token::new(token_b_id, &mut storage);
         token_b
-            .set_next_linking_token(
+            .update_linking_token(
                 &admin,
-                ITIP20::setNextLinkingTokenCall {
+                ITIP20::updateLinkingTokenCall {
                     newLinkingToken: token_a_address,
                 },
             )
@@ -1906,13 +1906,13 @@ mod tests {
 
         // Try to complete the update - should fail due to loop detection
         let result = token_b
-            .complete_linking_token_update(&admin, ITIP20::completeLinkingTokenUpdateCall {});
+            .finalize_linking_token_update(&admin, ITIP20::finalizeLinkingTokenUpdateCall {});
 
         assert!(matches!(result, Err(TIP20Error::InvalidLinkingToken(_))));
     }
 
     #[test]
-    fn test_complete_linking_token_update_requires_admin() {
+    fn test_finalize_linking_token_update_requires_admin() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let non_admin = Address::random();
@@ -1956,9 +1956,9 @@ mod tests {
 
         // Set next linking token as admin
         token
-            .set_next_linking_token(
+            .update_linking_token(
                 &admin,
-                ITIP20::setNextLinkingTokenCall {
+                ITIP20::updateLinkingTokenCall {
                     newLinkingToken: linking_token_address,
                 },
             )
@@ -1966,7 +1966,7 @@ mod tests {
 
         // Try to complete update as non-admin
         let result = token
-            .complete_linking_token_update(&non_admin, ITIP20::completeLinkingTokenUpdateCall {});
+            .finalize_linking_token_update(&non_admin, ITIP20::finalizeLinkingTokenUpdateCall {});
 
         assert!(matches!(result, Err(TIP20Error::PolicyForbids(_))));
     }
