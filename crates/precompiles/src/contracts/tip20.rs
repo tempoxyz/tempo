@@ -314,14 +314,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             }
 
             // Get the linking token of the current token
-            if address_is_token_address(&current) {
-                let token_id = address_to_token_id_unchecked(&current);
-                let mut current_token = TIP20Token::new(token_id, self.storage);
-                current = current_token.linking_token();
-            } else {
-                // If it's not a token address, break (shouldn't happen but safety check)
-                break;
-            }
+            let token_id = address_to_token_id_unchecked(&current);
+            let mut current_token = TIP20Token::new(token_id, self.storage);
+            current = current_token.linking_token();
         }
 
         // Update the linking token
