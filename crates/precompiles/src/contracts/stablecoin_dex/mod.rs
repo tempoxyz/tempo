@@ -10,8 +10,8 @@ use alloy::primitives::{Address, Bytes, U256};
 use revm::state::Bytecode;
 
 use crate::{
-    contracts::{StorageProvider, storage::StorageOps},
     STABLECOIN_DEX_ADDRESS,
+    contracts::{StorageProvider, storage::StorageOps},
 };
 
 pub struct StablecoinDex<'a, S: StorageProvider> {
