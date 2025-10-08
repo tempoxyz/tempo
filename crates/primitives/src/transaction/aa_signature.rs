@@ -42,9 +42,6 @@ impl AASignature {
                 Ok(Self::Secp256k1(sig))
             }
             P256_SIGNATURE_LENGTH => {
-                if data.len() != 129 {
-                    return Err("Invalid P256 signature length");
-                }
                 Ok(Self::P256 {
                     r: B256::from_slice(&data[0..32]),
                     s: B256::from_slice(&data[32..64]),
@@ -54,10 +51,6 @@ impl AASignature {
                 })
             }
             len if len > P256_SIGNATURE_LENGTH && len <= MAX_WEBAUTHN_SIGNATURE_LENGTH => {
-                // WebAuthn format: webauthn_data || r (32) || s (32) || pubKeyX (32) || pubKeyY (32)
-                if len < 128 {
-                    return Err("WebAuthn signature too short");
-                }
                 Ok(Self::WebAuthn {
                     webauthn_data: Bytes::copy_from_slice(&data[..len - 128]),
                     r: B256::from_slice(&data[len - 128..len - 96]),
