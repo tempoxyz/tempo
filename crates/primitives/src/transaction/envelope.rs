@@ -1,6 +1,7 @@
 use super::fee_token::TxFeeToken;
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
+    TypedTransaction,
     error::{UnsupportedTransactionType, ValueError},
 };
 use alloy_primitives::{Address, B256, Signature, SignatureError, U256};
@@ -23,7 +24,7 @@ pub const TEMPO_SYSTEM_TX_SENDER: Address = Address::ZERO;
 /// - EIP-7702 authorization list transactions
 /// - Tempo fee token transactions (0x77)
 #[derive(Clone, Debug, alloy_consensus::TransactionEnvelope)]
-#[envelope(tx_type_name = TempoTxType, arbitrary_cfg(feature = "arbitrary"), serde_cfg(feature = "serde"))]
+#[envelope(tx_type_name = TempoTxType, typed = TempoTypedTransaction, arbitrary_cfg(feature = "arbitrary"), serde_cfg(feature = "serde"))]
 pub enum TempoTxEnvelope {
     /// Legacy transaction (type 0x00)
     #[envelope(ty = 0)]
@@ -252,6 +253,40 @@ impl<Eip4844> TryFrom<EthereumTxEnvelope<Eip4844>> for TempoTxEnvelope {
 
 impl From<Signed<TxFeeToken>> for TempoTxEnvelope {
     fn from(value: Signed<TxFeeToken>) -> Self {
+        Self::FeeToken(value)
+    }
+}
+
+impl TryFrom<TypedTransaction> for TempoTypedTransaction {
+    type Error = UnsupportedTransactionType<TxType>;
+
+    fn try_from(value: TypedTransaction) -> Result<Self, Self::Error> {
+        Ok(match value {
+            TypedTransaction::Legacy(tx) => Self::Legacy(tx),
+            TypedTransaction::Eip2930(tx) => Self::Eip2930(tx),
+            TypedTransaction::Eip1559(tx) => Self::Eip1559(tx),
+            TypedTransaction::Eip4844(..) => {
+                return Err(UnsupportedTransactionType::new(TxType::Eip4844));
+            }
+            TypedTransaction::Eip7702(tx) => Self::Eip7702(tx),
+        })
+    }
+}
+
+impl From<TempoTxEnvelope> for TempoTypedTransaction {
+    fn from(value: TempoTxEnvelope) -> Self {
+        match value {
+            TempoTxEnvelope::Legacy(tx) => Self::Legacy(tx.into_parts().0),
+            TempoTxEnvelope::Eip2930(tx) => Self::Eip2930(tx.into_parts().0),
+            TempoTxEnvelope::Eip1559(tx) => Self::Eip1559(tx.into_parts().0),
+            TempoTxEnvelope::Eip7702(tx) => Self::Eip7702(tx.into_parts().0),
+            TempoTxEnvelope::FeeToken(tx) => Self::FeeToken(tx.into_parts().0),
+        }
+    }
+}
+
+impl From<TxFeeToken> for TempoTypedTransaction {
+    fn from(value: TxFeeToken) -> Self {
         Self::FeeToken(value)
     }
 }
