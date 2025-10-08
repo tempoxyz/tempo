@@ -3,10 +3,9 @@ use super::account_abstraction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH,
 };
 use alloy_primitives::{Address, Bytes, Signature, B256, keccak256};
-use core::hash::{Hash, Hasher};
 
 /// AA transaction signature supporting multiple signature schemes
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AASignature {
     /// Standard secp256k1 ECDSA signature (65 bytes: r, s, v)
@@ -166,29 +165,6 @@ impl AASignature {
 
                 // Derive and return address
                 Ok(derive_p256_address(pub_key_x, pub_key_y))
-            }
-        }
-    }
-}
-
-impl Hash for AASignature {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
-        match self {
-            Self::Secp256k1(sig) => sig.hash(state),
-            Self::P256 { r, s, pub_key_x, pub_key_y, pre_hash } => {
-                r.hash(state);
-                s.hash(state);
-                pub_key_x.hash(state);
-                pub_key_y.hash(state);
-                pre_hash.hash(state);
-            }
-            Self::WebAuthn { webauthn_data, r, s, pub_key_x, pub_key_y } => {
-                webauthn_data.hash(state);
-                r.hash(state);
-                s.hash(state);
-                pub_key_x.hash(state);
-                pub_key_y.hash(state);
             }
         }
     }
