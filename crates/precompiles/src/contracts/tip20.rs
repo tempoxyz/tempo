@@ -1765,6 +1765,83 @@ mod tests {
     }
 
     #[test]
+    fn test_update_linking_token_rejects_non_tip20() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        // Initialize the factory
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        // Create a token through the factory
+        let token_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Test".to_string(),
+                    symbol: "TST".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        // Try to set a non-TIP20 address (random address that doesn't match TIP20 pattern)
+        let non_tip20_address = Address::random();
+        let result = token.update_linking_token(
+            &admin,
+            ITIP20::updateLinkingTokenCall {
+                newLinkingToken: non_tip20_address,
+            },
+        );
+
+        assert!(matches!(result, Err(TIP20Error::InvalidLinkingToken(_))));
+    }
+
+    #[test]
+    fn test_update_linking_token_rejects_undeployed_token() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        // Initialize the factory
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        // Create a token through the factory (token_id = 1)
+        let token_id = factory
+            .create_token(
+                &admin,
+                ITIP20Factory::createTokenCall {
+                    name: "Test".to_string(),
+                    symbol: "TST".to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>();
+
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        // Try to set a TIP20 address that hasn't been deployed yet (token_id = 999)
+        // This has the correct TIP20 address pattern but hasn't been created
+        let undeployed_token_address = token_id_to_address(999);
+        let result = token.update_linking_token(
+            &admin,
+            ITIP20::updateLinkingTokenCall {
+                newLinkingToken: undeployed_token_address,
+            },
+        );
+
+        assert!(matches!(result, Err(TIP20Error::InvalidLinkingToken(_))));
+    }
+
+    #[test]
     fn test_finalize_linking_token_update() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
