@@ -307,7 +307,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         // Check that this does not create a loop
         // Loop through linking tokens until we reach the root (LinkingUSD)
         let mut current = next_linking_token;
-        while current != LINKING_USD_ADDRESS && current != Address::ZERO {
+        while current != LINKING_USD_ADDRESS {
             // If we encounter this token in the chain, there's a loop
             if current == self.token_address {
                 return Err(TIP20Error::invalid_linking_token());
