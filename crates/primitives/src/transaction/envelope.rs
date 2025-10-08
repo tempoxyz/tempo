@@ -191,11 +191,7 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::FeeToken(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
             }
-            Self::AA(tx) => {
-                // AA transactions have custom signature recovery based on signature type
-                tx.recover_signer()
-                    .map_err(|_| alloy_consensus::crypto::RecoveryError::new())
-            }
+            Self::AA(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer(tx),
         }
     }
 
@@ -219,11 +215,7 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::FeeToken(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
             }
-            Self::AA(tx) => {
-                // AA transactions have custom signature recovery based on signature type
-                tx.recover_signer()
-                    .map_err(|_| alloy_consensus::crypto::RecoveryError::new())
-            }
+            Self::AA(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx),
         }
     }
 }

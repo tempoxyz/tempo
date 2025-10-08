@@ -338,11 +338,20 @@ impl InMemorySize for AASigned {
     }
 }
 
-impl AASigned {
-    /// Recover the signer address from the transaction signature
-    pub fn recover_signer(&self) -> Result<alloy_primitives::Address, &'static str> {
+impl alloy_consensus::transaction::SignerRecoverable for AASigned {
+    fn recover_signer(
+        &self,
+    ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
+    }
+
+    fn recover_signer_unchecked(
+        &self,
+    ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
+        // For AA transactions, verified and unverified recovery are the same
+        // since signature verification happens during recover_signer
+        self.recover_signer()
     }
 }
 

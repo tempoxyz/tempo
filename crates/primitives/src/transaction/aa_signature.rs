@@ -117,13 +117,12 @@ impl AASignature {
     /// - secp256k1: Uses standard ecrecover (signature verification + address recovery)
     /// - P256: Verifies P256 signature then derives address from public key
     /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
-    pub fn recover_signer(&self, sig_hash: &B256) -> Result<Address, &'static str> {
+    pub fn recover_signer(&self, sig_hash: &B256) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
         match self {
             Self::Secp256k1(sig) => {
                 // Standard secp256k1 recovery using alloy's built-in methods
                 // This simultaneously verifies the signature AND recovers the address
-                sig.recover_address_from_prehash(sig_hash)
-                    .map_err(|_| "Failed to recover secp256k1 address")
+                Ok(sig.recover_address_from_prehash(sig_hash)?)
             }
             Self::P256 { r, s, pub_key_x, pub_key_y, pre_hash } => {
                 // Prepare message hash for verification
@@ -145,14 +144,15 @@ impl AASignature {
                     pub_key_x.as_slice(),
                     pub_key_y.as_slice(),
                     &message_hash,
-                )?;
+                ).map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Derive and return address
                 Ok(derive_p256_address(pub_key_x, pub_key_y))
             }
             Self::WebAuthn { webauthn_data, r, s, pub_key_x, pub_key_y } => {
                 // Parse and verify WebAuthn data, compute challenge hash
-                let message_hash = verify_webauthn_data_internal(webauthn_data, sig_hash)?;
+                let message_hash = verify_webauthn_data_internal(webauthn_data, sig_hash)
+                    .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Verify P256 signature over the computed message hash
                 verify_p256_signature_internal(
@@ -161,7 +161,7 @@ impl AASignature {
                     pub_key_x.as_slice(),
                     pub_key_y.as_slice(),
                     &message_hash,
-                )?;
+                ).map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Derive and return address
                 Ok(derive_p256_address(pub_key_x, pub_key_y))
