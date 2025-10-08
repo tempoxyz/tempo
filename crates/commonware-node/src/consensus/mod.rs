@@ -8,6 +8,8 @@ mod supervisor;
 use commonware_consensus::marshal;
 pub(crate) use supervisor::Supervisor;
 
+pub use engine::{Builder, Engine};
+
 use tempo_commonware_node_cryptography::{BlsScheme, Digest, PrivateKey};
 
 type Consensus<TContext, TBlocker> = commonware_consensus::threshold_simplex::Engine<

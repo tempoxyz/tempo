@@ -2352,7 +2352,7 @@ dependencies = [
  "bytes",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 0.0.62 (git+https://github.com/commonwarexyz/monorepo?rev=a68f75ec78bab93e551637f4799acc7b539f4f1a)",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
@@ -2382,7 +2382,7 @@ dependencies = [
  "commonware-broadcast",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 0.0.62 (git+https://github.com/commonwarexyz/monorepo?rev=a68f75ec78bab93e551637f4799acc7b539f4f1a)",
  "commonware-p2p",
  "commonware-resolver",
  "commonware-runtime",
@@ -2425,6 +2425,20 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.62"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25989115bb59d92b1b7f79018792b31882dbe08e3ecaa6fd4ade5c4244f0d4e3"
+dependencies = [
+ "futures",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+ "tracing",
+ "tracing-subscriber 0.3.20",
+]
+
+[[package]]
+name = "commonware-macros"
+version = "0.0.62"
 source = "git+https://github.com/commonwarexyz/monorepo?rev=a68f75ec78bab93e551637f4799acc7b539f4f1a#a68f75ec78bab93e551637f4799acc7b539f4f1a"
 dependencies = [
  "futures",
@@ -2443,7 +2457,7 @@ dependencies = [
  "bytes",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 0.0.62 (git+https://github.com/commonwarexyz/monorepo?rev=a68f75ec78bab93e551637f4799acc7b539f4f1a)",
  "commonware-runtime",
  "commonware-stream",
  "commonware-utils",
@@ -2470,7 +2484,7 @@ dependencies = [
  "bytes",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 0.0.62 (git+https://github.com/commonwarexyz/monorepo?rev=a68f75ec78bab93e551637f4799acc7b539f4f1a)",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-stream",
@@ -2492,7 +2506,7 @@ dependencies = [
  "axum",
  "bytes",
  "cfg-if",
- "commonware-macros",
+ "commonware-macros 0.0.62 (git+https://github.com/commonwarexyz/monorepo?rev=a68f75ec78bab93e551637f4799acc7b539f4f1a)",
  "commonware-utils",
  "criterion 0.5.1",
  "futures",
@@ -2523,7 +2537,7 @@ dependencies = [
  "cfg-if",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 0.0.62 (git+https://github.com/commonwarexyz/monorepo?rev=a68f75ec78bab93e551637f4799acc7b539f4f1a)",
  "commonware-runtime",
  "commonware-utils",
  "crc32fast",
@@ -2545,7 +2559,7 @@ dependencies = [
  "chacha20poly1305",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-macros",
+ "commonware-macros 0.0.62 (git+https://github.com/commonwarexyz/monorepo?rev=a68f75ec78bab93e551637f4799acc7b539f4f1a)",
  "commonware-runtime",
  "commonware-utils",
  "futures",
@@ -11558,6 +11572,33 @@ name = "tempo-contracts"
 version = "0.1.0"
 dependencies = [
  "alloy",
+]
+
+[[package]]
+name = "tempo-e2e"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "commonware-cryptography",
+ "commonware-macros 0.0.62 (registry+https://github.com/rust-lang/crates.io-index)",
+ "commonware-p2p",
+ "commonware-runtime",
+ "commonware-utils",
+ "eyre",
+ "futures",
+ "reth-db",
+ "reth-ethereum",
+ "reth-node-builder",
+ "reth-node-core",
+ "reth-rpc-builder",
+ "tempfile",
+ "tempo-chainspec",
+ "tempo-commonware-node",
+ "tempo-eyre",
+ "tempo-node",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.20",
 ]
 
 [[package]]

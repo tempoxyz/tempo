@@ -17,6 +17,7 @@ members = [
   "crates/consensus",
   "crates/eyre",
   "crates/evm",
+  "crates/e2e",
   "crates/faucet",
   "crates/node",
   "crates/payload/builder",
@@ -188,6 +189,7 @@ commonware-broadcast = "0.0.62"
 commonware-codec = "0.0.62"
 commonware-consensus = "0.0.62"
 commonware-cryptography = "0.0.62"
+commonware-macros = "0.0.62"
 commonware-p2p = "0.0.62"
 commonware-resolver = "0.0.62"
 commonware-runtime = "0.0.62"

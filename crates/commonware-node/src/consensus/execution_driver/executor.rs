@@ -233,7 +233,7 @@ impl Executor {
             %digest,
         ),
         ret,
-        err,
+        err(Display),
     )]
     async fn canonicalize(
         &self,
