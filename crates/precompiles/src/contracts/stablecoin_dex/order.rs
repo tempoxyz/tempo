@@ -1,6 +1,6 @@
 //! Limit order type for the stablecoin DEX.
 //!
-//! This module defines the core `LimitOrder` type used in the stablecoin DEX orderbook.
+//! This module defines the core `Order` type used in the stablecoin DEX orderbook.
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
@@ -8,12 +8,12 @@ use alloy::primitives::Address;
 
 use super::error::OrderError;
 
-/// Represents a limit order in the stablecoin DEX orderbook.
+/// Represents an order in the stablecoin DEX orderbook.
 ///
 /// # Order Types
-/// - **Bid**: Order to buy the token using its linking token
-/// - **Ask**: Order to sell the token for its linking token
-/// - **Flip**: Order that automatically creates a new order on the opposite side when fully filled
+/// - **Regular orders**: Orders with `flip_tick = None`
+/// - **Flip orders**: Orders with `flip_tick = Some(tick)` that automatically create
+///   a new order on the opposite side when fully filled
 ///
 /// # Order Lifecycle
 /// 1. Order is placed via `place()` or `placeFlip()` and added to pending queue
@@ -34,83 +34,36 @@ use super::error::OrderError;
 /// Orders are stored onchain in doubly linked lists organized by tick.
 /// Each tick maintains a FIFO queue of orders using `prev_order_id` and `next_order_id` pointers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LimitOrder {
-    /// Bid order: buying the token using its linking token
-    Bid {
-        /// Unique identifier for this order
-        order_id: u128,
-        /// Address of the user who placed this order
-        maker: Address,
-        /// Token being traded (not the linking token)
-        token: Address,
-        /// Linking token (quote currency) for this pair
-        linking_token: Address,
-        /// Remaining amount of the token to be filled
-        amount: u128,
-        /// Original amount when the order was placed
-        original_amount: u128,
-        /// Price tick: (price - 1) * 1000
-        tick: i16,
-        /// Previous order ID in the doubly linked list (0 if head)
-        prev_order_id: u128,
-        /// Next order ID in the doubly linked list (0 if tail)
-        next_order_id: u128,
-    },
-
-    /// Ask order: selling the token for its linking token
-    Ask {
-        /// Unique identifier for this order
-        order_id: u128,
-        /// Address of the user who placed this order
-        maker: Address,
-        /// Token being traded (not the linking token)
-        token: Address,
-        /// Linking token (quote currency) for this pair
-        linking_token: Address,
-        /// Remaining amount of the token to be filled
-        amount: u128,
-        /// Original amount when the order was placed
-        original_amount: u128,
-        /// Price tick: (price - 1) * 1000
-        tick: i16,
-        /// Previous order ID in the doubly linked list (0 if head)
-        prev_order_id: u128,
-        /// Next order ID in the doubly linked list (0 if tail)
-        next_order_id: u128,
-    },
-
-    /// Flip order: automatically creates a new order on the opposite side when fully filled
-    Flip {
-        /// Unique identifier for this order
-        order_id: u128,
-        /// Address of the user who placed this order
-        maker: Address,
-        /// Token being traded (not the linking token)
-        token: Address,
-        /// Linking token (quote currency) for this pair
-        linking_token: Address,
-        /// Remaining amount of the token to be filled
-        amount: u128,
-        /// Original amount when the order was placed
-        original_amount: u128,
-        /// True if this is a bid (buying), false if ask (selling)
-        is_bid: bool,
-        /// Price tick: (price - 1) * 1000
-        tick: i16,
-        /// Tick to flip to when fully filled
-        /// For bid flips: flip_tick must be > tick
-        /// For ask flips: flip_tick must be < tick
-        flip_tick: i16,
-        /// Whether this order was created from a flip within the current block
-        was_flipped: bool,
-        /// Previous order ID in the doubly linked list (0 if head)
-        prev_order_id: u128,
-        /// Next order ID in the doubly linked list (0 if tail)
-        next_order_id: u128,
-    },
+pub struct Order {
+    /// Unique identifier for this order
+    order_id: u128,
+    /// Address of the user who placed this order
+    maker: Address,
+    /// Token being traded (not the linking token)
+    token: Address,
+    /// Linking token (quote currency) for this pair
+    linking_token: Address,
+    /// Remaining amount of the token to be filled
+    amount: u128,
+    /// Original amount when the order was placed
+    original_amount: u128,
+    /// True if this is a bid (buying), false if ask (selling)
+    is_bid: bool,
+    /// Price tick: (price - 1) * 1000
+    tick: i16,
+    /// Tick to flip to when fully filled (None for regular orders)
+    /// For bid flips: flip_tick must be > tick
+    /// For ask flips: flip_tick must be < tick
+    flip_tick: Option<i16>,
+    /// Whether this order was created from a flip within the current block
+    was_flipped: bool,
+    /// Previous order ID in the doubly linked list (0 if head)
+    prev_order_id: u128,
+    /// Next order ID in the doubly linked list (0 if tail)
+    next_order_id: u128,
 }
 
-impl LimitOrder {
+impl Order {
     /// Creates a new bid order (buying token with linking token).
     ///
     /// Note: `prev_order_id` and `next_order_id` are initialized to 0.
@@ -123,14 +76,17 @@ impl LimitOrder {
         amount: u128,
         tick: i16,
     ) -> Self {
-        Self::Bid {
+        Self {
             order_id,
             maker,
             token,
             linking_token,
             amount,
             original_amount: amount,
+            is_bid: true,
             tick,
+            flip_tick: None,
+            was_flipped: false,
             prev_order_id: 0,
             next_order_id: 0,
         }
@@ -148,14 +104,17 @@ impl LimitOrder {
         amount: u128,
         tick: i16,
     ) -> Self {
-        Self::Ask {
+        Self {
             order_id,
             maker,
             token,
             linking_token,
             amount,
             original_amount: amount,
+            is_bid: false,
             tick,
+            flip_tick: None,
+            was_flipped: false,
             prev_order_id: 0,
             next_order_id: 0,
         }
@@ -190,7 +149,7 @@ impl LimitOrder {
             return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
         }
 
-        Ok(Self::Flip {
+        Ok(Self {
             order_id,
             maker,
             token,
@@ -199,7 +158,7 @@ impl LimitOrder {
             original_amount: amount,
             is_bid,
             tick,
-            flip_tick,
+            flip_tick: Some(flip_tick),
             was_flipped: false,
             prev_order_id: 0,
             next_order_id: 0,
@@ -208,145 +167,87 @@ impl LimitOrder {
 
     /// Returns the order ID.
     pub fn order_id(&self) -> u128 {
-        match self {
-            Self::Bid { order_id, .. }
-            | Self::Ask { order_id, .. }
-            | Self::Flip { order_id, .. } => *order_id,
-        }
+        self.order_id
     }
 
     /// Returns the maker address.
     pub fn maker(&self) -> Address {
-        match self {
-            Self::Bid { maker, .. } | Self::Ask { maker, .. } | Self::Flip { maker, .. } => *maker,
-        }
+        self.maker
     }
 
     /// Returns the token address.
     pub fn token(&self) -> Address {
-        match self {
-            Self::Bid { token, .. } | Self::Ask { token, .. } | Self::Flip { token, .. } => *token,
-        }
+        self.token
     }
 
     /// Returns the remaining amount.
     pub fn amount(&self) -> u128 {
-        match self {
-            Self::Bid { amount, .. } | Self::Ask { amount, .. } | Self::Flip { amount, .. } => {
-                *amount
-            }
-        }
+        self.amount
     }
 
     /// Returns a mutable reference to the remaining amount.
     fn amount_mut(&mut self) -> &mut u128 {
-        match self {
-            Self::Bid { amount, .. } | Self::Ask { amount, .. } | Self::Flip { amount, .. } => {
-                amount
-            }
-        }
+        &mut self.amount
     }
 
     /// Returns the original amount.
     pub fn original_amount(&self) -> u128 {
-        match self {
-            Self::Bid {
-                original_amount, ..
-            }
-            | Self::Ask {
-                original_amount, ..
-            }
-            | Self::Flip {
-                original_amount, ..
-            } => *original_amount,
-        }
+        self.original_amount
     }
 
     /// Returns the tick price.
     pub fn tick(&self) -> i16 {
-        match self {
-            Self::Bid { tick, .. } | Self::Ask { tick, .. } | Self::Flip { tick, .. } => *tick,
-        }
+        self.tick
     }
 
     /// Returns true if this is a bid order (buying token).
     pub fn is_bid(&self) -> bool {
-        match self {
-            Self::Bid { .. } => true,
-            Self::Ask { .. } => false,
-            Self::Flip { is_bid, .. } => *is_bid,
-        }
+        self.is_bid
     }
 
     /// Returns true if this is an ask order (selling token).
     pub fn is_ask(&self) -> bool {
-        !self.is_bid()
+        !self.is_bid
     }
 
     /// Returns true if this is a flip order.
     pub fn is_flip(&self) -> bool {
-        matches!(self, Self::Flip { .. })
+        self.flip_tick.is_some()
     }
 
     /// Returns the flip tick if this is a flip order.
     pub fn flip_tick(&self) -> Option<i16> {
-        match self {
-            Self::Flip { flip_tick, .. } => Some(*flip_tick),
-            _ => None,
-        }
+        self.flip_tick
     }
 
     /// Returns true if this order was created from a flip.
     pub fn was_flipped(&self) -> bool {
-        match self {
-            Self::Flip { was_flipped, .. } => *was_flipped,
-            _ => false,
-        }
+        self.was_flipped
     }
 
     /// Returns the linking token (quote currency) address.
     pub fn linking_token(&self) -> Address {
-        match self {
-            Self::Bid { linking_token, .. }
-            | Self::Ask { linking_token, .. }
-            | Self::Flip { linking_token, .. } => *linking_token,
-        }
+        self.linking_token
     }
 
     /// Returns the previous order ID in the doubly linked list (0 if head).
     pub fn prev_order_id(&self) -> u128 {
-        match self {
-            Self::Bid { prev_order_id, .. }
-            | Self::Ask { prev_order_id, .. }
-            | Self::Flip { prev_order_id, .. } => *prev_order_id,
-        }
+        self.prev_order_id
     }
 
     /// Returns the next order ID in the doubly linked list (0 if tail).
     pub fn next_order_id(&self) -> u128 {
-        match self {
-            Self::Bid { next_order_id, .. }
-            | Self::Ask { next_order_id, .. }
-            | Self::Flip { next_order_id, .. } => *next_order_id,
-        }
+        self.next_order_id
     }
 
     /// Sets the previous order ID in the doubly linked list.
     pub fn set_prev_order_id(&mut self, prev_id: u128) {
-        match self {
-            Self::Bid { prev_order_id, .. }
-            | Self::Ask { prev_order_id, .. }
-            | Self::Flip { prev_order_id, .. } => *prev_order_id = prev_id,
-        }
+        self.prev_order_id = prev_id;
     }
 
     /// Sets the next order ID in the doubly linked list.
     pub fn set_next_order_id(&mut self, next_id: u128) {
-        match self {
-            Self::Bid { next_order_id, .. }
-            | Self::Ask { next_order_id, .. }
-            | Self::Flip { next_order_id, .. } => *next_order_id = next_id,
-        }
+        self.next_order_id = next_id;
     }
 
     /// Returns true if the order is completely filled (no remaining amount).
@@ -383,39 +284,33 @@ impl LimitOrder {
     /// # Errors
     /// Returns an error if called on a non-flip order or if the order is not fully filled
     pub fn create_flipped_order(&self, new_order_id: u128) -> Result<Self, OrderError> {
-        match self {
-            Self::Flip {
-                maker,
-                token,
-                linking_token,
-                original_amount,
-                is_bid,
-                tick,
-                flip_tick,
-                amount,
-                ..
-            } => {
-                if *amount != 0 {
-                    return Err(OrderError::OrderNotFullyFilled { remaining: *amount });
-                }
+        // Check if this is a flip order
+        let Some(old_flip_tick) = self.flip_tick else {
+            return Err(OrderError::NotAFlipOrder);
+        };
 
-                Ok(Self::Flip {
-                    order_id: new_order_id,
-                    maker: *maker,
-                    token: *token,
-                    linking_token: *linking_token,
-                    amount: *original_amount,
-                    original_amount: *original_amount,
-                    is_bid: !is_bid,   // Flip the side
-                    tick: *flip_tick,  // Old flip_tick becomes new tick
-                    flip_tick: *tick,  // Old tick becomes new flip_tick
-                    was_flipped: true, // Mark as flipped for priority
-                    prev_order_id: 0,  // Reset linked list pointers
-                    next_order_id: 0,
-                })
-            }
-            _ => Err(OrderError::NotAFlipOrder),
+        // Check if fully filled
+        if self.amount != 0 {
+            return Err(OrderError::OrderNotFullyFilled {
+                remaining: self.amount,
+            });
         }
+
+        // Create flipped order
+        Ok(Self {
+            order_id: new_order_id,
+            maker: self.maker,
+            token: self.token,
+            linking_token: self.linking_token,
+            amount: self.original_amount,
+            original_amount: self.original_amount,
+            is_bid: !self.is_bid,       // Flip the side
+            tick: old_flip_tick,        // Old flip_tick becomes new tick
+            flip_tick: Some(self.tick), // Old tick becomes new flip_tick
+            was_flipped: true,          // Mark as flipped for priority
+            prev_order_id: 0,           // Reset linked list pointers
+            next_order_id: 0,
+        })
     }
 }
 
@@ -430,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_new_bid_order() {
-        let order = LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let order = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
         assert_eq!(order.order_id(), 1);
         assert_eq!(order.maker(), TEST_MAKER);
@@ -447,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_new_ask_order() {
-        let order = LimitOrder::new_ask(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let order = Order::new_ask(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
         assert_eq!(order.order_id(), 1);
         assert!(!order.is_bid());
@@ -457,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_bid() {
-        let order = LimitOrder::new_flip(
+        let order = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
@@ -477,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_ask() {
-        let order = LimitOrder::new_flip(
+        let order = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
@@ -498,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_bid_invalid_flip_tick() {
-        let result = LimitOrder::new_flip(
+        let result = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
@@ -514,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_ask_invalid_flip_tick() {
-        let result = LimitOrder::new_flip(
+        let result = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
@@ -530,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_fill_bid_order_partial() {
-        let mut order = LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let mut order = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
         assert!(!order.is_fully_filled());
 
@@ -543,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_fill_ask_order_complete() {
-        let mut order = LimitOrder::new_ask(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let mut order = Order::new_ask(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
         order.fill(1000).unwrap();
 
@@ -554,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_fill_order_overfill() {
-        let mut order = LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let mut order = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
         let result = order.fill(1001);
         assert!(matches!(
@@ -565,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_create_flipped_order_bid_to_ask() {
-        let mut order = LimitOrder::new_flip(
+        let mut order = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
@@ -599,7 +494,7 @@ mod tests {
 
     #[test]
     fn test_create_flipped_order_ask_to_bid() {
-        let mut order = LimitOrder::new_flip(
+        let mut order = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
@@ -623,7 +518,7 @@ mod tests {
 
     #[test]
     fn test_create_flipped_order_non_flip() {
-        let mut order = LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let mut order = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
         order.fill(1000).unwrap();
         let result = order.create_flipped_order(2);
@@ -632,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_create_flipped_order_not_filled() {
-        let order = LimitOrder::new_flip(
+        let order = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
@@ -653,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_multiple_fills() {
-        let mut order = LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let mut order = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
         // Multiple partial fills
         order.fill(300).unwrap();
@@ -670,7 +565,7 @@ mod tests {
     #[test]
     fn test_multiple_flips() {
         // Test that an order can flip multiple times
-        let mut order = LimitOrder::new_flip(
+        let mut order = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
@@ -703,11 +598,11 @@ mod tests {
 
     #[test]
     fn test_order_priority_fields() {
-        let order1 = LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let order1 = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
-        let order2 = LimitOrder::new_bid(2, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let order2 = Order::new_bid(2, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
-        let order3 = LimitOrder::new_bid(3, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let order3 = Order::new_bid(3, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
         assert_eq!(order1.tick(), order2.tick());
 
@@ -716,7 +611,7 @@ mod tests {
 
     #[test]
     fn test_flipped_order_priority_flag() {
-        let mut flip_order = LimitOrder::new_flip(
+        let mut flip_order = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
@@ -742,29 +637,27 @@ mod tests {
         // Tick = (price - 1) * 1000
 
         // Price = $1.002 -> tick = 2
-        let order_above =
-            LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 2);
+        let order_above = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 2);
         assert_eq!(order_above.tick(), 2);
 
         // Price = $0.998 -> tick = -2
-        let order_below =
-            LimitOrder::new_ask(2, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, -2);
+        let order_below = Order::new_ask(2, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, -2);
         assert_eq!(order_below.tick(), -2);
 
         // Price = $1.00 -> tick = 0
-        let order_par = LimitOrder::new_bid(3, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 0);
+        let order_par = Order::new_bid(3, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 0);
         assert_eq!(order_par.tick(), 0);
     }
 
     #[test]
     fn test_linking_token_field() {
-        let order = LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let order = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
         assert_eq!(order.linking_token(), TEST_LINKING_TOKEN);
     }
 
     #[test]
     fn test_linked_list_pointers_initialization() {
-        let order = LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let order = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
         // Linked list pointers should be initialized to 0
         assert_eq!(order.prev_order_id(), 0);
         assert_eq!(order.next_order_id(), 0);
@@ -772,7 +665,7 @@ mod tests {
 
     #[test]
     fn test_set_linked_list_pointers() {
-        let mut order = LimitOrder::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
+        let mut order = Order::new_bid(1, TEST_MAKER, TEST_TOKEN, TEST_LINKING_TOKEN, 1000, 5);
 
         // Set prev and next pointers
         order.set_prev_order_id(42);
@@ -784,7 +677,7 @@ mod tests {
 
     #[test]
     fn test_flipped_order_resets_linked_list_pointers() {
-        let mut order = LimitOrder::new_flip(
+        let mut order = Order::new_flip(
             1,
             TEST_MAKER,
             TEST_TOKEN,
