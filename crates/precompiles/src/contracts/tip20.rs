@@ -285,7 +285,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.storage
             .emit_event(
                 self.token_address,
-                TIP20Event::NextLinkingTokenSet(ITIP20::NextLinkingTokenSet {
+                TIP20Event::UpdateLinkingToken(ITIP20::UpdateLinkingToken {
                     updater: *msg_sender,
                     newLinkingToken: call.newLinkingToken,
                 })
@@ -328,7 +328,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.storage
             .emit_event(
                 self.token_address,
-                TIP20Event::LinkingTokenUpdate(ITIP20::LinkingTokenUpdate {
+                TIP20Event::LinkingTokenUpdateFinalized(ITIP20::LinkingTokenUpdateFinalized {
                     updater: *msg_sender,
                     newLinkingToken: next_linking_token,
                 })
@@ -1732,7 +1732,7 @@ mod tests {
         let events = &storage.events[&token_id_to_address(token_id)];
         assert_eq!(
             events.last().unwrap(),
-            &TIP20Event::NextLinkingTokenSet(ITIP20::NextLinkingTokenSet {
+            &TIP20Event::UpdateLinkingToken(ITIP20::UpdateLinkingToken {
                 updater: admin,
                 newLinkingToken: linking_token_address,
             })
@@ -1906,7 +1906,7 @@ mod tests {
         let events = &storage.events[&token_id_to_address(token_id)];
         assert_eq!(
             events.last().unwrap(),
-            &TIP20Event::LinkingTokenUpdate(ITIP20::LinkingTokenUpdate {
+            &TIP20Event::LinkingTokenUpdateFinalized(ITIP20::LinkingTokenUpdateFinalized {
                 updater: admin,
                 newLinkingToken: linking_token_address,
             })

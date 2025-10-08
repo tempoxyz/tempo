@@ -81,8 +81,8 @@ sol! {
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
-        event NextLinkingTokenSet(address indexed updater, address indexed newLinkingToken);
-        event LinkingTokenUpdate(address indexed updater, address indexed newLinkingToken);
+        event UpdateLinkingToken(address indexed updater, address indexed newLinkingToken);
+        event LinkingTokenUpdateFinalized(address indexed updater, address indexed newLinkingToken);
 
         // Errors
         error InsufficientBalance();
