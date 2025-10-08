@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use crate::{
-    TIP_FEE_MANAGER_ADDRESS,
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP20Factory, TIP403Registry,
         TIP4217Registry, address_is_token_address, address_to_token_id_unchecked,
@@ -305,14 +305,9 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         let next_linking_token = self.next_linking_token();
 
         // Check that this does not create a loop
-        // Loop through linking tokens until we reach the root (LinkingUSD at 0x20C0...)
-        const LINKING_USD_ROOT: Address = Address::new([
-            0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ]);
-
+        // Loop through linking tokens until we reach the root (LinkingUSD)
         let mut current = next_linking_token;
-        while current != LINKING_USD_ROOT && current != Address::ZERO {
+        while current != LINKING_USD_ADDRESS && current != Address::ZERO {
             // If we encounter this token in the chain, there's a loop
             if current == self.token_address {
                 return Err(TIP20Error::invalid_linking_token());
