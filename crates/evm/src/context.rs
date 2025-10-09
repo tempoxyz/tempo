@@ -27,9 +27,11 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<TempoHeader>
     for TempoNextBlockEnvAttributes
 {
     fn build_pending_env(parent: &crate::SealedHeader<TempoHeader>) -> Self {
+        use alloy_consensus::BlockHeader as _;
+
         Self {
             inner: NextBlockEnvAttributes::build_pending_env(parent),
-            general_gas_limit: parent.gas_limit / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR,
+            general_gas_limit: parent.gas_limit() / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR,
         }
     }
 }

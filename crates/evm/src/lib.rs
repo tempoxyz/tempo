@@ -4,6 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 mod assemble;
+use alloy_consensus::BlockHeader as _;
 pub use assemble::TempoBlockAssembler;
 mod block;
 mod context;
@@ -118,7 +119,8 @@ impl ConfigureEvm for TempoEvmConfig {
             header,
             self.chain_spec(),
             self.chain_spec().chain().id(),
-            self.chain_spec().blob_params_at_timestamp(header.timestamp),
+            self.chain_spec()
+                .blob_params_at_timestamp(header.timestamp()),
         ))
     }
 
@@ -151,8 +153,8 @@ impl ConfigureEvm for TempoEvmConfig {
     ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
-                parent_hash: block.header().parent_hash,
-                parent_beacon_block_root: block.header().parent_beacon_block_root,
+                parent_hash: block.header().parent_hash(),
+                parent_beacon_block_root: block.header().parent_beacon_block_root(),
                 // no ommers in tempo
                 ommers: &[],
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
