@@ -2,19 +2,16 @@ use alloy::{
     network::EthereumWallet,
     primitives::{Address, Bytes, U256},
     providers::{Provider, ProviderBuilder},
-    signers::{local::MnemonicBuilder, SignerSync},
+    signers::{SignerSync, local::MnemonicBuilder},
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_precompiles::{
-    NONCE_PRECOMPILE_ADDRESS,
-    contracts::INonce,
-};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, contracts::INonce};
 use tempo_primitives::{
-    transaction::{
-        aa_signature::AASignature, aa_signed::AASigned, account_abstraction::Call, TxAA,
-    },
     TempoTxEnvelope,
+    transaction::{
+        TxAA, aa_signature::AASignature, aa_signed::AASigned, account_abstraction::Call,
+    },
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -40,7 +37,11 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
 
     // Verify alice has ZERO native ETH (this is expected - gas paid via fee tokens)
     let alice_eth_balance = provider.get_balance(alice_addr).await?;
-    assert_eq!(alice_eth_balance, U256::ZERO, "Test accounts should have zero ETH balance");
+    assert_eq!(
+        alice_eth_balance,
+        U256::ZERO,
+        "Test accounts should have zero ETH balance"
+    );
 
     println!("Alice address: {}", alice_addr);
     println!("Alice ETH balance: {} (expected: 0)", alice_eth_balance);
@@ -85,11 +86,18 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
     let mut encoded = Vec::new();
     envelope.encode_2718(&mut encoded);
 
-    println!("Encoded AA transaction: {} bytes (type: 0x{:02x})", encoded.len(), encoded[0]);
+    println!(
+        "Encoded AA transaction: {} bytes (type: 0x{:02x})",
+        encoded.len(),
+        encoded[0]
+    );
 
     // Test encoding/decoding roundtrip
     let decoded = TempoTxEnvelope::decode_2718(&mut encoded.as_slice())?;
-    assert!(matches!(decoded, TempoTxEnvelope::AA(_)), "Should decode as AA transaction");
+    assert!(
+        matches!(decoded, TempoTxEnvelope::AA(_)),
+        "Should decode as AA transaction"
+    );
     println!("✓ Encoding/decoding roundtrip successful");
 
     // Inject transaction and mine block
@@ -101,7 +109,11 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
     // Verify alice's nonce incremented (protocol nonce)
     // This proves the transaction was successfully mined and executed
     let alice_nonce_after = provider.get_transaction_count(alice_addr).await?;
-    assert_eq!(alice_nonce_after, nonce + 1, "Protocol nonce should increment");
+    assert_eq!(
+        alice_nonce_after,
+        nonce + 1,
+        "Protocol nonce should increment"
+    );
 
     Ok(())
 }

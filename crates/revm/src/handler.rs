@@ -22,8 +22,7 @@ use reth_evm::{
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    NONCE_PRECOMPILE_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
 <<<<<<< HEAD
         EvmStorageProvider, nonce,
@@ -247,8 +246,8 @@ where
         restore_tx_env(evm, original_kind, original_value, original_data, gas_limit);
 
         // Fix gas accounting for the entire batch
-        let mut result = final_result
-            .ok_or_else(|| EVMError::Custom("No calls executed".into()))?;
+        let mut result =
+            final_result.ok_or_else(|| EVMError::Custom("No calls executed".into()))?;
 
         let total_gas_used = gas_limit - remaining_gas;
         let gas = result.gas_mut();
@@ -306,7 +305,11 @@ where
 
         if tx_type == AA_TX_TYPE_ID {
             // AA transaction - use batch execution with calls field
-            let calls = evm.ctx().tx().aa_calls.clone()
+            let calls = evm
+                .ctx()
+                .tx()
+                .aa_calls
+                .clone()
                 .ok_or_else(|| EVMError::Custom("AA transaction missing calls field".into()))?;
 
             trace!(num_calls = calls.len(), "executing AA transaction");
@@ -410,13 +413,17 @@ where
                 let tx_nonce = tx.nonce();
                 if tx_nonce != state_nonce {
                     return Err(EVMError::Transaction(
-                        TempoInvalidTransaction::EthInvalidTransaction(
-                            if tx_nonce > state_nonce {
-                                InvalidTransaction::NonceTooHigh { tx: tx_nonce, state: state_nonce }
-                            } else {
-                                InvalidTransaction::NonceTooLow { tx: tx_nonce, state: state_nonce }
+                        TempoInvalidTransaction::EthInvalidTransaction(if tx_nonce > state_nonce {
+                            InvalidTransaction::NonceTooHigh {
+                                tx: tx_nonce,
+                                state: state_nonce,
                             }
-                        ),
+                        } else {
+                            InvalidTransaction::NonceTooLow {
+                                tx: tx_nonce,
+                                state: state_nonce,
+                            }
+                        }),
                     ));
                 }
             }
@@ -454,7 +461,13 @@ where
                         let _ = caller_account;
 
                         // Increment using EvmStorageProvider (same pattern as FeeManager)
-                        increment_2d_nonce(journal, &context.block, chain_id, caller_addr, nonce_key)?;
+                        increment_2d_nonce(
+                            journal,
+                            &context.block,
+                            chain_id,
+                            caller_addr,
+                            nonce_key,
+                        )?;
                     }
                 }
             } else {

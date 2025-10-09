@@ -1,18 +1,13 @@
-use super::account_abstraction::{TxAA, AA_TX_TYPE_ID};
 use super::aa_signature::AASignature;
-use alloy_consensus::{
-    transaction::TxHashRef,
-    Transaction,
-};
+use super::account_abstraction::{AA_TX_TYPE_ID, TxAA};
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eips::{
+    Decodable2718, Encodable2718, Typed2718,
     eip2718::{Eip2718Error, Eip2718Result},
     eip2930::AccessList,
     eip7702::SignedAuthorization,
-    Decodable2718,
-    Encodable2718,
-    Typed2718,
 };
-use alloy_primitives::{Bytes, TxKind, B256, U256};
+use alloy_primitives::{B256, Bytes, TxKind, U256};
 use alloy_rlp::{BufMut, Encodable};
 use core::{
     fmt::Debug,
@@ -44,13 +39,21 @@ impl AASigned {
         let value = OnceLock::new();
         #[allow(clippy::useless_conversion)]
         value.get_or_init(|| hash.into());
-        Self { tx, signature, hash: value }
+        Self {
+            tx,
+            signature,
+            hash: value,
+        }
     }
 
     /// Instantiate from a transaction and signature without computing the hash.
     /// Does not verify the signature.
     pub const fn new_unhashed(tx: TxAA, signature: AASignature) -> Self {
-        Self { tx, signature, hash: OnceLock::new() }
+        Self {
+            tx,
+            signature,
+            hash: OnceLock::new(),
+        }
     }
 
     /// Returns a reference to the transaction.
@@ -98,7 +101,11 @@ impl AASigned {
         let sig_bytes = self.signature.to_bytes();
         let payload_length = self.tx.rlp_encoded_fields_length() + Encodable::length(&sig_bytes);
 
-        alloy_rlp::Header { list: true, payload_length }.encode(out);
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(out);
 
         // Encode transaction fields
         self.tx.rlp_encode_fields(out);
@@ -124,8 +131,14 @@ impl AASigned {
     /// Get the length of the transaction when RLP encoded.
     pub fn rlp_encoded_length(&self) -> usize {
         let sig_length = self.signature.length();
-        let payload_length = self.tx.rlp_encoded_fields_length() + alloy_rlp::length_of_length(sig_length) + sig_length;
-        alloy_rlp::Header { list: true, payload_length }.length_with_payload()
+        let payload_length = self.tx.rlp_encoded_fields_length()
+            + alloy_rlp::length_of_length(sig_length)
+            + sig_length;
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .length_with_payload()
     }
 
     /// RLP encode the signed transaction (without type byte).
@@ -152,7 +165,11 @@ impl AASigned {
     /// Network encode the signed transaction (wrapped in outer RLP header).
     pub fn network_encode(&self, out: &mut dyn BufMut) {
         let inner_length = self.eip2718_encoded_length();
-        alloy_rlp::Header { list: false, payload_length: inner_length }.encode(out);
+        alloy_rlp::Header {
+            list: false,
+            payload_length: inner_length,
+        }
+        .encode(out);
         self.encode_inner(out);
     }
 
@@ -188,7 +205,9 @@ impl AASigned {
     pub fn eip2718_decode(buf: &mut &[u8]) -> Result<Self, alloy_eips::eip2718::Eip2718Error> {
         // Decode type byte
         if buf.is_empty() {
-            return Err(alloy_eips::eip2718::Eip2718Error::RlpError(alloy_rlp::Error::InputTooShort));
+            return Err(alloy_eips::eip2718::Eip2718Error::RlpError(
+                alloy_rlp::Error::InputTooShort,
+            ));
         }
         let tx_type = buf[0];
         if tx_type != AA_TX_TYPE_ID {
@@ -202,11 +221,11 @@ impl AASigned {
     /// Network decode the signed transaction (unwraps outer RLP header then decodes EIP-2718).
     pub fn network_decode(buf: &mut &[u8]) -> Result<Self, alloy_eips::eip2718::Eip2718Error> {
         // Decode outer RLP header
-        let header = alloy_rlp::Header::decode(buf)
-            .map_err(alloy_eips::eip2718::Eip2718Error::RlpError)?;
+        let header =
+            alloy_rlp::Header::decode(buf).map_err(alloy_eips::eip2718::Eip2718Error::RlpError)?;
         if header.list {
             return Err(alloy_eips::eip2718::Eip2718Error::RlpError(
-                alloy_rlp::Error::UnexpectedList
+                alloy_rlp::Error::UnexpectedList,
             ));
         }
 
@@ -279,7 +298,11 @@ impl Transaction for AASigned {
     #[inline]
     fn kind(&self) -> TxKind {
         // Return first call's `to` or Create if empty
-        self.tx.calls.first().map(|c| c.to).unwrap_or(TxKind::Create)
+        self.tx
+            .calls
+            .first()
+            .map(|c| c.to)
+            .unwrap_or(TxKind::Create)
     }
 
     #[inline]
@@ -290,14 +313,21 @@ impl Transaction for AASigned {
     #[inline]
     fn value(&self) -> U256 {
         // Return sum of all call values
-        self.tx.calls.iter().fold(U256::ZERO, |acc, call| acc + call.value)
+        self.tx
+            .calls
+            .iter()
+            .fold(U256::ZERO, |acc, call| acc + call.value)
     }
 
     #[inline]
     fn input(&self) -> &Bytes {
         // Return first call's input or empty
         static EMPTY_BYTES: Bytes = Bytes::new();
-        self.tx.calls.first().map(|c| &c.input).unwrap_or(&EMPTY_BYTES)
+        self.tx
+            .calls
+            .first()
+            .map(|c| &c.input)
+            .unwrap_or(&EMPTY_BYTES)
     }
 
     #[inline]

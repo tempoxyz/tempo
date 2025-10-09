@@ -1,8 +1,7 @@
 use super::account_abstraction::{
-    SignatureType, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
-    MAX_WEBAUTHN_SIGNATURE_LENGTH,
+    MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
-use alloy_primitives::{Address, Bytes, Signature, B256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
 
 /// AA transaction signature supporting multiple signature schemes
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -36,19 +35,17 @@ impl AASignature {
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         match data.len() {
             SECP256K1_SIGNATURE_LENGTH => {
-                let sig = Signature::try_from(data)
-                    .map_err(|_| "Failed to parse secp256k1 signature")?;
+                let sig =
+                    Signature::try_from(data).map_err(|_| "Failed to parse secp256k1 signature")?;
                 Ok(Self::Secp256k1(sig))
             }
-            P256_SIGNATURE_LENGTH => {
-                Ok(Self::P256 {
-                    r: B256::from_slice(&data[0..32]),
-                    s: B256::from_slice(&data[32..64]),
-                    pub_key_x: B256::from_slice(&data[64..96]),
-                    pub_key_y: B256::from_slice(&data[96..128]),
-                    pre_hash: data[128] != 0,
-                })
-            }
+            P256_SIGNATURE_LENGTH => Ok(Self::P256 {
+                r: B256::from_slice(&data[0..32]),
+                s: B256::from_slice(&data[32..64]),
+                pub_key_x: B256::from_slice(&data[64..96]),
+                pub_key_y: B256::from_slice(&data[96..128]),
+                pre_hash: data[128] != 0,
+            }),
             len if len > P256_SIGNATURE_LENGTH && len <= MAX_WEBAUTHN_SIGNATURE_LENGTH => {
                 Ok(Self::WebAuthn {
                     webauthn_data: Bytes::copy_from_slice(&data[..len - 128]),
@@ -72,7 +69,13 @@ impl AASignature {
                 bytes.push(27 + sig.v() as u8);
                 Bytes::from(bytes)
             }
-            Self::P256 { r, s, pub_key_x, pub_key_y, pre_hash } => {
+            Self::P256 {
+                r,
+                s,
+                pub_key_x,
+                pub_key_y,
+                pre_hash,
+            } => {
                 let mut bytes = Vec::with_capacity(129);
                 bytes.extend_from_slice(r.as_slice());
                 bytes.extend_from_slice(s.as_slice());
@@ -81,7 +84,13 @@ impl AASignature {
                 bytes.push(if *pre_hash { 1 } else { 0 });
                 Bytes::from(bytes)
             }
-            Self::WebAuthn { webauthn_data, r, s, pub_key_x, pub_key_y } => {
+            Self::WebAuthn {
+                webauthn_data,
+                r,
+                s,
+                pub_key_x,
+                pub_key_y,
+            } => {
                 let mut bytes = Vec::with_capacity(webauthn_data.len() + 128);
                 bytes.extend_from_slice(webauthn_data);
                 bytes.extend_from_slice(r.as_slice());
@@ -117,14 +126,23 @@ impl AASignature {
     /// - secp256k1: Uses standard ecrecover (signature verification + address recovery)
     /// - P256: Verifies P256 signature then derives address from public key
     /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
-    pub fn recover_signer(&self, sig_hash: &B256) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+    pub fn recover_signer(
+        &self,
+        sig_hash: &B256,
+    ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
         match self {
             Self::Secp256k1(sig) => {
                 // Standard secp256k1 recovery using alloy's built-in methods
                 // This simultaneously verifies the signature AND recovers the address
                 Ok(sig.recover_address_from_prehash(sig_hash)?)
             }
-            Self::P256 { r, s, pub_key_x, pub_key_y, pre_hash } => {
+            Self::P256 {
+                r,
+                s,
+                pub_key_x,
+                pub_key_y,
+                pre_hash,
+            } => {
                 // Prepare message hash for verification
                 let message_hash = if *pre_hash {
                     // Some P256 implementations (like Web Crypto) require pre-hashing
@@ -144,12 +162,19 @@ impl AASignature {
                     pub_key_x.as_slice(),
                     pub_key_y.as_slice(),
                     &message_hash,
-                ).map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                )
+                .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Derive and return address
                 Ok(derive_p256_address(pub_key_x, pub_key_y))
             }
-            Self::WebAuthn { webauthn_data, r, s, pub_key_x, pub_key_y } => {
+            Self::WebAuthn {
+                webauthn_data,
+                r,
+                s,
+                pub_key_x,
+                pub_key_y,
+            } => {
                 // Parse and verify WebAuthn data, compute challenge hash
                 let message_hash = verify_webauthn_data_internal(webauthn_data, sig_hash)
                     .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
@@ -161,7 +186,8 @@ impl AASignature {
                     pub_key_x.as_slice(),
                     pub_key_y.as_slice(),
                     &message_hash,
-                ).map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                )
+                .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Derive and return address
                 Ok(derive_p256_address(pub_key_x, pub_key_y))
@@ -378,7 +404,7 @@ fn base64_url_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{address, hex, Signature as AlloySignature};
+    use alloy_primitives::{Signature as AlloySignature, address, hex};
 
     #[test]
     fn test_base64_url_encode() {
@@ -450,7 +476,10 @@ mod tests {
             pub_key_y.as_slice(),
             &message_hash,
         );
-        assert!(result.is_err(), "Invalid signature should fail verification");
+        assert!(
+            result.is_err(),
+            "Invalid signature should fail verification"
+        );
     }
 
     #[test]
@@ -488,7 +517,10 @@ mod tests {
             pub_key_y.as_slice(),
             &message_hash,
         );
-        assert!(result.is_ok(), "Valid P256 signature should verify successfully");
+        assert!(
+            result.is_ok(),
+            "Valid P256 signature should verify successfully"
+        );
     }
 
     #[test]
@@ -589,7 +621,10 @@ mod tests {
         webauthn_data.extend_from_slice(client_data.as_bytes());
 
         let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
-        assert!(result.is_ok(), "Valid WebAuthn data should verify successfully");
+        assert!(
+            result.is_ok(),
+            "Valid WebAuthn data should verify successfully"
+        );
 
         // Verify the computed message hash is correct
         let message_hash = result.unwrap();
@@ -654,7 +689,10 @@ mod tests {
         let addr1 = derive_p256_address(&pub_key_x1, &pub_key_y1);
         let addr2 = derive_p256_address(&pub_key_x2, &pub_key_y2);
 
-        assert_ne!(addr1, addr2, "Different keys should produce different addresses");
+        assert_ne!(
+            addr1, addr2,
+            "Different keys should produce different addresses"
+        );
     }
 
     #[test]
@@ -702,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_aa_signature_roundtrip() {
-        use super::{SECP256K1_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH};
+        use super::{P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH};
 
         // Test secp256k1
         let sig1_bytes = vec![1u8; SECP256K1_SIGNATURE_LENGTH];

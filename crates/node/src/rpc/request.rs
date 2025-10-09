@@ -274,7 +274,7 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
                 inner: TransactionRequest::from_transaction(tx),
             },
             TempoTypedTransaction::AA(tx) => Self {
-                fee_token: tx.fee_token,
+                fee_token: tx.tx().fee_token,
                 inner: TransactionRequest::from_transaction(tx),
             },
         }

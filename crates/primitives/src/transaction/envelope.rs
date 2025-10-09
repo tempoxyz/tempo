@@ -1,10 +1,7 @@
-
-use super::fee_token::TxFeeToken;
 use super::aa_signature::AASignature;
 use super::aa_signed::AASigned;
 use super::account_abstraction::TxAA;
-use crate::transaction::UnsupportedTransactionTypeEip4844;
-
+use super::fee_token::TxFeeToken;
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
     TypedTransaction,
@@ -215,7 +212,9 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::FeeToken(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
             }
-            Self::AA(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx),
+            Self::AA(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
+            }
         }
     }
 }
@@ -314,7 +313,7 @@ impl From<TempoTxEnvelope> for TempoTypedTransaction {
             TempoTxEnvelope::Eip1559(tx) => Self::Eip1559(tx.into_parts().0),
             TempoTxEnvelope::Eip7702(tx) => Self::Eip7702(tx.into_parts().0),
             TempoTxEnvelope::FeeToken(tx) => Self::FeeToken(tx.into_parts().0),
-            TempoTxEnvelope::AA(tx) => Self::AA(tx.into_parts().0),
+            TempoTxEnvelope::AA(tx) => Self::AA(tx), // AA keeps the signed wrapper due to macro generation
         }
     }
 }
@@ -322,6 +321,12 @@ impl From<TempoTxEnvelope> for TempoTypedTransaction {
 impl From<AASigned> for TempoTxEnvelope {
     fn from(value: AASigned) -> Self {
         Self::AA(value)
+    }
+}
+
+impl From<TxFeeToken> for TempoTypedTransaction {
+    fn from(value: TxFeeToken) -> Self {
+        Self::FeeToken(value)
     }
 }
 
@@ -449,7 +454,7 @@ mod codec {
                 Self::AA(_tx) => {
                     // TODO: Will this work?
                     &TEMPO_SYSTEM_TX_SIGNATURE
-                },
+                }
                 Self::FeeToken(tx) => tx.signature(),
             }
         }

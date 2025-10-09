@@ -36,7 +36,6 @@ pub struct TempoTxEnv {
     pub fee_payer: Option<Option<Address>>,
 
     // Account Abstraction fields (only set for AA transactions)
-
     /// Nonce key for 2D nonce system (None for non-AA transactions)
     pub nonce_key: Option<u64>,
 
@@ -266,7 +265,11 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
         let (to, value, input) = if let Some(first_call) = calls.first() {
             (first_call.to, first_call.value, first_call.input.clone())
         } else {
-            (alloy_primitives::TxKind::Create, alloy_primitives::U256::ZERO, alloy_primitives::Bytes::new())
+            (
+                alloy_primitives::TxKind::Create,
+                alloy_primitives::U256::ZERO,
+                alloy_primitives::Bytes::new(),
+            )
         };
 
         Self {
@@ -278,7 +281,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 kind: to,
                 value,
                 data: input,
-                nonce: *nonce_sequence,  // AA: nonce_sequence maps to TxEnv.nonce
+                nonce: *nonce_sequence, // AA: nonce_sequence maps to TxEnv.nonce
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
                 access_list: access_list.clone(),

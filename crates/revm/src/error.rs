@@ -54,11 +54,12 @@ pub enum TempoInvalidTransaction {
     InvalidFeePayerSignature,
 
     // Account Abstraction (AA) transaction errors
-
     /// Transaction cannot be included before validAfter timestamp.
     ///
     /// AA transactions can specify a validAfter field to restrict when they can be included.
-    #[error("transaction not valid yet: current block timestamp {current} < validAfter {valid_after}")]
+    #[error(
+        "transaction not valid yet: current block timestamp {current} < validAfter {valid_after}"
+    )]
     ValidAfter {
         /// The current block timestamp.
         current: u64,
@@ -109,7 +110,9 @@ pub enum TempoInvalidTransaction {
     ///
     /// AA transactions have variable intrinsic gas costs based on signature type and nonce usage.
     /// This error occurs when the gas_limit is less than the calculated intrinsic gas.
-    #[error("insufficient gas for intrinsic cost: gas_limit {gas_limit} < intrinsic_gas {intrinsic_gas}")]
+    #[error(
+        "insufficient gas for intrinsic cost: gas_limit {gas_limit} < intrinsic_gas {intrinsic_gas}"
+    )]
     InsufficientGasForIntrinsicCost {
         /// The transaction's gas limit.
         gas_limit: u64,
