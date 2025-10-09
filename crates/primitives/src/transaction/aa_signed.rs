@@ -412,6 +412,15 @@ impl Decodable2718 for AASigned {
     }
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for AASigned {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let tx = TxAA::arbitrary(u)?;
+        let signature = AASignature::arbitrary(u)?;
+        Ok(Self::new_unhashed(tx, signature))
+    }
+}
+
 #[cfg(feature = "serde")]
 mod serde_impl {
     use super::*;

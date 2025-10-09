@@ -24,6 +24,7 @@ pub enum SignatureType {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Call {
     pub to: TxKind,
     pub value: U256,
@@ -79,6 +80,7 @@ impl Decodable for Call {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[doc(alias = "AATransaction", alias = "TransactionAA")]
 pub struct TxAA {
     /// EIP-155: Simple replay attack protection
@@ -689,10 +691,18 @@ mod tests {
 
     #[test]
     fn test_tx_aa_validation() {
+        // Create a dummy call to satisfy validation
+        let dummy_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
         // Valid: valid_before > valid_after
         let tx1 = TxAA {
             valid_before: 100,
             valid_after: Some(50),
+            calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx1.validate().is_ok());
@@ -701,6 +711,7 @@ mod tests {
         let tx2 = TxAA {
             valid_before: 50,
             valid_after: Some(100),
+            calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx2.validate().is_err());
@@ -709,6 +720,7 @@ mod tests {
         let tx3 = TxAA {
             valid_before: 100,
             valid_after: Some(100),
+            calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx3.validate().is_err());
@@ -717,9 +729,16 @@ mod tests {
         let tx4 = TxAA {
             valid_before: 100,
             valid_after: None,
+            calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx4.validate().is_ok());
+
+        // Invalid: empty calls
+        let tx5 = TxAA {
+            ..Default::default()
+        };
+        assert!(tx5.validate().is_err());
     }
 
     #[test]
@@ -852,10 +871,18 @@ mod tests {
     fn test_nonce_system() {
         use alloy_consensus::Transaction;
 
+        // Create a dummy call to satisfy validation
+        let dummy_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
         // Protocol nonce (key 0)
         let tx1 = TxAA {
             nonce_key: 0,
             nonce_sequence: 1,
+            calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx1.validate().is_ok());
@@ -865,6 +892,7 @@ mod tests {
         let tx2 = TxAA {
             nonce_key: 1,
             nonce_sequence: 0,
+            calls: vec![dummy_call],
             ..Default::default()
         };
         assert!(tx2.validate().is_ok());
@@ -903,9 +931,17 @@ mod tests {
     fn test_effective_gas_price() {
         use alloy_consensus::Transaction;
 
+        // Create a dummy call to satisfy validation
+        let dummy_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
         let tx = TxAA {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
+            calls: vec![dummy_call],
             ..Default::default()
         };
 

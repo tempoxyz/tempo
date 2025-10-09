@@ -6,6 +6,7 @@ use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
 /// AA transaction signature supporting multiple signature schemes
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum AASignature {
     /// Standard secp256k1 ECDSA signature (65 bytes: r, s, v)
     Secp256k1(Signature),
@@ -343,7 +344,8 @@ fn verify_webauthn_data_internal(
     }
 
     // Verify challenge matches tx_hash (Base64URL encoded)
-    let challenge_b64url = base64_url_encode(tx_hash.as_slice());
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    let challenge_b64url = URL_SAFE_NO_PAD.encode(tx_hash.as_slice());
     let challenge_property = format!("\"challenge\":\"{}\"", challenge_b64url);
     if !json_str.contains(&challenge_property) {
         return Err("clientDataJSON challenge does not match transaction hash");
@@ -363,79 +365,10 @@ fn verify_webauthn_data_internal(
     Ok(B256::from_slice(&message_hash))
 }
 
-/// Base64URL encode (without padding) as required by WebAuthn spec
-fn base64_url_encode(data: &[u8]) -> String {
-    const BASE64URL_CHARS: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-    let mut result = String::new();
-    let mut i = 0;
-
-    while i + 2 < data.len() {
-        let b1 = data[i];
-        let b2 = data[i + 1];
-        let b3 = data[i + 2];
-
-        result.push(BASE64URL_CHARS[(b1 >> 2) as usize] as char);
-        result.push(BASE64URL_CHARS[(((b1 & 0x03) << 4) | (b2 >> 4)) as usize] as char);
-        result.push(BASE64URL_CHARS[(((b2 & 0x0f) << 2) | (b3 >> 6)) as usize] as char);
-        result.push(BASE64URL_CHARS[(b3 & 0x3f) as usize] as char);
-
-        i += 3;
-    }
-
-    // Handle remaining bytes
-    if i < data.len() {
-        let b1 = data[i];
-        result.push(BASE64URL_CHARS[(b1 >> 2) as usize] as char);
-
-        if i + 1 < data.len() {
-            let b2 = data[i + 1];
-            result.push(BASE64URL_CHARS[(((b1 & 0x03) << 4) | (b2 >> 4)) as usize] as char);
-            result.push(BASE64URL_CHARS[((b2 & 0x0f) << 2) as usize] as char);
-        } else {
-            result.push(BASE64URL_CHARS[((b1 & 0x03) << 4) as usize] as char);
-        }
-    }
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Signature as AlloySignature, address, hex};
-
-    #[test]
-    fn test_base64_url_encode() {
-        // Test empty input
-        let result = base64_url_encode(&[]);
-        assert_eq!(result, "");
-
-        // Test single byte
-        let result = base64_url_encode(&[0x00]);
-        assert_eq!(result, "AA");
-
-        // Test two bytes
-        let result = base64_url_encode(&[0x00, 0x00]);
-        assert_eq!(result, "AAA");
-
-        // Test three bytes (complete block)
-        let result = base64_url_encode(&[0x00, 0x00, 0x00]);
-        assert_eq!(result, "AAAA");
-
-        // Test known value
-        let input = b"hello world";
-        let result = base64_url_encode(input);
-        assert_eq!(result, "aGVsbG8gd29ybGQ");
-
-        // Test that it uses URL-safe characters (- and _ instead of + and /)
-        let input = &[0xFB, 0xFF];
-        let result = base64_url_encode(input);
-        assert!(result.contains('-') || result.contains('_'));
-        assert!(!result.contains('+'));
-        assert!(!result.contains('/'));
-    }
+    use alloy_primitives::hex;
 
     #[test]
     fn test_p256_signature_verification_invalid_pubkey() {
@@ -600,6 +533,7 @@ mod tests {
 
     #[test]
     fn test_webauthn_data_verification_valid() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
         use sha2::{Digest, Sha256};
 
         // Create valid authenticatorData with UP flag
@@ -610,7 +544,7 @@ mod tests {
         let tx_hash = B256::from_slice(&[0xAA; 32]);
 
         // Encode challenge as Base64URL
-        let challenge_b64url = base64_url_encode(tx_hash.as_slice());
+        let challenge_b64url = URL_SAFE_NO_PAD.encode(tx_hash.as_slice());
 
         // Create valid clientDataJSON with matching challenge
         let client_data = format!(
