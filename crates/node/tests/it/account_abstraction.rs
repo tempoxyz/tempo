@@ -315,8 +315,10 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
-    use p256::ecdsa::{SigningKey, signature::Signer};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::{
+        ecdsa::{SigningKey, signature::Signer},
+        elliptic_curve::rand_core::OsRng,
+    };
     use sha2::{Digest, Sha256};
 
     reth_tracing::init_test_tracing();
@@ -513,8 +515,10 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use p256::ecdsa::{SigningKey, signature::Signer};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::{
+        ecdsa::{SigningKey, signature::Signer},
+        elliptic_curve::rand_core::OsRng,
+    };
     use sha2::{Digest, Sha256};
 
     reth_tracing::init_test_tracing();
@@ -879,8 +883,10 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_p256_call_batching() -> eyre::Result<()> {
-    use p256::ecdsa::{SigningKey, signature::Signer};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::{
+        ecdsa::{SigningKey, signature::Signer},
+        elliptic_curve::rand_core::OsRng,
+    };
     use sha2::{Digest, Sha256};
     use tempo_precompiles::contracts::ITIP20;
 

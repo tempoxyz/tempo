@@ -1,5 +1,7 @@
-use super::aa_signature::AASignature;
-use super::account_abstraction::{AA_TX_TYPE_ID, TxAA};
+use super::{
+    aa_signature::AASignature,
+    account_abstraction::{AA_TX_TYPE_ID, TxAA},
+};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eips::{
     Decodable2718, Encodable2718, Typed2718,

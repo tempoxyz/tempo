@@ -232,8 +232,10 @@ fn verify_p256_signature_internal(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
-    use p256::EncodedPoint;
-    use p256::ecdsa::{Signature as P256Signature, VerifyingKey, signature::Verifier};
+    use p256::{
+        EncodedPoint,
+        ecdsa::{Signature as P256Signature, VerifyingKey, signature::Verifier},
+    };
 
     // Construct uncompressed public key point (0x04 || x || y)
     let mut pub_key_bytes = [0u8; 65];
@@ -385,8 +387,7 @@ mod tests {
 
     #[test]
     fn test_p256_signature_verification_invalid_signature() {
-        use p256::ecdsa::SigningKey;
-        use p256::elliptic_curve::rand_core::OsRng;
+        use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 
         // Generate a valid key pair
         let signing_key = SigningKey::random(&mut OsRng);
@@ -417,8 +418,10 @@ mod tests {
 
     #[test]
     fn test_p256_signature_verification_valid() {
-        use p256::ecdsa::{SigningKey, signature::Signer};
-        use p256::elliptic_curve::rand_core::OsRng;
+        use p256::{
+            ecdsa::{SigningKey, signature::Signer},
+            elliptic_curve::rand_core::OsRng,
+        };
         use sha2::{Digest, Sha256};
 
         // Generate a valid key pair
