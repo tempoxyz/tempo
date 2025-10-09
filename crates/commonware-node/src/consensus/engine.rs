@@ -11,7 +11,7 @@ use commonware_broadcast::buffered;
 use commonware_consensus::{marshal, threshold_simplex};
 use commonware_cryptography::Signer as _;
 use commonware_p2p::{Blocker, Receiver, Sender};
-use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage, buffer::PoolRef};
+use commonware_runtime::{Handle, Metrics, Pacer, Spawner, Storage, buffer::PoolRef};
 use eyre::WrapErr as _;
 use futures_util::future::try_join_all;
 use rand::{CryptoRng, Rng};
@@ -84,7 +84,7 @@ pub struct Builder<
 impl<TBlocker, TContext> Builder<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
         let supervisor = Supervisor::new(
@@ -219,7 +219,7 @@ where
 pub struct Engine<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
     // XXX: alto also defines an Indexer trait (not part of commonwarexyz itself); we will
     // not define it for now.
     // TIndexer,
@@ -248,7 +248,7 @@ where
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     pub fn start(
         self,

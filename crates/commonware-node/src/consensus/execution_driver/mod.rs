@@ -10,7 +10,9 @@ use commonware_consensus::{
     threshold_simplex::types::Context,
     types::{Epoch, Round, View},
 };
-use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
+use commonware_runtime::{
+    ContextCell, FutureExt as _, Handle, Metrics, Pacer, Spawner, Storage, spawn_cell,
+};
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
@@ -63,7 +65,7 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
 
 impl<TContext> ExecutionDriverBuilder<TContext>
 where
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Builds the uninitialized execution driver.
     pub(super) fn build(self) -> eyre::Result<ExecutionDriver<TContext, Uninit>> {
@@ -114,7 +116,7 @@ impl<TContext, TState> ExecutionDriver<TContext, TState> {
 
 impl<TContext> ExecutionDriver<TContext, Uninit>
 where
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Runs the execution driver until it is externally stopped.
     async fn run_until_stopped(self) {
@@ -146,7 +148,7 @@ where
 
 impl<TContext> ExecutionDriver<TContext, Init>
 where
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Runs the initialized execution driver.
     async fn run_until_stopped(mut self) {
@@ -198,7 +200,7 @@ where
             Message::Verify(verify) => {
                 self.context.with_label("verify").spawn({
                     let inner = self.inner.clone();
-                    move |_| inner.handle_verify(verify)
+                    move |context| inner.handle_verify(verify, context)
                 });
             }
         }
@@ -274,10 +276,11 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_propose<TContext>(self, request: Propose, context: TContext) -> eyre::Result<()>
-    where
-        TContext: Clock,
-    {
+    async fn handle_propose<TContext: Pacer>(
+        self,
+        request: Propose,
+        context: TContext,
+    ) -> eyre::Result<()> {
         let Propose {
             parent,
             mut response,
@@ -345,7 +348,7 @@ impl Inner<Init> {
             parent.digest = %verify.parent.1,
         ),
     )]
-    async fn handle_verify(mut self, verify: Verify) {
+    async fn handle_verify<TContext: Pacer>(mut self, verify: Verify, context: TContext) {
         let Verify {
             parent,
             payload,
@@ -362,7 +365,7 @@ impl Inner<Init> {
                 ))
             }
 
-            res = self.clone().verify(parent, payload, round) => {
+            res = self.clone().verify(context, parent, payload, round) => {
                 res.wrap_err("block verification failed")
             }
         );
@@ -383,15 +386,12 @@ impl Inner<Init> {
         }
     }
 
-    async fn propose<TContext>(
+    async fn propose<TContext: Pacer>(
         mut self,
         context: TContext,
         parent: (View, Digest),
         round: Round,
-    ) -> eyre::Result<EthBuiltPayload<TempoPrimitives>>
-    where
-        TContext: Clock,
-    {
+    ) -> eyre::Result<EthBuiltPayload<TempoPrimitives>> {
         if let Err(error) = self
             .state
             .executor_mailbox
@@ -440,6 +440,10 @@ impl Inner<Init> {
             .execution_node
             .payload_builder_handle
             .send_new_payload(attrs)
+            .pace(
+                &context,
+                Duration::from_millis(2)..Duration::from_millis(20),
+            )
             .await
             .map_err(|_| eyre!("channel was closed before a response was returned"))
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
@@ -468,6 +472,10 @@ impl Inner<Init> {
             .execution_node
             .payload_builder_handle
             .resolve_kind(payload_id, reth_node_builder::PayloadKind::WaitForPending)
+            .pace(
+                &context,
+                Duration::from_millis(2)..Duration::from_millis(20),
+            )
             .await
             // XXX: this returns Option<Result<_, _>>; drilling into
             // resolve_kind this really seems to resolve to None if no
@@ -479,8 +487,9 @@ impl Inner<Init> {
         Ok(payload)
     }
 
-    async fn verify(
+    async fn verify<TContext: Pacer>(
         mut self,
+        context: TContext,
         parent: (View, Digest),
         payload: Digest,
         round: Round,
@@ -520,6 +529,7 @@ impl Inner<Init> {
             .wrap_err("failed getting required blocks from syncer")?;
 
         let is_good = verify_block(
+            context,
             self.execution_node
                 .add_ons_handle
                 .beacon_engine_handle
@@ -542,10 +552,10 @@ impl Inner<Uninit> {
     /// 1. reading the last finalized digest from the consensus marshaller.
     /// 2. starting the canonical chain engine and storing its handle.
     #[instrument(skip_all, err)]
-    async fn into_initialized<TContext>(mut self, context: TContext) -> eyre::Result<Inner<Init>>
-    where
-        TContext: Metrics + Spawner,
-    {
+    async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
+        mut self,
+        context: TContext,
+    ) -> eyre::Result<Inner<Init>> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
         let (finalized_consensus_height, finalized_consensus_digest) = self
@@ -600,7 +610,7 @@ impl Inner<Uninit> {
 
         context
             .with_label("executor")
-            .spawn(move |_| executor.run());
+            .spawn(move |context| executor.run(context));
 
         Ok(initialized)
     }
@@ -637,7 +647,8 @@ struct Init {
         parent.timestamp = parent.timestamp(),
     )
 )]
-async fn verify_block(
+async fn verify_block<TContext: Pacer>(
+    context: TContext,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
     parent: &Block,
@@ -662,6 +673,10 @@ async fn verify_block(
     let block = block.clone().into_inner();
     let payload_status = engine
         .new_payload(TempoExecutionData(block))
+        .pace(
+            &context,
+            Duration::from_millis(5)..Duration::from_millis(50),
+        )
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {
