@@ -53,21 +53,21 @@ pub fn run(
     }: Setup,
 ) -> String {
     let threshold = quorum(how_many);
-    let cfg = deterministic::Config::default().with_seed(seed);
+    let cfg = deterministic::Config::default()
+        .with_seed(seed)
+        .with_realtime(true);
     let executor = Runner::from(cfg);
 
-    // XXX: launch all the nodes we will need before executor.start. The
-    // deterministic runtime does not take kindly to waiting.
-    let execution_runtime = ExecutionRuntime::new(name);
-    let mut execution_nodes = Vec::with_capacity(how_many as usize);
-    for i in 0..how_many {
-        let node = execution_runtime
-            .spawn_node_blocking(&format!("node-{i}"))
-            .expect("must be able to spawn nodes on the runtime");
-        execution_nodes.push(node);
-    }
-
     executor.start(|mut context| async move {
+        let execution_runtime = ExecutionRuntime::new(name);
+        let mut execution_nodes = Vec::with_capacity(how_many as usize);
+        for i in 0..how_many {
+            let node = execution_runtime
+                .spawn_node_blocking(&format!("node-{i}"))
+                .expect("must be able to spawn nodes on the runtime");
+            execution_nodes.push(node);
+        }
+
         let (network, mut oracle) = Network::new(
             context.with_label("network"),
             simulated::Config {

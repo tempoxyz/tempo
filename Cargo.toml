@@ -243,12 +243,11 @@ vergen = "9"
 vergen-git2 = "1"
 
 [patch.crates-io]
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
-
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
