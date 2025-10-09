@@ -5,7 +5,7 @@
 
 mod metrics;
 
-use alloy_consensus::{Signed, Transaction, TxLegacy};
+use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::U256;
 use alloy_rlp::Encodable;
 use alloy_sol_types::SolCall;
@@ -154,7 +154,7 @@ where
         skip_all,
         fields(
             id = %args.config.attributes.payload_id(),
-            parent_number = %args.config.parent_header.number,
+            parent_number = %args.config.parent_header.number(),
             parent_hash = %args.config.parent_header.hash()
         )
     )]
@@ -186,7 +186,7 @@ where
             .with_bundle_update()
             .build();
 
-        let general_gas_limit = parent_header.gas_limit / TEMPO_GENERAL_GAS_DIVISOR;
+        let general_gas_limit = parent_header.gas_limit() / TEMPO_GENERAL_GAS_DIVISOR;
 
         let mut builder = self
             .evm_config
@@ -198,7 +198,7 @@ where
                         timestamp: attributes.timestamp(),
                         suggested_fee_recipient: attributes.suggested_fee_recipient(),
                         prev_randao: attributes.prev_randao(),
-                        gas_limit: parent_header.gas_limit,
+                        gas_limit: parent_header.gas_limit(),
                         parent_beacon_block_root: attributes.parent_beacon_block_root(),
                         withdrawals: Some(attributes.withdrawals().clone()),
                     },

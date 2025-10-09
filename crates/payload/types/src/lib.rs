@@ -10,7 +10,7 @@ pub use crate::attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{ExecutionPayload, PayloadBuilderAttributes, PayloadTypes};
-use reth_primitives_traits::SealedBlock;
+use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{Block, TempoPrimitives};
 
@@ -25,7 +25,7 @@ pub struct TempoExecutionData(pub SealedBlock<Block>);
 
 impl ExecutionPayload for TempoExecutionData {
     fn parent_hash(&self) -> alloy_primitives::B256 {
-        self.0.parent_hash
+        self.0.parent_hash()
     }
 
     fn block_hash(&self) -> alloy_primitives::B256 {
@@ -33,7 +33,7 @@ impl ExecutionPayload for TempoExecutionData {
     }
 
     fn block_number(&self) -> u64 {
-        self.0.number
+        self.0.number()
     }
 
     fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
@@ -45,15 +45,15 @@ impl ExecutionPayload for TempoExecutionData {
     }
 
     fn parent_beacon_block_root(&self) -> Option<alloy_primitives::B256> {
-        self.0.parent_beacon_block_root
+        self.0.parent_beacon_block_root()
     }
 
     fn timestamp(&self) -> u64 {
-        self.0.timestamp
+        self.0.timestamp()
     }
 
     fn gas_used(&self) -> u64 {
-        self.0.gas_used
+        self.0.gas_used()
     }
 }
 

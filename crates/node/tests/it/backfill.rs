@@ -7,6 +7,7 @@ use alloy_eips::BlockNumberOrTag;
 use alloy_rpc_types_engine::ForkchoiceState;
 use reth_e2e_test_utils::{transaction::TransactionTestContext, wallet::Wallet};
 use reth_node_api::EngineApiMessageVersion;
+use reth_primitives_traits::AlloyBlockHeader as _;
 
 /// Test that verifies backfill sync works correctly.
 ///
@@ -73,7 +74,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
 
         // Verify the transaction was included
         let block_hash = payload.block().hash();
-        let block_number = payload.block().number;
+        let block_number = payload.block().number();
         node1
             .assert_new_block(tx_hash, block_hash, block_number)
             .await?;

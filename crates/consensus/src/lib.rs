@@ -65,7 +65,7 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
         if let Some(blob_params) = self
             .inner
             .chain_spec()
-            .blob_params_at_timestamp(header.timestamp)
+            .blob_params_at_timestamp(header.timestamp())
         {
             validate_against_parent_4844(header.header(), parent.header(), blob_params)?;
         }

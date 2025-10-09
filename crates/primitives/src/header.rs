@@ -8,19 +8,7 @@ use reth_primitives_traits::{InMemorySize, serde_bincode_compat::RlpBincode};
 ///
 /// Encoded as `rlp([inner, general_gas_limit])` meaning that any new
 /// fields added to the inner header will only affect the first list element.
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    Default,
-    derive_more::Deref,
-    derive_more::DerefMut,
-    RlpEncodable,
-    RlpDecodable,
-    Compact,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable, Compact)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -31,8 +19,6 @@ pub struct TempoHeader {
     pub general_gas_limit: u64,
 
     /// Inner Ethereum [`Header`].
-    #[deref]
-    #[deref_mut]
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub inner: Header,
 }

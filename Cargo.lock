@@ -11595,7 +11595,6 @@ dependencies = [
  "alloy-rpc-types-eth",
  "alloy-serde",
  "arbitrary",
- "derive_more",
  "modular-bitfield",
  "proptest",
  "proptest-arbitrary-interop",
