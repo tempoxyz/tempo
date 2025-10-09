@@ -7,3 +7,5 @@ scripts/data
 .idea
 **/.env
 **/.envrc
+
+.claude/
