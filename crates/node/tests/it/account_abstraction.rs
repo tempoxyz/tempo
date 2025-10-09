@@ -18,6 +18,62 @@ use tempo_primitives::{
     },
 };
 
+/// Helper function to fund an address with fee tokens
+async fn fund_address_with_fee_tokens(
+    setup: &mut crate::utils::SingleNodeSetup,
+    provider: &impl Provider,
+    funder_signer: &impl SignerSync,
+    funder_addr: Address,
+    recipient: Address,
+    amount: U256,
+    chain_id: u64,
+) -> eyre::Result<()> {
+    let transfer_calldata = transferCall {
+        to: recipient,
+        amount,
+    }
+    .abi_encode();
+
+    let funding_tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 100_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transfer_calldata.into(),
+        }],
+        nonce_key: 0,
+        nonce_sequence: provider.get_transaction_count(funder_addr).await?,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: 0,
+        valid_after: None,
+        access_list: Default::default(),
+    };
+
+    // Sign and send the funding transaction
+    let sig_hash = funding_tx.signature_hash();
+    let signature = funder_signer.sign_hash_sync(&sig_hash)?;
+    let aa_signature = AASignature::Secp256k1(signature);
+    let signed_funding_tx = AASigned::new_unhashed(funding_tx, aa_signature);
+    let funding_envelope: TempoTxEnvelope = signed_funding_tx.into();
+    let mut encoded_funding = Vec::new();
+    funding_envelope.encode_2718(&mut encoded_funding);
+
+    setup.node.rpc.inject_tx(encoded_funding.into()).await?;
+    let funding_payload = setup.node.advance_block().await?;
+    println!(
+        "✓ Funded {} with {} tokens in block {}",
+        recipient,
+        amount,
+        funding_payload.block().number
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -304,52 +360,20 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     // Get chain ID
     let chain_id = provider.get_chain_id().await?;
 
-    // First, fund the WebAuthn signer with fee tokens using an AA transaction from the funder
+    // Fund the WebAuthn signer with fee tokens
     println!("\nFunding WebAuthn signer with fee tokens...");
+    let transfer_amount = U256::from(10_000_000_000_000_000_000u64); // 10 tokens
 
-    // The funder should transfer DEFAULT_FEE_TOKEN to the WebAuthn signer
-    // Encode ERC20 transfer call
-    let transfer_amount = U256::from(10_000_000_000_000_000_000u64); // 10 tokens (assuming 18 decimals)
-    let transfer_calldata = transferCall {
-        to: signer_addr,
-        amount: transfer_amount,
-    }
-    .abi_encode();
-
-    let funding_tx = TxAA {
+    fund_address_with_fee_tokens(
+        &mut setup,
+        &provider,
+        &funder_signer,
+        funder_addr,
+        signer_addr,
+        transfer_amount,
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
-        calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
-            value: U256::ZERO,
-            input: transfer_calldata.into(),
-        }],
-        nonce_key: 0,
-        nonce_sequence: provider.get_transaction_count(funder_addr).await?,
-        fee_token: None, // Uses DEFAULT_FEE_TOKEN
-        fee_payer_signature: None,
-        valid_before: 0,
-        valid_after: None,
-        access_list: Default::default(),
-    };
-
-    // Sign and send the funding transaction
-    let sig_hash = funding_tx.signature_hash();
-    let signature = funder_signer.sign_hash_sync(&sig_hash)?;
-    let aa_signature = AASignature::Secp256k1(signature);
-    let signed_funding_tx = AASigned::new_unhashed(funding_tx, aa_signature);
-    let funding_envelope: TempoTxEnvelope = signed_funding_tx.into();
-    let mut encoded_funding = Vec::new();
-    funding_envelope.encode_2718(&mut encoded_funding);
-
-    setup.node.rpc.inject_tx(encoded_funding.into()).await?;
-    let funding_payload = setup.node.advance_block().await?;
-    println!(
-        "✓ Funding transaction mined in block {}",
-        funding_payload.block().number
-    );
+    )
+    .await?;
 
     // Create recipient address for the actual test
     let recipient = Address::random();
@@ -786,43 +810,16 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     // Fund the test signer
     let transfer_amount = U256::from(10_000_000_000_000_000_000u64);
-    let transfer_calldata = transferCall {
-        to: test_signer_addr,
-        amount: transfer_amount,
-    }
-    .abi_encode();
-
-    let funding_tx = TxAA {
+    fund_address_with_fee_tokens(
+        &mut setup,
+        &provider,
+        &funder_signer,
+        funder_addr,
+        test_signer_addr,
+        transfer_amount,
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
-        calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
-            value: U256::ZERO,
-            input: transfer_calldata.into(),
-        }],
-        nonce_key: 0,
-        nonce_sequence: provider.get_transaction_count(funder_addr).await?,
-        fee_token: None,
-        fee_payer_signature: None,
-        valid_before: 0,
-        valid_after: None,
-        access_list: Default::default(),
-    };
-
-    // Sign and send the funding transaction
-    let sig_hash = funding_tx.signature_hash();
-    let signature = funder_signer.sign_hash_sync(&sig_hash)?;
-    let aa_signature = AASignature::Secp256k1(signature);
-    let signed_funding_tx = AASigned::new_unhashed(funding_tx, aa_signature);
-    let funding_envelope: TempoTxEnvelope = signed_funding_tx.into();
-    let mut encoded_funding = Vec::new();
-    funding_envelope.encode_2718(&mut encoded_funding);
-
-    setup.node.rpc.inject_tx(encoded_funding.into()).await?;
-    let _funding_payload = setup.node.advance_block().await?;
-    println!("✓ Test signer funded with fee tokens");
+    )
+    .await?;
 
     // Now try to inject a transaction with wrong signature
     let bad_tx = create_test_tx(0);
@@ -877,12 +874,278 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Transaction with invalid WebAuthn signature correctly rejected");
 
-    println!("\n✅ All WebAuthn Negative Test Cases Passed!");
-    println!("  • Wrong public key: signature verification failed ✓");
-    println!("  • Wrong private key: signature verification failed ✓");
-    println!("  • Wrong challenge: WebAuthn validation failed ✓");
-    println!("  • Wrong authenticator data: WebAuthn validation failed ✓");
-    println!("  • Invalid signature transaction: injection rejected ✓");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_p256_call_batching() -> eyre::Result<()> {
+    use p256::ecdsa::{SigningKey, signature::Signer};
+    use p256::elliptic_curve::rand_core::OsRng;
+    use sha2::{Digest, Sha256};
+    use tempo_precompiles::contracts::ITIP20;
+
+    reth_tracing::init_test_tracing();
+
+    // Setup test node with direct access
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
+
+    let http_url = setup.node.rpc_url();
+
+    // Generate a P256 key pair for the batch sender
+    let signing_key = SigningKey::random(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    // Extract public key coordinates
+    let encoded_point = verifying_key.to_encoded_point(false);
+    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
+    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+
+    // Derive the P256 signer's address
+    let signer_addr =
+        tempo_primitives::transaction::aa_signature::derive_p256_address(&pub_key_x, &pub_key_y);
+
+    println!("\n=== Testing P256 Call Batching ===\n");
+    println!("P256 signer address: {}", signer_addr);
+
+    // Use TEST_MNEMONIC account to fund the P256 signer
+    let funder_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let funder_addr = funder_signer.address();
+
+    // Create provider with funder's wallet
+    let funder_wallet = EthereumWallet::from(funder_signer.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(funder_wallet)
+        .connect_http(http_url.clone());
+
+    // Get chain ID
+    let chain_id = provider.get_chain_id().await?;
+
+    // Fund the P256 signer with plenty of fee tokens for batching
+    println!("Funding P256 signer with fee tokens...");
+    let initial_funding_amount = U256::from(100u64) * U256::from(10).pow(U256::from(18)); // 100 tokens with 18 decimals
+
+    fund_address_with_fee_tokens(
+        &mut setup,
+        &provider,
+        &funder_signer,
+        funder_addr,
+        signer_addr,
+        initial_funding_amount,
+        chain_id,
+    )
+    .await?;
+
+    // Create multiple recipient addresses for batch transfers
+    let num_recipients = 5;
+    let mut recipients = Vec::new();
+    for i in 0..num_recipients {
+        recipients.push((Address::random(), i + 1)); // Each gets different amount
+    }
+
+    println!(
+        "\nPreparing batch transfer to {} recipients:",
+        num_recipients
+    );
+    for (i, (addr, multiplier)) in recipients.iter().enumerate() {
+        println!(
+            "  Recipient {}: {} (amount: {} tokens)",
+            i + 1,
+            addr,
+            multiplier
+        );
+    }
+
+    // Create batch calls - transfer different amounts to each recipient
+    let transfer_base_amount = U256::from(1_000_000_000_000_000_000u64); // 1 token base
+    let mut calls = Vec::new();
+
+    for (recipient, multiplier) in &recipients {
+        let amount = transfer_base_amount * U256::from(*multiplier);
+        let calldata = transferCall {
+            to: *recipient,
+            amount,
+        }
+        .abi_encode();
+
+        calls.push(Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: calldata.into(),
+        });
+    }
+
+    println!(
+        "\nCreating AA transaction with {} batched calls",
+        calls.len()
+    );
+
+    // Create AA transaction with batched calls and P256 signature
+    let batch_tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 500_000, // Higher gas limit for multiple calls
+        calls,              // Multiple batched calls
+        nonce_key: 0,
+        nonce_sequence: 0, // First transaction from P256 signer
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: 0,
+        valid_after: None,
+        access_list: Default::default(),
+    };
+
+    // Sign with P256
+    let batch_sig_hash = batch_tx.signature_hash();
+    println!("Batch transaction signature hash: {}", batch_sig_hash);
+
+    // For P256, we need to optionally pre-hash the message
+    // Let's test with pre_hash = true (common for Web Crypto API)
+    let mut hasher = Sha256::new();
+    hasher.update(batch_sig_hash.as_slice());
+    let pre_hashed = hasher.finalize();
+
+    // Sign the pre-hashed message
+    let p256_signature: p256::ecdsa::Signature = signing_key.sign(&pre_hashed);
+    let sig_bytes = p256_signature.to_bytes();
+
+    // Create P256 AA signature
+    let aa_batch_signature = AASignature::P256 {
+        r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
+        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        pub_key_x,
+        pub_key_y,
+        pre_hash: true, // We pre-hashed the message
+    };
+
+    println!("✓ Created P256 signature for batch transaction");
+
+    // Verify signature recovery works
+    let recovered_signer = aa_batch_signature
+        .recover_signer(&batch_sig_hash)
+        .expect("Should recover signer from P256 signature");
+    assert_eq!(
+        recovered_signer, signer_addr,
+        "Recovered signer should match P256 address"
+    );
+    println!("✓ P256 signature recovery successful");
+
+    // Sign and encode the batch transaction
+    let signed_batch_tx = AASigned::new_unhashed(batch_tx, aa_batch_signature);
+    let batch_envelope: TempoTxEnvelope = signed_batch_tx.into();
+    let mut encoded_batch = Vec::new();
+    batch_envelope.encode_2718(&mut encoded_batch);
+
+    println!(
+        "Encoded batch transaction: {} bytes (type: 0x{:02x})",
+        encoded_batch.len(),
+        encoded_batch[0]
+    );
+
+    // Get initial balances of all recipients (should be 0)
+    let token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
+    let mut initial_balances = Vec::new();
+
+    println!("\nChecking initial recipient balances:");
+    for (i, (recipient, _)) in recipients.iter().enumerate() {
+        let balance = token.balanceOf(*recipient).call().await?;
+        initial_balances.push(balance);
+        assert_eq!(
+            balance,
+            U256::ZERO,
+            "Recipient {} should have 0 initial balance",
+            i + 1
+        );
+        println!("  Recipient {}: {} tokens", i + 1, balance);
+    }
+
+    // Inject and mine the batch transaction
+    println!("\nExecuting batch transaction...");
+    setup.node.rpc.inject_tx(encoded_batch.into()).await?;
+    let batch_payload = setup.node.advance_block().await?;
+
+    println!(
+        "✓ Batch transaction mined in block {}",
+        batch_payload.block().number
+    );
+
+    // Verify the block contains the transaction
+    assert!(
+        batch_payload.block().body().transactions.len() > 0,
+        "Block should contain the batch transaction"
+    );
+
+    // Check that the transaction in the block is our AA transaction
+    let block_tx = &batch_payload.block().body().transactions[0];
+    if let TempoTxEnvelope::AA(aa_tx) = block_tx {
+        assert_eq!(
+            aa_tx.tx().calls.len(),
+            num_recipients,
+            "Transaction should have {} calls",
+            num_recipients
+        );
+        println!(
+            "✓ Block contains AA transaction with {} calls",
+            aa_tx.tx().calls.len()
+        );
+
+        // Verify it used P256 signature
+        match aa_tx.signature() {
+            AASignature::P256 { pre_hash, .. } => {
+                assert!(*pre_hash, "Should have pre_hash flag set");
+                println!("✓ Transaction used P256 signature with pre-hash");
+            }
+            _ => panic!("Transaction should have P256 signature"),
+        }
+    } else {
+        panic!("Expected AA transaction in block");
+    }
+
+    // Verify all recipients received their tokens
+    println!("\nVerifying recipient balances after batch transfer:");
+    for (i, ((recipient, multiplier), initial_balance)) in
+        recipients.iter().zip(initial_balances.iter()).enumerate()
+    {
+        let expected_amount = transfer_base_amount * U256::from(*multiplier);
+        let final_balance = token.balanceOf(*recipient).call().await?;
+
+        assert_eq!(
+            final_balance,
+            expected_amount,
+            "Recipient {} should have received {} tokens",
+            i + 1,
+            expected_amount
+        );
+
+        println!(
+            "  Recipient {}: {} → {} tokens (expected: {})",
+            i + 1,
+            initial_balance,
+            final_balance,
+            expected_amount
+        );
+    }
+
+    // Verify the P256 signer's balance decreased by the total transferred amount
+    let total_transferred = (1..=num_recipients as u64)
+        .map(|i| transfer_base_amount * U256::from(i))
+        .fold(U256::ZERO, |acc, x| acc + x);
+
+    let signer_final_balance = token.balanceOf(signer_addr).call().await?;
+    let expected_signer_balance = initial_funding_amount - total_transferred;
+
+    // Account for gas fees paid
+    assert!(
+        signer_final_balance < expected_signer_balance,
+        "Signer balance should be less than initial minus transferred (due to gas fees)"
+    );
+
+    println!(
+        "\n✓ P256 signer balance: {} tokens (transferred: {}, plus gas fees)",
+        signer_final_balance, total_transferred
+    );
 
     Ok(())
 }
