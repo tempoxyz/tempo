@@ -14,7 +14,6 @@ pub const PERMIT2_ADDRESS: Address = address!("0x000000000022d473030f116ddee9f6b
 pub const DEFAULT_7702_DELEGATE_ADDRESS: Address =
     address!("0x7702c00000000000000000000000000000000000");
 
-
 pub mod contracts {
     use alloy::sol;
 
