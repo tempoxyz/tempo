@@ -18,6 +18,7 @@ pub use tempo_contracts::{fee_manager_err, tip403_err};
 use crate::TIP20_TOKEN_PREFIX;
 use alloy::primitives::Address;
 pub use linking_usd::LinkingUSD;
+pub use stablecoin_dex::StablecoinDex;
 pub use storage::{StorageProvider, evm::EvmStorageProvider, hashmap::HashMapStorageProvider};
 pub use tip_account_registrar::TipAccountRegistrar;
 pub use tip20::TIP20Token;

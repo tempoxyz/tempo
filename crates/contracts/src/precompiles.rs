@@ -315,9 +315,17 @@ sol! {
         // Balance management
         function withdraw(address token, uint128 amount) external;
 
-        // TODO: Events
+        // Events
+        event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
+        event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
+        event OrderCancelled(uint128 indexed orderId);
+        event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
 
-        // TODO: Errors
+        // Errors
+        error OrderDoesNotExist();
+        error Unauthorized();
+        error InsufficientBalance();
+        error InvalidFlipTick();
     }
 }
 
@@ -543,9 +551,9 @@ macro_rules! fee_manager_err {
 // Use the auto-generated error and event enums
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
-// pub use IStablecoinDex::{
-//     IStablecoinDexErrors as StablecoinDexError, IStablecoinDexEvents as StablecoinDexEvent,
-// };
+pub use IStablecoinDex::{
+    IStablecoinDexErrors as StablecoinDexError, IStablecoinDexEvents as StablecoinDexEvent,
+};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 pub use ITIP403Registry::{
