@@ -22,7 +22,7 @@ use crate::{
     TIP4217_REGISTRY_ADDRESS,
     contracts::{
         EvmStorageProvider, LinkingUSD, TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry,
-        TipAccountRegistrar, address_is_token_address, address_to_token_id_unchecked,
+        TipAccountRegistrar, address_to_token_id_unchecked, is_tip20,
         tip_fee_manager::TipFeeManager,
     },
 };
@@ -37,7 +37,7 @@ pub trait Precompile {
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64) {
     precompiles.set_precompile_lookup(move |address: &Address| {
-        if address_is_token_address(address) {
+        if is_tip20(address) {
             let token_id = address_to_token_id_unchecked(address);
             if token_id == 0 {
                 Some(LinkingUSDPrecompile::create(chain_id))

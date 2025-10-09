@@ -42,10 +42,6 @@ pub fn token_id_to_address(token_id: u64) -> Address {
     Address::from(address_bytes)
 }
 
-pub fn address_is_token_address(address: &Address) -> bool {
-    address.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
-}
-
 pub fn address_to_token_id_unchecked(address: &Address) -> u64 {
     u64::from_be_bytes(address.as_slice()[12..20].try_into().unwrap())
 }

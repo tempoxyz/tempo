@@ -4,7 +4,7 @@ use crate::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP20Factory, TIP403Registry,
-        TIP4217Registry, address_is_token_address, address_to_token_id_unchecked,
+        TIP4217Registry, address_to_token_id_unchecked, is_tip20,
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
         token_id_to_address,
@@ -260,7 +260,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         // Verify the new linking token is a valid TIP20 token that has been deployed
-        if !address_is_token_address(&call.newLinkingToken) {
+        if !is_tip20(&call.newLinkingToken) {
             return Err(TIP20Error::invalid_linking_token());
         }
 
@@ -870,7 +870,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn check_not_token_address(&self, to: &Address) -> Result<(), TIP20Error> {
         // Don't allow sending to other precompiled tokens
-        if address_is_token_address(to) {
+        if is_tip20(to) {
             return Err(TIP20Error::invalid_recipient());
         }
         Ok(())
