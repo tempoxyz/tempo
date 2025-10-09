@@ -13,9 +13,14 @@ pub const SAFE_DEPLOYER_ADDRESS: Address = address!("0x914d7Fec6aaC8cd542e72Bca7
 pub const PERMIT2_ADDRESS: Address = address!("0x000000000022d473030f116ddee9f6b43ac78ba3");
 pub const DEFAULT_7702_DELEGATE_ADDRESS: Address =
     address!("0x7702c00000000000000000000000000000000000");
+pub const ARACHNID_CREATE2_FACTORY_ADDRESS: Address =
+    address!("0x4e59b44847b379578588920cA78FbF26c0B4956C");
 
 pub mod contracts {
-    use alloy::sol;
+    use alloy::{
+        primitives::{Bytes, bytes},
+        sol,
+    };
 
     sol!(
         #[allow(missing_docs)]
@@ -50,6 +55,10 @@ pub mod contracts {
         #[sol(rpc)]
         SafeDeployer,
         "abi/SafeDeployer.json",
+    );
+
+    pub const ARACHNID_CREATE2_FACTORY_BYTECODE: Bytes = bytes!(
+        "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3"
     );
 }
 

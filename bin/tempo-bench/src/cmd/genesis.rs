@@ -16,8 +16,9 @@ use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::{
-    CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS,
-    SAFE_DEPLOYER_ADDRESS,
+    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
+    MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
+    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
@@ -194,6 +195,15 @@ impl GenesisArgs {
             PERMIT2_ADDRESS,
             GenesisAccount {
                 code: Some(tempo_contracts::Permit2::DEPLOYED_BYTECODE.clone()),
+                nonce: Some(1),
+                ..Default::default()
+            },
+        );
+
+        genesis_alloc.insert(
+            ARACHNID_CREATE2_FACTORY_ADDRESS,
+            GenesisAccount {
+                code: Some(ARACHNID_CREATE2_FACTORY_BYTECODE),
                 nonce: Some(1),
                 ..Default::default()
             },
