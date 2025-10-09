@@ -16,7 +16,7 @@ Current accounts are limited to secp256k1 signatures and sequential nonces, crea
 - Native support for passkey authentication via P256/WebAuthn signatures
 - Parallel transaction execution through 2D nonce system
 - Native Gas Sponsorship using fee payers
-- Call Batching is suppported using the ERC 7821 `execute` interface available in all Default Accounts
+- Call Batching is supported using the ERC 7821 `execute` interface available in all Default Accounts
 - Scheduled Transactions are enabled using the optional `validBefore` and `validAfter` fields in the transaction 
 
 ### Transaction Type
@@ -125,7 +125,7 @@ The protocol implements 2D nonces without expiry or garbage collection:
 - Storage value: `nonce_sequence` (uint64)
 - Active key count for account: stored at `keccak256(abi.encode(account_address, uint192(0)))`
 
-Note: Protocol Nonce key (0), is directly stored in the acccount state, just like normal transaction types.
+Note: Protocol Nonce key (0), is directly stored in the account state, just like normal transaction types.
 
 #### Gas Schedule
 
