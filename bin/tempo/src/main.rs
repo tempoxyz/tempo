@@ -48,8 +48,8 @@ struct TempoArgs {
     #[arg(long)]
     pub no_consensus: bool,
 
-    #[clap(long, value_name = "FILE")]
-    pub consensus_config: camino::Utf8PathBuf,
+    #[clap(long, value_name = "FILE", required_unless_present_any = ["no_consensus", "dev"])]
+    pub consensus_config: Option<camino::Utf8PathBuf>,
 
     #[command(flatten)]
     pub faucet_args: FaucetArgs,
@@ -91,12 +91,15 @@ fn main() -> eyre::Result<()> {
                 Ok(())
             })
         } else {
+            let consensus_config_path = args
+                .consensus_config
+                .expect("Could not get consensus config path");
+
             let consensus_config =
-                tempo_commonware_node_config::Config::from_file(&args.consensus_config)
+                tempo_commonware_node_config::Config::from_file(&consensus_config_path)
                     .wrap_err_with(|| {
                         format!(
-                            "failed parsing consensus config from provided argument `{}`",
-                            args.consensus_config,
+                            "failed parsing consensus config from provided argument `{consensus_config_path}`",
                         )
                     })?;
             let runtime_config = commonware_runtime::tokio::Config::default()
