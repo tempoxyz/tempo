@@ -248,7 +248,7 @@ mod tests {
         let order_id = u128::abi_decode(&result.bytes).unwrap();
 
         // Verify order is stored correctly by reading from storage
-        let order_slot = mapping_slot(U256::from(order_id).to_be_bytes::<32>(), slots::ORDERS);
+        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
 
         // Check amount
         let stored_amount = dex.sload(order_slot + offsets::ORDER_AMOUNT_OFFSET);
@@ -293,7 +293,7 @@ mod tests {
         let order_id = u128::abi_decode(&result.bytes).unwrap();
 
         // Verify flip order is stored correctly
-        let order_slot = mapping_slot(U256::from(order_id).to_be_bytes::<32>(), slots::ORDERS);
+        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
 
         // Check is_flip (true = 1)
         let stored_is_flip = dex.sload(order_slot + offsets::ORDER_IS_FLIP_OFFSET);
@@ -449,7 +449,7 @@ mod tests {
         let order_id = u128::abi_decode(&result.bytes).unwrap();
 
         // Verify negative tick is stored correctly
-        let order_slot = mapping_slot(U256::from(order_id).to_be_bytes::<32>(), slots::ORDERS);
+        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
         let stored_tick = dex.sload(order_slot + offsets::ORDER_TICK_OFFSET);
 
         // Cast i16 through i128 to preserve sign, then to u128 for storage
@@ -494,7 +494,7 @@ mod tests {
         let order_id = u128::abi_decode(&result.bytes).unwrap();
 
         // Verify sender address is stored correctly
-        let order_slot = mapping_slot(U256::from(order_id).to_be_bytes::<32>(), slots::ORDERS);
+        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
         let stored_maker = dex.sload(order_slot + offsets::ORDER_MAKER_OFFSET);
         assert_eq!(stored_maker, sender.into_u256());
     }

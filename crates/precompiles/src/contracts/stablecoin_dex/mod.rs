@@ -66,7 +66,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
 
     /// Store a pending order
     fn store_pending_order(&mut self, order_id: u128, order: &Order) {
-        let order_slot = mapping_slot(U256::from(order_id).to_be_bytes::<32>(), slots::ORDERS);
+        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
 
         // Store order fields
         self.storage
