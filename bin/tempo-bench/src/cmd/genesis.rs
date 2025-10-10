@@ -59,6 +59,10 @@ pub struct GenesisArgs {
     /// Base fee
     #[arg(long, default_value_t = TEMPO_BASE_FEE.into())]
     pub base_fee_per_gas: u128,
+
+    /// Genesis block gas limit
+    #[arg(long, default_value_t = 17000000000000)]
+    pub gas_limit: u64,
 }
 
 impl GenesisArgs {
@@ -222,7 +226,7 @@ impl GenesisArgs {
         };
 
         let mut genesis = Genesis::default()
-            .with_gas_limit(0xfffffffffff)
+            .with_gas_limit(self.gas_limit)
             .with_base_fee(Some(self.base_fee_per_gas))
             .with_nonce(0x42)
             .with_extra_data(Bytes::from_static(b"tempo-genesis"))
