@@ -153,8 +153,11 @@ impl Executor {
     /// Backfills a block identified by `digest` by reading it from the
     /// consensus layer.
     ///
-    /// `round` must only be set if `digest` is a notarized block. If it is not,
-    /// this function will stall indefinitely.
+    /// Must only be called if `digest` belongs to a notarized block. If `digest`
+    /// does not identify a notarized block the triggered backfill will never
+    /// complete. `round` is used for blocks which are not yet available in the
+    /// consensus layer to help the marshal agent request it from the consensus
+    /// p2p network.
     ///
     /// Note that this function is not async. Backfills are run in an async
     /// queue and are allowed to finish anytime.
