@@ -78,7 +78,7 @@ mod tests {
     use super::*;
     use crate::contracts::{
         HashMapStorageProvider,
-        stablecoin_dex::slots,
+        stablecoin_dex::{offsets, slots},
         storage::{StorageOps, slots::mapping_slot},
         types::StablecoinDexEvent,
     };
@@ -251,19 +251,19 @@ mod tests {
         let order_slot = mapping_slot(U256::from(order_id).to_be_bytes::<32>(), slots::ORDERS);
 
         // Check amount
-        let stored_amount = dex.sload(order_slot + slots::ORDER_AMOUNT_OFFSET);
+        let stored_amount = dex.sload(order_slot + offsets::ORDER_AMOUNT_OFFSET);
         assert_eq!(stored_amount, U256::from(amount));
 
         // Check tick
-        let stored_tick = dex.sload(order_slot + slots::ORDER_TICK_OFFSET);
+        let stored_tick = dex.sload(order_slot + offsets::ORDER_TICK_OFFSET);
         assert_eq!(stored_tick, U256::from(tick as i128 as u128));
 
         // Check side (bid = true = 1)
-        let stored_side = dex.sload(order_slot + slots::ORDER_SIDE_OFFSET);
+        let stored_side = dex.sload(order_slot + offsets::ORDER_SIDE_OFFSET);
         assert_eq!(stored_side, U256::from(1u8));
 
         // Check is_flip (false = 0)
-        let stored_is_flip = dex.sload(order_slot + slots::ORDER_IS_FLIP_OFFSET);
+        let stored_is_flip = dex.sload(order_slot + offsets::ORDER_IS_FLIP_OFFSET);
         assert_eq!(stored_is_flip, U256::ZERO);
     }
 
@@ -296,11 +296,11 @@ mod tests {
         let order_slot = mapping_slot(U256::from(order_id).to_be_bytes::<32>(), slots::ORDERS);
 
         // Check is_flip (true = 1)
-        let stored_is_flip = dex.sload(order_slot + slots::ORDER_IS_FLIP_OFFSET);
+        let stored_is_flip = dex.sload(order_slot + offsets::ORDER_IS_FLIP_OFFSET);
         assert_eq!(stored_is_flip, U256::from(1u8));
 
         // Check flip_tick
-        let stored_flip_tick = dex.sload(order_slot + slots::ORDER_FLIP_TICK_OFFSET);
+        let stored_flip_tick = dex.sload(order_slot + offsets::ORDER_FLIP_TICK_OFFSET);
         assert_eq!(stored_flip_tick, U256::from(flip_tick as i128 as u128));
     }
 
@@ -450,7 +450,7 @@ mod tests {
 
         // Verify negative tick is stored correctly
         let order_slot = mapping_slot(U256::from(order_id).to_be_bytes::<32>(), slots::ORDERS);
-        let stored_tick = dex.sload(order_slot + slots::ORDER_TICK_OFFSET);
+        let stored_tick = dex.sload(order_slot + offsets::ORDER_TICK_OFFSET);
 
         // Cast i16 through i128 to preserve sign, then to u128 for storage
         let expected = U256::from(negative_tick as i128 as u128);
@@ -495,7 +495,7 @@ mod tests {
 
         // Verify sender address is stored correctly
         let order_slot = mapping_slot(U256::from(order_id).to_be_bytes::<32>(), slots::ORDERS);
-        let stored_maker = dex.sload(order_slot + slots::ORDER_MAKER_OFFSET);
+        let stored_maker = dex.sload(order_slot + offsets::ORDER_MAKER_OFFSET);
         assert_eq!(stored_maker, sender.into_u256());
     }
 }

@@ -1,6 +1,7 @@
 //! Stablecoin DEX types and utilities.
 
 pub mod error;
+pub mod offsets;
 pub mod order;
 pub mod slots;
 
@@ -71,7 +72,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .sstore(
                 self.address,
-                order_slot + slots::ORDER_MAKER_OFFSET,
+                order_slot + offsets::ORDER_MAKER_OFFSET,
                 order.maker().into_u256(),
             )
             .expect("Storage write failed");
@@ -80,7 +81,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .sstore(
                 self.address,
-                order_slot + slots::ORDER_BOOK_KEY_OFFSET,
+                order_slot + offsets::ORDER_BOOK_KEY_OFFSET,
                 order.linking_token().into_u256(),
             )
             .expect("Storage write failed");
@@ -88,7 +89,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .sstore(
                 self.address,
-                order_slot + slots::ORDER_SIDE_OFFSET,
+                order_slot + offsets::ORDER_SIDE_OFFSET,
                 U256::from(order.is_bid() as u8),
             )
             .expect("Storage write failed");
@@ -96,7 +97,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .sstore(
                 self.address,
-                order_slot + slots::ORDER_TICK_OFFSET,
+                order_slot + offsets::ORDER_TICK_OFFSET,
                 U256::from(order.tick() as i128 as u128), // Cast i16 through i128 to preserve sign
             )
             .expect("Storage write failed");
@@ -104,7 +105,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .sstore(
                 self.address,
-                order_slot + slots::ORDER_AMOUNT_OFFSET,
+                order_slot + offsets::ORDER_AMOUNT_OFFSET,
                 U256::from(order.amount()),
             )
             .expect("Storage write failed");
@@ -112,7 +113,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .sstore(
                 self.address,
-                order_slot + slots::ORDER_REMAINING_OFFSET,
+                order_slot + offsets::ORDER_REMAINING_OFFSET,
                 U256::from(order.amount()),
             )
             .expect("Storage write failed");
@@ -121,7 +122,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .sstore(
                 self.address,
-                order_slot + slots::ORDER_IS_FLIP_OFFSET,
+                order_slot + offsets::ORDER_IS_FLIP_OFFSET,
                 U256::from(order.is_flip() as u8),
             )
             .expect("Storage write failed");
@@ -130,7 +131,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             self.storage
                 .sstore(
                     self.address,
-                    order_slot + slots::ORDER_FLIP_TICK_OFFSET,
+                    order_slot + offsets::ORDER_FLIP_TICK_OFFSET,
                     U256::from(flip_tick as i128 as u128),
                 )
                 .expect("Storage write failed");
