@@ -10,7 +10,9 @@ use commonware_consensus::{
     threshold_simplex::types::Context,
     types::{Epoch, Round, View},
 };
-use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
+use commonware_runtime::{
+    AwaitAtExt, Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell,
+};
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
@@ -201,7 +203,7 @@ where
             Message::Verify(verify) => {
                 self.context.with_label("verify").spawn({
                     let inner = self.inner.clone();
-                    move |_| inner.handle_verify(verify)
+                    move |context| inner.handle_verify(verify, context)
                 });
             }
         }
@@ -348,7 +350,10 @@ impl Inner<Init> {
             parent.digest = %verify.parent.1,
         ),
     )]
-    async fn handle_verify(mut self, verify: Verify) {
+    async fn handle_verify<TContext>(mut self, verify: Verify, context: TContext)
+    where
+        TContext: Clock,
+    {
         let Verify {
             parent,
             payload,
@@ -365,7 +370,7 @@ impl Inner<Init> {
                 ))
             }
 
-            res = self.clone().verify(parent, payload, round) => {
+            res = self.clone().verify(context, parent, payload, round) => {
                 res.wrap_err("block verification failed")
             }
         );
@@ -463,6 +468,7 @@ impl Inner<Init> {
             .execution_node
             .payload_builder_handle
             .send_new_payload(attrs)
+            .await_at(&context, Duration::from_millis(10))
             .await
             .map_err(|_| eyre!("channel was closed before a response was returned"))
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
@@ -491,6 +497,7 @@ impl Inner<Init> {
             .execution_node
             .payload_builder_handle
             .resolve_kind(payload_id, reth_node_builder::PayloadKind::WaitForPending)
+            .await_at(&context, Duration::from_millis(10))
             .await
             // XXX: this returns Option<Result<_, _>>; drilling into
             // resolve_kind this really seems to resolve to None if no
@@ -502,12 +509,16 @@ impl Inner<Init> {
         Ok(payload)
     }
 
-    async fn verify(
+    async fn verify<TContext>(
         mut self,
+        context: TContext,
         parent: (View, Digest),
         payload: Digest,
         round: Round,
-    ) -> eyre::Result<(Block, bool)> {
+    ) -> eyre::Result<(Block, bool)>
+    where
+        TContext: Clock,
+    {
         if let Err(error) = self
             .state
             .executor_mailbox
@@ -543,6 +554,7 @@ impl Inner<Init> {
             .wrap_err("failed getting required blocks from syncer")?;
 
         let is_good = verify_block(
+            context,
             self.execution_node
                 .add_ons_handle
                 .beacon_engine_handle
@@ -660,11 +672,15 @@ struct Init {
         parent.timestamp = parent.timestamp(),
     )
 )]
-async fn verify_block(
+async fn verify_block<TContext>(
+    context: TContext,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
     parent: &Block,
-) -> eyre::Result<bool> {
+) -> eyre::Result<bool>
+where
+    TContext: Clock,
+{
     use alloy_rpc_types_engine::PayloadStatusEnum;
     if block.parent_digest() != parent.digest() {
         info!(
@@ -685,6 +701,7 @@ async fn verify_block(
     let block = block.clone().into_inner();
     let payload_status = engine
         .new_payload(TempoExecutionData(block))
+        .await_at(&context, Duration::from_millis(10))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {

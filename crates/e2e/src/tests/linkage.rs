@@ -32,15 +32,14 @@ fn only_good_links() {
             how_many: 5,
             seed,
             linkage: link.clone(),
-            height_to_reach: 25,
+            height_to_reach: 5,
         };
-        let _first = run(setup);
-        // FIXME(janis): our events are non-deterministic; likely due to the
-        // async interaction with the execution layer.
-        // How to fix that?
-        //
-        // let second = run(setup.clone());
-        // assert_eq!(first, second);
+        let first = run(setup.clone());
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        let second = run(setup);
+        assert_eq!(first, second);
     }
 }
 
