@@ -34,12 +34,13 @@ fn only_good_links() {
             linkage: link.clone(),
             height_to_reach: 5,
         };
-        let _first = run(setup);
+        let first = run(setup.clone());
 
-        // std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(1));
 
-        // let second = run(setup);
-        // assert_eq!(first, second);
+        let second = run(setup);
+        assert_eq!(first, second);
+        println!("first: {first} second: {second}");
     }
 }
 
