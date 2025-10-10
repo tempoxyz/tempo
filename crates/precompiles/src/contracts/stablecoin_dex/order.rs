@@ -17,6 +17,18 @@ pub enum Side {
     Ask,
 }
 
+impl Side {
+    /// Returns the opposite side.
+    ///
+    /// Bid flips to Ask, Ask flips to Bid.
+    pub fn flip(self) -> Self {
+        match self {
+            Self::Bid => Self::Ask,
+            Self::Ask => Self::Bid,
+        }
+    }
+}
+
 /// Represents an order in the stablecoin DEX orderbook.
 ///
 /// This struct matches the Solidity reference implementation in StablecoinExchange.sol.
@@ -297,16 +309,11 @@ impl Order {
         }
 
         // Create flipped order
-        let new_side = match self.side {
-            Side::Bid => Side::Ask,
-            Side::Ask => Side::Bid,
-        };
-
         Ok(Self {
             order_id: new_order_id,
             maker: self.maker,
             book_key: self.book_key,
-            side: new_side,         // Flip the side
+            side: self.side.flip(), // Flip the side
             tick: self.flip_tick,   // Old flip_tick becomes new tick
             amount: self.amount,    // Same as original
             remaining: self.amount, // Reset remaining to original amount
@@ -326,6 +333,16 @@ mod tests {
     const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
     const TEST_BOOK_KEY: B256 =
         b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
+
+    #[test]
+    fn test_side_flip() {
+        assert_eq!(Side::Bid.flip(), Side::Ask);
+        assert_eq!(Side::Ask.flip(), Side::Bid);
+
+        // Test double flip returns to original
+        assert_eq!(Side::Bid.flip().flip(), Side::Bid);
+        assert_eq!(Side::Ask.flip().flip(), Side::Ask);
+    }
 
     #[test]
     fn test_new_bid_order() {
