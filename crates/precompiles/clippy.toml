@@ -1,4 +1,4 @@
 disallowed-methods = [
-    { path = "std::time::SystemTime::now", reason = "system time in precompiles can cause determinism, use block time instead" },
-    { path = "std::time::Instant::now", reason = "system time in precompiles can cause determinism, use block time instead" },
+    { path = "std::time::SystemTime::now", reason = "system time in precompiles can cause non-determinism, use block time instead" },
+    { path = "std::time::Instant::now", reason = "system time in precompiles can cause non-determinism, use block time instead" },
 ]
