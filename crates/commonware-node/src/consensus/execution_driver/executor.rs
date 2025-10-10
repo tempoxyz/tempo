@@ -7,10 +7,11 @@
 //! If the agent detects that the execution layer is missing blocks it attempts
 //! to backfill them from the consensus layer.
 
-use std::{pin::Pin, sync::Arc};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use commonware_consensus::{Block as _, marshal, types::Round};
+use commonware_runtime::{AwaitAtExt, Clock};
 use eyre::{WrapErr as _, ensure};
 use futures_channel::{
     mpsc::{UnboundedReceiver, UnboundedSender},
@@ -116,7 +117,7 @@ impl Executor {
         &self.my_mailbox
     }
 
-    pub(super) async fn run(mut self) {
+    pub(super) async fn run<TContext: Clock>(mut self, context: TContext) {
         loop {
             // TODO: also listen to shutdown signals from the runtime here.
             select_biased! {
@@ -128,7 +129,7 @@ impl Executor {
                     //
                     // Backfills will be put on a queue and can happen anytime
                     // in between.
-                    self.handle_message(msg).await;
+                    self.handle_message(context.clone(), msg).await;
                 }
 
                 // Only exists to drain the queue
@@ -137,15 +138,15 @@ impl Executor {
         }
     }
 
-    async fn handle_message(&mut self, message: Message) {
+    async fn handle_message<TContext: Clock>(&mut self, context: TContext, message: Message) {
         let cause = message.cause;
         match message.command {
             Command::Backfill { round, digest } => self.backfill(cause, round, digest),
             Command::Canonicalize { round, digest } => {
-                let _ = self.canonicalize(cause, round, digest).await;
+                let _ = self.canonicalize(context, cause, round, digest).await;
             }
             Command::ForwardBlock { block, response } => {
-                let _ = self.forward_block(*block, response, cause).await;
+                let _ = self.forward_block(context, *block, response, cause).await;
             }
         }
     }
@@ -210,8 +211,9 @@ impl Executor {
         ret,
         err(Display),
     )]
-    async fn canonicalize(
+    async fn canonicalize<TContext: Clock>(
         &self,
+        context: TContext,
         cause: Span,
         round: Option<Round>,
         digest: Digest,
@@ -236,6 +238,7 @@ impl Executor {
                 None,
                 reth_node_builder::EngineApiMessageVersion::V3,
             )
+            .await_at(&context, Duration::from_millis(10))
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")?;
 
@@ -291,8 +294,9 @@ impl Executor {
         err(level = Level::WARN),
         ret,
     )]
-    async fn forward_block(
+    async fn forward_block<TContext: Clock>(
         &mut self,
+        context: TContext,
         block: Block,
         response: Option<oneshot::Sender<()>>,
         cause: Span,
@@ -304,6 +308,7 @@ impl Executor {
             .add_ons_handle
             .beacon_engine_handle
             .new_payload(TempoExecutionData(block))
+            .await_at(&context, Duration::from_millis(10))
             .await
             .wrap_err(
                 "failed sending new-payload request to execution engine to \

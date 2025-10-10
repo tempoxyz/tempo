@@ -579,7 +579,7 @@ impl Inner<Uninit> {
     #[instrument(skip_all, err)]
     async fn into_initialized<TContext>(mut self, context: TContext) -> eyre::Result<Inner<Init>>
     where
-        TContext: Metrics + Spawner,
+        TContext: Metrics + Spawner + Clock,
     {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
@@ -635,7 +635,7 @@ impl Inner<Uninit> {
 
         context
             .with_label("executor")
-            .spawn(move |_| executor.run());
+            .spawn(move |context| executor.run(context));
 
         Ok(initialized)
     }
