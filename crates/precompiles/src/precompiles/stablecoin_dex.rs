@@ -235,7 +235,7 @@ mod tests {
         let amount = 1500u128;
         let tick = 7i16;
 
-        // Place an order
+        // Place a regular order
         let place_call = IStablecoinDex::placeCall {
             token,
             amount,
@@ -265,43 +265,48 @@ mod tests {
         // Check is_flip (false = 0)
         let stored_is_flip = dex.sload(order_slot + offsets::ORDER_IS_FLIP_OFFSET);
         assert_eq!(stored_is_flip, U256::ZERO);
-    }
 
-    #[test]
-    fn test_flip_order_storage_persistence() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
-        dex.initialize();
+        // Check flip_tick (should be 0 for non-flip orders)
+        let stored_flip_tick = dex.sload(order_slot + offsets::ORDER_FLIP_TICK_OFFSET);
+        assert_eq!(stored_flip_tick, U256::ZERO);
 
-        let sender = Address::from([1u8; 20]);
-        let token = Address::from([2u8; 20]);
-        let amount = 2500u128;
-        let tick = 5i16;
-        let flip_tick = 12i16;
+        // Now place a flip order to test flip fields
+        let flip_amount = 2500u128;
+        let flip_order_tick = 5i16;
+        let flip_tick_value = 12i16;
 
-        // Place a flip order
         let place_flip_call = IStablecoinDex::placeFlipCall {
             token,
-            amount,
+            amount: flip_amount,
             isBid: true,
-            tick,
-            flipTick: flip_tick,
+            tick: flip_order_tick,
+            flipTick: flip_tick_value,
         };
         let result = dex
             .call(&Bytes::from(place_flip_call.abi_encode()), &sender)
             .unwrap();
-        let order_id = u128::abi_decode(&result.bytes).unwrap();
+        let flip_order_id = u128::abi_decode(&result.bytes).unwrap();
 
         // Verify flip order is stored correctly
-        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
+        let flip_order_slot = mapping_slot(flip_order_id.to_be_bytes(), slots::ORDERS);
 
         // Check is_flip (true = 1)
-        let stored_is_flip = dex.sload(order_slot + offsets::ORDER_IS_FLIP_OFFSET);
+        let stored_is_flip = dex.sload(flip_order_slot + offsets::ORDER_IS_FLIP_OFFSET);
         assert_eq!(stored_is_flip, U256::from(1u8));
 
         // Check flip_tick
-        let stored_flip_tick = dex.sload(order_slot + offsets::ORDER_FLIP_TICK_OFFSET);
-        assert_eq!(stored_flip_tick, U256::from(flip_tick as i128 as u128));
+        let stored_flip_tick = dex.sload(flip_order_slot + offsets::ORDER_FLIP_TICK_OFFSET);
+        assert_eq!(
+            stored_flip_tick,
+            U256::from(flip_tick_value as i128 as u128)
+        );
+
+        // Check tick on flip order too
+        let stored_flip_order_tick = dex.sload(flip_order_slot + offsets::ORDER_TICK_OFFSET);
+        assert_eq!(
+            stored_flip_order_tick,
+            U256::from(flip_order_tick as i128 as u128)
+        );
     }
 
     #[test]
@@ -338,6 +343,31 @@ mod tests {
         // Check pending_order_id incremented to 2
         let pending_after_second = dex.sload(slots::PENDING_ORDER_ID);
         assert_eq!(pending_after_second, U256::from(2));
+    }
+
+    #[test]
+    fn test_place_flip_bid_with_valid_flip_tick() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut dex = StablecoinDex::new(&mut storage);
+        dex.initialize();
+
+        let sender = Address::from([1u8; 20]);
+        let token = Address::from([2u8; 20]);
+
+        // For bid orders, flip_tick must be > tick
+        let place_flip_call = IStablecoinDex::placeFlipCall {
+            token,
+            amount: 2000,
+            isBid: true, // bid
+            tick: 5,
+            flipTick: 10, // flipTick > tick (valid)
+        };
+        let result = dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender);
+
+        // Should succeed
+        assert!(result.is_ok());
+        let order_id = u128::abi_decode(&result.unwrap().bytes).unwrap();
+        assert_eq!(order_id, 0);
     }
 
     #[test]
