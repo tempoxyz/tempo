@@ -104,15 +104,11 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             .expect("Storage write failed");
 
         // Store side (Bid = 0, Ask = 1)
-        let side_value = match order.side() {
-            Side::Bid => 0u8,
-            Side::Ask => 1u8,
-        };
         self.storage
             .sstore(
                 self.address,
                 order_slot + offsets::ORDER_SIDE_OFFSET,
-                U256::from(side_value),
+                order.side().into(),
             )
             .expect("Storage write failed");
 

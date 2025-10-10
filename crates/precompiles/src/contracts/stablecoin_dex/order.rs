@@ -4,7 +4,7 @@
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, U256};
 
 use super::error::OrderError;
 
@@ -25,6 +25,15 @@ impl Side {
         match self {
             Self::Bid => Self::Ask,
             Self::Ask => Self::Bid,
+        }
+    }
+}
+
+impl From<Side> for U256 {
+    fn from(side: Side) -> Self {
+        match side {
+            Side::Bid => Self::ZERO,
+            Side::Ask => Self::from(1u8),
         }
     }
 }
@@ -342,6 +351,14 @@ mod tests {
         // Test double flip returns to original
         assert_eq!(Side::Bid.flip().flip(), Side::Bid);
         assert_eq!(Side::Ask.flip().flip(), Side::Ask);
+    }
+
+    #[test]
+    fn test_side_into_u256() {
+        let bid: U256 = Side::Bid.into();
+        let ask: U256 = Side::Ask.into();
+        assert_eq!(bid, U256::ZERO);
+        assert_eq!(ask, U256::from(1u8));
     }
 
     #[test]
