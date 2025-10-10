@@ -224,7 +224,10 @@ impl Order {
         self.is_flip
     }
 
-    /// Returns the flip tick (0 for non-flip orders).
+    /// Returns the flip tick.
+    ///
+    /// For non-flip orders, this is always 0.
+    /// For flip orders, this can be any valid tick value including 0 (peg price).
     pub fn flip_tick(&self) -> i16 {
         self.flip_tick
     }
