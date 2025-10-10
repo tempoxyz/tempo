@@ -16,7 +16,7 @@ use futures_channel::{
     mpsc::{UnboundedReceiver, UnboundedSender},
     oneshot,
 };
-use futures_util::{FutureExt as _, StreamExt as _, select_biased, stream::FuturesUnordered};
+use futures_util::{StreamExt as _, select_biased, stream::FuturesUnordered};
 use reth_provider::BlockNumReader as _;
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_node::{TempoExecutionData, TempoFullNode};
@@ -150,13 +150,47 @@ impl Executor {
         }
     }
 
-    /// Attempts to backfill a block by reading its `digest` from the consensus layer.
+    /// Backfills a block identified by `digest` by reading it from the
+    /// consensus layer.
     ///
-    /// `round` must only be set if `digest` is a notarized block. If it is not
+    /// `round` must only be set if `digest` is a notarized block. If it is not,
     /// this function will stall indefinitely.
     ///
     /// Note that this function is not async. Backfills are run in an async
     /// queue and are allowed to finish anytime.
+    ///
+    /// # How backfills are triggered
+    ///
+    /// Backfills are done by requesting a block identified by `digest` and
+    /// `round` from the consensus `marshal` agent. Backfills are started in
+    /// two ways:
+    ///
+    /// 1. In the executor's constructor [`Builder::build`] with arguments
+    /// `round = None`, `digest = latest_finalized_digest`.
+    /// `latest_finalized_digest` is expected to be read from the `marshal`
+    /// agent, and as such the corresponding block and all its ancestors must
+    /// exist in the marshaler.
+    /// 2. As part of [`Executor::canonicalize`]. After sending a
+    /// fork-choice-update for `digest`, if the execution level responds with
+    /// `syncing` (meaning it does not yet have the block available), a backfill
+    /// is started if and only if `round` was set. The reasoning is that
+    /// `canonicalize` is called on the parent block of a consensus proposal or
+    /// verification. For both, the parent is guaranteed to be notarized (by
+    /// the simplex protocol), and hence its round known. For this reason, it is
+    /// guaranteed that the marshal agent will request (and eventually receive)
+    /// the block from the network. If a wrong `round` was supplied the block
+    /// subscription to the marshal would stall indefinitely.
+    ///
+    /// # Walking the chain of ancestors
+    ///
+    /// An initial backfill will trigger an avalanche of backfills walking the
+    /// chain of block ancestors until an ancestor's height is found to be at or
+    /// below the latest height available to the execution layer. Each new
+    /// backfill is a message to the actor with `round` unset (because `round`
+    /// can not be discerned from the block itself). But since all of these
+    /// ancestor blocks are finalized (indirectly or directly since they are
+    /// ancestors of a notarized block), it is also guaranteed that the marshal
+    /// agent will eventually supply the block.
     #[instrument(
         skip_all,
         parent = &cause,
@@ -167,18 +201,6 @@ impl Executor {
         ),
     )]
     fn backfill(&mut self, cause: Span, round: Option<Round>, digest: Digest) {
-        is_send(
-            backfill_from_consensus(
-                cause,
-                digest,
-                self.execution_node.clone(),
-                self.my_mailbox.clone(),
-                self.genesis_block.clone(),
-                self.marshal.clone(),
-                round,
-            )
-            .boxed(),
-        );
         self.running_backfills
             .push(Box::pin(backfill_from_consensus(
                 Span::current(),
@@ -433,6 +455,10 @@ enum Command {
     },
 }
 
+/// Reads a block from consensus and forwards it to the execution layer.
+///
+/// Triggers a new backfill if its parent's height is below the latest
+/// block number available in the execution layer.
 #[instrument(
     skip_all,
     follows_from = [cause],
@@ -488,5 +514,3 @@ async fn backfill_from_consensus(
     }
     Ok(())
 }
-
-fn is_send<T: Send>(_: T) {}
