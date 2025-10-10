@@ -6,9 +6,9 @@ pub mod order;
 pub mod slots;
 
 pub use error::OrderError;
-pub use order::Order;
+pub use order::{Order, Side};
 
-use alloy::primitives::{Address, Bytes, IntoLogData, U256};
+use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256};
 use revm::{interpreter::instructions::utility::IntoU256, state::Bytecode};
 
 use crate::{
@@ -64,11 +64,28 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         new_id
     }
 
+    /// Compute deterministic book key from token pair
+    /// Matches Solidity _pairKey function
+    fn compute_book_key(&self, token_a: Address, token_b: Address) -> B256 {
+        // Sort tokens to ensure deterministic key
+        let (token_a, token_b) = if token_a < token_b {
+            (token_a, token_b)
+        } else {
+            (token_b, token_a)
+        };
+
+        // Compute keccak256(abi.encodePacked(tokenA, tokenB))
+        let mut buf = [0u8; 40];
+        buf[..20].copy_from_slice(token_a.as_slice());
+        buf[20..].copy_from_slice(token_b.as_slice());
+        keccak256(buf)
+    }
+
     /// Store a pending order
     fn store_pending_order(&mut self, order_id: u128, order: &Order) {
         let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
 
-        // Store order fields
+        // Store maker address
         self.storage
             .sstore(
                 self.address,
@@ -77,23 +94,29 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             )
             .expect("Storage write failed");
 
-        // TODO: Store actual book key (pair_key) once orderbook management is implemented
+        // Store book_key
         self.storage
             .sstore(
                 self.address,
                 order_slot + offsets::ORDER_BOOK_KEY_OFFSET,
-                order.linking_token().into_u256(),
+                U256::from_be_bytes(order.book_key().0),
             )
             .expect("Storage write failed");
 
+        // Store side (Bid = 0, Ask = 1)
+        let side_value = match order.side() {
+            Side::Bid => 0u8,
+            Side::Ask => 1u8,
+        };
         self.storage
             .sstore(
                 self.address,
                 order_slot + offsets::ORDER_SIDE_OFFSET,
-                U256::from(order.is_bid() as u8),
+                U256::from(side_value),
             )
             .expect("Storage write failed");
 
+        // Store tick
         self.storage
             .sstore(
                 self.address,
@@ -102,6 +125,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             )
             .expect("Storage write failed");
 
+        // Store original amount
         self.storage
             .sstore(
                 self.address,
@@ -110,15 +134,16 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             )
             .expect("Storage write failed");
 
+        // Store remaining amount
         self.storage
             .sstore(
                 self.address,
                 order_slot + offsets::ORDER_REMAINING_OFFSET,
-                U256::from(order.amount()),
+                U256::from(order.remaining()),
             )
             .expect("Storage write failed");
 
-        // Store flip order info
+        // Store is_flip boolean
         self.storage
             .sstore(
                 self.address,
@@ -127,15 +152,14 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             )
             .expect("Storage write failed");
 
-        if let Some(flip_tick) = order.flip_tick() {
-            self.storage
-                .sstore(
-                    self.address,
-                    order_slot + offsets::ORDER_FLIP_TICK_OFFSET,
-                    U256::from(flip_tick as i128 as u128),
-                )
-                .expect("Storage write failed");
-        }
+        // Store flip_tick (always store, even if 0 for non-flip orders)
+        self.storage
+            .sstore(
+                self.address,
+                order_slot + offsets::ORDER_FLIP_TICK_OFFSET,
+                U256::from(order.flip_tick() as i128 as u128),
+            )
+            .expect("Storage write failed");
     }
 }
 
@@ -221,16 +245,18 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         // TODO: Lookup linking token from TIP20 token
         let linking_token = Address::ZERO;
 
-        // TODO: Validate pair exists and tick is within bounds
+        // Compute book_key from token pair
+        let book_key = self.compute_book_key(token, linking_token);
 
+        // TODO: Validate pair exists and tick is within bounds
         // TODO: Balance management - debit from user or transfer from user
 
         // Create the order
         let order_id = self.increment_pending_order_id();
         let order = if is_bid {
-            Order::new_bid(order_id, *sender, token, linking_token, amount, tick)
+            Order::new_bid(order_id, *sender, book_key, amount, tick)
         } else {
-            Order::new_ask(order_id, *sender, token, linking_token, amount, tick)
+            Order::new_ask(order_id, *sender, book_key, amount, tick)
         };
 
         // Store in pending queue
@@ -272,23 +298,17 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         // TODO: Lookup linking token from TIP20 token
         let linking_token = Address::ZERO;
 
-        // TODO: Validate pair exists and both tick and flip_tick are within bounds
+        // Compute book_key from token pair
+        let book_key = self.compute_book_key(token, linking_token);
 
+        // TODO: Validate pair exists and both tick and flip_tick are within bounds
         // TODO: Balance management
 
         // Create the flip order (with validation)
         let order_id = self.increment_pending_order_id();
-        let order = Order::new_flip(
-            order_id,
-            *sender,
-            token,
-            linking_token,
-            amount,
-            is_bid,
-            tick,
-            flip_tick,
-        )
-        .expect("Invalid flip tick");
+        let side = if is_bid { Side::Bid } else { Side::Ask };
+        let order = Order::new_flip(order_id, *sender, book_key, amount, side, tick, flip_tick)
+            .expect("Invalid flip tick");
 
         // Store in pending queue
         self.store_pending_order(order_id, &order);
@@ -319,5 +339,130 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
 
     pub fn withdraw(&mut self, _token: Address, _amount: u128) {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::HashMapStorageProvider;
+    use alloy::primitives::address;
+
+    #[test]
+    fn test_compute_book_key_deterministic() {
+        let storage = HashMapStorageProvider::new(1);
+        let dex = StablecoinDex {
+            address: STABLECOIN_DEX_ADDRESS,
+            storage: &mut { storage },
+        };
+
+        let token_a = address!("0x1111111111111111111111111111111111111111");
+        let token_b = address!("0x2222222222222222222222222222222222222222");
+
+        // Key should be the same regardless of input order
+        let key_ab = dex.compute_book_key(token_a, token_b);
+        let key_ba = dex.compute_book_key(token_b, token_a);
+
+        assert_eq!(key_ab, key_ba, "Book key should be deterministic");
+    }
+
+    #[test]
+    fn test_compute_book_key_matches_expected_hash() {
+        let storage = HashMapStorageProvider::new(1);
+        let dex = StablecoinDex {
+            address: STABLECOIN_DEX_ADDRESS,
+            storage: &mut { storage },
+        };
+
+        // Use specific addresses to verify the hash
+        let token_a = address!("0x1111111111111111111111111111111111111111");
+        let token_b = address!("0x2222222222222222222222222222222222222222");
+
+        let key = dex.compute_book_key(token_a, token_b);
+
+        // Manually compute the expected hash:
+        // token_a < token_b, so order is token_a then token_b
+        let mut buf = [0u8; 40];
+        buf[..20].copy_from_slice(token_a.as_slice());
+        buf[20..].copy_from_slice(token_b.as_slice());
+        let expected = keccak256(buf);
+
+        assert_eq!(
+            key, expected,
+            "Computed book key should match keccak256 of sorted concatenated addresses"
+        );
+    }
+
+    #[test]
+    fn test_compute_book_key_with_same_token() {
+        let storage = HashMapStorageProvider::new(1);
+        let dex = StablecoinDex {
+            address: STABLECOIN_DEX_ADDRESS,
+            storage: &mut { storage },
+        };
+
+        let token = address!("0x1111111111111111111111111111111111111111");
+
+        // Key with same token should still work
+        let key = dex.compute_book_key(token, token);
+
+        // Verify it produces a valid hash
+        let mut buf = [0u8; 40];
+        buf[..20].copy_from_slice(token.as_slice());
+        buf[20..].copy_from_slice(token.as_slice());
+        let expected = keccak256(buf);
+
+        assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn test_compute_book_key_sorting() {
+        let storage = HashMapStorageProvider::new(1);
+        let dex = StablecoinDex {
+            address: STABLECOIN_DEX_ADDRESS,
+            storage: &mut { storage },
+        };
+
+        // Use addresses where one is clearly larger
+        let smaller = address!("0x0000000000000000000000000000000000000001");
+        let larger = address!("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
+
+        let key = dex.compute_book_key(larger, smaller);
+
+        // Compute expected: should sort to smaller, then larger
+        let mut buf = [0u8; 40];
+        buf[..20].copy_from_slice(smaller.as_slice());
+        buf[20..].copy_from_slice(larger.as_slice());
+        let expected = keccak256(buf);
+
+        assert_eq!(key, expected, "Tokens should be sorted before hashing");
+    }
+
+    #[test]
+    fn test_book_key_stored_in_order() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut dex = StablecoinDex::new(&mut storage);
+        dex.initialize();
+
+        let sender = address!("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        let token = address!("0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+
+        // Place an order (which computes and stores book_key internally)
+        let order_id = dex.place(&sender, token, 1000, true, 5);
+
+        // Compute what the book_key should be
+        let linking_token = Address::ZERO;
+        let expected_book_key = dex.compute_book_key(token, linking_token);
+
+        // Read stored book_key from storage
+        use crate::contracts::storage::slots::mapping_slot;
+        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
+        let stored_book_key_u256 = dex.sload(order_slot + offsets::ORDER_BOOK_KEY_OFFSET);
+        let stored_book_key = B256::from(stored_book_key_u256.to_be_bytes::<32>());
+
+        assert_eq!(
+            stored_book_key, expected_book_key,
+            "Stored book_key should match computed book_key"
+        );
     }
 }

@@ -3,6 +3,8 @@
 //! This module defines field offsets within structs stored in the DEX.
 //! These are NOT storage slots - they are offsets added to a base storage slot
 //! to access individual struct fields.
+//!
+//! These offsets match the Solidity reference implementation in StablecoinExchange.sol.
 
 use alloy::primitives::{U256, uint};
 
@@ -21,15 +23,16 @@ pub const ORDERBOOK_BEST_BID_TICK_OFFSET: U256 = uint!(4_U256);
 pub const ORDERBOOK_BEST_ASK_TICK_OFFSET: U256 = uint!(5_U256);
 
 // Order struct field offsets (relative to order base slot)
+// Matches Solidity Order struct layout
 /// Maker address field offset
 pub const ORDER_MAKER_OFFSET: U256 = uint!(0_U256);
-/// Book key field offset
+/// Orderbook key field offset
 pub const ORDER_BOOK_KEY_OFFSET: U256 = uint!(1_U256);
 /// Side (bid/ask) field offset
 pub const ORDER_SIDE_OFFSET: U256 = uint!(2_U256);
 /// Tick field offset
 pub const ORDER_TICK_OFFSET: U256 = uint!(3_U256);
-/// Amount field offset
+/// Original amount field offset
 pub const ORDER_AMOUNT_OFFSET: U256 = uint!(4_U256);
 /// Remaining amount field offset
 pub const ORDER_REMAINING_OFFSET: U256 = uint!(5_U256);
