@@ -111,7 +111,7 @@ mod tests {
 
         // Decode the return value (should be order_id)
         let order_id = u128::abi_decode(&result.bytes).unwrap();
-        assert_eq!(order_id, 1); // First order should have ID 1
+        assert_eq!(order_id, 0); // First order should have ID 0
 
         // Verify OrderPlaced event was emitted
         let events = &storage.events[&crate::STABLECOIN_DEX_ADDRESS];
@@ -154,7 +154,7 @@ mod tests {
 
         // Decode the return value
         let order_id = u128::abi_decode(&result.bytes).unwrap();
-        assert_eq!(order_id, 1);
+        assert_eq!(order_id, 0);
 
         // Verify FlipOrderPlaced event was emitted
         let events = &storage.events[&crate::STABLECOIN_DEX_ADDRESS];
@@ -194,7 +194,7 @@ mod tests {
             .call(&Bytes::from(place_call.abi_encode()), &sender)
             .unwrap();
         let order_id_1 = u128::abi_decode(&result.bytes).unwrap();
-        assert_eq!(order_id_1, 1);
+        assert_eq!(order_id_1, 0);
 
         // Place second order
         let place_call_2 = IStablecoinDex::placeCall {
@@ -207,7 +207,7 @@ mod tests {
             .call(&Bytes::from(place_call_2.abi_encode()), &sender)
             .unwrap();
         let order_id_2 = u128::abi_decode(&result.bytes).unwrap();
-        assert_eq!(order_id_2, 2);
+        assert_eq!(order_id_2, 1);
 
         // Place third order (flip)
         let place_flip_call = IStablecoinDex::placeFlipCall {
@@ -221,7 +221,7 @@ mod tests {
             .call(&Bytes::from(place_flip_call.abi_encode()), &sender)
             .unwrap();
         let order_id_3 = u128::abi_decode(&result.bytes).unwrap();
-        assert_eq!(order_id_3, 3);
+        assert_eq!(order_id_3, 2);
     }
 
     #[test]
@@ -362,7 +362,7 @@ mod tests {
         // Should succeed
         assert!(result.is_ok());
         let order_id = u128::abi_decode(&result.unwrap().bytes).unwrap();
-        assert_eq!(order_id, 1);
+        assert_eq!(order_id, 0);
     }
 
     #[test]

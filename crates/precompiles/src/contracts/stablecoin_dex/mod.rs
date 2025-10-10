@@ -54,14 +54,14 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             .to::<u128>()
     }
 
-    /// Increment and return new pending order ID
-    fn increment_pending_order_id(&mut self) -> u128 {
+    /// Get current pending order ID and increment for next use
+    fn get_and_increment_pending_order_id(&mut self) -> u128 {
         let current = self.get_pending_order_id();
-        let new_id = current + 1;
+        let next_id = current + 1;
         self.storage
-            .sstore(self.address, slots::PENDING_ORDER_ID, U256::from(new_id))
+            .sstore(self.address, slots::PENDING_ORDER_ID, U256::from(next_id))
             .expect("Storage write failed");
-        new_id
+        current
     }
 
     /// Compute deterministic book key from token pair
@@ -248,7 +248,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         // TODO: Balance management - debit from user or transfer from user
 
         // Create the order
-        let order_id = self.increment_pending_order_id();
+        let order_id = self.get_and_increment_pending_order_id();
         let order = if is_bid {
             Order::new_bid(order_id, *sender, book_key, amount, tick)
         } else {
@@ -301,7 +301,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         // TODO: Balance management
 
         // Create the flip order (with validation)
-        let order_id = self.increment_pending_order_id();
+        let order_id = self.get_and_increment_pending_order_id();
         let side = if is_bid { Side::Bid } else { Side::Ask };
         let order = Order::new_flip(order_id, *sender, book_key, amount, side, tick, flip_tick)
             .expect("Invalid flip tick");
