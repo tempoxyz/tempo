@@ -273,7 +273,7 @@ async fn generate_transactions(
                 chain_id: Some(chain_id),
                 nonce,
                 gas_price: TEMPO_BASE_FEE as u128,
-                gas_limit: 300000,
+                gas_limit: 30000,
                 to: TxKind::Call(token_address),
                 value: U256::ZERO,
                 input: ERC20::transferCall {
