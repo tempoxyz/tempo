@@ -1,4 +1,14 @@
 //! Drives the execution engine by forwarding consensus messages.
+//!
+//! # On the usage of the commonware-pacer
+//!
+//! The execution driver will contain `Pacer::pace` calls for all interactions
+//! with the execution layer. This is a no-op in production because the
+//! commonware tokio runtime ignores these. However, these are critical in
+//! e2e tests using the commonware deterministic runtime: since the execution
+//! layer is still running on the tokio runtime, these calls signal the
+//! deterministic runtime to spend real life time to wait for the execution
+//! layer calls to complete.
 
 use std::{sync::Arc, time::Duration};
 
