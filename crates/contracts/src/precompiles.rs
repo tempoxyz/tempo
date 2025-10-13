@@ -326,6 +326,10 @@ sol! {
         error Unauthorized();
         error InsufficientBalance();
         error InvalidFlipTick();
+        error TickOutOfBounds(int16 tick);
+        error InsufficientLiquidity();
+        error MaxInputExceeded();
+        error InsufficientOutput();
     }
 }
 
@@ -527,6 +531,48 @@ impl TIP20Error {
     /// Creates an error for transfers being disabled.
     pub const fn transfers_disabled() -> Self {
         Self::TransfersDisabled(ITIP20::TransfersDisabled {})
+    }
+}
+
+impl StablecoinDexError {
+    /// Creates an error when an order does not exist.
+    pub const fn order_does_not_exist() -> Self {
+        Self::OrderDoesNotExist(IStablecoinDex::OrderDoesNotExist {})
+    }
+
+    /// Creates an error for unauthorized access.
+    pub const fn unauthorized() -> Self {
+        Self::Unauthorized(IStablecoinDex::Unauthorized {})
+    }
+
+    /// Creates an error for insufficient balance.
+    pub const fn insufficient_balance() -> Self {
+        Self::InsufficientBalance(IStablecoinDex::InsufficientBalance {})
+    }
+
+    /// Creates an error for invalid flip tick.
+    pub const fn invalid_flip_tick() -> Self {
+        Self::InvalidFlipTick(IStablecoinDex::InvalidFlipTick {})
+    }
+
+    /// Creates an error when tick is out of valid bounds.
+    pub const fn tick_out_of_bounds(tick: i16) -> Self {
+        Self::TickOutOfBounds(IStablecoinDex::TickOutOfBounds { tick })
+    }
+
+    /// Creates an error for insufficient liquidity.
+    pub const fn insufficient_liquidity() -> Self {
+        Self::InsufficientLiquidity(IStablecoinDex::InsufficientLiquidity {})
+    }
+
+    /// Creates an error when maximum input is exceeded.
+    pub const fn max_input_exceeded() -> Self {
+        Self::MaxInputExceeded(IStablecoinDex::MaxInputExceeded {})
+    }
+
+    /// Creates an error when output is insufficient.
+    pub const fn insufficient_output() -> Self {
+        Self::InsufficientOutput(IStablecoinDex::InsufficientOutput {})
     }
 }
 
