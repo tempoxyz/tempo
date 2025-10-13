@@ -30,7 +30,10 @@ pub struct TempoHeader {
 impl TempoHeader {
     /// Returns the timestamp in milliseconds.
     pub fn timestamp_millis(&self) -> u64 {
-        self.inner.timestamp() * 1000 + self.timestamp_millis_part
+        self.inner
+            .timestamp()
+            .saturating_mul(1000)
+            .saturating_add(self.timestamp_millis_part)
     }
 }
 
