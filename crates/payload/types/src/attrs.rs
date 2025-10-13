@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, B256};
-use alloy_rpc_types_engine::PayloadAttributes;
+use alloy_rpc_types_engine::{PayloadAttributes, PayloadId};
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
 use reth_node_api::PayloadBuilderAttributes;
@@ -11,7 +11,7 @@ use std::{
 /// A handle for a payload interrupt flag.
 ///
 /// Can be fired using [`InterruptHandle::interrupt`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct InterruptHandle(Arc<atomic::AtomicBool>);
 
 impl InterruptHandle {
@@ -33,11 +33,24 @@ pub struct TempoPayloadBuilderAttributes {
 
 impl TempoPayloadBuilderAttributes {
     /// Creates new `TempoPayloadBuilderAttributes` with `inner` attributes.
-    pub fn new(inner: EthPayloadBuilderAttributes, timestamp_millis_part: u64) -> Self {
+    pub fn new(
+        id: PayloadId,
+        parent: B256,
+        suggested_fee_recipient: Address,
+        timestamp_millis: u64,
+    ) -> Self {
         Self {
-            inner,
-            interrupt: InterruptHandle(Arc::new(atomic::AtomicBool::new(false))),
-            timestamp_millis_part,
+            inner: EthPayloadBuilderAttributes {
+                id,
+                parent,
+                timestamp: timestamp_millis / 1000,
+                suggested_fee_recipient,
+                prev_randao: B256::ZERO,
+                withdrawals: Withdrawals::default(),
+                parent_beacon_block_root: Some(B256::ZERO),
+            },
+            interrupt: InterruptHandle::default(),
+            timestamp_millis_part: timestamp_millis % 1000,
         }
     }
 
@@ -70,10 +83,12 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
     where
         Self: Sized,
     {
-        Ok(Self::new(
-            EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
-            0,
-        ))
+        let inner = EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?;
+        Ok(Self {
+            inner,
+            interrupt: InterruptHandle::default(),
+            timestamp_millis_part: 0,
+        })
     }
 
     fn payload_id(&self) -> alloy_rpc_types_engine::payload::PayloadId {
