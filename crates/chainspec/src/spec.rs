@@ -66,7 +66,7 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     TempoChainSpec {
         inner: spec.map_header(|inner| TempoHeader {
             general_gas_limit: 0,
-            timestamp_millis_part: inner.timestamp * 1000,
+            timestamp_millis_part: 0,
             inner,
         }),
     }
