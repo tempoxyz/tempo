@@ -302,7 +302,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         let book_key = self.compute_book_key(token, quote_token);
 
         // Validate tick is within bounds
-        if tick < MIN_TICK || tick > MAX_TICK {
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             panic!("Tick out of bounds");
         }
 
@@ -310,7 +310,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let price = tick_to_price(tick);
-            let quote_amount = (amount as u128 * price as u128) / PRICE_SCALE as u128;
+            let quote_amount = (amount * price as u128) / PRICE_SCALE as u128;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -372,10 +372,10 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         let book_key = self.compute_book_key(token, quote_token);
 
         // Validate tick and flip_tick are within bounds
-        if tick < MIN_TICK || tick > MAX_TICK {
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             panic!("Tick out of bounds");
         }
-        if flip_tick < MIN_TICK || flip_tick > MAX_TICK {
+        if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
             panic!("Flip tick out of bounds");
         }
 
@@ -391,7 +391,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let price = tick_to_price(tick);
-            let quote_amount = (amount as u128 * price as u128) / PRICE_SCALE as u128;
+            let quote_amount = (amount * price as u128) / PRICE_SCALE as u128;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -490,7 +490,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             .expect("TODO: handle error")
             .to::<u128>();
 
-        let mut orderbook =
+        let orderbook =
             orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
         let mut level = orderbook::TickLevel::load(
             self.storage,
@@ -511,7 +511,6 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
 
             if is_bid {
                 if tick > orderbook.best_bid_tick {
-                    orderbook.best_bid_tick = tick;
                     orderbook::Orderbook::update_best_bid_tick(
                         self.storage,
                         self.address,
@@ -519,16 +518,13 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                         tick,
                     );
                 }
-            } else {
-                if tick < orderbook.best_ask_tick {
-                    orderbook.best_ask_tick = tick;
-                    orderbook::Orderbook::update_best_ask_tick(
-                        self.storage,
-                        self.address,
-                        B256::from(book_key),
-                        tick,
-                    );
-                }
+            } else if tick < orderbook.best_ask_tick {
+                orderbook::Orderbook::update_best_ask_tick(
+                    self.storage,
+                    self.address,
+                    B256::from(book_key),
+                    tick,
+                );
             }
         } else {
             let prev_tail_slot = mapping_slot(prev_tail.to_be_bytes(), slots::ORDERS);
@@ -732,7 +728,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                 tick,
                 is_bid,
             );
-            return next;
+            next
         } else {
             level.store(
                 self.storage,
@@ -741,7 +737,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                 tick,
                 is_bid,
             );
-            return order_id;
+            order_id
         }
     }
 
