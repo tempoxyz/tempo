@@ -1018,6 +1018,52 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             panic!("Order already filled");
         }
 
+        // Check if the order is still pending (not yet in active orderbook)
+        let next_order_id = self
+            .storage
+            .sload(self.address, slots::NEXT_ORDER_ID)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        // If the order is pending, delete it without touching the orderbook
+        if order_id > next_order_id {
+            let orderbook = orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
+            let token = if is_bid { orderbook.quote } else { orderbook.base };
+
+            // For bids, calculate quote amount to refund; for asks, refund base amount
+            let refund_amount = if is_bid {
+                let price = orderbook::tick_to_price(tick);
+                (remaining * price as u128) / orderbook::PRICE_SCALE as u128
+            } else {
+                remaining
+            };
+
+            // Credit remaining tokens to user's withdrawable balance
+            self.add_balance(maker, token, refund_amount);
+
+            // Clear the order from storage
+            self.storage
+                .sstore(
+                    self.address,
+                    order_slot + offsets::ORDER_MAKER_OFFSET,
+                    U256::ZERO,
+                )
+                .expect("TODO: handle error");
+
+            // Emit OrderCancelled event
+            self.storage
+                .emit_event(
+                    self.address,
+                    StablecoinDexEvent::OrderCancelled(IStablecoinDex::OrderCancelled {
+                        orderId: order_id,
+                    })
+                    .into_log_data(),
+                )
+                .expect("Event emission failed");
+
+            return;
+        }
+
         let prev = self
             .storage
             .sload(self.address, order_slot + offsets::ORDER_PREV_OFFSET)
