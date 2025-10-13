@@ -294,14 +294,32 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         is_bid: bool,
         tick: i16,
     ) -> u128 {
-        // TODO: Lookup linking token from TIP20 token
-        let linking_token = Address::ZERO;
+        // Lookup quote token from TIP20 token
+        let quote_token = TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
+            .quote_token()
+            .expect("Failed to get quote token");
 
         // Compute book_key from token pair
-        let book_key = self.compute_book_key(token, linking_token);
+        let book_key = self.compute_book_key(token, quote_token);
 
-        // TODO: Validate pair exists and tick is within bounds
-        // TODO: Balance management - debit from user or transfer from user
+        // Validate tick is within bounds
+        if tick < MIN_TICK || tick > MAX_TICK {
+            panic!("Tick out of bounds");
+        }
+
+        // Calculate escrow amount and token based on order side
+        let (escrow_token, escrow_amount) = if is_bid {
+            // For bids, escrow quote tokens based on price
+            let price = tick_to_price(tick);
+            let quote_amount = (amount as u128 * price as u128) / PRICE_SCALE as u128;
+            (quote_token, quote_amount)
+        } else {
+            // For asks, escrow base tokens
+            (token, amount)
+        };
+
+        // Debit from user's balance or transfer from wallet
+        self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount);
 
         // Create the order
         let order_id = self.get_and_increment_pending_order_id();
@@ -347,14 +365,43 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         tick: i16,
         flip_tick: i16,
     ) -> u128 {
-        // TODO: Lookup linking token from TIP20 token
-        let linking_token = Address::ZERO;
+        // Lookup quote token from TIP20 token
+        let quote_token = TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
+            .quote_token()
+            .expect("Failed to get quote token");
 
         // Compute book_key from token pair
-        let book_key = self.compute_book_key(token, linking_token);
+        let book_key = self.compute_book_key(token, quote_token);
 
-        // TODO: Validate pair exists and both tick and flip_tick are within bounds
-        // TODO: Balance management
+        // Validate tick and flip_tick are within bounds
+        if tick < MIN_TICK || tick > MAX_TICK {
+            panic!("Tick out of bounds");
+        }
+        if flip_tick < MIN_TICK || flip_tick > MAX_TICK {
+            panic!("Flip tick out of bounds");
+        }
+
+        // Validate flip_tick relationship to tick based on order side
+        if is_bid && flip_tick <= tick {
+            panic!("Flip tick must be greater than tick for bid orders");
+        }
+        if !is_bid && flip_tick >= tick {
+            panic!("Flip tick must be less than tick for ask orders");
+        }
+
+        // Calculate escrow amount and token based on order side
+        let (escrow_token, escrow_amount) = if is_bid {
+            // For bids, escrow quote tokens based on price
+            let price = tick_to_price(tick);
+            let quote_amount = (amount as u128 * price as u128) / PRICE_SCALE as u128;
+            (quote_token, quote_amount)
+        } else {
+            // For asks, escrow base tokens
+            (token, amount)
+        };
+
+        // Debit from user's balance or transfer from wallet
+        self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount);
 
         // Create the flip order (with validation)
         let order_id = self.get_and_increment_pending_order_id();
