@@ -383,9 +383,7 @@ fn verify_webauthn_data_internal(
 
     // Compute message hash according to spec:
     // messageHash = sha256(authenticatorData || sha256(clientDataJSON))
-    let mut hasher = Sha256::new();
-    hasher.update(client_data_json);
-    let client_data_hash = hasher.finalize();
+    let client_data_hash = Sha256::digest(client_data_json);
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(authenticator_data);
@@ -458,9 +456,7 @@ mod tests {
 
         // Create a message and sign it
         let message = b"test message";
-        let mut hasher = Sha256::new();
-        hasher.update(message);
-        let message_hash = B256::from_slice(&hasher.finalize());
+        let message_hash = B256::from_slice(&Sha256::digest(message));
 
         // Sign the message
         let signature: p256::ecdsa::Signature = signing_key.sign(message_hash.as_slice());
@@ -595,9 +591,7 @@ mod tests {
         let message_hash = result.unwrap();
 
         // Manually compute expected hash
-        let mut hasher = Sha256::new();
-        hasher.update(client_data.as_bytes());
-        let client_data_hash = hasher.finalize();
+        let client_data_hash = Sha256::digest(client_data.as_bytes());
 
         let mut final_hasher = Sha256::new();
         final_hasher.update(&auth_data);
