@@ -7,6 +7,9 @@ use core::mem;
 /// Account abstraction transaction type byte (0x5)
 pub const AA_TX_TYPE_ID: u8 = 0x5;
 
+/// Magic byte for the fee payer signature
+pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
+
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
@@ -208,52 +211,32 @@ impl TxAA {
     /// Calculate the fee payer signature hash
     /// This hash is signed by the fee payer to sponsor the transaction
     pub fn fee_payer_signature_hash(&self, sender: Address) -> B256 {
-        let mut buf = Vec::new();
+        // Use helper functions for consistent encoding
+        let payload_length = self.rlp_encoded_fields_length(|_| sender.length(), false);
 
-        // Type byte
-        buf.put_u8(AA_TX_TYPE_ID);
+        let mut buf = Vec::with_capacity(
+            1 + alloy_rlp::Header { list: true, payload_length }.length_with_payload()
+        );
 
-        // Compute payload length (fields + sender address, no fee_token)
-        let payload_length = self.chain_id.length() +
-            self.max_priority_fee_per_gas.length() +
-            self.max_fee_per_gas.length() +
-            self.gas_limit.length() +
-            self.calls.length() +
-            self.access_list.length() +
-            self.nonce_key.length() +
-            self.nonce_sequence.length() +
-            self.valid_before.length() +
-            if self.valid_after.is_some() {
-                self.valid_after.unwrap().length()
-            } else {
-                1
-            } +
-            1 + // fee_token = empty (skip)
-            sender.length(); // sender instead of fee_payer_signature
+        // Magic byte for fee payer signature (like TxFeeToken)
+        buf.put_u8(FEE_PAYER_SIGNATURE_MAGIC_BYTE);
 
+        // RLP header
         alloy_rlp::Header {
             list: true,
             payload_length,
         }
         .encode(&mut buf);
 
-        // Encode fields
-        self.chain_id.encode(&mut buf);
-        self.max_priority_fee_per_gas.encode(&mut buf);
-        self.max_fee_per_gas.encode(&mut buf);
-        self.gas_limit.encode(&mut buf);
-        self.calls.encode(&mut buf);
-        self.access_list.encode(&mut buf);
-        self.nonce_key.encode(&mut buf);
-        self.nonce_sequence.encode(&mut buf);
-        self.valid_before.encode(&mut buf);
-        if let Some(valid_after) = self.valid_after {
-            valid_after.encode(&mut buf);
-        } else {
-            buf.put_u8(EMPTY_STRING_CODE);
-        }
-        buf.put_u8(EMPTY_STRING_CODE); // skip fee_token
-        sender.encode(&mut buf); // encode sender instead of fee_payer_signature
+        // Encode fields using helper (skip_fee_token = false, so fee_token IS included)
+        self.rlp_encode_fields(
+            &mut buf,
+            |_, out| {
+                // Encode sender address instead of fee_payer_signature
+                sender.encode(out);
+            },
+            false, // skip_fee_token = FALSE - fee payer commits to fee_token!
+        );
 
         keccak256(&buf)
     }
@@ -261,7 +244,13 @@ impl TxAA {
 
 impl TxAA {
     /// Outputs the length of the transaction's fields, without a RLP header.
-    pub(crate) fn rlp_encoded_fields_length(&self) -> usize {
+    ///
+    /// This is the internal helper that takes closures for flexible encoding.
+    fn rlp_encoded_fields_length(
+        &self,
+        signature_length: impl FnOnce(&Option<Signature>) -> usize,
+        skip_fee_token: bool,
+    ) -> usize {
         self.chain_id.length() +
             self.max_priority_fee_per_gas.length() +
             self.max_fee_per_gas.length() +
@@ -282,24 +271,20 @@ impl TxAA {
                 1 // EMPTY_STRING_CODE
             } +
             // fee_token (optional Address)
-            if let Some(addr) = self.fee_token {
+            if !skip_fee_token && let Some(addr) = self.fee_token {
                 addr.length()
             } else {
                 1 // EMPTY_STRING_CODE
             } +
-            // fee_payer_signature (optional)
-            if let Some(sig) = &self.fee_payer_signature {
-                alloy_rlp::Header {
-                    list: true,
-                    payload_length: sig.rlp_rs_len() + sig.v().length(),
-                }
-                .length_with_payload()
-            } else {
-                1 // EMPTY_STRING_CODE
-            }
+            signature_length(&self.fee_payer_signature)
     }
 
-    pub(crate) fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
+    fn rlp_encode_fields(
+        &self,
+        out: &mut dyn BufMut,
+        encode_signature: impl FnOnce(&Option<Signature>, &mut dyn BufMut),
+        skip_fee_token: bool,
+    ) {
         self.chain_id.encode(out);
         self.max_priority_fee_per_gas.encode(out);
         self.max_fee_per_gas.encode(out);
@@ -326,25 +311,55 @@ impl TxAA {
             out.put_u8(EMPTY_STRING_CODE);
         }
 
-        // Encode fee_token
-        if let Some(addr) = self.fee_token {
-            addr.encode(out);
+        // Encode fee_token (skip if requested)
+        if !skip_fee_token {
+            if let Some(addr) = self.fee_token {
+                addr.encode(out);
+            } else {
+                out.put_u8(EMPTY_STRING_CODE);
+            }
         } else {
             out.put_u8(EMPTY_STRING_CODE);
         }
 
-        // Encode fee_payer_signature
-        if let Some(signature) = &self.fee_payer_signature {
-            let payload_length = signature.rlp_rs_len() + signature.v().length();
-            alloy_rlp::Header {
-                list: true,
-                payload_length,
-            }
-            .encode(out);
-            signature.write_rlp_vrs(out, signature.v());
-        } else {
-            out.put_u8(EMPTY_STRING_CODE);
-        }
+        encode_signature(&self.fee_payer_signature, out);
+    }
+
+    /// Public version for normal RLP encoding
+    pub(crate) fn rlp_encoded_fields_length_default(&self) -> usize {
+        self.rlp_encoded_fields_length(
+            |signature| {
+                signature.map_or(1, |s| {
+                    alloy_rlp::Header {
+                        list: true,
+                        payload_length: s.rlp_rs_len() + s.v().length(),
+                    }
+                    .length_with_payload()
+                })
+            },
+            false,
+        )
+    }
+
+    /// Public version for normal RLP encoding
+    pub(crate) fn rlp_encode_fields_default(&self, out: &mut dyn BufMut) {
+        self.rlp_encode_fields(
+            out,
+            |signature, out| {
+                if let Some(signature) = signature {
+                    let payload_length = signature.rlp_rs_len() + signature.v().length();
+                    alloy_rlp::Header {
+                        list: true,
+                        payload_length,
+                    }
+                    .encode(out);
+                    signature.write_rlp_vrs(out, signature.v());
+                } else {
+                    out.put_u8(EMPTY_STRING_CODE);
+                }
+            },
+            false,
+        )
     }
 }
 
@@ -543,31 +558,8 @@ impl SignableTransaction<Signature> for TxAA {
         // Type byte
         out.put_u8(Self::tx_type());
 
-        // Compute payload length (all fields, no signature)
-        let payload_length = self.chain_id.length()
-            + self.max_priority_fee_per_gas.length()
-            + self.max_fee_per_gas.length()
-            + self.gas_limit.length()
-            + self.calls.length()
-            + self.access_list.length()
-            + self.nonce_key.length()
-            + self.nonce_sequence.length()
-            + self.valid_before.length()
-            + if self.valid_after.is_some() {
-                self.valid_after.unwrap().length()
-            } else {
-                1
-            }
-            + if !skip_fee_token && self.fee_token.is_some() {
-                self.fee_token.unwrap().length()
-            } else {
-                1
-            }
-            + if self.fee_payer_signature.is_some() {
-                1 // placeholder for fee_payer_signature when signing
-            } else {
-                1
-            };
+        // Compute payload length using helper
+        let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
 
         alloy_rlp::Header {
             list: true,
@@ -575,63 +567,23 @@ impl SignableTransaction<Signature> for TxAA {
         }
         .encode(out);
 
-        // Encode fields
-        self.chain_id.encode(out);
-        self.max_priority_fee_per_gas.encode(out);
-        self.max_fee_per_gas.encode(out);
-        self.gas_limit.encode(out);
-        self.calls.encode(out);
-        self.access_list.encode(out);
-        self.nonce_key.encode(out);
-        self.nonce_sequence.encode(out);
-        self.valid_before.encode(out);
-        if let Some(valid_after) = self.valid_after {
-            valid_after.encode(out);
-        } else {
-            out.put_u8(EMPTY_STRING_CODE);
-        }
-
-        // fee_token: skip if fee_payer_signature is present
-        if !skip_fee_token {
-            if let Some(addr) = self.fee_token {
-                addr.encode(out);
-            } else {
-                out.put_u8(EMPTY_STRING_CODE);
-            }
-        } else {
-            out.put_u8(EMPTY_STRING_CODE);
-        }
-
-        // fee_payer_signature placeholder
-        if self.fee_payer_signature.is_some() {
-            out.put_u8(0); // placeholder byte
-        } else {
-            out.put_u8(EMPTY_STRING_CODE);
-        }
+        // Encode fields using helper
+        self.rlp_encode_fields(
+            out,
+            |signature, out| {
+                if signature.is_some() {
+                    out.put_u8(0); // placeholder byte
+                } else {
+                    out.put_u8(EMPTY_STRING_CODE);
+                }
+            },
+            skip_fee_token,
+        );
     }
 
     fn payload_len_for_signature(&self) -> usize {
         let skip_fee_token = self.fee_payer_signature.is_some();
-        let payload_length = self.chain_id.length()
-            + self.max_priority_fee_per_gas.length()
-            + self.max_fee_per_gas.length()
-            + self.gas_limit.length()
-            + self.calls.length()
-            + self.access_list.length()
-            + self.nonce_key.length()
-            + self.nonce_sequence.length()
-            + self.valid_before.length()
-            + if self.valid_after.is_some() {
-                self.valid_after.unwrap().length()
-            } else {
-                1
-            }
-            + if !skip_fee_token && self.fee_token.is_some() {
-                self.fee_token.unwrap().length()
-            } else {
-                1
-            }
-            + 1; // fee_payer_signature placeholder
+        let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
 
         1 + alloy_rlp::Header {
             list: true,
@@ -644,17 +596,17 @@ impl SignableTransaction<Signature> for TxAA {
 impl Encodable for TxAA {
     fn encode(&self, out: &mut dyn BufMut) {
         // Encode as RLP list of fields
-        let payload_length = self.rlp_encoded_fields_length();
+        let payload_length = self.rlp_encoded_fields_length_default();
         alloy_rlp::Header {
             list: true,
             payload_length,
         }
         .encode(out);
-        self.rlp_encode_fields(out);
+        self.rlp_encode_fields_default(out);
     }
 
     fn length(&self) -> usize {
-        let payload_length = self.rlp_encoded_fields_length();
+        let payload_length = self.rlp_encoded_fields_length_default();
         alloy_rlp::Header {
             list: true,
             payload_length,
@@ -959,5 +911,320 @@ mod tests {
         // Without base fee
         let effective2 = tx.effective_gas_price(None);
         assert_eq!(effective2, 2000000000); // max_fee_per_gas
+    }
+
+    #[test]
+    fn test_fee_payer_commits_to_fee_token() {
+        // This test verifies that the fee payer signature commits to the fee_token value
+        // i.e., changing fee_token changes the fee_payer_signature_hash
+
+        let sender = address!("0000000000000000000000000000000000000001");
+        let token1 = address!("0000000000000000000000000000000000000002");
+        let token2 = address!("0000000000000000000000000000000000000003");
+
+        let dummy_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        // Transaction with fee_token = None
+        let tx_no_token = TxAA {
+            chain_id: 1,
+            fee_token: None,
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![dummy_call.clone()],
+            nonce_key: 0,
+            nonce_sequence: 1,
+            fee_payer_signature: Some(Signature::test_signature()),
+            valid_before: 0,
+            valid_after: None,
+            access_list: Default::default(),
+        };
+
+        // Transaction with fee_token = token1
+        let tx_token1 = TxAA {
+            fee_token: Some(token1),
+            ..tx_no_token.clone()
+        };
+
+        // Transaction with fee_token = token2
+        let tx_token2 = TxAA {
+            fee_token: Some(token2),
+            ..tx_no_token.clone()
+        };
+
+        // Calculate fee payer signature hashes
+        let fee_payer_hash_no_token = tx_no_token.fee_payer_signature_hash(sender);
+        let fee_payer_hash_token1 = tx_token1.fee_payer_signature_hash(sender);
+        let fee_payer_hash_token2 = tx_token2.fee_payer_signature_hash(sender);
+
+        // All three fee payer hashes should be different (fee payer commits to fee_token)
+        assert_ne!(
+            fee_payer_hash_no_token, fee_payer_hash_token1,
+            "Fee payer hash should change when fee_token changes from None to Some"
+        );
+        assert_ne!(
+            fee_payer_hash_token1, fee_payer_hash_token2,
+            "Fee payer hash should change when fee_token changes from token1 to token2"
+        );
+        assert_ne!(
+            fee_payer_hash_no_token, fee_payer_hash_token2,
+            "Fee payer hash should be different for None vs token2"
+        );
+
+        // Calculate user signature hashes (what the sender signs)
+        let user_hash_no_token = tx_no_token.signature_hash();
+        let user_hash_token1 = tx_token1.signature_hash();
+        let user_hash_token2 = tx_token2.signature_hash();
+
+        // All three user hashes should be THE SAME (user skips fee_token when fee_payer is present)
+        assert_eq!(
+            user_hash_no_token, user_hash_token1,
+            "User hash should be the same regardless of fee_token (user skips fee_token)"
+        );
+        assert_eq!(
+            user_hash_token1, user_hash_token2,
+            "User hash should be the same regardless of fee_token (user skips fee_token)"
+        );
+        assert_eq!(
+            user_hash_no_token, user_hash_token2,
+            "User hash should be the same regardless of fee_token (user skips fee_token)"
+        );
+    }
+
+    #[test]
+    fn test_fee_payer_signature_uses_magic_byte() {
+        // Verify that fee payer signature hash uses the magic byte 0x78
+
+        let sender = address!("0000000000000000000000000000000000000001");
+        let dummy_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        let tx = TxAA {
+            chain_id: 1,
+            fee_token: None,
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![dummy_call],
+            nonce_key: 0,
+            nonce_sequence: 1,
+            fee_payer_signature: Some(Signature::test_signature()),
+            valid_before: 0,
+            valid_after: None,
+            access_list: Default::default(),
+        };
+
+        // The fee_payer_signature_hash should start with the magic byte
+        // We can't directly inspect the hash construction, but we can verify it's different
+        // from the sender signature hash which uses AA_TX_TYPE_ID (0x5)
+        let sender_hash = tx.signature_hash();
+        let fee_payer_hash = tx.fee_payer_signature_hash(sender);
+
+        // These should be different because they use different type bytes
+        assert_ne!(
+            sender_hash, fee_payer_hash,
+            "Sender and fee payer hashes should be different (different magic bytes)"
+        );
+
+    }
+
+    #[test]
+    fn test_user_signature_without_fee_payer() {
+        // Test that user signature hash INCLUDES fee_token when fee_payer is NOT present
+
+        let token1 = address!("0000000000000000000000000000000000000002");
+        let token2 = address!("0000000000000000000000000000000000000003");
+
+        let dummy_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        // Transaction WITHOUT fee_payer, fee_token = None
+        let tx_no_payer_no_token = TxAA {
+            chain_id: 1,
+            fee_token: None,
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![dummy_call.clone()],
+            nonce_key: 0,
+            nonce_sequence: 1,
+            fee_payer_signature: None, // No fee payer
+            valid_before: 0,
+            valid_after: None,
+            access_list: Default::default(),
+        };
+
+        // Transaction WITHOUT fee_payer, fee_token = token1
+        let tx_no_payer_token1 = TxAA {
+            fee_token: Some(token1),
+            ..tx_no_payer_no_token.clone()
+        };
+
+        // Transaction WITHOUT fee_payer, fee_token = token2
+        let tx_no_payer_token2 = TxAA {
+            fee_token: Some(token2),
+            ..tx_no_payer_no_token.clone()
+        };
+
+        // Calculate user signature hashes
+        let hash_no_token = tx_no_payer_no_token.signature_hash();
+        let hash_token1 = tx_no_payer_token1.signature_hash();
+        let hash_token2 = tx_no_payer_token2.signature_hash();
+
+        // All three hashes should be DIFFERENT (user includes fee_token when no fee_payer)
+        assert_ne!(
+            hash_no_token, hash_token1,
+            "User hash should change when fee_token changes (no fee_payer)"
+        );
+        assert_ne!(
+            hash_token1, hash_token2,
+            "User hash should change when fee_token changes (no fee_payer)"
+        );
+        assert_ne!(
+            hash_no_token, hash_token2,
+            "User hash should change when fee_token changes (no fee_payer)"
+        );
+    }
+
+    #[test]
+    fn test_rlp_encoding_includes_fee_token() {
+        // Test that RLP encoding always includes fee_token in the encoded data
+
+        let token = address!("0000000000000000000000000000000000000002");
+
+        let dummy_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        // Transaction with fee_token
+        let tx_with_token = TxAA {
+            chain_id: 1,
+            fee_token: Some(token),
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![dummy_call.clone()],
+            nonce_key: 0,
+            nonce_sequence: 1,
+            fee_payer_signature: Some(Signature::test_signature()),
+            valid_before: 0,
+            valid_after: None,
+            access_list: Default::default(),
+        };
+
+        // Transaction without fee_token
+        let tx_without_token = TxAA {
+            fee_token: None,
+            ..tx_with_token.clone()
+        };
+
+        // Encode both transactions
+        let mut buf_with = Vec::new();
+        tx_with_token.encode(&mut buf_with);
+
+        let mut buf_without = Vec::new();
+        tx_without_token.encode(&mut buf_without);
+
+        // The encoded bytes should be different lengths
+        assert_ne!(
+            buf_with.len(),
+            buf_without.len(),
+            "RLP encoding should include fee_token in the encoded data"
+        );
+
+        // The one with token should be longer (20 bytes for address vs 1 byte for empty)
+        assert!(
+            buf_with.len() > buf_without.len(),
+            "Transaction with fee_token should have longer encoding"
+        );
+
+        // Decode and verify
+        let decoded_with = TxAA::decode(&mut buf_with.as_slice()).unwrap();
+        let decoded_without = TxAA::decode(&mut buf_without.as_slice()).unwrap();
+
+        assert_eq!(decoded_with.fee_token, Some(token));
+        assert_eq!(decoded_without.fee_token, None);
+    }
+
+    #[test]
+    fn test_signature_hash_behavior_with_and_without_fee_payer() {
+        // Comprehensive test showing all signature hash behaviors
+
+        let token = address!("0000000000000000000000000000000000000002");
+
+        let dummy_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        // Scenario 1: No fee payer, no token
+        let tx_no_payer_no_token = TxAA {
+            chain_id: 1,
+            fee_token: None,
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![dummy_call.clone()],
+            nonce_key: 0,
+            nonce_sequence: 1,
+            fee_payer_signature: None,
+            valid_before: 0,
+            valid_after: None,
+            access_list: Default::default(),
+        };
+
+        // Scenario 2: No fee payer, with token
+        let tx_no_payer_with_token = TxAA {
+            fee_token: Some(token),
+            ..tx_no_payer_no_token.clone()
+        };
+
+        // Scenario 3: With fee payer, no token
+        let tx_with_payer_no_token = TxAA {
+            fee_payer_signature: Some(Signature::test_signature()),
+            ..tx_no_payer_no_token.clone()
+        };
+
+        // Scenario 4: With fee payer, with token
+        let tx_with_payer_with_token = TxAA {
+            fee_token: Some(token),
+            fee_payer_signature: Some(Signature::test_signature()),
+            ..tx_no_payer_no_token.clone()
+        };
+
+        // Calculate user signature hashes
+        let hash1 = tx_no_payer_no_token.signature_hash();
+        let hash2 = tx_no_payer_with_token.signature_hash();
+        let hash3 = tx_with_payer_no_token.signature_hash();
+        let hash4 = tx_with_payer_with_token.signature_hash();
+
+        // Without fee_payer: user includes fee_token, so hash1 != hash2
+        assert_ne!(
+            hash1, hash2,
+            "User hash changes with fee_token when no fee_payer"
+        );
+
+        // With fee_payer: user skips fee_token, so hash3 == hash4
+        assert_eq!(
+            hash3, hash4,
+            "User hash ignores fee_token when fee_payer is present"
+        );
+
+        // Hashes without fee_payer should differ from hashes with fee_payer
+        // (because skip_fee_token logic changes)
+        assert_ne!(hash1, hash3, "User hash changes when fee_payer is added");
     }
 }

@@ -1,9 +1,9 @@
 use alloy::{
     network::EthereumWallet,
-    primitives::{Address, B256, Bytes, U256},
+    primitives::{Address, B256, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
     signers::{SignerSync, local::MnemonicBuilder},
-    sol_types::SolCall,
+    sol_types::{SolCall},
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
@@ -68,7 +68,7 @@ async fn fund_address_with_fee_tokens(
         "✓ Funded {} with {} tokens in block {}",
         recipient,
         amount,
-        funding_payload.block().number
+        funding_payload.block().inner.number
     );
 
     Ok(())
@@ -164,7 +164,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
     setup.node.rpc.inject_tx(encoded.into()).await?;
     let payload = setup.node.advance_block().await?;
 
-    println!("✓ AA transaction mined in block {}", payload.block().number);
+    println!("✓ AA transaction mined in block {}", payload.block().inner.number);
 
     // Verify alice's nonce incremented (protocol nonce)
     // This proves the transaction was successfully mined and executed
@@ -248,7 +248,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
     // Inject transaction and mine block
     setup.node.rpc.inject_tx(encoded1.into()).await?;
     let payload = setup.node.advance_block().await?;
-    println!("✓ Transaction mined in block {}", payload.block().number);
+    println!("✓ Transaction mined in block {}", payload.block().inner.number);
 
     // Step 2: Verify nonce was incremented
     println!("\n2. Verifying nonce increment");
@@ -428,9 +428,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
 
     // Compute the message hash for P256 signature according to WebAuthn spec:
     // messageHash = sha256(authenticatorData || sha256(clientDataJSON))
-    let mut hasher = Sha256::new();
-    hasher.update(client_data_json.as_bytes());
-    let client_data_hash = hasher.finalize();
+    let client_data_hash = Sha256::digest(client_data_json.as_bytes());
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data);
@@ -500,7 +498,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
 
     println!(
         "✓ AA transaction with WebAuthn signature mined in block {}",
-        payload.block().number
+        payload.block().inner.number
     );
 
     // Verify the block contains transactions
@@ -609,9 +607,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
 
     // Compute message hash
-    let mut hasher = Sha256::new();
-    hasher.update(client_data_json1.as_bytes());
-    let client_data_hash1 = hasher.finalize();
+    let client_data_hash1 = Sha256::digest(client_data_json1.as_bytes());
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data1);
@@ -662,9 +658,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
 
     // Compute message hash
-    let mut hasher = Sha256::new();
-    hasher.update(client_data_json2.as_bytes());
-    let client_data_hash2 = hasher.finalize();
+    let client_data_hash2 = Sha256::digest(client_data_json2.as_bytes());
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data2);
@@ -716,9 +710,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
 
     // Compute message hash
-    let mut hasher = Sha256::new();
-    hasher.update(client_data_json3.as_bytes());
-    let client_data_hash3 = hasher.finalize();
+    let client_data_hash3 = Sha256::digest(client_data_json3.as_bytes());
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data3);
@@ -768,9 +760,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
 
     // Compute message hash
-    let mut hasher = Sha256::new();
-    hasher.update(client_data_json4.as_bytes());
-    let client_data_hash4 = hasher.finalize();
+    let client_data_hash4 = Sha256::digest(client_data_json4.as_bytes());
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data4);
@@ -841,9 +831,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
 
     // Sign with correct key but wrong data
-    let mut hasher = Sha256::new();
-    hasher.update(bad_client_data.as_bytes());
-    let client_hash = hasher.finalize();
+    let client_hash = Sha256::digest(bad_client_data.as_bytes());
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&bad_auth_data);
@@ -1009,9 +997,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     // For P256, we need to optionally pre-hash the message
     // Let's test with pre_hash = true (common for Web Crypto API)
-    let mut hasher = Sha256::new();
-    hasher.update(batch_sig_hash.as_slice());
-    let pre_hashed = hasher.finalize();
+    let pre_hashed = Sha256::digest(batch_sig_hash.as_slice());
 
     // Sign the pre-hashed message
     let p256_signature: p256::ecdsa::Signature = signing_key.sign(&pre_hashed);
@@ -1074,7 +1060,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     println!(
         "✓ Batch transaction mined in block {}",
-        batch_payload.block().number
+        batch_payload.block().inner.number
     );
 
     // Verify the block contains the transaction
@@ -1155,3 +1141,179 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Setup test node
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
+
+    let http_url = setup.node.rpc_url();
+
+    // Fee payer is the funded TEST_MNEMONIC account
+    let fee_payer_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let fee_payer_addr = fee_payer_signer.address();
+
+    // User is a fresh random account with no balance
+    let user_signer = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = user_signer.address();
+
+    // Create provider without wallet (we'll sign manually)
+    let provider = ProviderBuilder::new().connect_http(http_url.clone());
+
+    let chain_id = provider.get_chain_id().await?;
+
+    println!("\n=== Testing AA Fee Payer Transaction ===\n");
+    println!("Fee payer address: {}", fee_payer_addr);
+    println!("User address: {} (unfunded)", user_addr);
+
+    // Verify user has ZERO balance in DEFAULT_FEE_TOKEN
+    let user_token_balance = tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(user_addr)
+        .call()
+        .await?;
+    assert_eq!(
+        user_token_balance,
+        U256::ZERO,
+        "User should have zero balance"
+    );
+    println!("User token balance: {} (expected: 0)", user_token_balance);
+
+    // Get fee payer's balance before transaction
+    let fee_payer_balance_before =
+        tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+            .balanceOf(fee_payer_addr)
+            .call()
+            .await?;
+    println!(
+        "Fee payer balance before: {} tokens",
+        fee_payer_balance_before
+    );
+
+    // Create AA transaction with fee payer signature placeholder
+    let recipient = Address::random();
+    let mut tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 100_000,
+        calls: vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: 0, // Protocol nonce
+        nonce_sequence: 0, // First transaction for user
+        fee_token: None, // Use DEFAULT_FEE_TOKEN
+        fee_payer_signature: Some(Signature::new(
+            U256::ZERO,
+            U256::ZERO,
+            false,
+        )), // Placeholder
+        valid_before: 0,
+        valid_after: None,
+        access_list: Default::default(),
+    };
+
+    println!("Created AA transaction with fee payer placeholder");
+
+    // Step 1: User signs the transaction
+    let user_sig_hash = tx.signature_hash();
+    let user_signature = user_signer.sign_hash_sync(&user_sig_hash)?;
+    println!("✓ User signed transaction");
+
+    // Verify user signature is valid
+    assert_eq!(
+        user_signature
+            .recover_address_from_prehash(&user_sig_hash)
+            .unwrap(),
+        user_addr,
+        "User signature should recover to user address"
+    );
+
+    // Step 2: Fee payer signs the fee payer signature hash
+    let fee_payer_sig_hash = tx.fee_payer_signature_hash(user_addr);
+    let fee_payer_signature = fee_payer_signer.sign_hash_sync(&fee_payer_sig_hash)?;
+    println!("✓ Fee payer signed fee payer hash");
+
+    // Verify fee payer signature is valid
+    assert_eq!(
+        fee_payer_signature
+            .recover_address_from_prehash(&fee_payer_sig_hash)
+            .unwrap(),
+        fee_payer_addr,
+        "Fee payer signature should recover to fee payer address"
+    );
+
+    // Step 3: Update transaction with real fee payer signature
+    tx.fee_payer_signature = Some(fee_payer_signature);
+
+    // Create signed transaction with user's signature
+    let aa_signature = AASignature::Secp256k1(user_signature);
+    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
+
+    // Convert to envelope and encode
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    println!(
+        "Encoded AA transaction: {} bytes (type: 0x{:02x})",
+        encoded.len(),
+        encoded[0]
+    );
+
+    // Inject transaction and mine block
+    setup.node.rpc.inject_tx(encoded.into()).await?;
+    let payload = setup.node.advance_block().await?;
+
+    println!(
+        "✓ AA fee payer transaction mined in block {}",
+        payload.block().inner.number
+    );
+
+    // Verify the transaction was successful
+    assert!(
+        payload.block().body().transactions.len() > 0,
+        "Block should contain the fee payer transaction"
+    );
+
+    // Verify user still has ZERO balance (fee payer paid)
+    let user_token_balance_after =
+        tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+            .balanceOf(user_addr)
+            .call()
+            .await?;
+    assert_eq!(
+        user_token_balance_after,
+        U256::ZERO,
+        "User should still have zero balance"
+    );
+
+    // Verify fee payer's balance decreased
+    let fee_payer_balance_after =
+        tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+            .balanceOf(fee_payer_addr)
+            .call()
+            .await?;
+
+    println!(
+        "Fee payer balance after: {} tokens",
+        fee_payer_balance_after
+    );
+
+    assert!(
+        fee_payer_balance_after < fee_payer_balance_before,
+        "Fee payer balance should have decreased"
+    );
+
+    let gas_cost = fee_payer_balance_before - fee_payer_balance_after;
+    println!("Gas cost paid by fee payer: {} tokens", gas_cost);
+
+    Ok(())
+}
+
+

@@ -30,21 +30,25 @@ pub struct AATransaction {
     max_priority_fee_per_gas: U256,
     max_fee_per_gas: U256,
     gas_limit: U64,
-    to: Address,             
-    value: U256,         
+    calls: Vec<Call>,         // Batch of calls to execute
     access_list: Vec<AccessListItem>,
 
     // AA-specific fields
-    data: Bytes,              // ERC-7821 encoded operations for batching
-    signature: Bytes,         // Variable length based on type
-    nonce_key: U192,          // 192 bit sequence keys
-    nonce_sequence: U64       // 64 bit current value of the sequence key
+    nonce_key: U64,           // 64 bit sequence keys (was U192, changed to U64 for simplicity)
+    nonce_sequence: U64,      // 64 bit current value of the sequence key
 
     // Optional features
-    fee_payer_signature: Option<Bytes>, // Sponsored transactions
-    fee_token: Option<Address>,
-    validBefore: Option<U64>,         // Transaction expiration timestamp
-    validAfter: Option<U64>          // Transaction can only be included in a block after this timestamp
+    fee_token: Option<Address>,         // Optional fee token preference
+    fee_payer_signature: Option<Bytes>, // Sponsored transactions (secp256k1 only)
+    valid_before: U64,                  // Transaction expiration timestamp (0 means no expiry)
+    valid_after: Option<U64>            // Transaction can only be included after this timestamp
+}
+
+// Call structure for batching
+pub struct Call {
+    to: TxKind,      // Can be Address or Create
+    value: U256,
+    input: Bytes     // Calldata for the call
 }
 ```
 
@@ -161,6 +165,161 @@ We specify the complete gas schedule in more detail in the [gas costs section](#
 1. Verify fee payer signature (K1 only initially)
 2. Recover payer address via `ecrecover`
 3. Deduct fees from payer instead of sender
+
+### Fee Payer Signature Details
+
+This transaction type supports **gas sponsorship** where a third party (fee payer) can pay transaction fees on behalf of the sender. This is achieved through dual signature domains, following the same pattern as Type 0x77 (Tempo Transaction).
+
+#### Signing Domains
+
+##### Sender Signature
+
+For computing the transaction hash that the sender signs:
+
+* Fields are preceded by transaction type byte `0x05`
+* Field 11 (`fee_token`) is encoded as empty string (`0x80`) **if and only if** `fee_payer_signature` is present. This allows the fee payer to specify the fee token.
+* Field 12 (`fee_payer_signature`) is encoded as:
+  - Single byte `0x00` if fee payer signature will be present (placeholder)
+  - Empty string `0x80` if no fee payer
+
+**Sender Signature Hash:**
+```rust
+// When fee_payer_signature is present:
+sender_hash = keccak256(0x05 || rlp([
+    chain_id,
+    max_priority_fee_per_gas,
+    max_fee_per_gas,
+    gas_limit,
+    calls,
+    access_list,
+    nonce_key,
+    nonce_sequence,
+    valid_before,
+    valid_after,
+    0x80,  // fee_token encoded as EMPTY (skipped)
+    0x00   // placeholder byte for fee_payer_signature
+]))
+
+// When no fee_payer_signature:
+sender_hash = keccak256(0x05 || rlp([
+    chain_id,
+    max_priority_fee_per_gas,
+    max_fee_per_gas,
+    gas_limit,
+    calls,
+    access_list,
+    nonce_key,
+    nonce_sequence,
+    valid_before,
+    valid_after,
+    fee_token,  // fee_token is INCLUDED
+    0x80        // empty for no fee_payer_signature
+]))
+```
+
+##### Fee Payer Signature
+
+Only included for sponsored transactions. For computing the fee payer's signature hash:
+
+* Fields are preceded by **magic byte `0x78`** (different from transaction type `0x05`)
+* Field 11 (`fee_token`) is **always included** (20-byte address or `0x80` for None)
+* Field 12 is serialized as the **sender address** (20 bytes). This commits the fee payer to sponsoring a specific sender.
+
+**Fee Payer Signature Hash:**
+```rust
+fee_payer_hash = keccak256(0x78 || rlp([  // Note: 0x78 magic byte
+    chain_id,
+    max_priority_fee_per_gas,
+    max_fee_per_gas,
+    gas_limit,
+    calls,
+    access_list,
+    nonce_key,
+    nonce_sequence,
+    valid_before,
+    valid_after,
+    fee_token,      // fee_token ALWAYS included
+    sender_address  // 20-byte sender address
+]))
+```
+
+#### Key Properties
+
+1. **Sender Flexibility**: By omitting `fee_token` from sender signature when fee payer is present, the fee payer can specify which token to use for payment without invalidating the sender's signature
+2. **Fee Payer Commitment**: Fee payer's signature includes `fee_token` and `sender_address`, ensuring they agree to:
+   - Pay for the specific sender
+   - Use the specific fee token
+3. **Domain Separation**: Different magic bytes (`0x05` vs `0x78`) prevent signature reuse attacks between sender and fee payer roles
+4. **Deterministic Fee Payer**: The fee payer address is statically recoverable from the transaction via secp256k1 signature recovery
+
+#### Validation Rules
+
+**Signature Requirements:**
+- Sender signature MUST be valid (secp256k1, P256, or WebAuthn depending on signature length)
+- If `fee_payer_signature` present:
+  - MUST be recoverable via secp256k1 (only secp256k1 supported for fee payers)
+  - Recovery MUST succeed, otherwise transaction is invalid
+- If `fee_payer_signature` absent:
+  - Fee payer defaults to sender address (self-paid transaction)
+
+**Token Preference:**
+- When `fee_token` is `Some(address)`, this overrides any account/validator-level preferences
+- Validation ensures the token is a valid TIP-20 token with sufficient balance/liquidity
+- Failures reject the transaction before execution (see Token Preferences spec)
+
+**Fee Payer Resolution:**
+- Fee payer signature present → recovered address via `ecrecover`
+- Fee payer signature absent → sender address
+- This address is used for all fee accounting (pre-charge, refund) via TIP Fee Manager precompile
+
+#### Transaction Flow
+
+1. **User prepares transaction**: Sets `fee_payer_signature` to placeholder (`Some(Signature::default())`)
+2. **User signs**: Computes sender hash (with fee_token skipped) and signs
+3. **Fee payer receives** user-signed transaction
+4. **Fee payer verifies** user signature is valid
+5. **Fee payer signs**: Computes fee payer hash (with fee_token and sender_address) and signs
+6. **Complete transaction**: Replace placeholder with actual fee payer signature
+7. **Broadcast**: Transaction is sent to network with both signatures
+
+#### Error Cases
+
+- `fee_payer_signature` present but unrecoverable → invalid transaction
+- Fee payer balance insufficient for `gas_limit * max_fee_per_gas` in fee token → invalid
+- Any sender signature failure → invalid
+- Malformed RLP → invalid
+
+### RLP Encoding
+
+The transaction is RLP encoded as follows:
+
+**Transaction Envelope:**
+```
+0x05 || rlp([
+    chain_id,
+    max_priority_fee_per_gas,
+    max_fee_per_gas,
+    gas_limit,
+    calls,          // RLP list of Call structs
+    access_list,
+    nonce_key,
+    nonce_sequence,
+    valid_before,
+    valid_after,
+    fee_token,      // Always included in encoding (0x80 if None)
+    fee_payer_signature  // Always included in encoding (0x80 if None)
+])
+```
+
+**Call Encoding:**
+```
+rlp([to, value, input])
+```
+
+**Notes:**
+- Optional fields encode as `0x80` (EMPTY_STRING_CODE) when `None`
+- The RLP encoding always includes all fields, even if they are omitted from signature hashes
+- The `calls` field is a list that must contain at least one Call (empty calls list is invalid)
 
 ### WebAuthn Signature Verification
 
@@ -474,6 +633,3 @@ If garbage collection becomes necessary, this field can be made mandatory
 **Practical Usage:**
 - Most users will use 1-5 parallel nonce keys for typical parallel transaction patterns
 - Power users requiring higher parallelism will pay proportionally
-
-### RLP Encoding Safety
-Care must be taken to ensure unique RLP encoding for all valid transaction configurations, particularly around optional fields. The encoding must be unambiguous to prevent transaction malleability.
