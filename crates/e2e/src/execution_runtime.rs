@@ -33,11 +33,10 @@ pub struct ExecutionRuntime {
 
 impl ExecutionRuntime {
     /// Constructs a new execution runtime to launch execution nodes.
-    pub fn new(name: &str) -> Self {
+    pub fn new() -> Self {
         let tempdir = tempfile::Builder::new()
             // TODO(janis): cargo manifest prefix?
             .prefix("tempo_e2e_test")
-            .suffix(name)
             .tempdir()
             .expect("must be able to create a temp directory run tun tests");
 

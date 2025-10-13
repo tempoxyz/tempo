@@ -27,8 +27,6 @@ fn only_good_links() {
     // for seed in 0..5 {
     for seed in 0..1 {
         let setup = Setup {
-            // TODO(janis): smarter way to get this name in here?
-            name: "linkage::success_rate_100",
             how_many: 5,
             seed,
             linkage: link.clone(),
@@ -66,19 +64,22 @@ fn many_bad_links() {
     // for seed in 0..5 {
     for seed in 0..1 {
         let setup = Setup {
-            name: "linkage::success_rate_75",
             how_many: 5,
             seed,
             linkage: link.clone(),
-            height_to_reach: 25,
+            height_to_reach: 5,
         };
-        let _first = run(setup);
+        let first = run(setup.clone());
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        // let _first = run(setup);
         // FIXME(janis): our events are non-deterministic; likely due to the
         // async interaction with the execution layer.
         // How to fix that?
         //
-        // let second = run(setup.clone());
-        // assert_eq!(first, second);
+        let second = run(setup.clone());
+        assert_eq!(first, second);
     }
 }
 
@@ -95,8 +96,6 @@ fn reach_height_100_with_a_few_bad_links() {
     };
 
     let setup = Setup {
-        // TODO(janis): smarter way to get this name in here?
-        name: "linkage::success_rate_98_up_to_height_100",
         how_many: 10,
         seed: 0,
         linkage: link,

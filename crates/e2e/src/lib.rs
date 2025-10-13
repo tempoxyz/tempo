@@ -29,9 +29,6 @@ mod tests;
 /// The test setup run by [`run`].
 #[derive(Clone)]
 pub struct Setup {
-    /// A name to identify the test by. This will be used to create temp
-    /// directories.
-    pub name: &'static str,
     /// How many validators to launch.
     pub how_many: u32,
     /// The seed used for setting up the deterministic runtime.
@@ -45,7 +42,6 @@ pub struct Setup {
 /// Runs a test configured by [`Setup`].
 pub fn run(
     Setup {
-        name,
         how_many,
         seed,
         linkage,
@@ -59,7 +55,7 @@ pub fn run(
     let executor = Runner::from(cfg);
 
     executor.start(|mut context| async move {
-        let execution_runtime = ExecutionRuntime::new(name);
+        let execution_runtime = ExecutionRuntime::new();
         let mut execution_nodes = Vec::with_capacity(how_many as usize);
         for i in 0..how_many {
             let node = execution_runtime

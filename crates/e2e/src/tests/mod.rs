@@ -12,7 +12,7 @@ fn spawning_execution_node_works() {
         .with_test_writer()
         .try_init();
 
-    let runtime = ExecutionRuntime::new("spawning_execution_node_works");
+    let runtime = ExecutionRuntime::new();
     let handle = runtime.handle();
 
     futures::executor::block_on(async move {
