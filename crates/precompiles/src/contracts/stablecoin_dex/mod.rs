@@ -466,7 +466,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             .storage
             .sload(self.address, order_slot + offsets::ORDER_MAKER_OFFSET)
             .expect("TODO: handle error");
-        if maker == U256::ZERO {
+        if maker.is_zero() {
             return;
         }
 
@@ -479,7 +479,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             .storage
             .sload(self.address, order_slot + offsets::ORDER_SIDE_OFFSET)
             .expect("TODO: handle error");
-        let is_bid = side_u256 == U256::ZERO;
+        let is_bid = side_u256.is_zero();
 
         let tick = self
             .storage
@@ -575,7 +575,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             .storage
             .sload(self.address, order_slot + offsets::ORDER_SIDE_OFFSET)
             .expect("TODO: handle error");
-        let is_bid = side_u256 == U256::ZERO;
+        let is_bid = side_u256.is_zero();
 
         let tick = self
             .storage
@@ -631,7 +631,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                 .sload(self.address, order_slot + offsets::ORDER_IS_FLIP_OFFSET)
                 .expect("TODO: handle error");
 
-            if is_flip != U256::ZERO {
+            if !is_flip.is_zero() {
                 // Get the flip tick and original amount
                 let flip_tick = self
                     .storage
@@ -1087,7 +1087,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             .storage
             .sload(self.address, order_slot + offsets::ORDER_SIDE_OFFSET)
             .expect("TODO: handle error");
-        let is_bid = side_u256 == U256::ZERO;
+        let is_bid = side_u256.is_zero();
 
         let tick = self
             .storage
