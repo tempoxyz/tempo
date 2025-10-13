@@ -457,7 +457,7 @@ impl Inner<Init> {
                 // tie this to the threshold simplex view / round / height?;
                 parent_beacon_block_root: Some(B256::ZERO),
             },
-            0,
+            context.current().epoch_millis() % 1000,
         );
 
         let interrupt_handle = attrs.interrupt_handle().clone();
