@@ -70,6 +70,13 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
             validate_against_parent_4844(header.header(), parent.header(), blob_params)?;
         }
 
+        if header.timestamp_millis() <= parent.timestamp_millis() {
+            return Err(ConsensusError::TimestampIsInPast {
+                parent_timestamp: parent.timestamp_millis(),
+                timestamp: header.timestamp_millis(),
+            });
+        }
+
         Ok(())
     }
 }

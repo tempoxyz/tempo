@@ -27,6 +27,13 @@ pub struct TempoHeader {
     pub inner: Header,
 }
 
+impl TempoHeader {
+    /// Returns the timestamp in milliseconds.
+    pub fn timestamp_millis(&self) -> u64 {
+        self.inner.timestamp() * 1000 + self.timestamp_millis_part
+    }
+}
+
 impl AsRef<Self> for TempoHeader {
     fn as_ref(&self) -> &Self {
         self
