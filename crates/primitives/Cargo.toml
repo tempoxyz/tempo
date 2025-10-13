@@ -61,7 +61,8 @@ serde = [
 	"alloy-eips/serde",
 	"alloy-primitives/serde",
 	"reth-codecs?/serde",
-	"rand/serde"
+	"rand/serde",
+	"p256/serde",
 ]
 reth-codec = [
 	"dep:reth-codecs",

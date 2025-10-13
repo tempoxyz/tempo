@@ -193,8 +193,7 @@ impl AASigned {
         let sig_bytes: Bytes = Decodable::decode(buf)?;
 
         // Parse signature
-        let signature =
-            AASignature::from_bytes(&sig_bytes).map_err(|e| alloy_rlp::Error::Custom(e))?;
+        let signature = AASignature::from_bytes(&sig_bytes).map_err(alloy_rlp::Error::Custom)?;
 
         Ok(Self::new_unhashed(tx, signature))
     }

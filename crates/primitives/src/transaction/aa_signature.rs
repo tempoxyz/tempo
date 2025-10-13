@@ -79,7 +79,7 @@ impl AASignature {
             }
             SIGNATURE_TYPE_WEBAUTHN => {
                 let len = sig_data.len();
-                if len < 128 || len > MAX_WEBAUTHN_SIGNATURE_LENGTH {
+                if !(128..=MAX_WEBAUTHN_SIGNATURE_LENGTH).contains(&len) {
                     return Err("Invalid WebAuthn signature length");
                 }
                 Ok(Self::WebAuthn {
@@ -244,7 +244,7 @@ impl AASignature {
 
 /// Derives a P256 address from public key coordinates
 pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
-    let hash = keccak256(&[pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
+    let hash = keccak256([pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
 
     // Take last 20 bytes as address
     Address::from_slice(&hash[12..])
@@ -270,7 +270,7 @@ fn verify_p256_signature_internal(
 
     // Parse public key
     let encoded_point =
-        EncodedPoint::from_bytes(&pub_key_bytes).map_err(|_| "Invalid P256 public key encoding")?;
+        EncodedPoint::from_bytes(pub_key_bytes).map_err(|_| "Invalid P256 public key encoding")?;
 
     let verifying_key =
         VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| "Invalid P256 public key")?;
@@ -319,11 +319,12 @@ fn verify_webauthn_data_internal(
         // Simple case: authenticatorData is exactly 37 bytes
         if webauthn_data.len() > 37 {
             let potential_json = &webauthn_data[37..];
-            if let Ok(json_str) = core::str::from_utf8(potential_json) {
-                if json_str.starts_with('{') && json_str.ends_with('}') {
-                    client_data_json = Some(potential_json);
-                    auth_data_len = 37;
-                }
+            if let Ok(json_str) = core::str::from_utf8(potential_json)
+                && json_str.starts_with('{')
+                && json_str.ends_with('}')
+            {
+                client_data_json = Some(potential_json);
+                auth_data_len = 37;
             }
         }
     } else {
@@ -331,14 +332,15 @@ fn verify_webauthn_data_internal(
         // For now, try multiple split points and validate JSON
         for split_point in 37..webauthn_data.len().saturating_sub(20) {
             let potential_json = &webauthn_data[split_point..];
-            if let Ok(json_str) = core::str::from_utf8(potential_json) {
-                if json_str.starts_with('{') && json_str.ends_with('}') {
-                    // Basic JSON validation - check for required fields
-                    if json_str.contains("\"type\"") && json_str.contains("\"challenge\"") {
-                        client_data_json = Some(potential_json);
-                        auth_data_len = split_point;
-                        break;
-                    }
+            if let Ok(json_str) = core::str::from_utf8(potential_json)
+                && json_str.starts_with('{')
+                && json_str.ends_with('}')
+            {
+                // Basic JSON validation - check for required fields
+                if json_str.contains("\"type\"") && json_str.contains("\"challenge\"") {
+                    client_data_json = Some(potential_json);
+                    auth_data_len = split_point;
+                    break;
                 }
             }
         }
@@ -370,7 +372,7 @@ fn verify_webauthn_data_internal(
 
     // Verify challenge matches tx_hash (Base64URL encoded)
     let challenge_b64url = URL_SAFE_NO_PAD.encode(tx_hash.as_slice());
-    let challenge_property = format!("\"challenge\":\"{}\"", challenge_b64url);
+    let challenge_property = format!("\"challenge\":\"{challenge_b64url}\"");
     if !json_str.contains(&challenge_property) {
         return Err("clientDataJSON challenge does not match transaction hash");
     }
@@ -381,7 +383,7 @@ fn verify_webauthn_data_internal(
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(authenticator_data);
-    final_hasher.update(&client_data_hash);
+    final_hasher.update(client_data_hash);
     let message_hash = final_hasher.finalize();
 
     Ok(B256::from_slice(&message_hash))
@@ -568,10 +570,8 @@ mod tests {
         let challenge_b64url = URL_SAFE_NO_PAD.encode(tx_hash.as_slice());
 
         // Create valid clientDataJSON with matching challenge
-        let client_data = format!(
-            "{{\"type\":\"webauthn.get\",\"challenge\":\"{}\"}}",
-            challenge_b64url
-        );
+        let client_data =
+            format!("{{\"type\":\"webauthn.get\",\"challenge\":\"{challenge_b64url}\"}}");
         let mut webauthn_data = auth_data.clone();
         webauthn_data.extend_from_slice(client_data.as_bytes());
 
@@ -589,7 +589,7 @@ mod tests {
 
         let mut final_hasher = Sha256::new();
         final_hasher.update(&auth_data);
-        final_hasher.update(&client_data_hash);
+        final_hasher.update(client_data_hash);
         let expected_hash = final_hasher.finalize();
 
         assert_eq!(message_hash.as_slice(), expected_hash.as_slice());

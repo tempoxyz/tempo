@@ -425,12 +425,12 @@ where
         }
 
         // Step 3: Time window validation for AA transactions
-        if tx_type == AA_TX_TYPE_ID {
-            if let Some(valid_before) = tx.valid_before {
-                validate_time_window(tx.valid_after, valid_before, block_timestamp)?;
-            }
-            // Note: Signature verification happens during recover_signer() before entering the pool
+        if tx_type == AA_TX_TYPE_ID
+            && let Some(valid_before) = tx.valid_before
+        {
+            validate_time_window(tx.valid_after, valid_before, block_timestamp)?;
         }
+        // Note: Signature verification happens during recover_signer() before entering the pool
 
         let max_balance_spending = tx
             .max_balance_spending()
@@ -616,7 +616,7 @@ where
     DB: reth_evm::Database,
 {
     let tx_type = evm.ctx_ref().tx().tx_type();
-    let spec = evm.ctx_ref().cfg().spec().into();
+    let spec = evm.ctx_ref().cfg().spec();
 
     // For non-AA transactions, use default validation
     if tx_type != AA_TX_TYPE_ID {
@@ -708,7 +708,7 @@ where
 
         // Read current sequence from storage (matches spec: current_sequence = get_nonce())
         let stored_sequence = journal
-            .sload(NONCE_PRECOMPILE_ADDRESS, storage_key.into())
+            .sload(NONCE_PRECOMPILE_ADDRESS, storage_key)
             .map_err(EVMError::Database)?
             .data;
 
@@ -718,7 +718,7 @@ where
             // Inline get_active_nonce_key_count
             let count_storage_key = nonce::slots::active_key_count_slot(&caller_addr);
             let num_active_keys = journal
-                .sload(NONCE_PRECOMPILE_ADDRESS, count_storage_key.into())
+                .sload(NONCE_PRECOMPILE_ADDRESS, count_storage_key)
                 .map_err(EVMError::Database)?
                 .data
                 .to::<u64>();
@@ -918,7 +918,7 @@ where
     let storage_key = nonce::slots::nonce_slot(&caller, nonce_key);
 
     let stored_sequence = journal
-        .sload(NONCE_PRECOMPILE_ADDRESS, storage_key.into())
+        .sload(NONCE_PRECOMPILE_ADDRESS, storage_key)
         .map_err(|e| TempoInvalidTransaction::InvalidWebAuthnSignature {
             reason: format!("Failed to read nonce from storage: {e:?}"),
         })?
@@ -1000,13 +1000,13 @@ pub fn validate_time_window(
     block_timestamp: u64,
 ) -> Result<(), TempoInvalidTransaction> {
     // Validate validAfter constraint
-    if let Some(after) = valid_after {
-        if block_timestamp < after {
-            return Err(TempoInvalidTransaction::ValidAfter {
-                current: block_timestamp,
-                valid_after: after,
-            });
-        }
+    if let Some(after) = valid_after
+        && block_timestamp < after
+    {
+        return Err(TempoInvalidTransaction::ValidAfter {
+            current: block_timestamp,
+            valid_after: after,
+        });
     }
 
     // Validate validBefore constraint (0 means no constraint)

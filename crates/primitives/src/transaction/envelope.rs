@@ -412,7 +412,7 @@ mod codec {
                     // For AA transactions, we need to decode the signature bytes as AASignature
                     let (sig_bytes, buf) = Bytes::from_compact(buf, buf.len());
                     let aa_sig = AASignature::from_bytes(&sig_bytes)
-                        .map_err(|e| panic!("Failed to decode AA signature: {}", e))
+                        .map_err(|e| panic!("Failed to decode AA signature: {e}"))
                         .unwrap();
                     let tx = AASigned::new_unhashed(tx, aa_sig);
                     (Self::AA(tx), buf)

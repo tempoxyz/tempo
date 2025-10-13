@@ -85,6 +85,7 @@ impl Decodable for Call {
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[doc(alias = "AATransaction", alias = "TransactionAA")]
+#[derive(Default)]
 pub struct TxAA {
     /// EIP-155: Simple replay attack protection
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
@@ -138,25 +139,6 @@ pub struct TxAA {
     pub valid_after: Option<u64>,
 }
 
-impl Default for TxAA {
-    fn default() -> Self {
-        Self {
-            chain_id: 0,
-            fee_token: None,
-            max_priority_fee_per_gas: 0,
-            max_fee_per_gas: 0,
-            gas_limit: 0,
-            calls: Vec::new(),
-            access_list: AccessList::default(),
-            nonce_key: 0,
-            nonce: 0,
-            fee_payer_signature: None,
-            valid_before: 0,
-            valid_after: None,
-        }
-    }
-}
-
 impl TxAA {
     /// Get the transaction type
     #[doc(alias = "transaction_type")]
@@ -172,10 +154,11 @@ impl TxAA {
         }
 
         // validBefore must be greater than validAfter if both are set
-        if let Some(valid_after) = self.valid_after {
-            if self.valid_before > 0 && self.valid_before <= valid_after {
-                return Err("valid_before must be greater than valid_after");
-            }
+        if let Some(valid_after) = self.valid_after
+            && self.valid_before > 0
+            && self.valid_before <= valid_after
+        {
+            return Err("valid_before must be greater than valid_after");
         }
 
         // For now, only allow protocol nonce (nonce_key = 0)
@@ -691,7 +674,7 @@ mod tests {
         let tx4 = TxAA {
             valid_before: 100,
             valid_after: None,
-            calls: vec![dummy_call.clone()],
+            calls: vec![dummy_call],
             ..Default::default()
         };
         assert!(tx4.validate().is_ok());
@@ -720,13 +703,13 @@ mod tests {
 
         // P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
-        sig2_bytes.extend_from_slice(&vec![0u8; P256_SIGNATURE_LENGTH]);
+        sig2_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
         let sig2 = AASignature::from_bytes(&sig2_bytes).unwrap();
         assert_eq!(sig2.signature_type(), SignatureType::P256);
 
         // WebAuthn
         let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
-        sig3_bytes.extend_from_slice(&vec![0u8; 200]);
+        sig3_bytes.extend_from_slice(&[0u8; 200]);
         let sig3 = AASignature::from_bytes(&sig3_bytes).unwrap();
         assert_eq!(sig3.signature_type(), SignatureType::WebAuthn);
     }
@@ -949,7 +932,7 @@ mod tests {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![dummy_call.clone()],
+            calls: vec![dummy_call],
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
@@ -1068,7 +1051,7 @@ mod tests {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![dummy_call.clone()],
+            calls: vec![dummy_call],
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: None, // No fee payer
@@ -1128,7 +1111,7 @@ mod tests {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![dummy_call.clone()],
+            calls: vec![dummy_call],
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
@@ -1190,7 +1173,7 @@ mod tests {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![dummy_call.clone()],
+            calls: vec![dummy_call],
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: None,

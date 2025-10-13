@@ -6,17 +6,17 @@ pub mod slots {
     use crate::contracts::storage::slots::{double_mapping_slot, mapping_slot};
     use alloy::primitives::{Address, U256};
 
-    /// Base slot for nonces mapping: nonces[account][nonce_key]
+    /// Base slot for nonces mapping: nonces\[account\]\[nonce_key\]
     pub const NONCES: U256 = U256::ZERO;
-    /// Base slot for active key count mapping: activeKeyCount[account]
+    /// Base slot for active key count mapping: activeKeyCount\[account\]
     pub const ACTIVE_KEY_COUNT: U256 = U256::from_limbs([1, 0, 0, 0]);
 
-    /// Compute storage slot for nonces[account][nonce_key]
+    /// Compute storage slot for nonces\[account\]\[nonce_key\]
     pub fn nonce_slot(account: &Address, nonce_key: u64) -> U256 {
-        double_mapping_slot(account, &nonce_key.to_be_bytes(), NONCES)
+        double_mapping_slot(account, nonce_key.to_be_bytes(), NONCES)
     }
 
-    /// Compute storage slot for activeKeyCount[account]
+    /// Compute storage slot for activeKeyCount\[account\]
     pub fn active_key_count_slot(account: &Address) -> U256 {
         mapping_slot(account, ACTIVE_KEY_COUNT)
     }
@@ -60,7 +60,7 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
         let nonce = self
             .storage
             .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .map_err(|e| format!("Failed to read nonce from storage: {:?}", e))?;
+            .map_err(|e| format!("Failed to read nonce from storage: {e:?}"))?;
 
         Ok(nonce.to::<u64>())
     }

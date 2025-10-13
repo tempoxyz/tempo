@@ -7,10 +7,7 @@ use alloy::{
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN,
-    contracts::ITIP20::transferCall,
-};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, contracts::ITIP20::transferCall};
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
@@ -103,15 +100,15 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
         "Test accounts should have zero ETH balance"
     );
 
-    println!("Alice address: {}", alice_addr);
-    println!("Alice ETH balance: {} (expected: 0)", alice_eth_balance);
+    println!("Alice address: {alice_addr}");
+    println!("Alice ETH balance: {alice_eth_balance} (expected: 0)");
 
     // Create recipient address
     let recipient = Address::random();
 
     // Get alice's current nonce (protocol nonce, key 0)
     let nonce = provider.get_transaction_count(alice_addr).await?;
-    println!("Alice nonce: {}", nonce);
+    println!("Alice nonce: {nonce}");
 
     // Create AA transaction with secp256k1 signature and protocol nonce
     let tx = TxAA {
@@ -125,7 +122,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
             input: Bytes::new(),
         }],
         nonce_key: 0, // Protocol nonce (key 0)
-        nonce: nonce,
+        nonce,
         fee_token: None, // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
         valid_before: 0,
@@ -203,7 +200,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         .connect_http(http_url.clone());
 
     println!("\nTesting AA 2D Nonce System (nonce_key restriction)");
-    println!("Alice address: {}", alice_addr);
+    println!("Alice address: {alice_addr}");
 
     let recipient = Address::random();
     let chain_id = provider.get_chain_id().await?;
@@ -223,7 +220,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             input: Bytes::new(),
         }],
         nonce_key: 0, // Protocol nonce - should work
-        nonce: nonce,
+        nonce,
         fee_token: None,
         fee_payer_signature: None,
         valid_before: 0,
@@ -297,7 +294,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
     );
 
     if let Err(e) = result {
-        println!("✓ Transaction with nonce_key=1 correctly rejected: {}", e);
+        println!("✓ Transaction with nonce_key=1 correctly rejected: {e}");
 
         // Verify the error is about unsupported nonce_key or decode failure (validation happens during decode)
         let error_msg = e.to_string();
@@ -306,8 +303,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
                 || error_msg.contains("protocol nonce")
                 || error_msg.contains("supported")
                 || error_msg.contains("decode"),
-            "Error should indicate nonce_key issue or decode failure, got: {}",
-            error_msg
+            "Error should indicate nonce_key issue or decode failure, got: {error_msg}"
         );
     }
 
@@ -344,9 +340,9 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     let signer_addr =
         tempo_primitives::transaction::aa_signature::derive_p256_address(&pub_key_x, &pub_key_y);
 
-    println!("WebAuthn signer address: {}", signer_addr);
-    println!("Public key X: {}", pub_key_x);
-    println!("Public key Y: {}", pub_key_y);
+    println!("WebAuthn signer address: {signer_addr}");
+    println!("Public key X: {pub_key_x}");
+    println!("Public key Y: {pub_key_y}");
 
     // Use TEST_MNEMONIC account to fund the WebAuthn signer
     let funder_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -358,7 +354,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         .wallet(funder_wallet)
         .connect_http(http_url.clone());
 
-    println!("Funder address: {}", funder_addr);
+    println!("Funder address: {funder_addr}");
 
     // Get chain ID
     let chain_id = provider.get_chain_id().await?;
@@ -405,7 +401,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
 
     // Get the signature hash
     let sig_hash = tx.signature_hash();
-    println!("Transaction signature hash: {}", sig_hash);
+    println!("Transaction signature hash: {sig_hash}");
 
     // Create WebAuthn authenticator data (mock)
     // Minimum authenticatorData: 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
@@ -421,11 +417,10 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let challenge_b64url = URL_SAFE_NO_PAD.encode(sig_hash.as_slice());
     let client_data_json = format!(
-        r#"{{"type":"webauthn.get","challenge":"{}","origin":"https://example.com","crossOrigin":false}}"#,
-        challenge_b64url
+        r#"{{"type":"webauthn.get","challenge":"{challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
     );
 
-    println!("ClientDataJSON: {}", client_data_json);
+    println!("ClientDataJSON: {client_data_json}");
 
     // Compute the message hash for P256 signature according to WebAuthn spec:
     // messageHash = sha256(authenticatorData || sha256(clientDataJSON))
@@ -433,7 +428,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data);
-    final_hasher.update(&client_data_hash);
+    final_hasher.update(client_data_hash);
     let message_hash = final_hasher.finalize();
 
     // Sign the message hash with P256
@@ -504,7 +499,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
 
     // Verify the block contains transactions
     assert!(
-        payload.block().body().transactions.len() > 0,
+        !payload.block().body().transactions.is_empty(),
         "Block should contain the WebAuthn transaction"
     );
 
@@ -603,8 +598,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let challenge_b64url1 = URL_SAFE_NO_PAD.encode(sig_hash1.as_slice());
     let client_data_json1 = format!(
-        r#"{{"type":"webauthn.get","challenge":"{}","origin":"https://example.com","crossOrigin":false}}"#,
-        challenge_b64url1
+        r#"{{"type":"webauthn.get","challenge":"{challenge_b64url1}","origin":"https://example.com","crossOrigin":false}}"#
     );
 
     // Compute message hash
@@ -612,7 +606,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data1);
-    final_hasher.update(&client_data_hash1);
+    final_hasher.update(client_data_hash1);
     let message_hash1 = final_hasher.finalize();
 
     // Sign with CORRECT private key
@@ -654,8 +648,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let challenge_b64url2 = URL_SAFE_NO_PAD.encode(sig_hash2.as_slice());
     let client_data_json2 = format!(
-        r#"{{"type":"webauthn.get","challenge":"{}","origin":"https://example.com","crossOrigin":false}}"#,
-        challenge_b64url2
+        r#"{{"type":"webauthn.get","challenge":"{challenge_b64url2}","origin":"https://example.com","crossOrigin":false}}"#
     );
 
     // Compute message hash
@@ -663,7 +656,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data2);
-    final_hasher.update(&client_data_hash2);
+    final_hasher.update(client_data_hash2);
     let message_hash2 = final_hasher.finalize();
 
     // Sign with WRONG private key
@@ -706,8 +699,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let wrong_challenge = B256::from([0xFF; 32]); // Different hash
     let wrong_challenge_b64url = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let client_data_json3 = format!(
-        r#"{{"type":"webauthn.get","challenge":"{}","origin":"https://example.com","crossOrigin":false}}"#,
-        wrong_challenge_b64url
+        r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
     );
 
     // Compute message hash
@@ -715,7 +707,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data3);
-    final_hasher.update(&client_data_hash3);
+    final_hasher.update(client_data_hash3);
     let message_hash3 = final_hasher.finalize();
 
     // Sign with correct private key
@@ -756,8 +748,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let challenge_b64url4 = URL_SAFE_NO_PAD.encode(sig_hash4.as_slice());
     let client_data_json4 = format!(
-        r#"{{"type":"webauthn.get","challenge":"{}","origin":"https://example.com","crossOrigin":false}}"#,
-        challenge_b64url4
+        r#"{{"type":"webauthn.get","challenge":"{challenge_b64url4}","origin":"https://example.com","crossOrigin":false}}"#
     );
 
     // Compute message hash
@@ -765,7 +756,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&authenticator_data4);
-    final_hasher.update(&client_data_hash4);
+    final_hasher.update(client_data_hash4);
     let message_hash4 = final_hasher.finalize();
 
     // Sign with correct private key
@@ -827,8 +818,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let wrong_challenge = B256::from([0xAA; 32]);
     let wrong_challenge_b64 = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let bad_client_data = format!(
-        r#"{{"type":"webauthn.get","challenge":"{}","origin":"https://example.com","crossOrigin":false}}"#,
-        wrong_challenge_b64
+        r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64}","origin":"https://example.com","crossOrigin":false}}"#
     );
 
     // Sign with correct key but wrong data
@@ -836,7 +826,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     let mut final_hasher = Sha256::new();
     final_hasher.update(&bad_auth_data);
-    final_hasher.update(&client_hash);
+    final_hasher.update(client_hash);
     let bad_message_hash = final_hasher.finalize();
 
     let bad_signature: p256::ecdsa::Signature = correct_signing_key.sign(&bad_message_hash);
@@ -902,7 +892,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         tempo_primitives::transaction::aa_signature::derive_p256_address(&pub_key_x, &pub_key_y);
 
     println!("\n=== Testing P256 Call Batching ===\n");
-    println!("P256 signer address: {}", signer_addr);
+    println!("P256 signer address: {signer_addr}");
 
     // Use TEST_MNEMONIC account to fund the P256 signer
     let funder_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -939,10 +929,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         recipients.push((Address::random(), i + 1)); // Each gets different amount
     }
 
-    println!(
-        "\nPreparing batch transfer to {} recipients:",
-        num_recipients
-    );
+    println!("\nPreparing batch transfer to {num_recipients} recipients:");
     for (i, (addr, multiplier)) in recipients.iter().enumerate() {
         println!(
             "  Recipient {}: {} (amount: {} tokens)",
@@ -994,7 +981,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     // Sign with P256
     let batch_sig_hash = batch_tx.signature_hash();
-    println!("Batch transaction signature hash: {}", batch_sig_hash);
+    println!("Batch transaction signature hash: {batch_sig_hash}");
 
     // For P256, we need to optionally pre-hash the message
     // Let's test with pre_hash = true (common for Web Crypto API)
@@ -1066,7 +1053,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     // Verify the block contains the transaction
     assert!(
-        batch_payload.block().body().transactions.len() > 0,
+        !batch_payload.block().body().transactions.is_empty(),
         "Block should contain the batch transaction"
     );
 
@@ -1076,8 +1063,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         assert_eq!(
             aa_tx.tx().calls.len(),
             num_recipients,
-            "Transaction should have {} calls",
-            num_recipients
+            "Transaction should have {num_recipients} calls"
         );
         println!(
             "✓ Block contains AA transaction with {} calls",
@@ -1136,8 +1122,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     );
 
     println!(
-        "\n✓ P256 signer balance: {} tokens (transferred: {}, plus gas fees)",
-        signer_final_balance, total_transferred
+        "\n✓ P256 signer balance: {signer_final_balance} tokens (transferred: {total_transferred}, plus gas fees)"
     );
 
     Ok(())
@@ -1168,8 +1153,8 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     println!("\n=== Testing AA Fee Payer Transaction ===\n");
-    println!("Fee payer address: {}", fee_payer_addr);
-    println!("User address: {} (unfunded)", user_addr);
+    println!("Fee payer address: {fee_payer_addr}");
+    println!("User address: {user_addr} (unfunded)");
 
     // Verify user has ZERO balance in DEFAULT_FEE_TOKEN
     let user_token_balance =
@@ -1182,7 +1167,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
         U256::ZERO,
         "User should have zero balance"
     );
-    println!("User token balance: {} (expected: 0)", user_token_balance);
+    println!("User token balance: {user_token_balance} (expected: 0)");
 
     // Get fee payer's balance before transaction
     let fee_payer_balance_before =
@@ -1190,10 +1175,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
             .balanceOf(fee_payer_addr)
             .call()
             .await?;
-    println!(
-        "Fee payer balance before: {} tokens",
-        fee_payer_balance_before
-    );
+    println!("Fee payer balance before: {fee_payer_balance_before} tokens");
 
     // Create AA transaction with fee payer signature placeholder
     let recipient = Address::random();
@@ -1275,7 +1257,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
 
     // Verify the transaction was successful
     assert!(
-        payload.block().body().transactions.len() > 0,
+        !payload.block().body().transactions.is_empty(),
         "Block should contain the fee payer transaction"
     );
 
@@ -1298,10 +1280,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
             .call()
             .await?;
 
-    println!(
-        "Fee payer balance after: {} tokens",
-        fee_payer_balance_after
-    );
+    println!("Fee payer balance after: {fee_payer_balance_after} tokens");
 
     assert!(
         fee_payer_balance_after < fee_payer_balance_before,
@@ -1309,7 +1288,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
 
     let gas_cost = fee_payer_balance_before - fee_payer_balance_after;
-    println!("Gas cost paid by fee payer: {} tokens", gas_cost);
+    println!("Gas cost paid by fee payer: {gas_cost} tokens");
 
     Ok(())
 }
