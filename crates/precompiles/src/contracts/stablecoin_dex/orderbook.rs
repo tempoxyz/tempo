@@ -9,7 +9,7 @@ use crate::contracts::{
     storage::{StorageOps, slots::mapping_slot},
 };
 use alloy::primitives::{Address, B256, U256};
-use revm::interpreter::instructions::utility::IntoU256;
+use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 /// Constants from Solidity implementation
 pub const MIN_TICK: i16 = -2000;
@@ -259,12 +259,12 @@ impl Orderbook {
         let base = storage
             .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)
             .expect("TODO: handle error")
-            .into();
+            .into_address();
 
         let quote = storage
             .sload(address, orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET)
             .expect("TODO: handle error")
-            .into();
+            .into_address();
 
         let best_bid_tick = storage
             .sload(

@@ -13,14 +13,17 @@ pub use orderbook::{
 };
 
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256};
-use revm::{interpreter::instructions::utility::IntoU256, state::Bytecode};
+use revm::{
+    interpreter::instructions::utility::{IntoAddress, IntoU256},
+    state::Bytecode,
+};
 
 use crate::{
     STABLECOIN_DEX_ADDRESS,
     contracts::{
-        StorageProvider,
+        StorageProvider, TIP20Token, address_to_token_id_unchecked,
         storage::{StorageOps, slots::mapping_slot},
-        types::{IStablecoinDex, StablecoinDexEvent},
+        types::{IStablecoinDex, ITIP20, StablecoinDexEvent},
     },
 };
 
@@ -219,8 +222,15 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         } else {
             self.set_balance(user, token, 0);
             let remaining = amount - user_balance;
-            ITIP20::new(token, self.storage)
-                .transfer_from(user, self.address, remaining)
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
+                .transfer_from(
+                    &user,
+                    ITIP20::transferFromCall {
+                        from: user,
+                        to: self.address,
+                        amount: U256::from(remaining),
+                    },
+                )
                 .expect("TODO: handle error");
         }
     }
@@ -538,7 +548,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             .storage
             .sload(self.address, order_slot + offsets::ORDER_MAKER_OFFSET)
             .expect("TODO: handle error")
-            .into();
+            .into_address();
 
         let orderbook =
             orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
@@ -971,8 +981,14 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         let current_balance = self.balance_of(user, token);
         assert!(current_balance >= amount, "Insufficient balance");
         self.sub_balance(user, token, amount);
-        ITIP20::new(token, self.storage)
-            .transfer(user, amount)
+        TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
+            .transfer(
+                &self.address,
+                ITIP20::transferCall {
+                    to: user,
+                    amount: U256::from(amount),
+                },
+            )
             .expect("TODO: handle error");
     }
 }
