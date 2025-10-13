@@ -176,9 +176,51 @@ impl<'a, S: StorageProvider> StorageOps for StablecoinDex<'a, S> {
 }
 
 impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
-    // TODO: Implement in follow-up issue - balance management
-    pub fn balance_of(&mut self, _user: Address, _token: Address) -> u128 {
-        todo!()
+    /// Get user's balance for a specific token
+    pub fn balance_of(&mut self, user: Address, token: Address) -> u128 {
+        let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
+        let balance_slot = mapping_slot(token.as_slice(), user_slot);
+        
+        self.storage
+            .sload(self.address, balance_slot)
+            .expect("TODO: handle error")
+            .to::<u128>()
+    }
+
+    /// Set user's balance for a specific token
+    fn set_balance(&mut self, user: Address, token: Address, amount: u128) {
+        let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
+        let balance_slot = mapping_slot(token.as_slice(), user_slot);
+        
+        self.storage
+            .sstore(self.address, balance_slot, U256::from(amount))
+            .expect("TODO: handle error");
+    }
+
+    /// Add to user's balance
+    fn add_balance(&mut self, user: Address, token: Address, amount: u128) {
+        let current = self.balance_of(user, token);
+        self.set_balance(user, token, current + amount);
+    }
+
+    /// Subtract from user's balance
+    fn sub_balance(&mut self, user: Address, token: Address, amount: u128) {
+        let current = self.balance_of(user, token);
+        self.set_balance(user, token, current.saturating_sub(amount));
+    }
+
+    /// Decrement user's internal balance or transfer from external wallet
+    fn decrement_balance_or_transfer_from(&mut self, user: Address, token: Address, amount: u128) {
+        let user_balance = self.balance_of(user, token);
+        if user_balance >= amount {
+            self.sub_balance(user, token, amount);
+        } else {
+            self.set_balance(user, token, 0);
+            let remaining = amount - user_balance;
+            ITIP20::new(token, self.storage)
+                .transfer_from(user, self.address, remaining)
+                .expect("TODO: handle error");
+        }
     }
 
     pub fn quote_buy(
@@ -432,8 +474,14 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         todo!()
     }
 
-    pub fn withdraw(&mut self, _token: Address, _amount: u128) {
-        todo!()
+    /// Withdraw tokens from exchange balance
+    pub fn withdraw(&mut self, user: Address, token: Address, amount: u128) {
+        let current_balance = self.balance_of(user, token);
+        assert!(current_balance >= amount, "Insufficient balance");
+        self.sub_balance(user, token, amount);
+        ITIP20::new(token, self.storage)
+            .transfer(user, amount)
+            .expect("TODO: handle error");
     }
 }
 
