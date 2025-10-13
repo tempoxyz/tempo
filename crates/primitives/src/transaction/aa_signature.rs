@@ -55,8 +55,8 @@ impl AASignature {
 
         // Backward compatibility: 65 bytes means secp256k1 without type identifier
         if data.len() == SECP256K1_SIGNATURE_LENGTH {
-            let sig = Signature::try_from(data)
-                .map_err(|_| "Failed to parse secp256k1 signature")?;
+            let sig =
+                Signature::try_from(data).map_err(|_| "Failed to parse secp256k1 signature")?;
             return Ok(Self::Secp256k1(sig));
         }
 
@@ -244,13 +244,7 @@ impl AASignature {
 
 /// Derives a P256 address from public key coordinates
 pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
-    let hash = keccak256(
-        &[
-            pub_key_x.as_slice(),
-            pub_key_y.as_slice(),
-        ]
-        .concat(),
-    );
+    let hash = keccak256(&[pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
 
     // Take last 20 bytes as address
     Address::from_slice(&hash[12..])
@@ -704,7 +698,10 @@ mod tests {
 
     #[test]
     fn test_aa_signature_roundtrip() {
-        use super::{P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN};
+        use super::{
+            P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256,
+            SIGNATURE_TYPE_WEBAUTHN,
+        };
 
         // Test secp256k1 (no type identifier, detected by 65-byte length)
         let sig1_bytes = vec![1u8; SECP256K1_SIGNATURE_LENGTH];

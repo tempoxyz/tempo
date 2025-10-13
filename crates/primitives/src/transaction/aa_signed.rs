@@ -101,7 +101,8 @@ impl AASigned {
     fn encode_rlp_fields(&self, out: &mut dyn BufMut) {
         // RLP encode the transaction fields + signature
         let sig_bytes = self.signature.to_bytes();
-        let payload_length = self.tx.rlp_encoded_fields_length_default() + Encodable::length(&sig_bytes);
+        let payload_length =
+            self.tx.rlp_encoded_fields_length_default() + Encodable::length(&sig_bytes);
 
         alloy_rlp::Header {
             list: true,

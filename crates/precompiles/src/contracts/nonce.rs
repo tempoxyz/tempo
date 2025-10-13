@@ -75,7 +75,7 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
 
     /// Internal: Set nonce for a specific account and nonce key
     /// This is called by the transaction validation logic
-    pub fn set_nonce(&mut self, account: &Address, nonce_key: u64, nonce_sequence: u64) {
+    pub fn set_nonce(&mut self, account: &Address, nonce_key: u64, nonce: u64) {
         if nonce_key == 0 {
             // Protocol nonce is managed by account state, not this precompile
             return;
@@ -89,16 +89,12 @@ impl<'a, S: StorageProvider> NonceManager<'a, S> {
             .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
             .expect("TODO: handle error");
 
-        if current == U256::ZERO && nonce_sequence > 0 {
+        if current == U256::ZERO && nonce > 0 {
             self.increment_active_key_count(account);
         }
 
         self.storage
-            .sstore(
-                crate::NONCE_PRECOMPILE_ADDRESS,
-                slot,
-                U256::from(nonce_sequence),
-            )
+            .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, U256::from(nonce))
             .expect("TODO: handle error");
     }
 

@@ -351,7 +351,7 @@ where
             tracing::info!(
                 caller = %caller_addr,
                 nonce_key = tx.nonce_key.unwrap_or(0),
-                nonce_sequence = tx.nonce(),
+                nonce = tx.nonce(),
                 fee_payer = %self.fee_payer,
                 fee_token = ?self.fee_token,
                 "REVM handler processing AA transaction"
@@ -364,7 +364,7 @@ where
             if nonce_key != 0 {
                 tracing::info!(
                     nonce_key,
-                    nonce_sequence = tx.nonce(),
+                    nonce = tx.nonce(),
                     "Validating 2D nonce from precompile"
                 );
                 validate_2d_nonce(journal, caller_addr, nonce_key, tx.nonce())?;
@@ -630,7 +630,7 @@ where
     }
 
     // For AA transactions, extract all needed data first
-    let (nonce_key, nonce_sequence, signature, caller_addr, gas_limit) = {
+    let (nonce_key, nonce, signature, caller_addr, gas_limit) = {
         let tx = evm.ctx_ref().tx();
         (
             tx.nonce_key.unwrap_or(0),
@@ -754,7 +754,7 @@ where
     trace!(
         signature_len = sig_bytes.len(),
         nonce_key,
-        nonce_sequence,
+        nonce,
         additional_signature_gas,
         nonce_key_gas,
         standard_gas = standard_gas.initial_gas,
@@ -888,7 +888,7 @@ where
 
 /// Validates 2D nonce for AA transactions (validation phase only)
 ///
-/// AA transactions use a 2D nonce system with nonce_key and nonce_sequence:
+/// AA transactions use a 2D nonce system with nonce_key and nonce:
 /// - nonce_key 0: Protocol nonce (stored in account state, validated separately)
 /// - nonce_key 1-N: User nonces (stored in NONCE_PRECOMPILE_ADDRESS)
 ///
@@ -902,7 +902,7 @@ pub fn validate_2d_nonce<JOURNAL>(
     journal: &mut JOURNAL,
     caller: Address,
     nonce_key: u64,
-    nonce_sequence: u64,
+    nonce: u64,
 ) -> Result<(), TempoInvalidTransaction>
 where
     JOURNAL: JournalTr,
@@ -933,17 +933,17 @@ where
         caller = %caller,
         nonce_key = nonce_key,
         stored_sequence = %stored_sequence,
-        nonce_sequence = nonce_sequence,
+        nonce = nonce,
         "2D nonce validation: checking stored vs expected"
     );
 
     // Validate sequence matches
-    let expected_sequence = U256::from(nonce_sequence);
+    let expected_sequence = U256::from(nonce);
     if stored_sequence != expected_sequence {
         return Err(TempoInvalidTransaction::Invalid2DNonce {
             nonce_key,
             expected: stored_sequence.to::<u64>(),
-            actual: nonce_sequence,
+            actual: nonce,
         });
     }
 

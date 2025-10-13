@@ -3,13 +3,13 @@ use alloy::{
     primitives::{Address, B256, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
     signers::{SignerSync, local::MnemonicBuilder},
-    sol_types::{SolCall},
+    sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS,
-    contracts::{INonce, ITIP20::transferCall},
+    DEFAULT_FEE_TOKEN,
+    contracts::ITIP20::transferCall,
 };
 use tempo_primitives::{
     TempoTxEnvelope,
@@ -45,7 +45,7 @@ async fn fund_address_with_fee_tokens(
             input: transfer_calldata.into(),
         }],
         nonce_key: 0,
-        nonce_sequence: provider.get_transaction_count(funder_addr).await?,
+        nonce: provider.get_transaction_count(funder_addr).await?,
         fee_token: None,
         fee_payer_signature: None,
         valid_before: 0,
@@ -125,7 +125,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
             input: Bytes::new(),
         }],
         nonce_key: 0, // Protocol nonce (key 0)
-        nonce_sequence: nonce,
+        nonce: nonce,
         fee_token: None, // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
         valid_before: 0,
@@ -164,7 +164,10 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
     setup.node.rpc.inject_tx(encoded.into()).await?;
     let payload = setup.node.advance_block().await?;
 
-    println!("✓ AA transaction mined in block {}", payload.block().inner.number);
+    println!(
+        "✓ AA transaction mined in block {}",
+        payload.block().inner.number
+    );
 
     // Verify alice's nonce incremented (protocol nonce)
     // This proves the transaction was successfully mined and executed
@@ -199,24 +202,17 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         .wallet(wallet)
         .connect_http(http_url.clone());
 
-    // Create nonce precompile contract instance
-    let nonce_contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider.clone());
-
-    println!("\nTesting AA 2D Nonce System");
+    println!("\nTesting AA 2D Nonce System (nonce_key restriction)");
     println!("Alice address: {}", alice_addr);
-
-    // Check initial state
-    let initial_nonce = nonce_contract.getNonce(alice_addr, 1).call().await?;
-    println!("Initial nonce[key=1]: {}", initial_nonce);
-    assert_eq!(initial_nonce, 0, "Initial nonce should be 0");
 
     let recipient = Address::random();
     let chain_id = provider.get_chain_id().await?;
 
-    // Step 1: Send first AA transaction with nonce_key=1, sequence=0
-    println!("\n1. Sending first AA transaction (nonce_key=1, sequence=0)");
+    // Step 1: Verify that nonce_key = 0 (protocol nonce) works
+    println!("\n1. Testing nonce_key = 0 (should succeed)");
 
-    let tx1 = TxAA {
+    let nonce = provider.get_transaction_count(alice_addr).await?;
+    let tx_protocol = TxAA {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
@@ -226,8 +222,8 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 1,
-        nonce_sequence: 0,
+        nonce_key: 0, // Protocol nonce - should work
+        nonce: nonce,
         fee_token: None,
         fee_payer_signature: None,
         valid_before: 0,
@@ -236,30 +232,30 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
     };
 
     // Sign and encode transaction
-    let sig_hash = tx1.signature_hash();
+    let sig_hash = tx_protocol.signature_hash();
     let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-    let signed_tx1 = AASigned::new_unhashed(tx1, AASignature::Secp256k1(signature));
-    let envelope1: TempoTxEnvelope = signed_tx1.into();
-    let mut encoded1 = Vec::new();
-    envelope1.encode_2718(&mut encoded1);
+    let signed_tx_protocol = AASigned::new_unhashed(tx_protocol, AASignature::Secp256k1(signature));
+    let envelope_protocol: TempoTxEnvelope = signed_tx_protocol.into();
+    let mut encoded_protocol = Vec::new();
+    envelope_protocol.encode_2718(&mut encoded_protocol);
 
-    println!("Transaction encoded, size: {} bytes", encoded1.len());
+    println!(
+        "Transaction with nonce_key=0 encoded, size: {} bytes",
+        encoded_protocol.len()
+    );
 
-    // Inject transaction and mine block
-    setup.node.rpc.inject_tx(encoded1.into()).await?;
+    // Inject transaction and mine block - should succeed
+    setup.node.rpc.inject_tx(encoded_protocol.into()).await?;
     let payload = setup.node.advance_block().await?;
-    println!("✓ Transaction mined in block {}", payload.block().inner.number);
+    println!(
+        "✓ Transaction with nonce_key=0 mined in block {}",
+        payload.block().inner.number
+    );
 
-    // Step 2: Verify nonce was incremented
-    println!("\n2. Verifying nonce increment");
-    let nonce_after_tx = nonce_contract.getNonce(alice_addr, 1).call().await?;
-    println!("Nonce[key=1] after transaction: {}", nonce_after_tx);
-    assert_eq!(nonce_after_tx, 1, "Nonce should be incremented to 1");
+    // Step 2: Verify that nonce_key != 0 is rejected
+    println!("\n2. Testing nonce_key = 1 (should be rejected)");
 
-    // Step 3: Try to send duplicate transaction with same nonce sequence
-    println!("\n3. Testing duplicate nonce rejection");
-
-    let tx2 = TxAA {
+    let tx_parallel = TxAA {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
@@ -269,8 +265,8 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 1,
-        nonce_sequence: 0, // DUPLICATE - should fail
+        nonce_key: 1, // Parallel nonce - should be rejected
+        nonce: 0,
         fee_token: None,
         fee_payer_signature: None,
         valid_before: 0,
@@ -278,37 +274,42 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         access_list: Default::default(),
     };
 
-    let sig_hash = tx2.signature_hash();
+    // Sign and encode transaction
+    let sig_hash = tx_parallel.signature_hash();
     let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-    let signed_tx2 = AASigned::new_unhashed(tx2, AASignature::Secp256k1(signature));
-    let envelope2: TempoTxEnvelope = signed_tx2.into();
-    let mut encoded2 = Vec::new();
-    envelope2.encode_2718(&mut encoded2);
+    let signed_tx_parallel = AASigned::new_unhashed(tx_parallel, AASignature::Secp256k1(signature));
+    let envelope_parallel: TempoTxEnvelope = signed_tx_parallel.into();
+    let mut encoded_parallel = Vec::new();
+    envelope_parallel.encode_2718(&mut encoded_parallel);
 
-    // Try to inject duplicate transaction - this SHOULD fail
-    let result = setup.node.rpc.inject_tx(encoded2.into()).await;
+    println!(
+        "Transaction with nonce_key=1 encoded, size: {} bytes",
+        encoded_parallel.len()
+    );
+
+    // Try to inject transaction - should fail due to nonce_key != 0
+    let result = setup.node.rpc.inject_tx(encoded_parallel.into()).await;
 
     // The transaction should be rejected
     assert!(
         result.is_err(),
-        "Duplicate nonce transaction should be rejected"
+        "Transaction with nonce_key != 0 should be rejected"
     );
 
     if let Err(e) = result {
-        println!("✓ Transaction correctly rejected: {}", e);
+        println!("✓ Transaction with nonce_key=1 correctly rejected: {}", e);
 
-        // Verify the error is about nonce
+        // Verify the error is about unsupported nonce_key or decode failure (validation happens during decode)
         let error_msg = e.to_string();
         assert!(
-            error_msg.contains("nonce") || error_msg.contains("Invalid2DNonce"),
-            "Error should indicate nonce issue, got: {}",
+            error_msg.contains("nonce")
+                || error_msg.contains("protocol nonce")
+                || error_msg.contains("supported")
+                || error_msg.contains("decode"),
+            "Error should indicate nonce_key issue or decode failure, got: {}",
             error_msg
         );
     }
-
-    println!("\n✅ AA 2D Nonce System Test Passed!");
-    println!("  • Nonce correctly incremented from 0 to 1");
-    println!("  • Duplicate nonce transaction properly rejected");
 
     Ok(())
 }
@@ -391,9 +392,9 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 0,      // Protocol nonce
-        nonce_sequence: 0, // First transaction
-        fee_token: None,   // Will use DEFAULT_FEE_TOKEN from genesis
+        nonce_key: 0,    // Protocol nonce
+        nonce: 0,        // First transaction
+        fee_token: None, // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
         valid_before: 0,
         valid_after: None,
@@ -580,7 +581,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
             input: Bytes::new(),
         }],
         nonce_key: 0,
-        nonce_sequence: nonce_seq,
+        nonce: nonce_seq,
         fee_token: None,
         fee_payer_signature: None,
         valid_before: 0,
@@ -983,7 +984,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         gas_limit: 500_000, // Higher gas limit for multiple calls
         calls,              // Multiple batched calls
         nonce_key: 0,
-        nonce_sequence: 0, // First transaction from P256 signer
+        nonce: 0, // First transaction from P256 signer
         fee_token: None,
         fee_payer_signature: None,
         valid_before: 0,
@@ -1171,10 +1172,11 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     println!("User address: {} (unfunded)", user_addr);
 
     // Verify user has ZERO balance in DEFAULT_FEE_TOKEN
-    let user_token_balance = tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-        .balanceOf(user_addr)
-        .call()
-        .await?;
+    let user_token_balance =
+        tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+            .balanceOf(user_addr)
+            .call()
+            .await?;
     assert_eq!(
         user_token_balance,
         U256::ZERO,
@@ -1205,14 +1207,10 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 0, // Protocol nonce
-        nonce_sequence: 0, // First transaction for user
+        nonce_key: 0,    // Protocol nonce
+        nonce: 0,        // First transaction for user
         fee_token: None, // Use DEFAULT_FEE_TOKEN
-        fee_payer_signature: Some(Signature::new(
-            U256::ZERO,
-            U256::ZERO,
-            false,
-        )), // Placeholder
+        fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)), // Placeholder
         valid_before: 0,
         valid_after: None,
         access_list: Default::default(),
@@ -1315,5 +1313,3 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
 
     Ok(())
 }
-
-

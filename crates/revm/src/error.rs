@@ -80,7 +80,7 @@ pub enum TempoInvalidTransaction {
 
     /// Invalid nonce for 2D nonce system.
     ///
-    /// AA transactions use a 2D nonce system with nonce_key and nonce_sequence.
+    /// AA transactions use a 2D nonce system with nonce_key and nonce.
     #[error("invalid 2D nonce: expected sequence {expected} for key {nonce_key}, got {actual}")]
     Invalid2DNonce {
         /// The nonce key.

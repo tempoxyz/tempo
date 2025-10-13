@@ -75,7 +75,7 @@ impl Decodable for Call {
 ///
 /// This transaction type supports:
 /// - Multiple signature types (secp256k1, P256, WebAuthn)
-/// - Parallelizable nonces via 2D nonce system (nonce_key + nonce_sequence)
+/// - Parallelizable nonces via 2D nonce system (nonce_key + nonce)
 /// - Gas sponsorship via fee payer
 /// - Scheduled transactions (validBefore/validAfter)
 /// - EIP-7702 authorization lists
@@ -120,9 +120,9 @@ pub struct TxAA {
     /// Key 0 is the protocol nonce, keys 1-N are user nonces for parallelization
     pub nonce_key: u64,
 
-    /// Current sequence value for the nonce key
+    /// Current nonce value for the nonce key
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
-    pub nonce_sequence: u64,
+    pub nonce: u64,
 
     /// Optional features
 
@@ -149,7 +149,7 @@ impl Default for TxAA {
             calls: Vec::new(),
             access_list: AccessList::default(),
             nonce_key: 0,
-            nonce_sequence: 0,
+            nonce: 0,
             fee_payer_signature: None,
             valid_before: 0,
             valid_after: None,
@@ -178,6 +178,12 @@ impl TxAA {
             }
         }
 
+        // For now, only allow protocol nonce (nonce_key = 0)
+        // 2D nonce system support (nonce_key > 0) will be enabled in a future release
+        if self.nonce_key != 0 {
+            return Err("only protocol nonce (nonce_key = 0) is currently supported");
+        }
+
         Ok(())
     }
 
@@ -194,7 +200,7 @@ impl TxAA {
         }).sum::<usize>() + // calls
         self.access_list.size() + // access_list
         mem::size_of::<u64>() + // nonce_key
-        mem::size_of::<u64>() + // nonce_sequence
+        mem::size_of::<u64>() + // nonce
         mem::size_of::<Option<Signature>>() + // fee_payer_signature
         mem::size_of::<u64>() + // valid_before
         mem::size_of::<Option<u64>>() // valid_after
@@ -215,7 +221,11 @@ impl TxAA {
         let payload_length = self.rlp_encoded_fields_length(|_| sender.length(), false);
 
         let mut buf = Vec::with_capacity(
-            1 + alloy_rlp::Header { list: true, payload_length }.length_with_payload()
+            1 + alloy_rlp::Header {
+                list: true,
+                payload_length,
+            }
+            .length_with_payload(),
         );
 
         // Magic byte for fee payer signature (like TxFeeToken)
@@ -260,8 +270,8 @@ impl TxAA {
             self.access_list.length() +
             // nonce_key
             self.nonce_key.length() +
-            // nonce_sequence
-            self.nonce_sequence.length() +
+            // nonce
+            self.nonce.length() +
             // valid_before
             self.valid_before.length() +
             // valid_after (optional u64)
@@ -298,8 +308,8 @@ impl TxAA {
         // Encode nonce_key
         self.nonce_key.encode(out);
 
-        // Encode nonce_sequence
-        self.nonce_sequence.encode(out);
+        // Encode nonce
+        self.nonce.encode(out);
 
         // Encode valid_before
         self.valid_before.encode(out);
@@ -373,7 +383,7 @@ impl TxAA {
         let calls = Decodable::decode(buf)?;
         let access_list = Decodable::decode(buf)?;
         let nonce_key = Decodable::decode(buf)?;
-        let nonce_sequence = Decodable::decode(buf)?;
+        let nonce = Decodable::decode(buf)?;
         let valid_before = Decodable::decode(buf)?;
 
         let valid_after = if let Some(first) = buf.first() {
@@ -425,7 +435,7 @@ impl TxAA {
             calls,
             access_list,
             nonce_key,
-            nonce_sequence,
+            nonce,
             fee_payer_signature,
             valid_before,
             valid_after,
@@ -446,7 +456,7 @@ impl Transaction for TxAA {
 
     #[inline]
     fn nonce(&self) -> u64 {
-        self.nonce_sequence
+        self.nonce
     }
 
     #[inline]
@@ -738,7 +748,7 @@ mod tests {
             calls: vec![call.clone()],
             access_list: Default::default(),
             nonce_key: 0,
-            nonce_sequence: 1,
+            nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: 1000000,
             valid_after: Some(500000),
@@ -765,7 +775,7 @@ mod tests {
         assert_eq!(decoded.calls[0].value, call.value);
         assert_eq!(decoded.calls[0].input, call.input);
         assert_eq!(decoded.nonce_key, tx.nonce_key);
-        assert_eq!(decoded.nonce_sequence, tx.nonce_sequence);
+        assert_eq!(decoded.nonce, tx.nonce);
         assert_eq!(decoded.valid_before, tx.valid_before);
         assert_eq!(decoded.valid_after, tx.valid_after);
         assert_eq!(decoded.fee_payer_signature, tx.fee_payer_signature);
@@ -788,7 +798,7 @@ mod tests {
             calls: vec![call],
             access_list: Default::default(),
             nonce_key: 0,
-            nonce_sequence: 1,
+            nonce: 1,
             fee_payer_signature: None,
             valid_before: 0,
             valid_after: None,
@@ -837,24 +847,28 @@ mod tests {
             input: Bytes::new(),
         };
 
-        // Protocol nonce (key 0)
+        // Protocol nonce (key 0) - should be accepted
         let tx1 = TxAA {
             nonce_key: 0,
-            nonce_sequence: 1,
+            nonce: 1,
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx1.validate().is_ok());
         assert_eq!(tx1.nonce(), 1);
 
-        // User parallel nonce (key > 0)
+        // User parallel nonce (key > 0) - should be rejected for now
         let tx2 = TxAA {
             nonce_key: 1,
-            nonce_sequence: 0,
+            nonce: 0,
             calls: vec![dummy_call],
             ..Default::default()
         };
-        assert!(tx2.validate().is_ok());
+        assert!(tx2.validate().is_err());
+        assert_eq!(
+            tx2.validate().unwrap_err(),
+            "only protocol nonce (nonce_key = 0) is currently supported"
+        );
         assert_eq!(tx2.nonce(), 0);
     }
 
@@ -937,7 +951,7 @@ mod tests {
             gas_limit: 21000,
             calls: vec![dummy_call.clone()],
             nonce_key: 0,
-            nonce_sequence: 1,
+            nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: 0,
             valid_after: None,
@@ -1014,7 +1028,7 @@ mod tests {
             gas_limit: 21000,
             calls: vec![dummy_call],
             nonce_key: 0,
-            nonce_sequence: 1,
+            nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: 0,
             valid_after: None,
@@ -1032,7 +1046,6 @@ mod tests {
             sender_hash, fee_payer_hash,
             "Sender and fee payer hashes should be different (different magic bytes)"
         );
-
     }
 
     #[test]
@@ -1057,7 +1070,7 @@ mod tests {
             gas_limit: 21000,
             calls: vec![dummy_call.clone()],
             nonce_key: 0,
-            nonce_sequence: 1,
+            nonce: 1,
             fee_payer_signature: None, // No fee payer
             valid_before: 0,
             valid_after: None,
@@ -1117,7 +1130,7 @@ mod tests {
             gas_limit: 21000,
             calls: vec![dummy_call.clone()],
             nonce_key: 0,
-            nonce_sequence: 1,
+            nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: 0,
             valid_after: None,
@@ -1179,7 +1192,7 @@ mod tests {
             gas_limit: 21000,
             calls: vec![dummy_call.clone()],
             nonce_key: 0,
-            nonce_sequence: 1,
+            nonce: 1,
             fee_payer_signature: None,
             valid_before: 0,
             valid_after: None,

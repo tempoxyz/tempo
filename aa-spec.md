@@ -35,7 +35,7 @@ pub struct AATransaction {
 
     // AA-specific fields
     nonce_key: U64,           // 64 bit sequence keys (was U192, changed to U64 for simplicity)
-    nonce_sequence: U64,      // 64 bit current value of the sequence key
+    nonce: U64,      // 64 bit current value of the sequence key
 
     // Optional features
     fee_token: Option<Address>,         // Optional fee token preference
@@ -122,7 +122,7 @@ The protocol implements 2D nonces without expiry or garbage collection:
 
 **Storage Layout at 0x4E4F4E4345:**
 - Storage key: `keccak256(abi.encode(account_address, nonce_key))`
-- Storage value: `nonce_sequence` (uint64)
+- Storage value: `nonce` (uint64)
 - Active key count for account: stored at `keccak256(abi.encode(account_address, uint192(0)))`
 
 Note: Protocol Nonce key (0), is directly stored in the account state, just like normal transaction types.
@@ -193,7 +193,7 @@ sender_hash = keccak256(0x05 || rlp([
     calls,
     access_list,
     nonce_key,
-    nonce_sequence,
+    nonce,
     valid_before,
     valid_after,
     0x80,  // fee_token encoded as EMPTY (skipped)
@@ -209,7 +209,7 @@ sender_hash = keccak256(0x05 || rlp([
     calls,
     access_list,
     nonce_key,
-    nonce_sequence,
+    nonce,
     valid_before,
     valid_after,
     fee_token,  // fee_token is INCLUDED
@@ -235,7 +235,7 @@ fee_payer_hash = keccak256(0x78 || rlp([  // Note: 0x78 magic byte
     calls,
     access_list,
     nonce_key,
-    nonce_sequence,
+    nonce,
     valid_before,
     valid_after,
     fee_token,      // fee_token ALWAYS included
@@ -303,7 +303,7 @@ The transaction is RLP encoded as follows:
     calls,          // RLP list of Call structs
     access_list,
     nonce_key,
-    nonce_sequence,
+    nonce,
     valid_before,
     valid_after,
     fee_token,      // Always included in encoding (0x80 if None)
@@ -510,7 +510,7 @@ def calculate_aa_tx_base_gas(tx):
         tx: AA transaction object with fields:
             - signature: bytes (variable length)
             - nonce_key: uint192
-            - nonce_sequence: uint64
+            - nonce: uint64
             - sender_address: address
 
     Returns:

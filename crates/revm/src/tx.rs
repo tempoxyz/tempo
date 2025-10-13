@@ -255,7 +255,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             calls,
             access_list,
             nonce_key,
-            nonce_sequence,
+            nonce,
             fee_payer_signature,
             valid_before,
             valid_after,
@@ -281,7 +281,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 kind: to,
                 value,
                 data: input,
-                nonce: *nonce_sequence, // AA: nonce_sequence maps to TxEnv.nonce
+                nonce: *nonce, // AA: nonce maps to TxEnv.nonce
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
                 access_list: access_list.clone(),
