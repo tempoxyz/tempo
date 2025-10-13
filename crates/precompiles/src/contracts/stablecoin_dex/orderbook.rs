@@ -1,6 +1,9 @@
 //! Orderbook and tick level management for the stablecoin DEX.
 
-use super::{slots::{ASK_BITMAPS, BID_BITMAPS, BID_TICK_LEVELS, ASK_TICK_LEVELS, ORDERBOOKS}, offsets};
+use super::{
+    offsets,
+    slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS},
+};
 use crate::contracts::{
     StorageProvider,
     storage::{StorageOps, slots::mapping_slot},
@@ -53,8 +56,12 @@ impl TickLevel {
         tick: i16,
         is_bid: bool,
     ) -> Self {
-        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
-        
+        let base_slot = if is_bid {
+            BID_TICK_LEVELS
+        } else {
+            ASK_TICK_LEVELS
+        };
+
         // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
@@ -71,7 +78,10 @@ impl TickLevel {
             .to::<u128>();
 
         let total_liquidity = storage
-            .sload(address, tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET)
+            .sload(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+            )
             .expect("TODO: handle error")
             .to::<u128>();
 
@@ -91,8 +101,12 @@ impl TickLevel {
         tick: i16,
         is_bid: bool,
     ) {
-        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
-        
+        let base_slot = if is_bid {
+            BID_TICK_LEVELS
+        } else {
+            ASK_TICK_LEVELS
+        };
+
         // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
@@ -132,7 +146,11 @@ impl TickLevel {
         is_bid: bool,
         new_head: u128,
     ) {
-        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
+        let base_slot = if is_bid {
+            BID_TICK_LEVELS
+        } else {
+            ASK_TICK_LEVELS
+        };
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
 
@@ -154,7 +172,11 @@ impl TickLevel {
         is_bid: bool,
         new_tail: u128,
     ) {
-        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
+        let base_slot = if is_bid {
+            BID_TICK_LEVELS
+        } else {
+            ASK_TICK_LEVELS
+        };
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
 
@@ -176,7 +198,11 @@ impl TickLevel {
         is_bid: bool,
         new_total: u128,
     ) {
-        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
+        let base_slot = if is_bid {
+            BID_TICK_LEVELS
+        } else {
+            ASK_TICK_LEVELS
+        };
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
 
@@ -241,12 +267,18 @@ impl Orderbook {
             .into();
 
         let best_bid_tick = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET)
+            .sload(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+            )
             .expect("TODO: handle error")
             .to::<i16>();
 
         let best_ask_tick = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET)
+            .sload(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+            )
             .expect("TODO: handle error")
             .to::<i16>();
 
@@ -337,7 +369,6 @@ impl Orderbook {
             .expect("TODO: handle error");
         base != U256::ZERO
     }
-
 }
 
 /// Tick bitmap manager for efficient price discovery

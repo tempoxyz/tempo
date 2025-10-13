@@ -331,6 +331,103 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         order_id
     }
 
+    /// Process all pending orders into the active orderbook
+    pub fn execute_block(&mut self) {
+        let next_order_id = self.storage
+            .sload(self.address, slots::NEXT_ORDER_ID)
+            .expect("TODO: handle error")
+            .to::<u128>();
+            
+        let pending_order_id = self.get_pending_order_id();
+
+        let mut current_order_id = next_order_id + 1;
+        while current_order_id <= pending_order_id {
+            self.process_pending_order(current_order_id);
+            current_order_id += 1;
+        }
+
+        self.storage
+            .sstore(self.address, slots::NEXT_ORDER_ID, U256::from(pending_order_id))
+            .expect("TODO: handle error");
+    }
+
+    /// Process a single pending order into the active orderbook
+    fn process_pending_order(&mut self, order_id: u128) {
+        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
+        
+        let maker = self.storage
+            .sload(self.address, order_slot + offsets::ORDER_MAKER_OFFSET)
+            .expect("TODO: handle error");
+        if maker == U256::ZERO {
+            return;
+        }
+
+        let book_key = self.storage
+            .sload(self.address, order_slot + offsets::ORDER_BOOK_KEY_OFFSET)
+            .expect("TODO: handle error");
+
+        let side_u256 = self.storage
+            .sload(self.address, order_slot + offsets::ORDER_SIDE_OFFSET)
+            .expect("TODO: handle error");
+        let is_bid = side_u256 == U256::ZERO;
+
+        let tick = self.storage
+            .sload(self.address, order_slot + offsets::ORDER_TICK_OFFSET)
+            .expect("TODO: handle error")
+            .to::<i16>();
+
+        let remaining = self.storage
+            .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        let mut orderbook = orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
+        let mut level = orderbook::TickLevel::load(self.storage, self.address, B256::from(book_key), tick, is_bid);
+
+        let prev_tail = level.tail;
+        if prev_tail == 0 {
+            level.head = order_id;
+            level.tail = order_id;
+            
+            let mut bitmap = orderbook::TickBitmap::new(self.storage, self.address, B256::from(book_key));
+            bitmap.set_tick_bit(tick, is_bid);
+
+            if is_bid {
+                if tick > orderbook.best_bid_tick {
+                    orderbook.best_bid_tick = tick;
+                    orderbook::Orderbook::update_best_bid_tick(self.storage, self.address, B256::from(book_key), tick);
+                }
+            } else {
+                if tick < orderbook.best_ask_tick {
+                    orderbook.best_ask_tick = tick;
+                    orderbook::Orderbook::update_best_ask_tick(self.storage, self.address, B256::from(book_key), tick);
+                }
+            }
+        } else {
+            let prev_tail_slot = mapping_slot(prev_tail.to_be_bytes(), slots::ORDERS);
+            self.storage
+                .sstore(
+                    self.address,
+                    prev_tail_slot + offsets::ORDER_NEXT_OFFSET,
+                    U256::from(order_id),
+                )
+                .expect("TODO: handle error");
+
+            self.storage
+                .sstore(
+                    self.address,
+                    order_slot + offsets::ORDER_PREV_OFFSET,
+                    U256::from(prev_tail),
+                )
+                .expect("TODO: handle error");
+
+            level.tail = order_id;
+        }
+
+        level.total_liquidity += remaining;
+        level.store(self.storage, self.address, B256::from(book_key), tick, is_bid);
+    }
+
     pub fn cancel(&mut self, _order_id: u128) {
         todo!()
     }
