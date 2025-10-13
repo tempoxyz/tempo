@@ -115,7 +115,7 @@ fn main() -> eyre::Result<()> {
                 // Ensure all consensus metrics are prefixed. Shadow `ctx` to
                 // not forget.
                 let ctx = ctx.with_label("consensus");
-                
+
                 let mut metrics_server = match consensus_config
                     .metrics_port {
                     Some(port) => {
