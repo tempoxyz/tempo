@@ -2,6 +2,12 @@ use super::account_abstraction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use p256::{
+    EncodedPoint,
+    ecdsa::{Signature as P256Signature, VerifyingKey, signature::Verifier},
+};
+use sha2::{Digest, Sha256};
 
 /// AA transaction signature supporting multiple signature schemes
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -147,7 +153,6 @@ impl AASignature {
                 // Prepare message hash for verification
                 let message_hash = if *pre_hash {
                     // Some P256 implementations (like Web Crypto) require pre-hashing
-                    use sha2::{Digest, Sha256};
                     let mut hasher = Sha256::new();
                     hasher.update(sig_hash.as_slice());
                     let result = hasher.finalize();
@@ -227,11 +232,6 @@ fn verify_p256_signature_internal(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
-    use p256::{
-        EncodedPoint,
-        ecdsa::{Signature as P256Signature, VerifyingKey, signature::Verifier},
-    };
-
     // Construct uncompressed public key point (0x04 || x || y)
     let mut pub_key_bytes = [0u8; 65];
     pub_key_bytes[0] = 0x04; // Uncompressed point marker
@@ -270,8 +270,6 @@ fn verify_webauthn_data_internal(
     webauthn_data: &[u8],
     tx_hash: &B256,
 ) -> Result<B256, &'static str> {
-    use sha2::{Digest, Sha256};
-
     // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
     if webauthn_data.len() < 37 {
         return Err("WebAuthn data too short");
@@ -341,7 +339,6 @@ fn verify_webauthn_data_internal(
     }
 
     // Verify challenge matches tx_hash (Base64URL encoded)
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let challenge_b64url = URL_SAFE_NO_PAD.encode(tx_hash.as_slice());
     let challenge_property = format!("\"challenge\":\"{}\"", challenge_b64url);
     if !json_str.contains(&challenge_property) {
