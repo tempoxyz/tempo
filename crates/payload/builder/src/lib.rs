@@ -203,6 +203,7 @@ where
                         withdrawals: Some(attributes.withdrawals().clone()),
                     },
                     general_gas_limit,
+                    timestamp_millis_part: attributes.timestamp_millis_part(),
                 },
             )
             .map_err(PayloadBuilderError::other)?;

@@ -28,14 +28,16 @@ impl InterruptHandle {
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
     interrupt: InterruptHandle,
+    timestamp_millis_part: u64,
 }
 
 impl TempoPayloadBuilderAttributes {
     /// Creates new `TempoPayloadBuilderAttributes` with `inner` attributes.
-    pub fn new(inner: EthPayloadBuilderAttributes) -> Self {
+    pub fn new(inner: EthPayloadBuilderAttributes, timestamp_millis_part: u64) -> Self {
         Self {
             inner,
             interrupt: InterruptHandle(Arc::new(atomic::AtomicBool::new(false))),
+            timestamp_millis_part,
         }
     }
 
@@ -48,6 +50,11 @@ impl TempoPayloadBuilderAttributes {
     /// Returns a cloneable [`InterruptHandle`] for turning on the `interrupt` flag.
     pub fn interrupt_handle(&self) -> &InterruptHandle {
         &self.interrupt
+    }
+
+    /// Returns the milliseconds portion of the timestamp.
+    pub fn timestamp_millis_part(&self) -> u64 {
+        self.timestamp_millis_part
     }
 }
 
@@ -63,11 +70,10 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
     where
         Self: Sized,
     {
-        Ok(Self::new(EthPayloadBuilderAttributes::try_new(
-            parent,
-            rpc_payload_attributes,
-            version,
-        )?))
+        Ok(Self::new(
+            EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
+            0,
+        ))
     }
 
     fn payload_id(&self) -> alloy_rpc_types_engine::payload::PayloadId {

@@ -18,6 +18,10 @@ pub struct TempoHeader {
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub general_gas_limit: u64,
 
+    /// Sub-second (milliseconds) portion of the timestamp.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub timestamp_millis_part: u64,
+
     /// Inner Ethereum [`Header`].
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub inner: Header,
@@ -122,8 +126,9 @@ impl InMemorySize for TempoHeader {
         let Self {
             inner,
             general_gas_limit,
+            timestamp_millis_part,
         } = self;
-        inner.size() + general_gas_limit.size()
+        inner.size() + general_gas_limit.size() + timestamp_millis_part.size()
     }
 }
 

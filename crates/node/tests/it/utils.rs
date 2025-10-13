@@ -331,8 +331,8 @@ fn default_attributes_generator(timestamp: u64) -> TempoPayloadBuilderAttributes
         parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
     };
 
-    TempoPayloadBuilderAttributes::new(EthPayloadBuilderAttributes::new(
-        alloy::primitives::B256::ZERO,
-        attributes,
-    ))
+    TempoPayloadBuilderAttributes::new(
+        EthPayloadBuilderAttributes::new(alloy::primitives::B256::ZERO, attributes),
+        0,
+    )
 }

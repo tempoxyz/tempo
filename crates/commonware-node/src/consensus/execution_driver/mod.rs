@@ -435,27 +435,30 @@ impl Inner<Init> {
             timestamp = parent.timestamp().saturating_add(1);
         }
 
-        let attrs = TempoPayloadBuilderAttributes::new(EthPayloadBuilderAttributes {
-            // XXX: derives the payload ID from the parent so that
-            // overlong payload builds will eventually succeed on the
-            // next iteration: if all other nodes take equally as long,
-            // the consensus engine will kill the proposal task (see
-            // also `response.cancellation` below). Then eventually
-            // consensus will circle back to an earlier node, which then
-            // has the chance of picking up the old payload.
-            id: payload_id_from_block_hash(&parent.block_hash()),
-            parent: parent.block_hash(),
-            timestamp,
-            suggested_fee_recipient: self.fee_recipient,
-            // XXX(tempo): for PoS compatibility
-            prev_randao: B256::ZERO,
-            // XXX(tempo): empty withdrawals post-shanghai
-            withdrawals: Withdrawals::default(),
-            // TODO: tempo-malachite did this (why?); but maybe we can
-            // use the consensus block' digest for this? alternatively somehow
-            // tie this to the threshold simplex view / round / height?;
-            parent_beacon_block_root: Some(B256::ZERO),
-        });
+        let attrs = TempoPayloadBuilderAttributes::new(
+            EthPayloadBuilderAttributes {
+                // XXX: derives the payload ID from the parent so that
+                // overlong payload builds will eventually succeed on the
+                // next iteration: if all other nodes take equally as long,
+                // the consensus engine will kill the proposal task (see
+                // also `response.cancellation` below). Then eventually
+                // consensus will circle back to an earlier node, which then
+                // has the chance of picking up the old payload.
+                id: payload_id_from_block_hash(&parent.block_hash()),
+                parent: parent.block_hash(),
+                timestamp,
+                suggested_fee_recipient: self.fee_recipient,
+                // XXX(tempo): for PoS compatibility
+                prev_randao: B256::ZERO,
+                // XXX(tempo): empty withdrawals post-shanghai
+                withdrawals: Withdrawals::default(),
+                // TODO: tempo-malachite did this (why?); but maybe we can
+                // use the consensus block' digest for this? alternatively somehow
+                // tie this to the threshold simplex view / round / height?;
+                parent_beacon_block_root: Some(B256::ZERO),
+            },
+            0,
+        );
 
         let interrupt_handle = attrs.interrupt_handle().clone();
 
