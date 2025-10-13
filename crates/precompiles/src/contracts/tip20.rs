@@ -626,6 +626,8 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         _msg_sender: &Address,
         call: ITIP20::permitCall,
     ) -> Result<(), TIP20Error> {
+        #[allow(clippy::disallowed_methods)]
+        // TODO: this shouldn't use SystemTime due to non-determinism, see GH issue #446
         if U256::from(call.deadline)
             < U256::from(
                 std::time::SystemTime::now()
