@@ -20,10 +20,7 @@ use futures_util::{
     future::{Either, try_join},
 };
 use rand::{CryptoRng, Rng};
-use reth::{
-    payload::{EthBuiltPayload, EthPayloadBuilderAttributes},
-    rpc::types::Withdrawals,
-};
+use reth::payload::EthBuiltPayload;
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
@@ -424,6 +421,13 @@ impl Inner<Init> {
                 ))?;
 
         let attrs = TempoPayloadBuilderAttributes::new(
+            // XXX: derives the payload ID from the parent so that
+            // overlong payload builds will eventually succeed on the
+            // next iteration: if all other nodes take equally as long,
+            // the consensus engine will kill the proposal task (see
+            // also `response.cancellation` below). Then eventually
+            // consensus will circle back to an earlier node, which then
+            // has the chance of picking up the old payload.
             payload_id_from_block_hash(&parent.block_hash()),
             parent.block_hash(),
             self.fee_recipient,

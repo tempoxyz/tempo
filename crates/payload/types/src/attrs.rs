@@ -83,9 +83,8 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
     where
         Self: Sized,
     {
-        let inner = EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?;
         Ok(Self {
-            inner,
+            inner: EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
         })
