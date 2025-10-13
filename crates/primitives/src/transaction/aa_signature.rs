@@ -202,14 +202,9 @@ impl AASignature {
 // ============================================================================
 
 /// Derives a P256 address from public key coordinates
-/// Uses domain separation to prevent collision with secp256k1 addresses
 pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
-    // Domain separator prevents collision with standard secp256k1 addresses
-    let prefix = b"TEMPO_P256";
-
     let hash = keccak256(
         &[
-            prefix.as_slice(),
             pub_key_x.as_slice(),
             pub_key_y.as_slice(),
         ]

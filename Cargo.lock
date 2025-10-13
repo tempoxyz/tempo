@@ -11810,7 +11810,6 @@ dependencies = [
  "alloy-serde",
  "arbitrary",
  "base64 0.22.1",
- "derive_more",
  "modular-bitfield",
  "p256",
  "proptest",

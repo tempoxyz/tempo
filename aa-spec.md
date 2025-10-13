@@ -91,13 +91,9 @@ address(uint160(uint256(keccak256(abi.encode(x, y)))))
 
 #### P256 and WebAuthn
 ```solidity
-function deriveAddressFromP256(bytes32 pubKeyX, bytes32 pubKeyY) public pure returns (address) {
-    // Domain separator prevents collision with standard secp256k1 addresses
-    bytes memory prefix = "TEMPO_P256";
-    
-    // Hash with domain separator
+function deriveAddressFromP256(bytes32 pubKeyX, bytes32 pubKeyY) public pure returns (address) {    
+    // Hash 
     bytes32 hash = keccak256(abi.encodePacked(
-        prefix,
         pubKeyX,
         pubKeyY
     ));
@@ -262,9 +258,6 @@ Since authenticatorData has variable length, finding the split point requires:
 
 ### Signature Type Detection by Length
 Using signature length for type detection avoids adding explicit type fields while maintaining deterministic parsing. The chosen lengths (65, 129, variable) are naturally distinct.
-
-### Domain-Separated P256 Address Derivation
-The prefix-based derivation ensures P256-derived addresses cannot collide with secp256k1 addresses, as different inputs to keccak256 produce different outputs with overwhelming probability (2^-160).
 
 ### Linear Gas Scaling for Nonce Keys
 The progressive pricing model prevents state bloat while keeping initial keys affordable. The 20,000 gas increment approximates the long-term state cost of maintaining each additional nonce mapping.
@@ -484,6 +477,3 @@ If garbage collection becomes necessary, this field can be made mandatory
 
 ### RLP Encoding Safety
 Care must be taken to ensure unique RLP encoding for all valid transaction configurations, particularly around optional fields. The encoding must be unambiguous to prevent transaction malleability.
-
-### Address Collision Prevention
-The domain-separated hashing for P256 addresses prevents collision with existing secp256k1 addresses. It should be cryptographically infeasible to generate a P256 private key mapping to existing addresses like the zero address.
