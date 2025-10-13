@@ -1,6 +1,7 @@
 use alloy::{
+    eips::BlockNumberOrTag::Latest,
     network::TxSignerSync,
-    primitives::{Address, TxKind, U256},
+    primitives::{Address, BlockNumber, TxKind, U256},
     providers::{Provider, ProviderBuilder},
     sol,
     sol_types::SolCall,
@@ -10,12 +11,15 @@ use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use clap::Parser;
 use core_affinity::CoreId;
-use eyre::{Context, ensure};
+use eyre::{Context, OptionExt, ensure};
 use governor::{Quota, RateLimiter};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rlimit::Resource;
+use serde::Serialize;
 use simple_tqdm::ParTqdm;
 use std::{
+    fs::File,
+    io::BufWriter,
     num::NonZeroU32,
     sync::{
         Arc,
@@ -83,6 +87,18 @@ pub struct MaxTpsArgs {
     /// File descriptor limit to set
     #[arg(long)]
     fd_limit: Option<u64>,
+
+    /// Node commit SHA for metadata
+    #[arg(long)]
+    node_commit_sha: Option<String>,
+
+    /// Build profile for metadata (e.g., "release", "debug", "maxperf")
+    #[arg(long)]
+    build_profile: Option<String>,
+
+    /// Benchmark mode for metadata (e.g., "max_tps", "stress_test")
+    #[arg(long)]
+    benchmark_mode: Option<String>,
 }
 
 impl MaxTpsArgs {
@@ -117,6 +133,14 @@ impl MaxTpsArgs {
             .context("Failed to generate transactions")?,
         );
 
+        // Get first block height before sending transactions
+        let provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
+        let start_block = provider
+            .get_block(Latest.into())
+            .await?
+            .ok_or_eyre("failed to fetch start block")?;
+        let start_block_number = start_block.header.number;
+
         // Create shared transaction counter and monitoring
         let tx_counter = Arc::new(AtomicU64::new(0));
 
@@ -128,7 +152,7 @@ impl MaxTpsArgs {
             transactions,
             self.workers,
             self.total_connections,
-            target_urls,
+            target_urls.clone(),
             self.tps,
             self.disable_thread_pinning,
             tx_counter,
@@ -138,6 +162,20 @@ impl MaxTpsArgs {
         // Wait for all sender threads to finish
         std::thread::sleep(Duration::from_secs(self.duration));
         println!("Finished sending transactions");
+
+        let end_block = provider
+            .get_block(Latest.into())
+            .await?
+            .ok_or_eyre("failed to fetch start block")?;
+        let end_block_number = end_block.header.number;
+
+        generate_report(
+            &target_urls[0].clone(),
+            start_block_number,
+            end_block_number,
+            &self,
+        )
+        .await?;
 
         Ok(())
     }
@@ -325,6 +363,103 @@ pub fn pin_thread(core_id: CoreId) {
             core_id.id
         );
     }
+}
+
+#[derive(Serialize)]
+struct BenchmarkedBlock {
+    number: BlockNumber,
+    tx_count: usize,
+    gas_used: u64,
+    timestamp: u64,
+    latency_ms: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct BenchmarkMetadata {
+    target_tps: u64,
+    run_duration_secs: u64,
+    num_accounts: u64,
+    num_workers: usize,
+    chain_id: u64,
+    total_connections: u64,
+    start_block: BlockNumber,
+    end_block: BlockNumber,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_commit_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BenchmarkReport {
+    metadata: BenchmarkMetadata,
+    blocks: Vec<BenchmarkedBlock>,
+}
+
+pub async fn generate_report(
+    rpc_url: &Url,
+    start_block: BlockNumber,
+    end_block: BlockNumber,
+    args: &MaxTpsArgs,
+) -> eyre::Result<()> {
+    let provider = ProviderBuilder::new().connect_http(rpc_url.clone());
+
+    let mut last_block_timestamp: Option<u64> = None;
+
+    let mut benchmarked_blocks = Vec::new();
+
+    for number in start_block..=end_block {
+        let block = provider
+            .get_block(number.into())
+            .await?
+            .expect("we should always have this block number");
+        let receipts = provider
+            .get_block_receipts(number.into())
+            .await?
+            .expect("there should always be at least one receipt");
+        let timestamp = block.header.timestamp;
+
+        let latency_ms = last_block_timestamp.map(|last| (timestamp - last) * 1000);
+
+        benchmarked_blocks.push(BenchmarkedBlock {
+            number,
+            tx_count: receipts.len(),
+            gas_used: block.header.gas_used,
+            timestamp: block.header.timestamp,
+            latency_ms,
+        });
+
+        last_block_timestamp = Some(timestamp);
+    }
+
+    let metadata = BenchmarkMetadata {
+        target_tps: args.tps,
+        run_duration_secs: args.duration,
+        num_accounts: args.accounts,
+        num_workers: args.workers,
+        chain_id: args.chain_id,
+        total_connections: args.total_connections,
+        start_block,
+        end_block,
+        node_commit_sha: args.node_commit_sha.clone(),
+        build_profile: args.build_profile.clone(),
+        mode: args.benchmark_mode.clone(),
+    };
+
+    let report = BenchmarkReport {
+        metadata,
+        blocks: benchmarked_blocks,
+    };
+
+    let file = File::create("report.json")?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, &report)?;
+
+    println!("Report written to report.json");
+
+    Ok(())
 }
 
 fn monitor_tps(tx_counter: Arc<AtomicU64>) -> thread::JoinHandle<()> {
