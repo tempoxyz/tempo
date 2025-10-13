@@ -111,6 +111,11 @@ fn main() -> eyre::Result<()> {
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
             runner.start(async move |ctx| {
+
+                // Ensure all consensus metrics are prefixed. Shadow `ctx` to
+                // not forget.
+                let ctx = ctx.with_label("consensus");
+                
                 let mut metrics_server = match consensus_config
                     .metrics_port {
                     Some(port) => {
