@@ -39,18 +39,19 @@ impl TempoPayloadBuilderAttributes {
         suggested_fee_recipient: Address,
         timestamp_millis: u64,
     ) -> Self {
+        let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
         Self {
             inner: EthPayloadBuilderAttributes {
                 id,
                 parent,
-                timestamp: timestamp_millis / 1000,
+                timestamp: seconds,
                 suggested_fee_recipient,
                 prev_randao: B256::ZERO,
                 withdrawals: Withdrawals::default(),
                 parent_beacon_block_root: Some(B256::ZERO),
             },
             interrupt: InterruptHandle::default(),
-            timestamp_millis_part: timestamp_millis % 1000,
+            timestamp_millis_part: millis,
         }
     }
 
