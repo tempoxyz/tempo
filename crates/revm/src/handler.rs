@@ -20,16 +20,11 @@ use reth_evm::{
     },
 };
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
-use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
-<<<<<<< HEAD
-        EvmStorageProvider, nonce,
-=======
         EvmStorageProvider,
         nonce::{self, NonceManager},
->>>>>>> c34d127 (chore(revm): update nonce logic)
         storage::slots::mapping_slot,
         tip_fee_manager::{self, TipFeeManager},
         tip20,
