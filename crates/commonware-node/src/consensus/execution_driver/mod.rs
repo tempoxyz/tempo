@@ -162,26 +162,16 @@ where
 {
     /// Runs the initialized execution driver.
     async fn run_until_stopped(mut self) {
-        loop {
-            tokio::select!(
-                // NOTE: biased because we prefer running finalizations above
-                // all else.
-                // TODO(janis): listen to a shutdown message here so that having
-                // biased and this note here make sense.
-                biased;
-
-                Some(msg) = self.mailbox.next() => {
-                    if let Err(error) =  self.handle_message(msg) {
-                        tracing::error_span!("handle message").in_scope(|| tracing::error!(
-                            %error,
-                            "critical error occurred while handling message; exiting"
-                        ));
-                        break;
-                    }
-                }
-
-                else => break,
-            )
+        while let Some(msg) = self.mailbox.next().await {
+            if let Err(error) = self.handle_message(msg) {
+                tracing::error_span!("handle message").in_scope(|| {
+                    tracing::error!(
+                        %error,
+                        "critical error occurred while handling message; exiting"
+                    )
+                });
+                break;
+            }
         }
     }
 
@@ -296,15 +286,13 @@ impl Inner<Init> {
             mut response,
             round,
         } = request;
-        let proposal = tokio::select!(
-            biased;
-
+        let proposal = commonware_macros::select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
                     engine before block could be proposed; aborting"
                 ))
-           }
+           },
 
             res = self.clone().propose(context, parent, round) => {
                 res.wrap_err("failed creating a proposal")
