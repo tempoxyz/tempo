@@ -1,11 +1,12 @@
 //! Orderbook and tick level management for the stablecoin DEX.
 
-use super::slots::{ASK_BITMAPS, BID_BITMAPS};
+use super::{slots::{ASK_BITMAPS, BID_BITMAPS, BID_TICK_LEVELS, ASK_TICK_LEVELS, ORDERBOOKS}, offsets};
 use crate::contracts::{
     StorageProvider,
     storage::{StorageOps, slots::mapping_slot},
 };
 use alloy::primitives::{Address, B256, U256};
+use revm::interpreter::instructions::utility::IntoU256;
 
 /// Constants from Solidity implementation
 pub const MIN_TICK: i16 = -2000;
@@ -42,6 +43,150 @@ impl TickLevel {
     /// Returns true if this tick level has orders
     pub fn has_liquidity(&self) -> bool {
         !self.is_empty()
+    }
+
+    /// Load a TickLevel from storage
+    pub fn load<S: StorageProvider>(
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+    ) -> Self {
+        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
+        
+        // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
+        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+
+        // Load each field
+        let head = storage
+            .sload(address, tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        let tail = storage
+            .sload(address, tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        let total_liquidity = storage
+            .sload(address, tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        Self {
+            head,
+            tail,
+            total_liquidity,
+        }
+    }
+
+    /// Store this TickLevel to storage
+    pub fn store<S: StorageProvider>(
+        &self,
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+    ) {
+        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
+        
+        // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
+        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+
+        // Store each field
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+                U256::from(self.head),
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+                U256::from(self.tail),
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+                U256::from(self.total_liquidity),
+            )
+            .expect("TODO: handle error");
+    }
+
+    /// Update only the head order ID
+    pub fn update_head<S: StorageProvider>(
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+        new_head: u128,
+    ) {
+        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
+        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+                U256::from(new_head),
+            )
+            .expect("TODO: handle error");
+    }
+
+    /// Update only the tail order ID
+    pub fn update_tail<S: StorageProvider>(
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+        new_tail: u128,
+    ) {
+        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
+        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+                U256::from(new_tail),
+            )
+            .expect("TODO: handle error");
+    }
+
+    /// Update only the total liquidity
+    pub fn update_total_liquidity<S: StorageProvider>(
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+        new_total: u128,
+    ) {
+        let base_slot = if is_bid { BID_TICK_LEVELS } else { ASK_TICK_LEVELS };
+        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+                U256::from(new_total),
+            )
+            .expect("TODO: handle error");
     }
 }
 
@@ -80,6 +225,119 @@ impl Orderbook {
     pub fn is_initialized(&self) -> bool {
         self.base != Address::ZERO
     }
+
+    /// Load an Orderbook from storage
+    pub fn load<S: StorageProvider>(storage: &mut S, address: Address, book_key: B256) -> Self {
+        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+
+        let base = storage
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)
+            .expect("TODO: handle error")
+            .into();
+
+        let quote = storage
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET)
+            .expect("TODO: handle error")
+            .into();
+
+        let best_bid_tick = storage
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET)
+            .expect("TODO: handle error")
+            .to::<i16>();
+
+        let best_ask_tick = storage
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET)
+            .expect("TODO: handle error")
+            .to::<i16>();
+
+        Self {
+            base,
+            quote,
+            best_bid_tick,
+            best_ask_tick,
+        }
+    }
+
+    /// Store this Orderbook to storage
+    pub fn store<S: StorageProvider>(&self, storage: &mut S, address: Address, book_key: B256) {
+        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET,
+                self.base.into_u256(),
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET,
+                self.quote.into_u256(),
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+                U256::from(self.best_bid_tick as u16),
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+                U256::from(self.best_ask_tick as u16),
+            )
+            .expect("TODO: handle error");
+    }
+
+    /// Update only the best bid tick
+    pub fn update_best_bid_tick<S: StorageProvider>(
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+        new_best_bid: i16,
+    ) {
+        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+                U256::from(new_best_bid as u16),
+            )
+            .expect("TODO: handle error");
+    }
+
+    /// Update only the best ask tick
+    pub fn update_best_ask_tick<S: StorageProvider>(
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+        new_best_ask: i16,
+    ) {
+        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+                U256::from(new_best_ask as u16),
+            )
+            .expect("TODO: handle error");
+    }
+
+    /// Check if this orderbook exists in storage
+    pub fn exists<S: StorageProvider>(storage: &mut S, address: Address, book_key: B256) -> bool {
+        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+        let base = storage
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)
+            .expect("TODO: handle error");
+        base != U256::ZERO
+    }
+
 }
 
 /// Tick bitmap manager for efficient price discovery
