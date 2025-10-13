@@ -627,6 +627,46 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         }
 
         if new_remaining == 0 {
+            // Check if this is a flip order before removing it
+            let is_flip = self
+                .storage
+                .sload(self.address, order_slot + offsets::ORDER_IS_FLIP_OFFSET)
+                .expect("TODO: handle error");
+
+            if is_flip != U256::ZERO {
+                // Get the flip tick and original amount
+                let flip_tick = self
+                    .storage
+                    .sload(self.address, order_slot + offsets::ORDER_FLIP_TICK_OFFSET)
+                    .expect("TODO: handle error")
+                    .to::<i16>();
+
+                let original_amount = self
+                    .storage
+                    .sload(self.address, order_slot + offsets::ORDER_AMOUNT_OFFSET)
+                    .expect("TODO: handle error")
+                    .to::<u128>();
+
+                // Create a new flip order with flipped side and swapped ticks
+                // Bid becomes Ask, Ask becomes Bid
+                // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
+                let new_order_id = self.get_and_increment_pending_order_id();
+                let new_side = if is_bid { Side::Ask } else { Side::Bid };
+
+                let new_order = Order::new_flip(
+                    new_order_id,
+                    maker,
+                    book_key,
+                    original_amount,
+                    new_side,
+                    flip_tick, // New tick is the old flip_tick
+                    tick,      // New flip_tick is the old tick
+                )
+                .expect("Invalid flip order");
+
+                self.store_pending_order(new_order_id, &new_order);
+            }
+
             let next = self
                 .storage
                 .sload(self.address, order_slot + offsets::ORDER_NEXT_OFFSET)
@@ -1074,8 +1114,13 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
 
         // If the order is pending, delete it without touching the orderbook
         if order_id > next_order_id {
-            let orderbook = orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
-            let token = if is_bid { orderbook.quote } else { orderbook.base };
+            let orderbook =
+                orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
+            let token = if is_bid {
+                orderbook.quote
+            } else {
+                orderbook.base
+            };
 
             // For bids, calculate quote amount to refund; for asks, refund base amount
             let refund_amount = if is_bid {
@@ -1186,9 +1231,10 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             .expect("TODO: handle error");
 
         // Refund tokens to maker
-        let orderbook = orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
+        let orderbook =
+            orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
         if is_bid {
-            // Bid orders are in quote token, refund quote amount  
+            // Bid orders are in quote token, refund quote amount
             let price = orderbook::tick_to_price(tick);
             let quote_amount = (remaining * price as u128) / orderbook::PRICE_SCALE as u128;
             self.add_balance(maker, orderbook.quote, quote_amount);
