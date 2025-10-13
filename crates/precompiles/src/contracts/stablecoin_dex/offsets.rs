@@ -44,3 +44,12 @@ pub const ORDER_NEXT_OFFSET: U256 = uint!(7_U256);
 pub const ORDER_IS_FLIP_OFFSET: U256 = uint!(8_U256);
 /// Flip tick field offset
 pub const ORDER_FLIP_TICK_OFFSET: U256 = uint!(9_U256);
+
+// TickLevel struct field offsets (relative to tick level base slot)
+// Matches Solidity TickLevel struct layout
+/// Head order ID field offset
+pub const TICK_LEVEL_HEAD_OFFSET: U256 = uint!(0_U256);
+/// Tail order ID field offset
+pub const TICK_LEVEL_TAIL_OFFSET: U256 = uint!(1_U256);
+/// Total liquidity field offset
+pub const TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET: U256 = uint!(2_U256);

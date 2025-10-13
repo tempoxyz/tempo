@@ -3,10 +3,12 @@
 pub mod error;
 pub mod offsets;
 pub mod order;
+pub mod orderbook;
 pub mod slots;
 
 pub use error::OrderError;
 pub use order::{Order, Side};
+pub use orderbook::{TickLevel, Orderbook, TickBitmap, tick_to_price, price_to_tick, MIN_TICK, MAX_TICK, PRICE_SCALE};
 
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256};
 use revm::{interpreter::instructions::utility::IntoU256, state::Bytecode};
