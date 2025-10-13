@@ -4,10 +4,7 @@ use super::{
     offsets,
     slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS},
 };
-use crate::contracts::{
-    StorageProvider,
-    storage::{StorageOps, slots::mapping_slot},
-};
+use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
 use alloy::primitives::{Address, B256, U256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 

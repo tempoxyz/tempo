@@ -294,10 +294,9 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         is_bid: bool,
         tick: i16,
     ) -> u128 {
-        // Lookup quote token from TIP20 token
-        let quote_token = TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
-            .quote_token()
-            .expect("Failed to get quote token");
+        // Lookup quote token (linking token) from TIP20 token
+        let quote_token =
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).linking_token();
 
         // Compute book_key from token pair
         let book_key = self.compute_book_key(token, quote_token);
@@ -365,10 +364,9 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         tick: i16,
         flip_tick: i16,
     ) -> u128 {
-        // Lookup quote token from TIP20 token
-        let quote_token = TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
-            .quote_token()
-            .expect("Failed to get quote token");
+        // Lookup quote token (linking token) from TIP20 token
+        let quote_token =
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).linking_token();
 
         // Compute book_key from token pair
         let book_key = self.compute_book_key(token, quote_token);
@@ -656,7 +654,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                 let new_order = Order::new_flip(
                     new_order_id,
                     maker,
-                    book_key,
+                    B256::from(book_key),
                     original_amount,
                     new_side,
                     flip_tick, // New tick is the old flip_tick
