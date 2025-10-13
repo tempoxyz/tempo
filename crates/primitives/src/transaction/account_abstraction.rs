@@ -749,16 +749,23 @@ mod tests {
 
     #[test]
     fn test_signature_type_detection() {
-        // Secp256k1
-        let sig1 = AASignature::from_bytes(&vec![0u8; SECP256K1_SIGNATURE_LENGTH]).unwrap();
+        use crate::transaction::aa_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN};
+
+        // Secp256k1 (detected by 65-byte length, no type identifier)
+        let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
+        let sig1 = AASignature::from_bytes(&sig1_bytes).unwrap();
         assert_eq!(sig1.signature_type(), SignatureType::Secp256k1);
 
         // P256
-        let sig2 = AASignature::from_bytes(&vec![0u8; P256_SIGNATURE_LENGTH]).unwrap();
+        let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
+        sig2_bytes.extend_from_slice(&vec![0u8; P256_SIGNATURE_LENGTH]);
+        let sig2 = AASignature::from_bytes(&sig2_bytes).unwrap();
         assert_eq!(sig2.signature_type(), SignatureType::P256);
 
         // WebAuthn
-        let sig3 = AASignature::from_bytes(&vec![0u8; 200]).unwrap();
+        let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
+        sig3_bytes.extend_from_slice(&vec![0u8; 200]);
+        let sig3 = AASignature::from_bytes(&sig3_bytes).unwrap();
         assert_eq!(sig3.signature_type(), SignatureType::WebAuthn);
     }
 

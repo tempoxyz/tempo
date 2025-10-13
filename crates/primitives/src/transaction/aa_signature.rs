@@ -9,6 +9,11 @@ use p256::{
 };
 use sha2::{Digest, Sha256};
 
+/// Signature type identifiers
+/// Note: Secp256k1 has no identifier - detected by length (65 bytes)
+pub const SIGNATURE_TYPE_P256: u8 = 0x01;
+pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
+
 /// AA transaction signature supporting multiple signature schemes
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -38,38 +43,66 @@ pub enum AASignature {
 }
 
 impl AASignature {
-    /// Parse signature from bytes, detecting type by length
+    /// Parse signature from bytes with backward compatibility
+    ///
+    /// For backward compatibility with existing secp256k1 signatures:
+    /// - If length is 65 bytes: treat as secp256k1 signature (no type identifier)
+    /// - Otherwise: first byte is the signature type identifier
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
-        match data.len() {
-            SECP256K1_SIGNATURE_LENGTH => {
-                let sig =
-                    Signature::try_from(data).map_err(|_| "Failed to parse secp256k1 signature")?;
-                Ok(Self::Secp256k1(sig))
-            }
-            P256_SIGNATURE_LENGTH => Ok(Self::P256 {
-                r: B256::from_slice(&data[0..32]),
-                s: B256::from_slice(&data[32..64]),
-                pub_key_x: B256::from_slice(&data[64..96]),
-                pub_key_y: B256::from_slice(&data[96..128]),
-                pre_hash: data[128] != 0,
-            }),
-            len if len > P256_SIGNATURE_LENGTH && len <= MAX_WEBAUTHN_SIGNATURE_LENGTH => {
-                Ok(Self::WebAuthn {
-                    webauthn_data: Bytes::copy_from_slice(&data[..len - 128]),
-                    r: B256::from_slice(&data[len - 128..len - 96]),
-                    s: B256::from_slice(&data[len - 96..len - 64]),
-                    pub_key_x: B256::from_slice(&data[len - 64..len - 32]),
-                    pub_key_y: B256::from_slice(&data[len - 32..]),
+        if data.is_empty() {
+            return Err("Signature data is empty");
+        }
+
+        // Backward compatibility: 65 bytes means secp256k1 without type identifier
+        if data.len() == SECP256K1_SIGNATURE_LENGTH {
+            let sig = Signature::try_from(data)
+                .map_err(|_| "Failed to parse secp256k1 signature")?;
+            return Ok(Self::Secp256k1(sig));
+        }
+
+        // For all other lengths, first byte is the type identifier
+        let type_id = data[0];
+        let sig_data = &data[1..];
+
+        match type_id {
+            SIGNATURE_TYPE_P256 => {
+                if sig_data.len() != P256_SIGNATURE_LENGTH {
+                    return Err("Invalid P256 signature length");
+                }
+                Ok(Self::P256 {
+                    r: B256::from_slice(&sig_data[0..32]),
+                    s: B256::from_slice(&sig_data[32..64]),
+                    pub_key_x: B256::from_slice(&sig_data[64..96]),
+                    pub_key_y: B256::from_slice(&sig_data[96..128]),
+                    pre_hash: sig_data[128] != 0,
                 })
             }
-            _ => Err("Invalid signature length"),
+            SIGNATURE_TYPE_WEBAUTHN => {
+                let len = sig_data.len();
+                if len < 128 || len > MAX_WEBAUTHN_SIGNATURE_LENGTH {
+                    return Err("Invalid WebAuthn signature length");
+                }
+                Ok(Self::WebAuthn {
+                    webauthn_data: Bytes::copy_from_slice(&sig_data[..len - 128]),
+                    r: B256::from_slice(&sig_data[len - 128..len - 96]),
+                    s: B256::from_slice(&sig_data[len - 96..len - 64]),
+                    pub_key_x: B256::from_slice(&sig_data[len - 64..len - 32]),
+                    pub_key_y: B256::from_slice(&sig_data[len - 32..]),
+                })
+            }
+            _ => Err("Unknown signature type identifier"),
         }
     }
 
     /// Encode signature to bytes
+    ///
+    /// For backward compatibility:
+    /// - Secp256k1: encoded WITHOUT type identifier (65 bytes)
+    /// - P256/WebAuthn: encoded WITH type identifier prefix
     pub fn to_bytes(&self) -> Bytes {
         match self {
             Self::Secp256k1(sig) => {
+                // Backward compatibility: no type identifier for secp256k1
                 let mut bytes = Vec::with_capacity(65);
                 bytes.extend_from_slice(&sig.r().to_be_bytes::<32>());
                 bytes.extend_from_slice(&sig.s().to_be_bytes::<32>());
@@ -83,7 +116,8 @@ impl AASignature {
                 pub_key_y,
                 pre_hash,
             } => {
-                let mut bytes = Vec::with_capacity(129);
+                let mut bytes = Vec::with_capacity(1 + 129);
+                bytes.push(SIGNATURE_TYPE_P256);
                 bytes.extend_from_slice(r.as_slice());
                 bytes.extend_from_slice(s.as_slice());
                 bytes.extend_from_slice(pub_key_x.as_slice());
@@ -98,7 +132,8 @@ impl AASignature {
                 pub_key_x,
                 pub_key_y,
             } => {
-                let mut bytes = Vec::with_capacity(webauthn_data.len() + 128);
+                let mut bytes = Vec::with_capacity(1 + webauthn_data.len() + 128);
+                bytes.push(SIGNATURE_TYPE_WEBAUTHN);
                 bytes.extend_from_slice(webauthn_data);
                 bytes.extend_from_slice(r.as_slice());
                 bytes.extend_from_slice(s.as_slice());
@@ -110,11 +145,15 @@ impl AASignature {
     }
 
     /// Get the length of the encoded signature in bytes
+    ///
+    /// For backward compatibility:
+    /// - Secp256k1: 65 bytes (no type identifier)
+    /// - P256/WebAuthn: includes 1-byte type identifier prefix
     pub fn length(&self) -> usize {
         match self {
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
-            Self::P256 { .. } => P256_SIGNATURE_LENGTH,
-            Self::WebAuthn { webauthn_data, .. } => webauthn_data.len() + 128,
+            Self::P256 { .. } => 1 + P256_SIGNATURE_LENGTH,
+            Self::WebAuthn { webauthn_data, .. } => 1 + webauthn_data.len() + 128,
         }
     }
 
@@ -153,10 +192,7 @@ impl AASignature {
                 // Prepare message hash for verification
                 let message_hash = if *pre_hash {
                     // Some P256 implementations (like Web Crypto) require pre-hashing
-                    let mut hasher = Sha256::new();
-                    hasher.update(sig_hash.as_slice());
-                    let result = hasher.finalize();
-                    B256::from_slice(&result)
+                    B256::from_slice(&Sha256::digest(sig_hash.as_slice()))
                 } else {
                     *sig_hash
                 };
@@ -628,6 +664,7 @@ mod tests {
     fn test_aa_signature_from_bytes_secp256k1() {
         use super::SECP256K1_SIGNATURE_LENGTH;
 
+        // Secp256k1 signatures are detected by length (65 bytes), no type identifier
         let sig_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let result = AASignature::from_bytes(&sig_bytes);
 
@@ -641,9 +678,10 @@ mod tests {
 
     #[test]
     fn test_aa_signature_from_bytes_p256() {
-        use super::P256_SIGNATURE_LENGTH;
+        use super::{P256_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256};
 
-        let sig_bytes = vec![0u8; P256_SIGNATURE_LENGTH];
+        let mut sig_bytes = vec![SIGNATURE_TYPE_P256];
+        sig_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
         let result = AASignature::from_bytes(&sig_bytes);
 
         assert!(result.is_ok());
@@ -656,7 +694,10 @@ mod tests {
 
     #[test]
     fn test_aa_signature_from_bytes_webauthn() {
-        let sig_bytes = vec![0u8; 200]; // > P256_SIGNATURE_LENGTH
+        use super::SIGNATURE_TYPE_WEBAUTHN;
+
+        let mut sig_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
+        sig_bytes.extend_from_slice(&[0u8; 200]); // 200 bytes of WebAuthn data
         let result = AASignature::from_bytes(&sig_bytes);
 
         assert!(result.is_ok());
@@ -669,24 +710,35 @@ mod tests {
 
     #[test]
     fn test_aa_signature_roundtrip() {
-        use super::{P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH};
+        use super::{P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN};
 
-        // Test secp256k1
+        // Test secp256k1 (no type identifier, detected by 65-byte length)
         let sig1_bytes = vec![1u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = AASignature::from_bytes(&sig1_bytes).unwrap();
         let encoded1 = sig1.to_bytes();
-        assert_eq!(encoded1.len(), SECP256K1_SIGNATURE_LENGTH);
+        assert_eq!(encoded1.len(), SECP256K1_SIGNATURE_LENGTH); // No type identifier
+        // Verify roundtrip
+        let decoded1 = AASignature::from_bytes(&encoded1).unwrap();
+        assert_eq!(sig1, decoded1);
 
         // Test P256
-        let sig2_bytes = vec![2u8; P256_SIGNATURE_LENGTH];
+        let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
+        sig2_bytes.extend_from_slice(&[2u8; P256_SIGNATURE_LENGTH]);
         let sig2 = AASignature::from_bytes(&sig2_bytes).unwrap();
         let encoded2 = sig2.to_bytes();
-        assert_eq!(encoded2.len(), P256_SIGNATURE_LENGTH);
+        assert_eq!(encoded2.len(), 1 + P256_SIGNATURE_LENGTH);
+        // Verify roundtrip
+        let decoded2 = AASignature::from_bytes(&encoded2).unwrap();
+        assert_eq!(sig2, decoded2);
 
         // Test WebAuthn
-        let sig3_bytes = vec![3u8; 200];
+        let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
+        sig3_bytes.extend_from_slice(&[3u8; 200]);
         let sig3 = AASignature::from_bytes(&sig3_bytes).unwrap();
         let encoded3 = sig3.to_bytes();
-        assert_eq!(encoded3.len(), 200);
+        assert_eq!(encoded3.len(), 1 + 200);
+        // Verify roundtrip
+        let decoded3 = AASignature::from_bytes(&encoded3).unwrap();
+        assert_eq!(sig3, decoded3);
     }
 }
