@@ -24,7 +24,7 @@ impl<'a, S: StorageProvider> Precompile for StablecoinDex<'a, S> {
                 mutate::<IStablecoinDex::placeCall, IStablecoinDex::IStablecoinDexErrors>(
                     calldata,
                     msg_sender,
-                    |s, call| Ok(self.place(s, call.token, call.amount, call.isBid, call.tick)),
+                    |s, call| self.place(s, call.token, call.amount, call.isBid, call.tick),
                 )
             }
             IStablecoinDex::placeFlipCall::SELECTOR => {
@@ -32,14 +32,14 @@ impl<'a, S: StorageProvider> Precompile for StablecoinDex<'a, S> {
                     calldata,
                     msg_sender,
                     |s, call| {
-                        Ok(self.place_flip(
+                        self.place_flip(
                             s,
                             call.token,
                             call.amount,
                             call.isBid,
                             call.tick,
                             call.flipTick,
-                        ))
+                        )
                     },
                 )
             }
@@ -88,6 +88,18 @@ mod tests {
     };
     use revm::interpreter::instructions::utility::IntoU256;
 
+    /// Helper to set internal DEX balance for a user (avoids TIP20 transfer in tests)
+    fn setup_balance(
+        dex: &mut StablecoinDex<'_, HashMapStorageProvider>,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) {
+        let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
+        let balance_slot = mapping_slot(token.as_slice(), user_slot);
+        dex.sstore(balance_slot, U256::from(amount));
+    }
+
     #[test]
     fn test_place_function() {
         let mut storage = HashMapStorageProvider::new(1);
@@ -96,6 +108,9 @@ mod tests {
 
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
+
+        // Give sender internal DEX balance to avoid TIP20 transfer (quote token is Address::ZERO in tests)
+        setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
         // Create a place call
         let place_call = IStablecoinDex::placeCall {
@@ -138,6 +153,8 @@ mod tests {
 
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
+
+        setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
         // Create a placeFlip call (bid: flip_tick must be > tick)
         let place_flip_call = IStablecoinDex::placeFlipCall {
@@ -182,6 +199,9 @@ mod tests {
 
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
+
+        setup_balance(&mut dex, sender, Address::ZERO, 10000);
+        setup_balance(&mut dex, sender, token, 10000);
 
         // Place first order
         let place_call = IStablecoinDex::placeCall {
@@ -234,6 +254,8 @@ mod tests {
         let token = Address::from([2u8; 20]);
         let amount = 1500u128;
         let tick = 7i16;
+
+        setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
         // Place a regular order
         let place_call = IStablecoinDex::placeCall {
@@ -318,6 +340,8 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
 
+        setup_balance(&mut dex, sender, Address::ZERO, 10000);
+
         // Initially pending_order_id should be 0
         let initial_pending = dex.sload(slots::PENDING_ORDER_ID);
         assert_eq!(initial_pending, U256::ZERO);
@@ -354,6 +378,8 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
 
+        setup_balance(&mut dex, sender, Address::ZERO, 10000);
+
         // For bid orders, flip_tick must be > tick
         let place_flip_call = IStablecoinDex::placeFlipCall {
             token,
@@ -379,6 +405,8 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
 
+        setup_balance(&mut dex, sender, token, 10000);
+
         // For ask orders, flip_tick must be < tick
         let place_flip_call = IStablecoinDex::placeFlipCall {
             token,
@@ -396,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn test_place_flip_bid_with_invalid_flip_tick_panics() {
+    fn test_place_flip_bid_with_invalid_flip_tick_returns_error() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut dex = StablecoinDex::new(&mut storage);
         dex.initialize();
@@ -414,20 +442,17 @@ mod tests {
             flipTick: 3, // flipTick < tick (invalid, should be > tick)
         };
 
-        // This should panic because Order::new_flip will return Err
-        // and we call .expect() which panics
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender)
-        }));
+        // This should return an error for invalid flip tick constraint
+        let result = dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender);
 
         assert!(
             result.is_err(),
-            "Expected panic for invalid flip tick constraint"
+            "Expected error for invalid flip tick constraint"
         );
     }
 
     #[test]
-    fn test_place_flip_ask_with_invalid_flip_tick_panics() {
+    fn test_place_flip_ask_with_invalid_flip_tick_returns_error() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut dex = StablecoinDex::new(&mut storage);
         dex.initialize();
@@ -445,14 +470,12 @@ mod tests {
             flipTick: 15, // flipTick > tick (invalid, should be < tick)
         };
 
-        // This should panic
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender)
-        }));
+        // This should return an error for invalid flip tick constraint
+        let result = dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender);
 
         assert!(
             result.is_err(),
-            "Expected panic for invalid flip tick constraint"
+            "Expected error for invalid flip tick constraint"
         );
     }
 
@@ -465,6 +488,8 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
         let negative_tick = -15i16;
+
+        setup_balance(&mut dex, sender, token, 10000);
 
         // Place order with negative tick
         let place_call = IStablecoinDex::placeCall {
@@ -510,6 +535,8 @@ mod tests {
 
         let sender = Address::from([0xAB; 20]);
         let token = Address::from([2u8; 20]);
+
+        setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
         // Place an order
         let place_call = IStablecoinDex::placeCall {

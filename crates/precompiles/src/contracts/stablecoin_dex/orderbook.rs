@@ -4,10 +4,7 @@ use super::{
     offsets,
     slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS},
 };
-use crate::contracts::{
-    StorageProvider,
-    storage::{StorageOps, slots::mapping_slot},
-};
+use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
 use alloy::primitives::{Address, B256, U256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
@@ -64,7 +61,7 @@ impl TickLevel {
 
         // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         // Load each field
         let head = storage
@@ -109,7 +106,7 @@ impl TickLevel {
 
         // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         // Store each field
         storage
@@ -152,7 +149,7 @@ impl TickLevel {
             ASK_TICK_LEVELS
         };
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         storage
             .sstore(
@@ -178,7 +175,7 @@ impl TickLevel {
             ASK_TICK_LEVELS
         };
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         storage
             .sstore(
@@ -204,7 +201,7 @@ impl TickLevel {
             ASK_TICK_LEVELS
         };
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(&tick.to_be_bytes(), book_key_slot);
+        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         storage
             .sstore(
@@ -389,7 +386,7 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
 
     /// Set bit in bitmap to mark tick as active
     pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) {
-        if tick < MIN_TICK || tick > MAX_TICK {
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             todo!()
         }
 
@@ -413,7 +410,7 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
 
     /// Clear bit in bitmap to mark tick as inactive
     pub fn clear_tick_bit(&mut self, tick: i16, is_bid: bool) {
-        if tick < MIN_TICK || tick > MAX_TICK {
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             todo!()
         }
 
@@ -437,7 +434,7 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
 
     /// Check if a tick is initialized (has orders)
     pub fn is_tick_initialized(&mut self, tick: i16, is_bid: bool) -> bool {
-        if tick < MIN_TICK || tick > MAX_TICK {
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             todo!()
         }
 
@@ -484,7 +481,7 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
 
         // Create nested mapping slot: mapping(book_key => mapping(word_index => bitmap_word))
         let book_key_slot = mapping_slot(self.book_key.as_slice(), base_slot);
-        mapping_slot(&word_index.to_be_bytes(), book_key_slot)
+        mapping_slot(word_index.to_be_bytes(), book_key_slot)
     }
 }
 
