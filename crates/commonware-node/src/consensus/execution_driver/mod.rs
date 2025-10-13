@@ -10,7 +10,7 @@ use commonware_consensus::{
     threshold_simplex::types::Context,
     types::{Epoch, Round, View},
 };
-use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
+use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
@@ -82,7 +82,7 @@ where
             .wrap_err("failed reading genesis block from execution node")?;
 
         Ok(ExecutionDriver {
-            context: self.context,
+            context: ContextCell::new(self.context),
             mailbox: rx,
 
             inner: Inner {
@@ -103,7 +103,7 @@ where
 }
 
 pub(super) struct ExecutionDriver<TContext, TState = Uninit> {
-    context: TContext,
+    context: ContextCell<TContext>,
     mailbox: mpsc::Receiver<Message>,
 
     inner: Inner<TState>,
@@ -143,7 +143,7 @@ where
     }
 
     pub(super) fn start(mut self) -> Handle<()> {
-        self.context.spawn_ref()(self.run_until_stopped())
+        spawn_cell!(self.context, self.run_until_stopped().await)
     }
 }
 
