@@ -8,7 +8,9 @@ pub mod slots;
 
 pub use error::OrderError;
 pub use order::{Order, Side};
-pub use orderbook::{TickLevel, Orderbook, TickBitmap, tick_to_price, price_to_tick, MIN_TICK, MAX_TICK, PRICE_SCALE};
+pub use orderbook::{
+    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickBitmap, TickLevel, price_to_tick, tick_to_price,
+};
 
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256};
 use revm::{interpreter::instructions::utility::IntoU256, state::Bytecode};
@@ -180,7 +182,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
     pub fn balance_of(&mut self, user: Address, token: Address) -> u128 {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
-        
+
         self.storage
             .sload(self.address, balance_slot)
             .expect("TODO: handle error")
@@ -191,7 +193,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
     fn set_balance(&mut self, user: Address, token: Address, amount: u128) {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
-        
+
         self.storage
             .sstore(self.address, balance_slot, U256::from(amount))
             .expect("TODO: handle error");
@@ -375,11 +377,12 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
 
     /// Process all pending orders into the active orderbook
     pub fn execute_block(&mut self) {
-        let next_order_id = self.storage
+        let next_order_id = self
+            .storage
             .sload(self.address, slots::NEXT_ORDER_ID)
             .expect("TODO: handle error")
             .to::<u128>();
-            
+
         let pending_order_id = self.get_pending_order_id();
 
         let mut current_order_id = next_order_id + 1;
@@ -389,60 +392,87 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         }
 
         self.storage
-            .sstore(self.address, slots::NEXT_ORDER_ID, U256::from(pending_order_id))
+            .sstore(
+                self.address,
+                slots::NEXT_ORDER_ID,
+                U256::from(pending_order_id),
+            )
             .expect("TODO: handle error");
     }
 
     /// Process a single pending order into the active orderbook
     fn process_pending_order(&mut self, order_id: u128) {
         let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
-        
-        let maker = self.storage
+
+        let maker = self
+            .storage
             .sload(self.address, order_slot + offsets::ORDER_MAKER_OFFSET)
             .expect("TODO: handle error");
         if maker == U256::ZERO {
             return;
         }
 
-        let book_key = self.storage
+        let book_key = self
+            .storage
             .sload(self.address, order_slot + offsets::ORDER_BOOK_KEY_OFFSET)
             .expect("TODO: handle error");
 
-        let side_u256 = self.storage
+        let side_u256 = self
+            .storage
             .sload(self.address, order_slot + offsets::ORDER_SIDE_OFFSET)
             .expect("TODO: handle error");
         let is_bid = side_u256 == U256::ZERO;
 
-        let tick = self.storage
+        let tick = self
+            .storage
             .sload(self.address, order_slot + offsets::ORDER_TICK_OFFSET)
             .expect("TODO: handle error")
             .to::<i16>();
 
-        let remaining = self.storage
+        let remaining = self
+            .storage
             .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
             .expect("TODO: handle error")
             .to::<u128>();
 
-        let mut orderbook = orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
-        let mut level = orderbook::TickLevel::load(self.storage, self.address, B256::from(book_key), tick, is_bid);
+        let mut orderbook =
+            orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
+        let mut level = orderbook::TickLevel::load(
+            self.storage,
+            self.address,
+            B256::from(book_key),
+            tick,
+            is_bid,
+        );
 
         let prev_tail = level.tail;
         if prev_tail == 0 {
             level.head = order_id;
             level.tail = order_id;
-            
-            let mut bitmap = orderbook::TickBitmap::new(self.storage, self.address, B256::from(book_key));
+
+            let mut bitmap =
+                orderbook::TickBitmap::new(self.storage, self.address, B256::from(book_key));
             bitmap.set_tick_bit(tick, is_bid);
 
             if is_bid {
                 if tick > orderbook.best_bid_tick {
                     orderbook.best_bid_tick = tick;
-                    orderbook::Orderbook::update_best_bid_tick(self.storage, self.address, B256::from(book_key), tick);
+                    orderbook::Orderbook::update_best_bid_tick(
+                        self.storage,
+                        self.address,
+                        B256::from(book_key),
+                        tick,
+                    );
                 }
             } else {
                 if tick < orderbook.best_ask_tick {
                     orderbook.best_ask_tick = tick;
-                    orderbook::Orderbook::update_best_ask_tick(self.storage, self.address, B256::from(book_key), tick);
+                    orderbook::Orderbook::update_best_ask_tick(
+                        self.storage,
+                        self.address,
+                        B256::from(book_key),
+                        tick,
+                    );
                 }
             }
         } else {
@@ -467,7 +497,469 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         }
 
         level.total_liquidity += remaining;
-        level.store(self.storage, self.address, B256::from(book_key), tick, is_bid);
+        level.store(
+            self.storage,
+            self.address,
+            B256::from(book_key),
+            tick,
+            is_bid,
+        );
+    }
+
+    /// Fill an order and handle cleanup when fully filled
+    /// Returns the next order ID to process (0 if no more liquidity at this tick)
+    fn fill_order(&mut self, order_id: u128, fill_amount: u128) -> u128 {
+        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
+
+        let book_key = self
+            .storage
+            .sload(self.address, order_slot + offsets::ORDER_BOOK_KEY_OFFSET)
+            .expect("TODO: handle error");
+
+        let side_u256 = self
+            .storage
+            .sload(self.address, order_slot + offsets::ORDER_SIDE_OFFSET)
+            .expect("TODO: handle error");
+        let is_bid = side_u256 == U256::ZERO;
+
+        let tick = self
+            .storage
+            .sload(self.address, order_slot + offsets::ORDER_TICK_OFFSET)
+            .expect("TODO: handle error")
+            .to::<i16>();
+
+        let remaining = self
+            .storage
+            .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        let maker = self
+            .storage
+            .sload(self.address, order_slot + offsets::ORDER_MAKER_OFFSET)
+            .expect("TODO: handle error")
+            .into();
+
+        let orderbook =
+            orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
+        let mut level = orderbook::TickLevel::load(
+            self.storage,
+            self.address,
+            B256::from(book_key),
+            tick,
+            is_bid,
+        );
+
+        let new_remaining = remaining - fill_amount;
+        self.storage
+            .sstore(
+                self.address,
+                order_slot + offsets::ORDER_REMAINING_OFFSET,
+                U256::from(new_remaining),
+            )
+            .expect("TODO: handle error");
+
+        level.total_liquidity -= fill_amount;
+
+        if is_bid {
+            self.add_balance(maker, orderbook.base, fill_amount);
+        } else {
+            let price = orderbook::tick_to_price(tick);
+            let quote_amount = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            self.add_balance(maker, orderbook.quote, quote_amount);
+        }
+
+        if new_remaining == 0 {
+            let next = self
+                .storage
+                .sload(self.address, order_slot + offsets::ORDER_NEXT_OFFSET)
+                .expect("TODO: handle error")
+                .to::<u128>();
+
+            let prev = self
+                .storage
+                .sload(self.address, order_slot + offsets::ORDER_PREV_OFFSET)
+                .expect("TODO: handle error")
+                .to::<u128>();
+
+            if prev != 0 {
+                let prev_slot = mapping_slot(prev.to_be_bytes(), slots::ORDERS);
+                self.storage
+                    .sstore(
+                        self.address,
+                        prev_slot + offsets::ORDER_NEXT_OFFSET,
+                        U256::from(next),
+                    )
+                    .expect("TODO: handle error");
+            } else {
+                level.head = next;
+            }
+
+            if next != 0 {
+                let next_slot = mapping_slot(next.to_be_bytes(), slots::ORDERS);
+                self.storage
+                    .sstore(
+                        self.address,
+                        next_slot + offsets::ORDER_PREV_OFFSET,
+                        U256::from(prev),
+                    )
+                    .expect("TODO: handle error");
+            } else {
+                level.tail = prev;
+            }
+
+            self.storage
+                .sstore(
+                    self.address,
+                    order_slot + offsets::ORDER_MAKER_OFFSET,
+                    U256::ZERO,
+                )
+                .expect("TODO: handle error");
+
+            if level.head == 0 {
+                let mut bitmap =
+                    orderbook::TickBitmap::new(self.storage, self.address, B256::from(book_key));
+                bitmap.clear_tick_bit(tick, is_bid);
+                level.store(
+                    self.storage,
+                    self.address,
+                    B256::from(book_key),
+                    tick,
+                    is_bid,
+                );
+                return 0;
+            }
+
+            level.store(
+                self.storage,
+                self.address,
+                B256::from(book_key),
+                tick,
+                is_bid,
+            );
+            return next;
+        } else {
+            level.store(
+                self.storage,
+                self.address,
+                B256::from(book_key),
+                tick,
+                is_bid,
+            );
+            return order_id;
+        }
+    }
+
+    /// Fill orders for exact output amount
+    fn fill_orders_exact_out(
+        &mut self,
+        book_key: B256,
+        base_for_quote: bool,
+        amount_out: u128,
+        max_amount_in: u128,
+    ) -> u128 {
+        let mut remaining_out = amount_out;
+        let mut amount_in = 0u128;
+        let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
+
+        if base_for_quote {
+            let mut current_tick = orderbook.best_bid_tick;
+            if current_tick == i16::MIN {
+                panic!("Insufficient liquidity");
+            }
+
+            let mut level = orderbook::TickLevel::load(
+                self.storage,
+                self.address,
+                book_key,
+                current_tick,
+                true,
+            );
+            let mut order_id = level.head;
+
+            while remaining_out > 0 {
+                let price = orderbook::tick_to_price(current_tick);
+
+                let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
+                let order_remaining = self
+                    .storage
+                    .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
+                    .expect("TODO: handle error")
+                    .to::<u128>();
+
+                let base_needed = (remaining_out * orderbook::PRICE_SCALE as u128) / price as u128;
+                let fill_amount = if base_needed > order_remaining {
+                    order_remaining
+                } else {
+                    base_needed
+                };
+
+                if amount_in + fill_amount > max_amount_in {
+                    panic!("Max input exceeded");
+                }
+
+                remaining_out -= (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                amount_in += fill_amount;
+
+                order_id = self.fill_order(order_id, fill_amount);
+
+                if remaining_out == 0 {
+                    return amount_in;
+                }
+
+                if order_id == 0 {
+                    let mut bitmap =
+                        orderbook::TickBitmap::new(self.storage, self.address, book_key);
+                    let (next_tick, initialized) = bitmap.next_initialized_bid_tick(current_tick);
+                    if !initialized {
+                        panic!("Insufficient liquidity");
+                    }
+
+                    current_tick = next_tick;
+                    orderbook::Orderbook::update_best_bid_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    );
+                    level = orderbook::TickLevel::load(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                        true,
+                    );
+                    order_id = level.head;
+                }
+            }
+        } else {
+            let mut current_tick = orderbook.best_ask_tick;
+            if current_tick == i16::MAX {
+                panic!("Insufficient liquidity");
+            }
+
+            let mut level = orderbook::TickLevel::load(
+                self.storage,
+                self.address,
+                book_key,
+                current_tick,
+                false,
+            );
+            let mut order_id = level.head;
+
+            while remaining_out > 0 {
+                let price = orderbook::tick_to_price(current_tick);
+
+                let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
+                let order_remaining = self
+                    .storage
+                    .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
+                    .expect("TODO: handle error")
+                    .to::<u128>();
+
+                let fill_amount = if remaining_out > order_remaining {
+                    order_remaining
+                } else {
+                    remaining_out
+                };
+                let quote_in = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+                if amount_in + quote_in > max_amount_in {
+                    panic!("Max input exceeded");
+                }
+
+                remaining_out -= fill_amount;
+                amount_in += quote_in;
+
+                order_id = self.fill_order(order_id, fill_amount);
+
+                if remaining_out == 0 {
+                    return amount_in;
+                }
+
+                if order_id == 0 {
+                    let mut bitmap =
+                        orderbook::TickBitmap::new(self.storage, self.address, book_key);
+                    let (next_tick, initialized) = bitmap.next_initialized_ask_tick(current_tick);
+                    if !initialized {
+                        panic!("Insufficient liquidity");
+                    }
+
+                    current_tick = next_tick;
+                    orderbook::Orderbook::update_best_ask_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    );
+                    level = orderbook::TickLevel::load(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                        false,
+                    );
+                    order_id = level.head;
+                }
+            }
+        }
+
+        amount_in
+    }
+
+    /// Fill orders for exact input amount
+    fn fill_orders_exact_in(
+        &mut self,
+        book_key: B256,
+        base_for_quote: bool,
+        amount_in: u128,
+        min_amount_out: u128,
+    ) -> u128 {
+        let mut remaining_in = amount_in;
+        let mut amount_out = 0u128;
+        let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
+
+        if base_for_quote {
+            let mut current_tick = orderbook.best_bid_tick;
+            if current_tick == i16::MIN {
+                panic!("Insufficient liquidity");
+            }
+
+            let mut level = orderbook::TickLevel::load(
+                self.storage,
+                self.address,
+                book_key,
+                current_tick,
+                true,
+            );
+            let mut order_id = level.head;
+
+            while remaining_in > 0 {
+                let price = orderbook::tick_to_price(current_tick);
+
+                let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
+                let order_remaining = self
+                    .storage
+                    .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
+                    .expect("TODO: handle error")
+                    .to::<u128>();
+
+                let fill_amount = if remaining_in > order_remaining {
+                    order_remaining
+                } else {
+                    remaining_in
+                };
+                let quote_out = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+                remaining_in -= fill_amount;
+                amount_out += quote_out;
+
+                order_id = self.fill_order(order_id, fill_amount);
+
+                if remaining_in == 0 {
+                    if amount_out < min_amount_out {
+                        panic!("Insufficient output");
+                    }
+                    return amount_out;
+                }
+
+                if order_id == 0 {
+                    let mut bitmap =
+                        orderbook::TickBitmap::new(self.storage, self.address, book_key);
+                    let (next_tick, initialized) = bitmap.next_initialized_bid_tick(current_tick);
+                    if !initialized {
+                        panic!("Insufficient liquidity");
+                    }
+
+                    current_tick = next_tick;
+                    orderbook::Orderbook::update_best_bid_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    );
+                    level = orderbook::TickLevel::load(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                        true,
+                    );
+                    order_id = level.head;
+                }
+            }
+        } else {
+            let mut current_tick = orderbook.best_ask_tick;
+            if current_tick == i16::MAX {
+                panic!("Insufficient liquidity");
+            }
+
+            let mut level = orderbook::TickLevel::load(
+                self.storage,
+                self.address,
+                book_key,
+                current_tick,
+                false,
+            );
+            let mut order_id = level.head;
+
+            while remaining_in > 0 {
+                let price = orderbook::tick_to_price(current_tick);
+
+                let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
+                let order_remaining = self
+                    .storage
+                    .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
+                    .expect("TODO: handle error")
+                    .to::<u128>();
+
+                let base_out = (remaining_in * orderbook::PRICE_SCALE as u128) / price as u128;
+                let fill_amount = if base_out > order_remaining {
+                    order_remaining
+                } else {
+                    base_out
+                };
+
+                remaining_in -= (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                amount_out += fill_amount;
+
+                order_id = self.fill_order(order_id, fill_amount);
+
+                if remaining_in == 0 {
+                    if amount_out < min_amount_out {
+                        panic!("Insufficient output");
+                    }
+                    return amount_out;
+                }
+
+                if order_id == 0 {
+                    let mut bitmap =
+                        orderbook::TickBitmap::new(self.storage, self.address, book_key);
+                    let (next_tick, initialized) = bitmap.next_initialized_ask_tick(current_tick);
+                    if !initialized {
+                        panic!("Insufficient liquidity");
+                    }
+
+                    current_tick = next_tick;
+                    orderbook::Orderbook::update_best_ask_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    );
+                    level = orderbook::TickLevel::load(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                        false,
+                    );
+                    order_id = level.head;
+                }
+            }
+        }
+
+        amount_out
     }
 
     pub fn cancel(&mut self, _order_id: u128) {
