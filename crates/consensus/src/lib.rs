@@ -45,7 +45,7 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
         }
 
         // Validate the timestamp milliseconds part
-        if header.timestamp_millis() >= 1000 {
+        if header.timestamp_millis_part >= 1000 {
             return Err(ConsensusError::Other(
                 "Timestamp milliseconds part must be less than 1000".to_string(),
             ));
