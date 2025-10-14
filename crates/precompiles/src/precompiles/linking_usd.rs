@@ -58,20 +58,20 @@ impl<S: StorageProvider> Precompile for LinkingUSD<'_, S> {
 
             // Transfer functions that are disabled for LinkingUSD
             ITIP20::transferCall::SELECTOR => {
-                mutate::<ITIP20::transferCall, TIP20Error>(calldata, msg_sender, |_sender, call| {
-                    self.transfer(call.to, call.amount)
+                mutate::<ITIP20::transferCall, TIP20Error>(calldata, msg_sender, |sender, call| {
+                    self.transfer(sender, call)
                 })
             }
             ITIP20::transferFromCall::SELECTOR => mutate::<ITIP20::transferFromCall, TIP20Error>(
                 calldata,
                 msg_sender,
-                |_sender, call| self.transfer_from(call.from, call.to, call.amount),
+                |sender, call| self.transfer_from(sender, call),
             ),
             ITIP20::transferWithMemoCall::SELECTOR => {
                 mutate_void::<ITIP20::transferWithMemoCall, TIP20Error>(
                     calldata,
                     msg_sender,
-                    |_sender, call| self.transfer_with_memo(call.to, call.amount, *call.memo),
+                    |sender, call| self.transfer_with_memo(sender, call),
                 )
             }
 
