@@ -137,10 +137,8 @@ impl Order {
             if flip_tick <= tick {
                 return Err(OrderError::InvalidBidFlipTick { tick, flip_tick });
             }
-        } else {
-            if flip_tick >= tick {
-                return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
-            }
+        } else if flip_tick >= tick {
+            return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
         }
 
         Ok(Self {

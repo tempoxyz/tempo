@@ -56,7 +56,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
         } else if *address == TIP_ACCOUNT_REGISTRAR {
             Some(TipAccountRegistrarPrecompile::create(chain_id))
         } else if *address == STABLECOIN_DEX_ADDRESS {
-            Some(StablecoinDexPrecompile::create(chain_id))
+            Some(StablecoinExchangePrecompile::create(chain_id))
         } else {
             None
         }
@@ -151,9 +151,9 @@ impl TipAccountRegistrarPrecompile {
     }
 }
 
-pub struct StablecoinDexPrecompile;
+pub struct StablecoinExchangePrecompile;
 
-impl StablecoinDexPrecompile {
+impl StablecoinExchangePrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
             &mut EvmStorageProvider::new(input.internals, chain_id)

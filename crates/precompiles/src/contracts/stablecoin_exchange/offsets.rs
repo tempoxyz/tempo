@@ -1,4 +1,4 @@
-//! Struct field offsets for StablecoinDex storage layout.
+//! Struct field offsets for StablecoinExchange storage layout.
 //!
 //! This module defines field offsets within structs stored in the DEX.
 //! These are NOT storage slots - they are offsets added to a base storage slot

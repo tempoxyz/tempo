@@ -50,7 +50,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
     /// Initializes the contract
     ///
-    /// This ensures the [`StablecoinDex`] isn't empty and prevents state clear.
+    /// This ensures the [`StablecoinExchange`] isn't empty and prevents state clear.
     pub fn initialize(&mut self) {
         // must ensure the account is not empty, by setting some code
         self.storage

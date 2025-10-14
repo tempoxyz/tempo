@@ -1,4 +1,4 @@
-//! Storage slot definitions for the StablecoinDex contract.
+//! Storage slot definitions for the StablecoinExchange contract.
 //!
 //! This module defines the storage layout for the stablecoin DEX,
 //! following the same pattern as the Solidity reference implementation.
