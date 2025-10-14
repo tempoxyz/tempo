@@ -17,6 +17,11 @@ pub const PRICE_SCALE: u32 = 100_000;
 /// Orders are maintained in FIFO order at each tick level
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TickLevel {
+    // TODO: add tick
+    // TODO: add bid or ask
+    // TODO: add book key
+    //
+    //
     /// Order ID of the first order at this tick (0 if empty)
     pub head: u128,
     /// Order ID of the last order at this tick (0 if empty)
@@ -46,7 +51,7 @@ impl TickLevel {
     }
 
     /// Load a TickLevel from storage
-    pub fn load<S: StorageProvider>(
+    pub fn from_storage<S: StorageProvider>(
         storage: &mut S,
         address: Address,
         book_key: B256,
@@ -250,7 +255,11 @@ impl Orderbook {
     }
 
     /// Load an Orderbook from storage
-    pub fn load<S: StorageProvider>(storage: &mut S, address: Address, book_key: B256) -> Self {
+    pub fn from_storage<S: StorageProvider>(
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+    ) -> Self {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
         let base = storage

@@ -134,7 +134,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Add to user's balance
-    fn add_balance(&mut self, user: Address, token: Address, amount: u128) {
+    fn increment_balance(&mut self, user: Address, token: Address, amount: u128) {
         let current = self.balance_of(user, token);
         self.set_balance(user, token, current + amount);
     }
@@ -579,90 +579,34 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Fill an order and handle cleanup when fully filled
-    /// Returns the next order ID to process (0 if no more liquidity at this tick)
+    /// Returns the next order ID to process. If there is no more liquidity at the current tick,
+    /// then, 0 will be returned instead.
     #[allow(dead_code)]
     fn fill_order(&mut self, order_id: u128, fill_amount: u128) -> u128 {
-        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
-
-        let book_key = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_BOOK_KEY_OFFSET)
-            .expect("TODO: handle error");
-
-        let is_bid = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_IS_BID_OFFSET)
-            .expect("TODO: handle error")
-            .to::<bool>();
-
-        let tick = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_TICK_OFFSET)
-            .expect("TODO: handle error")
-            .to::<i16>();
-
-        let remaining = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
-            .expect("TODO: handle error")
-            .to::<u128>();
-
-        let maker = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_MAKER_OFFSET)
-            .expect("TODO: handle error")
-            .into_address();
-
-        let orderbook =
-            orderbook::Orderbook::load(self.storage, self.address, B256::from(book_key));
-        let mut level = orderbook::TickLevel::load(
+        let mut order = Order::from_storage(order_id, self.storage, self.address);
+        let orderbook = Orderbook::from_storage(self.storage, self.address, order.book_key());
+        let mut level = TickLevel::from_storage(
             self.storage,
             self.address,
-            B256::from(book_key),
-            tick,
-            is_bid,
+            order.book_key(),
+            order.tick(),
+            order.is_bid(),
         );
 
-        let new_remaining = remaining - fill_amount;
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_REMAINING_OFFSET,
-                U256::from(new_remaining),
-            )
-            .expect("TODO: handle error");
-
+        let new_remaining = order.remaining() - fill_amount;
+        order.update_remaining(new_remaining, self.storage, self.address);
         level.total_liquidity -= fill_amount;
 
-        if is_bid {
-            self.add_balance(maker, orderbook.base, fill_amount);
+        if order.is_bid() {
+            self.increment_balance(order.maker(), orderbook.base, fill_amount);
         } else {
-            let price = orderbook::tick_to_price(tick);
+            let price = tick_to_price(order.tick());
             let quote_amount = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
-            self.add_balance(maker, orderbook.quote, quote_amount);
+            self.increment_balance(order.maker(), orderbook.quote, quote_amount);
         }
 
         if new_remaining == 0 {
-            // Check if this is a flip order before removing it
-            let is_flip = self
-                .storage
-                .sload(self.address, order_slot + offsets::ORDER_IS_FLIP_OFFSET)
-                .expect("TODO: handle error");
-
-            if !is_flip.is_zero() {
-                // Get the flip tick and original amount
-                let flip_tick = self
-                    .storage
-                    .sload(self.address, order_slot + offsets::ORDER_FLIP_TICK_OFFSET)
-                    .expect("TODO: handle error")
-                    .to::<i16>();
-
-                let original_amount = self
-                    .storage
-                    .sload(self.address, order_slot + offsets::ORDER_AMOUNT_OFFSET)
-                    .expect("TODO: handle error")
-                    .to::<u128>();
-
+            if order.is_flip() {
                 // Create a new flip order with flipped side and swapped ticks
                 // Bid becomes Ask, Ask becomes Bid
                 // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
@@ -670,94 +614,60 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
                 let new_order = Order::new_flip(
                     new_order_id,
-                    maker,
-                    B256::from(book_key),
-                    original_amount,
-                    flip_tick,
-                    !is_bid,
-                    tick,
+                    order.maker(),
+                    order.book_key(),
+                    order.amount(),
+                    order.flip_tick(),
+                    !order.is_bid(),
+                    order.tick(),
                 )
-                .expect("Invalid flip order");
+                .expect("TODO: error handling");
 
                 new_order.store(self.storage, self.address);
             }
 
-            // TODO: order .next and prev
-            let next = self
-                .storage
-                .sload(self.address, order_slot + offsets::ORDER_NEXT_OFFSET)
-                .expect("TODO: handle error")
-                .to::<u128>();
-
-            let prev = self
-                .storage
-                .sload(self.address, order_slot + offsets::ORDER_PREV_OFFSET)
-                .expect("TODO: handle error")
-                .to::<u128>();
-
-            if prev != 0 {
-                let prev_slot = mapping_slot(prev.to_be_bytes(), slots::ORDERS);
-                self.storage
-                    .sstore(
-                        self.address,
-                        prev_slot + offsets::ORDER_NEXT_OFFSET,
-                        U256::from(next),
-                    )
-                    .expect("TODO: handle error");
+            if order.prev() != 0 {
+                Order::update_next_order(order.prev(), order.next(), self.storage, self.address);
             } else {
-                level.head = next;
+                level.head = order.next();
             }
 
-            if next != 0 {
-                let next_slot = mapping_slot(next.to_be_bytes(), slots::ORDERS);
-                self.storage
-                    .sstore(
-                        self.address,
-                        next_slot + offsets::ORDER_PREV_OFFSET,
-                        U256::from(prev),
-                    )
-                    .expect("TODO: handle error");
-            } else {
-                level.tail = prev;
-            }
-
-            self.storage
-                .sstore(
-                    self.address,
-                    order_slot + offsets::ORDER_MAKER_OFFSET,
-                    U256::ZERO,
-                )
-                .expect("TODO: handle error");
-
-            if level.head == 0 {
-                let mut bitmap =
-                    orderbook::TickBitmap::new(self.storage, self.address, B256::from(book_key));
-                bitmap.clear_tick_bit(tick, is_bid);
-                level.store(
+            if order.next() != 0 {
+                Order::update_prev_order(
+                    order.order_id(),
+                    order.prev(),
                     self.storage,
                     self.address,
-                    B256::from(book_key),
-                    tick,
-                    is_bid,
                 );
-                return 0;
+            } else {
+                level.tail = order.prev();
             }
+            order.delete(self.storage, self.address);
 
             level.store(
                 self.storage,
                 self.address,
-                B256::from(book_key),
-                tick,
-                is_bid,
+                order.book_key(),
+                order.tick(),
+                order.is_bid(),
             );
-            next
+
+            if level.head == 0 {
+                let mut bitmap =
+                    orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
+                bitmap.clear_tick_bit(order.tick(), order.is_bid());
+
+                return 0;
+            } else {
+                order.next()
+            }
         } else {
             level.store(
                 self.storage,
                 self.address,
-                B256::from(book_key),
-                tick,
-                is_bid,
+                order.book_key(),
+                order.tick(),
+                order.is_bid(),
             );
             order_id
         }

@@ -239,6 +239,64 @@ impl Order {
         }
     }
 
+    /// Update the order's remaining value in memory and storage
+    pub fn update_remaining<S: StorageProvider>(
+        &mut self,
+        new_remaining: u128,
+        storage: &mut S,
+        stablecoin_exchange: Address,
+    ) {
+        self.remaining = new_remaining;
+
+        let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_REMAINING_OFFSET,
+                U256::from(new_remaining),
+            )
+            .expect("TODO: handle error");
+    }
+
+    pub fn update_next_order<S: StorageProvider>(
+        order_id: u128,
+        new_next: u128,
+        storage: &mut S,
+        stablecoin_exchange: Address,
+    ) {
+        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_NEXT_OFFSET,
+                U256::from(new_next),
+            )
+            .expect("TODO: handle error");
+    }
+
+    pub fn update_prev_order<S: StorageProvider>(
+        order_id: u128,
+        new_prev: u128,
+        storage: &mut S,
+        stablecoin_exchange: Address,
+    ) {
+        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_PREV_OFFSET,
+                U256::from(new_prev),
+            )
+            .expect("TODO: handle error");
+    }
+
+    pub fn delete<S: StorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
+        let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
+        todo!()
+    }
+
     /// Returns the order ID.
     pub fn order_id(&self) -> u128 {
         self.order_id
