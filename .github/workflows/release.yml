@@ -102,8 +102,8 @@ jobs:
         shell: bash
         run: |
           PROFILE="${{ steps.profile.outputs.profile }}"
-          if [ "$PROFILE" = "maxperf" ] || [ "$PROFILE" = "release" ]; then
-            PROFILE_DIR="release"
+          if [ "$PROFILE" = "dev" ]; then
+            PROFILE_DIR="debug"
           else
             PROFILE_DIR="$PROFILE"
           fi
