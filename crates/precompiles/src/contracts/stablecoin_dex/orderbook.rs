@@ -506,14 +506,14 @@ pub fn next_initialized_bid_tick<S: StorageProvider>(
     while next_tick >= MIN_TICK {
         let word_index = next_tick >> 8;
         let bit_index = (next_tick & 0xff) as u8;
-        
+
         let bitmap_slot = mapping_slot(&word_index.to_be_bytes()[6..], BID_BITMAPS);
         let bitmap_key_slot = mapping_slot(book_key.as_slice(), bitmap_slot);
-        
+
         let bitmap = storage
             .sload(address, bitmap_key_slot)
             .expect("TODO: handle error");
-        
+
         if (bitmap >> bit_index) & U256::from(1u8) != U256::ZERO {
             return (next_tick, true);
         }
@@ -533,14 +533,14 @@ pub fn next_initialized_ask_tick<S: StorageProvider>(
     while next_tick <= MAX_TICK {
         let word_index = next_tick >> 8;
         let bit_index = (next_tick & 0xff) as u8;
-        
+
         let bitmap_slot = mapping_slot(&word_index.to_be_bytes()[6..], ASK_BITMAPS);
         let bitmap_key_slot = mapping_slot(book_key.as_slice(), bitmap_slot);
-        
+
         let bitmap = storage
             .sload(address, bitmap_key_slot)
             .expect("TODO: handle error");
-        
+
         if (bitmap >> bit_index) & U256::from(1u8) != U256::ZERO {
             return (next_tick, true);
         }
