@@ -35,25 +35,6 @@ use tracing::trace;
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
 
-/// Restores the transaction environment to its original state.
-///
-/// Used in multi-call execution to reset TxEnv after batch processing.
-fn restore_tx_env<DB, I>(
-    evm: &mut TempoEvm<DB, I>,
-    kind: TxKind,
-    value: U256,
-    data: Bytes,
-    gas_limit: u64,
-) where
-    DB: reth_evm::Database,
-{
-    let tx = &mut evm.ctx().tx;
-    tx.inner.kind = kind;
-    tx.inner.value = value;
-    tx.inner.data = data;
-    tx.inner.gas_limit = gas_limit;
-}
-
 /// Additional gas for P256 signature verification
 /// P256 precompile cost (6900 from EIP-7951) + 1100 for extra signature size - ecrecover savings (3000)
 const P256_VERIFY_GAS: u64 = 5_000;
@@ -87,6 +68,25 @@ pub struct TempoEvmHandler<DB, I> {
     fee_payer: Address,
     /// Phantom data to avoid type inference issues.
     _phantom: core::marker::PhantomData<(DB, I)>,
+}
+
+/// Restores the transaction environment to its original state.
+///
+/// Used in multi-call execution to reset TxEnv after batch processing.
+fn restore_tx_env<DB, I>(
+    evm: &mut TempoEvm<DB, I>,
+    kind: TxKind,
+    value: U256,
+    data: Bytes,
+    gas_limit: u64,
+) where
+    DB: reth_evm::Database,
+{
+    let tx = &mut evm.ctx().tx;
+    tx.inner.kind = kind;
+    tx.inner.value = value;
+    tx.inner.data = data;
+    tx.inner.gas_limit = gas_limit;
 }
 
 impl<DB, I> TempoEvmHandler<DB, I> {
@@ -303,8 +303,9 @@ where
             let calls = evm
                 .ctx()
                 .tx()
-                .aa_calls
-                .clone()
+                .aa_tx_env
+                .as_ref()
+                .and_then(|aa| Some(aa.aa_calls.clone()))
                 .ok_or_else(|| EVMError::Custom("AA transaction missing calls field".into()))?;
 
             trace!(num_calls = calls.len(), "executing AA transaction");
@@ -345,7 +346,7 @@ where
         if tx_type == AA_TX_TYPE_ID {
             tracing::info!(
                 caller = %caller_addr,
-                nonce_key = tx.nonce_key.unwrap_or(0),
+                nonce_key = tx.aa_tx_env.as_ref().unwrap().nonce_key,
                 nonce = tx.nonce(),
                 fee_payer = %self.fee_payer,
                 fee_token = ?self.fee_token,
@@ -355,7 +356,7 @@ where
 
         // For AA transactions with user nonces, validate 2D nonce before loading account (avoids borrow conflicts)
         if !is_nonce_check_disabled && tx_type == AA_TX_TYPE_ID {
-            let nonce_key = tx.nonce_key.unwrap_or(0);
+            let nonce_key = tx.aa_tx_env.as_ref().unwrap().nonce_key;
             if nonce_key != 0 {
                 tracing::info!(
                     nonce_key,
@@ -397,7 +398,7 @@ where
         if !is_nonce_check_disabled {
             let should_validate_protocol_nonce = if tx_type == AA_TX_TYPE_ID {
                 // AA transactions: only validate protocol nonce if key=0
-                tx.nonce_key.unwrap_or(0) == 0
+                tx.aa_tx_env.as_ref().unwrap().nonce_key == 0
             } else {
                 // Standard transactions: always validate protocol nonce
                 true
@@ -425,10 +426,11 @@ where
         }
 
         // Step 3: Time window validation for AA transactions
-        if tx_type == AA_TX_TYPE_ID
-            && let Some(valid_before) = tx.valid_before
-        {
-            validate_time_window(tx.valid_after, valid_before, block_timestamp)?;
+        if tx_type == AA_TX_TYPE_ID {
+            let aa_env = tx.aa_tx_env.as_ref().unwrap();
+            if aa_env.valid_before > 0 {
+                validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
+            }
         }
         // Note: Signature verification happens during recover_signer() before entering the pool
 
@@ -444,7 +446,7 @@ where
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
         if tx.kind().is_call() {
             if tx_type == AA_TX_TYPE_ID {
-                let nonce_key = tx.nonce_key.unwrap_or(0);
+                let nonce_key = tx.aa_tx_env.as_ref().unwrap().nonce_key;
                 if nonce_key == 0 {
                     // Protocol nonce (key 0): increment account nonce
                     caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
@@ -627,22 +629,18 @@ where
     // For AA transactions, extract all needed data first
     let (nonce_key, nonce, signature, caller_addr, gas_limit) = {
         let tx = evm.ctx_ref().tx();
+        let aa_env = tx.aa_tx_env.as_ref().unwrap();
         (
-            tx.nonce_key.unwrap_or(0),
+            aa_env.nonce_key,
             tx.nonce(),
-            tx.signature.clone(),
+            aa_env.signature.clone(),
             tx.caller(),
             tx.gas_limit(),
         )
     };
 
     // Get signature bytes
-    let sig_bytes =
-        signature
-            .as_ref()
-            .ok_or_else(|| TempoInvalidTransaction::InvalidWebAuthnSignature {
-                reason: "Missing signature for AA transaction".into(),
-            })?;
+    let sig_bytes = &signature;
 
     // Start with the standard intrinsic gas calculation (calldata, access list, etc.)
     let standard_gas = {

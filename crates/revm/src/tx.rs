@@ -14,6 +14,25 @@ use reth_evm::{
 };
 use tempo_primitives::{AASigned, TempoTxEnvelope, TxAA, TxFeeToken, transaction::Call};
 
+/// Account Abstraction transaction environment.
+#[derive(Debug, Clone, Default)]
+#[allow(unnameable_types)]
+pub struct AATxEnv {
+    /// Nonce key for 2D nonce system
+    pub nonce_key: u64,
+
+    /// Signature bytes for AA transactions
+    pub signature: Bytes,
+
+    /// validBefore timestamp
+    pub valid_before: u64,
+
+    /// validAfter timestamp
+    pub valid_after: Option<u64>,
+
+    /// Multiple calls for AA transactions
+    pub aa_calls: Vec<Call>,
+}
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
@@ -35,21 +54,9 @@ pub struct TempoTxEnv {
     /// - None corresponds to a transaction without a fee payer
     pub fee_payer: Option<Option<Address>>,
 
-    // Account Abstraction fields (only set for AA transactions)
-    /// Nonce key for 2D nonce system (None for non-AA transactions)
-    pub nonce_key: Option<u64>,
-
-    /// Signature bytes for AA transactions (used for P256/WebAuthn gas calculation)
-    pub signature: Option<Bytes>,
-
-    /// validBefore timestamp for AA transactions
-    pub valid_before: Option<u64>,
-
-    /// validAfter timestamp for AA transactions
-    pub valid_after: Option<u64>,
-
-    /// Multiple calls for AA transactions (None for non-AA transactions)
-    pub aa_calls: Option<Vec<Call>>,
+    /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
+    #[allow(private_interfaces)]
+    pub aa_tx_env: Option<Box<AATxEnv>>,
 }
 
 impl TempoTxEnv {
@@ -71,11 +78,7 @@ impl From<TxEnv> for TempoTxEnv {
             fee_token: None,
             is_system_tx: false,
             fee_payer: None,
-            nonce_key: None,
-            signature: None,
-            valid_before: None,
-            valid_after: None,
-            aa_calls: None,
+            aa_tx_env: None,
         }
     }
 }
@@ -231,12 +234,7 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
                 sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
                     .ok()
             }),
-            // Non-AA transaction, so AA fields are None
-            nonce_key: None,
-            signature: None,
-            valid_before: None,
-            valid_after: None,
-            aa_calls: None,
+            aa_tx_env: None, // Non-AA transaction
         }
     }
 }
@@ -295,12 +293,14 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
                     .ok()
             }),
-            // AA-specific fields
-            nonce_key: Some(*nonce_key),
-            signature: Some(signature.to_bytes()), // Store signature bytes for gas calculation
-            valid_before: Some(*valid_before),
-            valid_after: *valid_after,
-            aa_calls: Some(calls.clone()),
+            // Bundle AA-specific fields into AATxEnv
+            aa_tx_env: Some(Box::new(AATxEnv {
+                nonce_key: *nonce_key,
+                signature: signature.to_bytes(), // Store signature bytes for gas calculation
+                valid_before: *valid_before,
+                valid_after: *valid_after,
+                aa_calls: calls.clone(),
+            })),
         }
     }
 }
@@ -313,12 +313,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
                 fee_payer: None,
-                // Non-AA transaction, so AA fields are None
-                nonce_key: None,
-                signature: None,
-                valid_before: None,
-                valid_after: None,
-                aa_calls: None,
+                aa_tx_env: None, // Non-AA transaction
             },
             TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
@@ -373,12 +368,7 @@ impl reth_rpc_convert::transaction::TryIntoTxEnv<TempoTxEnv>
             fee_token: None,
             is_system_tx: false,
             fee_payer: None,
-            // RPC transactions are not AA transactions
-            nonce_key: None,
-            signature: None,
-            valid_before: None,
-            valid_after: None,
-            aa_calls: None,
+            aa_tx_env: None, // RPC transactions are not AA transactions
         })
     }
 }

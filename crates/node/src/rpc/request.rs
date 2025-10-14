@@ -116,11 +116,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             is_system_tx: false,
             fee_payer: None,
             // RPC transactions are not AA transactions
-            nonce_key: None,
-            signature: None,
-            valid_before: None,
-            valid_after: None,
-            aa_calls: None,
+            aa_tx_env: None,
         })
     }
 }
