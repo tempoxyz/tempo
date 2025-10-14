@@ -7,7 +7,7 @@ use crate::{
         stablecoin_exchange::StablecoinExchange, storage::StorageProvider,
         types::IStablecoinExchange,
     },
-    precompiles::{Precompile, mutate},
+    precompiles::{Precompile, mutate, mutate_void},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -68,6 +68,14 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
             IStablecoinExchange::quoteBuyCall::SELECTOR => Err(PrecompileError::Other(
                 "quoteBuy not yet implemented".to_string(),
             )),
+            IStablecoinExchange::executeBlockCall::SELECTOR => {
+                mutate_void::<
+                    IStablecoinExchange::executeBlockCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |_s, _call| {
+                    self.execute_block(msg_sender)
+                })
+            }
 
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),

@@ -15,7 +15,10 @@ use reth_evm::{
 };
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use tempo_chainspec::TempoChainSpec;
-use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::IFeeManager::executeBlockCall};
+use tempo_precompiles::{
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    contracts::{IFeeManager::executeBlockCall, types::IStablecoinExchange},
+};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_revm::evm::TempoContext;
 use tracing::trace;
@@ -61,7 +64,8 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
 
     general_gas_left: u64,
 
-    seen_system_tx: bool,
+    seen_fee_manager_system_tx: bool,
+    seen_stablecoin_dex_system_tx: bool,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -82,32 +86,46 @@ where
                 chain_spec,
                 TempoReceiptBuilder::default(),
             ),
-            seen_system_tx: false,
+            seen_fee_manager_system_tx: false,
+            seen_stablecoin_dex_system_tx: false,
         }
     }
 
     /// Validates a system transaction.
     fn validate_system_tx(&self, tx: &TempoTxEnvelope) -> Result<(), BlockValidationError> {
-        // todo: we likely want to change this once we have more system transactions
-        if self.seen_system_tx {
-            return Err(BlockValidationError::msg(
-                "only expecting one system transaction per block",
-            ));
-        }
-
-        let expected_calldata = executeBlockCall
+        let fee_manager_calldata = executeBlockCall
             .abi_encode()
             .into_iter()
             .chain(self.evm().block().number.to_be_bytes_vec())
             .collect::<Bytes>();
 
-        if tx.to() != Some(TIP_FEE_MANAGER_ADDRESS) || tx.input() != &expected_calldata {
-            return Err(BlockValidationError::msg(
-                "system transaction is not a fee manager execute block transaction",
-            ));
+        let stablecoin_dex_calldata = IStablecoinExchange::executeBlockCall {}
+            .abi_encode()
+            .into_iter()
+            .chain(self.evm().block().number.to_be_bytes_vec())
+            .collect::<Bytes>();
+
+        // Check if this is a fee manager system transaction
+        if tx.to() == Some(TIP_FEE_MANAGER_ADDRESS) && tx.input() == &fee_manager_calldata {
+            if self.seen_fee_manager_system_tx {
+                return Err(BlockValidationError::msg(
+                    "duplicate fee manager system transaction",
+                ));
+            }
+            return Ok(());
         }
 
-        Ok(())
+        // Check if this is a stablecoin DEX system transaction
+        if tx.to() == Some(STABLECOIN_EXCHANGE_ADDRESS) && tx.input() == &stablecoin_dex_calldata {
+            if self.seen_stablecoin_dex_system_tx {
+                return Err(BlockValidationError::msg(
+                    "duplicate stablecoin DEX system transaction",
+                ));
+            }
+            return Ok(());
+        }
+
+        Err(BlockValidationError::msg("invalid system transaction"))
     }
 }
 
@@ -134,7 +152,7 @@ where
 
         if is_system {
             self.validate_system_tx(tx.tx())?;
-        } else if self.seen_system_tx {
+        } else if self.seen_fee_manager_system_tx || self.seen_stablecoin_dex_system_tx {
             trace!(target: "tempo::block", tx_hash = ?tx.tx().tx_hash(), "Rejecting: regular transaction after system transaction");
             return Err(BlockValidationError::msg(
                 "regular transaction can't follow system transaction",
@@ -165,7 +183,12 @@ where
         let gas_used = self.inner.commit_transaction(output, &tx)?;
 
         if tx.tx().is_system_tx() {
-            self.seen_system_tx = true;
+            // Mark which system transaction we've seen based on the target address
+            if tx.tx().to() == Some(TIP_FEE_MANAGER_ADDRESS) {
+                self.seen_fee_manager_system_tx = true;
+            } else if tx.tx().to() == Some(STABLECOIN_EXCHANGE_ADDRESS) {
+                self.seen_stablecoin_dex_system_tx = true;
+            }
         }
 
         self.general_gas_left = self.general_gas_left.saturating_sub(gas_used);
@@ -176,8 +199,17 @@ where
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        if !self.seen_system_tx {
-            return Err(BlockValidationError::msg("system transaction not seen in block").into());
+        if !self.seen_fee_manager_system_tx {
+            return Err(BlockValidationError::msg(
+                "fee manager system transaction not seen in block",
+            )
+            .into());
+        }
+        if !self.seen_stablecoin_dex_system_tx {
+            return Err(BlockValidationError::msg(
+                "stablecoin DEX system transaction not seen in block",
+            )
+            .into());
         }
         self.inner.finish()
     }
