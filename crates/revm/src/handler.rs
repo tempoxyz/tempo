@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, b256};
+use alloy_primitives::{Address, B256, U256, b256};
 use reth_evm::{
     EvmInternals,
     revm::{
@@ -55,25 +55,6 @@ pub struct TempoEvmHandler<DB, I> {
     fee_payer: Address,
     /// Phantom data to avoid type inference issues.
     _phantom: core::marker::PhantomData<(DB, I)>,
-}
-
-/// Restores the transaction environment to its original state.
-///
-/// Used in multi-call execution to reset TxEnv after batch processing.
-fn restore_tx_env<DB, I>(
-    evm: &mut TempoEvm<DB, I>,
-    kind: TxKind,
-    value: U256,
-    data: Bytes,
-    gas_limit: u64,
-) where
-    DB: reth_evm::Database,
-{
-    let tx = &mut evm.ctx().tx;
-    tx.inner.kind = kind;
-    tx.inner.value = value;
-    tx.inner.data = data;
-    tx.inner.gas_limit = gas_limit;
 }
 
 impl<DB, I> TempoEvmHandler<DB, I> {
@@ -199,16 +180,24 @@ where
             }
 
             // Execute this call using the provided single-call function
-            let frame_result = execute_single(self, evm, init_and_floor_gas)?;
+            let frame_result = execute_single(self, evm, init_and_floor_gas);
+
+            // Restore original TxEnv immediately after execution, even if execution failed
+            {
+                let tx = &mut evm.ctx().tx;
+                tx.inner.kind = original_kind;
+                tx.inner.value = original_value;
+                tx.inner.data = original_data.clone();
+                tx.inner.gas_limit = gas_limit;
+            }
+
+            let frame_result = frame_result?;
 
             // Check if call succeeded
             let instruction_result = frame_result.instruction_result();
             if !instruction_result.is_ok() {
                 // Revert checkpoint - rolls back ALL state changes from ALL calls
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
-
-                // Restore original TxEnv
-                restore_tx_env(evm, original_kind, original_value, original_data, gas_limit);
 
                 // Return the failure result (gas accounting already correct for failed call)
                 return Ok(frame_result);
@@ -226,9 +215,6 @@ where
 
         // All calls succeeded - commit checkpoint to finalize ALL state changes
         evm.ctx().journal_mut().checkpoint_commit();
-
-        // Restore original TxEnv
-        restore_tx_env(evm, original_kind, original_value, original_data, gas_limit);
 
         // Fix gas accounting for the entire batch
         let mut result =
@@ -328,19 +314,10 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Check transaction type to determine execution path
-        let tx_type = evm.ctx().tx().tx_type();
-
-        if tx_type == AA_TX_TYPE_ID {
+        // Check if this is an AA transaction by checking for aa_tx_env
+        if let Some(aa_tx_env) = evm.ctx().tx().aa_tx_env.as_ref() {
             // AA transaction - use batch execution with calls field
-            let calls = evm
-                .ctx()
-                .tx()
-                .aa_tx_env
-                .as_ref()
-                .map(|aa| aa.aa_calls.clone())
-                .ok_or_else(|| EVMError::Custom("AA transaction missing calls field".into()))?;
-
+            let calls = aa_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, init_and_floor_gas, calls)
         } else {
             // Standard transaction - use single-call execution
@@ -365,7 +342,6 @@ where
         let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
-        let tx_type = context.tx().tx_type();
         let value = context.tx().value();
         let caller_addr = context.tx().caller(); // Extract caller address early
 
@@ -395,8 +371,7 @@ where
         .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
 
         // Time window validation for AA transactions
-        if tx_type == AA_TX_TYPE_ID {
-            let aa_env = tx.aa_tx_env.as_ref().unwrap();
+        if let Some(aa_env) = tx.aa_tx_env.as_ref() {
             validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
         }
         // Note: Signature verification happens during recover_signer() before entering the pool
@@ -566,20 +541,16 @@ where
         return Ok(standard_gas);
     }
 
-    // For AA transactions, extract all needed data first
-    let (signature, gas_limit) = {
-        let tx = evm.ctx_ref().tx();
-        let aa_env = tx.aa_tx_env.as_ref().unwrap();
-        (aa_env.signature.clone(), tx.gas_limit())
-    };
-
-    // Get signature bytes
-    let sig_bytes = &signature;
+    // For AA transactions, extract signature reference and gas limit
+    let tx = evm.ctx_ref().tx();
+    let aa_env = tx.aa_tx_env.as_ref().unwrap();
+    let signature_bytes = &aa_env.signature;
+    let gas_limit = tx.gas_limit();
 
     // Calculate AA-specific additional gas (signature + nonce key costs)
 
     // Parse the signature using AASignature to determine type from prefix
-    let aa_signature = AASignature::from_bytes(sig_bytes).map_err(|e| {
+    let aa_signature = AASignature::from_bytes(signature_bytes).map_err(|e| {
         TempoInvalidTransaction::InvalidWebAuthnSignature {
             reason: format!("Failed to parse signature: {e}"),
         }
@@ -759,19 +730,10 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Check transaction type to determine execution path
-        let tx_type = evm.ctx().tx().tx_type();
-
-        if tx_type == AA_TX_TYPE_ID {
+        // Check if this is an AA transaction by checking for aa_tx_env
+        if let Some(aa_tx_env) = evm.ctx().tx().aa_tx_env.as_ref() {
             // AA transaction - use batch execution with calls field
-            let calls = evm
-                .ctx()
-                .tx()
-                .aa_tx_env
-                .as_ref()
-                .map(|aa| aa.aa_calls.clone())
-                .ok_or_else(|| EVMError::Custom("AA transaction missing calls field".into()))?;
-
+            let calls = aa_tx_env.aa_calls.clone();
             self.inspect_execute_multi_call(evm, init_and_floor_gas, calls)
         } else {
             // Standard transaction - use single-call execution
