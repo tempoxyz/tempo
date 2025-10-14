@@ -1686,10 +1686,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place bid order
         let order_id = exchange.place(&sender, token, amount, true, tick).unwrap();
@@ -1717,10 +1717,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place ask order
         let order_id = exchange.place(&sender, token, amount, false, tick).unwrap();
@@ -1749,10 +1749,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place flip bid order
         let order_id = exchange
@@ -1783,10 +1783,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place flip ask order
         let order_id = exchange
@@ -1816,10 +1816,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place bid order
         let order_id = exchange.place(&sender, token, amount, true, tick).unwrap();
@@ -1852,10 +1852,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place bid order
         let order_id = exchange.place(&sender, token, amount, true, tick).unwrap();
@@ -1889,10 +1889,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place multiple orders
         let bid_0 = exchange.place(&alice, token, amount, true, tick).unwrap();
@@ -1933,10 +1933,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place and cancel order to create balance
         let order_id = exchange.place(&sender, token, amount, true, tick).unwrap();
@@ -1945,7 +1945,7 @@ mod tests {
         // Test withdraw functionality
         let balance = exchange.balance_of(sender, quote_token);
         if balance > 0 {
-            exchange.withdraw(&sender, quote_token, balance).unwrap();
+            exchange.withdraw(sender, quote_token, balance);
             assert_eq!(exchange.balance_of(sender, quote_token), 0);
         }
     }
@@ -1969,17 +1969,17 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place ask order and execute block
         exchange.place(&sender, token, amount, false, tick).unwrap();
         exchange.execute_block();
 
         // Test quote buy
-        let amount_out = 500e18_u128;
+        let amount_out = 500000000000000000000u128;
         let result = exchange.quote_buy(quote_token, token, amount_out);
 
         if let Ok(amount_in) = result {
@@ -2011,17 +2011,17 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place bid order and execute block
         exchange.place(&sender, token, amount, true, tick).unwrap();
         exchange.execute_block();
 
         // Test quote sell
-        let amount_in = 500e18_u128;
+        let amount_in = 500000000000000000000u128;
         let result = exchange.quote_sell(token, quote_token, amount_in);
 
         if let Ok(amount_out) = result {
@@ -2054,10 +2054,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place ask order and execute block
         exchange.place(&seller, token, amount, false, tick).unwrap();
@@ -2112,10 +2112,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place bid order and execute block
         exchange.place(&buyer, token, amount, true, tick).unwrap();
@@ -2176,10 +2176,10 @@ mod tests {
 
         // Create orderbook
         let mut orderbook =
-            orderbook::Orderbook::load(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+            orderbook::Orderbook::load(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
         orderbook.base = token;
         orderbook.quote = quote_token;
-        orderbook.store(&mut storage, STABLECOIN_DEX_ADDRESS, book_key);
+        orderbook.store(exchange.storage, STABLECOIN_DEX_ADDRESS, book_key);
 
         // Place flip order
         let flip_order_id = exchange
