@@ -468,9 +468,10 @@ mod serde_impl {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
-        use crate::transaction::aa_signature::AASignature;
-        use crate::transaction::account_abstraction::{Call, TxAA};
+        use crate::transaction::{
+            aa_signature::AASignature,
+            account_abstraction::{Call, TxAA},
+        };
         use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
 
         #[test]
@@ -504,7 +505,7 @@ mod serde_impl {
             let json = serde_json::to_string_pretty(&aa_signed).unwrap();
 
             println!("\n=== AASigned JSON Output ===");
-            println!("{}", json);
+            println!("{json}");
             println!("============================\n");
 
             // Also test deserialization round-trip
