@@ -61,10 +61,33 @@ pub struct Order {
 }
 
 impl Order {
-    /// Creates a new bid order (buying base token with quote token).
-    ///
-    /// Note: `prev` and `next` are initialized to 0.
-    /// The orderbook will set these when inserting the order into the linked list.
+    /// Creates a new order with `prev` and `next` initialized to 0.
+    pub fn new(
+        order_id: u128,
+        maker: Address,
+        book_key: B256,
+        amount: u128,
+        tick: i16,
+        is_bid: bool,
+        is_flip: bool,
+        flip_tick: i16,
+    ) -> Self {
+        Self {
+            order_id,
+            maker,
+            book_key,
+            is_bid,
+            tick,
+            amount,
+            remaining: amount,
+            prev: 0,
+            next: 0,
+            is_flip,
+            flip_tick,
+        }
+    }
+
+    /// Creates a new bid order
     pub fn new_bid(
         order_id: u128,
         maker: Address,
@@ -72,25 +95,10 @@ impl Order {
         amount: u128,
         tick: i16,
     ) -> Self {
-        Self {
-            order_id,
-            maker,
-            book_key,
-            is_bid: true,
-            tick,
-            amount,
-            remaining: amount,
-            prev: 0,
-            next: 0,
-            is_flip: false,
-            flip_tick: 0,
-        }
+        Self::new(order_id, maker, book_key, amount, tick, true, false, 0)
     }
 
-    /// Creates a new ask order (selling base token for quote token).
-    ///
-    /// Note: `prev` and `next` are initialized to 0.
-    /// The orderbook will set these when inserting the order into the linked list.
+    /// Creates a new ask order
     pub fn new_ask(
         order_id: u128,
         maker: Address,
@@ -98,19 +106,7 @@ impl Order {
         amount: u128,
         tick: i16,
     ) -> Self {
-        Self {
-            order_id,
-            maker,
-            book_key,
-            is_bid: false,
-            tick,
-            amount,
-            remaining: amount,
-            prev: 0,
-            next: 0,
-            is_flip: false,
-            flip_tick: 0,
-        }
+        Self::new(order_id, maker, book_key, amount, tick, false, false, 0)
     }
 
     /// Creates a new flip order.
@@ -127,8 +123,8 @@ impl Order {
         maker: Address,
         book_key: B256,
         amount: u128,
-        is_bid: bool,
         tick: i16,
+        is_bid: bool,
         flip_tick: i16,
     ) -> Result<Self, OrderError> {
         // Validate flip tick constraint
@@ -140,19 +136,9 @@ impl Order {
             return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
         }
 
-        Ok(Self {
-            order_id,
-            maker,
-            book_key,
-            is_bid,
-            tick,
-            amount,
-            remaining: amount,
-            prev: 0,
-            next: 0,
-            is_flip: true,
-            flip_tick,
-        })
+        Ok(Self::new(
+            order_id, maker, book_key, amount, tick, is_bid, true, flip_tick,
+        ))
     }
 
     /// Returns the order ID.
@@ -333,16 +319,7 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_bid() {
-        let order = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            true, // Bid
-            5,
-            10, // flip_tick > tick for bid
-        )
-        .unwrap();
+        let order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
 
         assert!(order.is_flip());
         assert_eq!(order.flip_tick(), 10);
@@ -352,16 +329,7 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_ask() {
-        let order = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            false, // Ask
-            5,
-            2, // flip_tick < tick for ask
-        )
-        .unwrap();
+        let order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 2).unwrap();
 
         assert!(order.is_flip());
         assert_eq!(order.flip_tick(), 2);
@@ -372,30 +340,14 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_bid_invalid_flip_tick() {
-        let result = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            true, // Bid
-            5,
-            3, // Invalid: flip_tick <= tick for bid
-        );
+        let result = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 3);
 
         assert!(matches!(result, Err(OrderError::InvalidBidFlipTick { .. })));
     }
 
     #[test]
     fn test_new_flip_order_ask_invalid_flip_tick() {
-        let result = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            false, // Ask
-            5,
-            7, // Invalid: flip_tick >= tick for ask
-        );
+        let result = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 7);
 
         assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
     }
@@ -437,16 +389,7 @@ mod tests {
 
     #[test]
     fn test_create_flipped_order_bid_to_ask() {
-        let mut order = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            true, // Bid
-            5,    // tick
-            10,   // flip_tick
-        )
-        .unwrap();
+        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
 
         // Fully fill the order
         order.fill(1000).unwrap();
@@ -469,16 +412,7 @@ mod tests {
 
     #[test]
     fn test_create_flipped_order_ask_to_bid() {
-        let mut order = Order::new_flip(
-            1,
-            TEST_MAKER,
-            TEST_BOOK_KEY,
-            1000,
-            false, // Ask
-            10,    // tick
-            5,     // flip_tick (< tick for ask)
-        )
-        .unwrap();
+        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 10, false, 5).unwrap();
 
         order.fill(1000).unwrap();
         let flipped = order.create_flipped_order(2).unwrap();
@@ -500,7 +434,7 @@ mod tests {
 
     #[test]
     fn test_create_flipped_order_not_filled() {
-        let order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, true, 5, 10).unwrap();
+        let order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
 
         let result = order.create_flipped_order(2);
         assert!(matches!(
@@ -528,7 +462,7 @@ mod tests {
     #[test]
     fn test_multiple_flips() {
         // Test that an order can flip multiple times
-        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, true, 5, 10).unwrap();
+        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
 
         // First flip: bid -> ask
         order.fill(1000).unwrap();
@@ -585,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_flipped_order_resets_linked_list_pointers() {
-        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, true, 5, 10).unwrap();
+        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
 
         // Set linked list pointers on original order
         order.set_prev(100);

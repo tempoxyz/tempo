@@ -493,7 +493,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
         // Create the flip order (with validation)
         let order_id = self.get_and_increment_pending_order_id();
-        let order = Order::new_flip(order_id, *sender, book_key, amount, is_bid, tick, flip_tick)
+        let order = Order::new_flip(order_id, *sender, book_key, amount, tick, is_bid, flip_tick)
             .expect("Invalid flip tick");
 
         // Store in pending queue
@@ -750,9 +750,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                     maker,
                     B256::from(book_key),
                     original_amount,
-                    !is_bid,   // Flip the side
-                    flip_tick, // New tick is the old flip_tick
-                    tick,      // New flip_tick is the old tick
+                    flip_tick,
+                    !is_bid,
+                    tick,
                 )
                 .expect("Invalid flip order");
 
@@ -1688,7 +1688,89 @@ mod tests {
 
     #[test]
     fn test_place_bid_order() {
-        // TODO:
+        // let mut storage = HashMapStorageProvider::new(1);
+        // let mut exchange = StablecoinExchange::new(&mut storage);
+        // exchange.initialize();
+        //
+        // let alice = Address::random();
+        // let admin = Address::random();
+        // let base_token = Address::random();
+        // let quote_token = Address::random();
+        // let amount = 1_000_000_000_000_000_000u128; // 1e18
+        // let tick = 100i16;
+        //
+        // // Initialize base token
+        // let token_id = address_to_token_id_unchecked(&base_token);
+        // let mut base_tip20 = TIP20Token::new(token_id, exchange.storage);
+        // base_tip20
+        //     .initialize("BASE", "BASE", "USD", quote_token, &admin)
+        //     .expect("Base token initialization should succeed");
+        //
+        // // Initialize quote token (linking token)
+        // let quote_token_id = address_to_token_id_unchecked(&quote_token);
+        // let mut quote_tip20 = TIP20Token::new(quote_token_id, base_tip20.storage);
+        // quote_tip20
+        //     .initialize("linkingUSD", "linkingUSD", "USD", Address::ZERO, &admin)
+        //     .expect("Quote token initialization should succeed");
+        //
+        // // Grant issuer role to admin for quote token
+        // let mut roles = quote_tip20.get_roles_contract();
+        // roles.grant_role_internal(&admin, *crate::contracts::tip20::ISSUER_ROLE);
+        //
+        // // Calculate escrow amount needed for bid
+        // let price = orderbook::tick_to_price(tick);
+        // let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+        //
+        // // Mint quote tokens to alice
+        // quote_tip20
+        //     .mint(
+        //         &admin,
+        //         crate::contracts::types::ITIP20::mintCall {
+        //             to: alice,
+        //             amount: alloy::primitives::U256::from(expected_escrow),
+        //         },
+        //     )
+        //     .expect("Mint should succeed");
+        //
+        // // Approve exchange to spend alice's quote tokens
+        // quote_tip20
+        //     .approve(
+        //         &alice,
+        //         crate::contracts::types::ITIP20::approveCall {
+        //             spender: exchange.address,
+        //             amount: alloy::primitives::U256::from(expected_escrow),
+        //         },
+        //     )
+        //     .expect("Approve should succeed");
+        //
+        // // Place the bid order
+        // let order_id = exchange
+        //     .place(&alice, base_token, amount, true, tick)
+        //     .expect("Place bid order should succeed");
+        //
+        // // Verify order ID is 1 (since it's the first order)
+        // assert_eq!(order_id, 1);
+        //
+        // // Verify activeOrderId is still 0 (orders are pending until executeBlock)
+        // assert_eq!(exchange.active_order_id(), 0);
+        //
+        // // Verify pendingOrderId is 1
+        // assert_eq!(exchange.pending_order_id(), 1);
+        //
+        // // Verify alice's token balance was reduced by the escrow amount
+        // let remaining_balance = quote_tip20
+        //     .balance_of(crate::contracts::types::ITIP20::balanceOfCall { account: alice });
+        // assert_eq!(remaining_balance, alloy::primitives::U256::ZERO);
+        //
+        // // Verify exchange received the tokens
+        // let exchange_balance =
+        //     quote_tip20.balance_of(crate::contracts::types::ITIP20::balanceOfCall {
+        //         account: exchange.address,
+        //     });
+        // assert_eq!(
+        //     exchange_balance,
+        //     alloy::primitives::U256::from(expected_escrow)
+        // );
     }
 
     #[test]
