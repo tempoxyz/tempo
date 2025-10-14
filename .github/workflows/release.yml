@@ -1,4 +1,6 @@
 name: Release
+# Adapted from Reth's release workflow
+# https://github.com/paradigmxyz/reth/blob/main/.github/workflows/release.yml
 
 on:
   push:
@@ -139,26 +141,43 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      # This is necessary for generating the changelog.
+      # It has to come before "Download Artifacts" or else it deletes the artifacts.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Generate full changelog
+        id: changelog
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$(git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 ${{ env.VERSION }}^)..${{ env.VERSION }})" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.get-version.outputs.version }}
         run: |
-          VERSION="${{ needs.get-version.outputs.version }}"
-
           # Determine if this is a prerelease
           PRERELEASE=""
           if echo "$VERSION" | grep -qE '(alpha|beta|rc)'; then
             PRERELEASE="--prerelease"
           fi
 
-          # Create release with all artifacts
+          # Create draft release with all artifacts
           gh release create "$VERSION" \
             --repo ${{ github.repository }} \
             --title "Release $VERSION" \
+            --draft \
+            --notes "${{ steps.changelog.outputs.CHANGELOG }}" \
             $PRERELEASE \
             artifacts/**/*
