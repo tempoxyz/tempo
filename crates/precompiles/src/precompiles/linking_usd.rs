@@ -74,6 +74,13 @@ impl<S: StorageProvider> Precompile for LinkingUSD<'_, S> {
                     |sender, call| self.transfer_with_memo(sender, call),
                 )
             }
+            ITIP20::transferFromWithMemoCall::SELECTOR => {
+                mutate::<ITIP20::transferFromWithMemoCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.transfer_from_with_memo(sender, call),
+                )
+            }
 
             _ => Err(PrecompileError::Other("Unknown selector".to_string())),
         }
