@@ -15,10 +15,13 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 # Resolve repository root from scripts/ directory.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ANALYZE_SCRIPT = REPO_ROOT / "analyze_log.py"
+RPC_URL = "http://localhost:8545"
 
 
 DEFAULT_LOG_PATH = os.environ.get(
@@ -56,10 +59,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--duration-seconds",
         type=int,
-        default=600,
-        help="Duration to run tempo-bench before stopping (default: 600 seconds)",
+        default=60,
+        help="Duration to run tempo-bench before stopping (default: 60 seconds)",
     )
     return parser.parse_args()
+
+
+def wait_for_tempo(rpc_url: str, timeout_seconds: int = 120) -> None:
+    print("Waiting for tempo HTTP endpoint...")
+    payload = b'{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+    headers = {"Content-Type": "application/json"}
+    request = Request(rpc_url, data=payload, headers=headers)
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            with urlopen(request, timeout=2) as response:  # nosec - local URL
+                if response.status == 200:
+                    print("Tempo HTTP endpoint is ready.")
+                    return
+        except URLError:
+            pass
+        time.sleep(1)
+
+    raise RuntimeError(f"Tempo HTTP endpoint at {rpc_url} did not become ready in time.")
 
 
 def run_tempo_bench(duration_seconds: int, log_dir: Path) -> None:
@@ -75,7 +98,7 @@ def run_tempo_bench(duration_seconds: int, log_dir: Path) -> None:
         "--tps",
         "20000",
         "--target-urls",
-        "http://localhost:8545",
+        RPC_URL,
         "--disable-thread-pinning",
         "true",
         "--chain-id",
@@ -95,11 +118,12 @@ def run_tempo_bench(duration_seconds: int, log_dir: Path) -> None:
     def stream_output() -> None:
         if not process.stdout:
             return
+        prefix = "tempo bench: "
         with bench_cli_log.open("a") as log_handle:
             for line in process.stdout:
-                sys.stdout.write(line)
+                sys.stdout.write(prefix + line)
                 sys.stdout.flush()
-                log_handle.write(line)
+                log_handle.write(prefix + line)
                 log_handle.flush()
 
     stream_thread = threading.Thread(target=stream_output, name="tempo-bench-log", daemon=True)
@@ -236,6 +260,7 @@ def main() -> None:
     log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
+    wait_for_tempo(RPC_URL)
     run_tempo_bench(args.duration_seconds, log_path.parent)
 
     pids = find_tempo_pids()
