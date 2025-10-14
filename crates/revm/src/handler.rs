@@ -59,6 +59,19 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     }
 }
 
+impl<DB: reth_evm::Database, I> TempoEvmHandler<DB, I> {
+    fn load_fee_fields(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        self.fee_token = get_fee_token(evm.ctx_mut())?;
+        trace!(fee_token=%self.fee_token, caller=%evm.ctx().caller(), beneficiary=%evm.ctx().beneficiary(), "loaded fee token");
+        self.fee_payer = evm.ctx().tx().fee_payer()?;
+
+        Ok(())
+    }
+}
+
 impl<DB, I> Default for TempoEvmHandler<DB, I> {
     fn default() -> Self {
         Self::new()
@@ -78,10 +91,7 @@ where
         &mut self,
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        self.fee_token = get_fee_token(evm.ctx_mut())?;
-        trace!(fee_token=%self.fee_token, caller=%evm.ctx().caller(), beneficiary=%evm.ctx().beneficiary(), "loaded fee token");
-
-        self.fee_payer = evm.ctx().tx().fee_payer()?;
+        self.load_fee_fields(evm)?;
 
         // Run inner handler and catch all errors to handle cleanup.
         match self.run_without_catch_error(evm) {
@@ -369,6 +379,18 @@ where
     I: Inspector<TempoContext<DB>>,
 {
     type IT = EthInterpreter;
+
+    fn inspect_run(
+        &mut self,
+        evm: &mut Self::Evm,
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        self.load_fee_fields(evm)?;
+
+        match self.inspect_run_without_catch_error(evm) {
+            Ok(output) => Ok(output),
+            Err(e) => self.catch_error(evm, e),
+        }
+    }
 }
 
 #[cfg(test)]

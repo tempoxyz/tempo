@@ -111,7 +111,7 @@ async fn instantiate_network(
     config: &tempo_commonware_node_config::Config,
 ) -> eyre::Result<(
     discovery::Network<commonware_runtime::tokio::Context, PrivateKey>,
-    discovery::Oracle<commonware_runtime::tokio::Context, PublicKey>,
+    discovery::Oracle<PublicKey>,
 )> {
     use commonware_p2p::authenticated::discovery;
     use std::net::Ipv4Addr;
@@ -145,7 +145,7 @@ async fn instantiate_network(
     let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
     let p2p_cfg = discovery::Config {
         mailbox_size: config.mailbox_size,
-        ..discovery::Config::aggressive(
+        ..discovery::Config::local(
             config.signer.clone(),
             &p2p_namespace,
             // TODO: should the listen addr be restricted to ipv4?

@@ -626,6 +626,8 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         _msg_sender: &Address,
         call: ITIP20::permitCall,
     ) -> Result<(), TIP20Error> {
+        // TODO: this shouldn't use SystemTime due to non-determinism, see GH issue #446
+        #[allow(clippy::disallowed_methods)]
         if U256::from(call.deadline)
             < U256::from(
                 std::time::SystemTime::now()
@@ -1078,6 +1080,70 @@ mod tests {
         },
     };
 
+    /// Initialize a factory and create a single token
+    fn setup_factory_with_token(
+        storage: &mut HashMapStorageProvider,
+        admin: &Address,
+        name: &str,
+        symbol: &str,
+    ) -> u64 {
+        let mut factory = TIP20Factory::new(storage);
+        factory.initialize().unwrap();
+
+        factory
+            .create_token(
+                admin,
+                ITIP20Factory::createTokenCall {
+                    name: name.to_string(),
+                    symbol: symbol.to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: LINKING_USD_ADDRESS,
+                    admin: *admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>()
+    }
+
+    /// Create a token via an already-initialized factory
+    fn create_token_via_factory(
+        factory: &mut TIP20Factory<'_, HashMapStorageProvider>,
+        admin: &Address,
+        name: &str,
+        symbol: &str,
+        linking_token: Address,
+    ) -> u64 {
+        factory
+            .create_token(
+                admin,
+                ITIP20Factory::createTokenCall {
+                    name: name.to_string(),
+                    symbol: symbol.to_string(),
+                    currency: "USD".to_string(),
+                    linkingToken: linking_token,
+                    admin: *admin,
+                },
+            )
+            .unwrap()
+            .to::<u64>()
+    }
+
+    /// Setup factory and create a token with a separate linking token (both linking to LINKING_USD)
+    fn setup_token_with_custom_linking_token(
+        storage: &mut HashMapStorageProvider,
+        admin: &Address,
+    ) -> (u64, u64) {
+        let mut factory = TIP20Factory::new(storage);
+        factory.initialize().unwrap();
+
+        let token_id =
+            create_token_via_factory(&mut factory, admin, "Test", "TST", LINKING_USD_ADDRESS);
+        let linking_token_id =
+            create_token_via_factory(&mut factory, admin, "Linking", "LINK", LINKING_USD_ADDRESS);
+
+        (token_id, linking_token_id)
+    }
+
     #[test]
     fn test_permit_sets_allowance_and_increments_nonce() {
         // Setup token
@@ -1096,6 +1162,8 @@ mod tests {
         // Permit params
         let spender = Address::from([2u8; 20]);
         let value = U256::from(12345u64);
+
+        #[allow(clippy::disallowed_methods)]
         let deadline_u64 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1178,6 +1246,8 @@ mod tests {
         // Params
         let spender = Address::from([3u8; 20]);
         let value = U256::from(777u64);
+
+        #[allow(clippy::disallowed_methods)]
         let deadline_u64 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1646,25 +1716,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        // Initialize the factory
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().unwrap();
-
-        // Create a token
-        let token_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Test".to_string(),
-                    symbol: "TST".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
+        let token_id = setup_factory_with_token(&mut storage, &admin, "Test", "TST");
         let mut token = TIP20Token::new(token_id, &mut storage);
 
         // Verify both linkingToken and nextLinkingToken are set to the same value
@@ -1677,42 +1729,10 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        // Initialize the factory
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().unwrap();
-
-        // Create two tokens through the factory
-        let token_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Test".to_string(),
-                    symbol: "TST".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
-        let linking_token_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Linking".to_string(),
-                    symbol: "LINK".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
+        let (token_id, linking_token_id) =
+            setup_token_with_custom_linking_token(&mut storage, &admin);
         let linking_token_address = token_id_to_address(linking_token_id);
 
-        // Now get the main token
         let mut token = TIP20Token::new(token_id, &mut storage);
 
         // Set next linking token
@@ -1769,25 +1789,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        // Initialize the factory
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().unwrap();
-
-        // Create a token through the factory
-        let token_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Test".to_string(),
-                    symbol: "TST".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
+        let token_id = setup_factory_with_token(&mut storage, &admin, "Test", "TST");
         let mut token = TIP20Token::new(token_id, &mut storage);
 
         // Try to set a non-TIP20 address (random address that doesn't match TIP20 pattern)
@@ -1807,25 +1809,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        // Initialize the factory
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().unwrap();
-
-        // Create a token through the factory (token_id = 1)
-        let token_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Test".to_string(),
-                    symbol: "TST".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
+        let token_id = setup_factory_with_token(&mut storage, &admin, "Test", "TST");
         let mut token = TIP20Token::new(token_id, &mut storage);
 
         // Try to set a TIP20 address that hasn't been deployed yet (token_id = 999)
@@ -1846,42 +1830,10 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        // Initialize the factory
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().unwrap();
-
-        // Create two tokens through the factory
-        let token_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Test".to_string(),
-                    symbol: "TST".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
-        let linking_token_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Linking".to_string(),
-                    symbol: "LINK".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
+        let (token_id, linking_token_id) =
+            setup_token_with_custom_linking_token(&mut storage, &admin);
         let linking_token_address = token_id_to_address(linking_token_id);
 
-        // Now get the main token
         let mut token = TIP20Token::new(token_id, &mut storage);
 
         // Set next linking token
@@ -1919,42 +1871,17 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        // Initialize the factory
         let mut factory = TIP20Factory::new(&mut storage);
         factory.initialize().unwrap();
 
         // Create token_b first (links to LINKING_USD)
-        let token_b_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Token B".to_string(),
-                    symbol: "TKB".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
+        let token_b_id =
+            create_token_via_factory(&mut factory, &admin, "Token B", "TKB", LINKING_USD_ADDRESS);
         let token_b_address = token_id_to_address(token_b_id);
 
         // Create token_a (links to token_b)
-        let token_a_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Token A".to_string(),
-                    symbol: "TKA".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: token_b_address,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
+        let token_a_id =
+            create_token_via_factory(&mut factory, &admin, "Token A", "TKA", token_b_address);
         let token_a_address = token_id_to_address(token_a_id);
 
         // Now try to set token_a as the next linking token for token_b (would create A -> B -> A loop)
@@ -1981,39 +1908,8 @@ mod tests {
         let admin = Address::random();
         let non_admin = Address::random();
 
-        // Initialize the factory
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().unwrap();
-
-        // Create two tokens through the factory
-        let token_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Test".to_string(),
-                    symbol: "TST".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
-        let linking_token_id = factory
-            .create_token(
-                &admin,
-                ITIP20Factory::createTokenCall {
-                    name: "Linking".to_string(),
-                    symbol: "LINK".to_string(),
-                    currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
-                    admin,
-                },
-            )
-            .unwrap()
-            .to::<u64>();
-
+        let (token_id, linking_token_id) =
+            setup_token_with_custom_linking_token(&mut storage, &admin);
         let linking_token_address = token_id_to_address(linking_token_id);
 
         let mut token = TIP20Token::new(token_id, &mut storage);

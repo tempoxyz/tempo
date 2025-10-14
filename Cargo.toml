@@ -241,11 +241,12 @@ vergen = "9"
 vergen-git2 = "1"
 
 [patch.crates-io]
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "0320f5c8985ae767d7da75b61025ad47732354ab" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "0320f5c8985ae767d7da75b61025ad47732354ab" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "0320f5c8985ae767d7da75b61025ad47732354ab" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "0320f5c8985ae767d7da75b61025ad47732354ab" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "0320f5c8985ae767d7da75b61025ad47732354ab" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "0320f5c8985ae767d7da75b61025ad47732354ab" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "0320f5c8985ae767d7da75b61025ad47732354ab" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "0320f5c8985ae767d7da75b61025ad47732354ab" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "a68f75ec78bab93e551637f4799acc7b539f4f1a" }
+
