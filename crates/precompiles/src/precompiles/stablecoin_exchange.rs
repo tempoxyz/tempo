@@ -112,10 +112,8 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
 
-        // Give sender internal DEX balance to avoid TIP20 transfer (quote token is Address::ZERO in tests)
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
-        // Create a place call
         let place_call = IStablecoinExchange::placeCall {
             token,
             amount: 1000,
@@ -123,15 +121,10 @@ mod tests {
             tick: 5,
         };
         let calldata = place_call.abi_encode();
-
-        // Execute place
         let result = dex.call(&Bytes::from(calldata), &sender).unwrap();
-
-        // Decode the return value (should be order_id)
         let order_id = u128::abi_decode(&result.bytes).unwrap();
         assert_eq!(order_id, 0); // First order should have ID 0
 
-        // Verify OrderPlaced event was emitted
         let events = &storage.events[&crate::STABLECOIN_DEX_ADDRESS];
         assert_eq!(events.len(), 1);
         assert_eq!(
@@ -159,7 +152,6 @@ mod tests {
 
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
-        // Create a placeFlip call (bid: flip_tick must be > tick)
         let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 2000,
@@ -168,15 +160,11 @@ mod tests {
             flipTick: 10,
         };
         let calldata = place_flip_call.abi_encode();
-
-        // Execute placeFlip
         let result = dex.call(&Bytes::from(calldata), &sender).unwrap();
 
-        // Decode the return value
         let order_id = u128::abi_decode(&result.bytes).unwrap();
         assert_eq!(order_id, 0);
 
-        // Verify FlipOrderPlaced event was emitted
         let events = &storage.events[&crate::STABLECOIN_DEX_ADDRESS];
         assert_eq!(events.len(), 1);
         assert_eq!(
@@ -260,7 +248,6 @@ mod tests {
 
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
-        // Place a regular order
         let place_call = IStablecoinExchange::placeCall {
             token,
             amount,
@@ -272,14 +259,11 @@ mod tests {
             .unwrap();
         let order_id = u128::abi_decode(&result.bytes).unwrap();
 
-        // Verify order is stored correctly by reading from storage
         let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
 
-        // Check amount
         let stored_amount = dex.sload(order_slot + offsets::ORDER_AMOUNT_OFFSET);
         assert_eq!(stored_amount, U256::from(amount));
 
-        // Check tick
         let stored_tick = dex.sload(order_slot + offsets::ORDER_TICK_OFFSET);
         assert_eq!(stored_tick, U256::from(tick as i128 as u128));
 
@@ -293,11 +277,9 @@ mod tests {
             .to::<bool>();
         assert!(!is_flip);
 
-        // Check flip_tick (should be 0 for non-flip orders)
         let stored_flip_tick = dex.sload(order_slot + offsets::ORDER_FLIP_TICK_OFFSET);
         assert_eq!(stored_flip_tick, U256::ZERO);
 
-        // Now place a flip order to test flip fields
         let flip_amount = 2500u128;
         let flip_order_tick = 5i16;
         let flip_tick_value = 12i16;
@@ -314,21 +296,17 @@ mod tests {
             .unwrap();
         let flip_order_id = u128::abi_decode(&result.bytes).unwrap();
 
-        // Verify flip order is stored correctly
         let flip_order_slot = mapping_slot(flip_order_id.to_be_bytes(), slots::ORDERS);
 
-        // Check is_flip (true = 1)
         let stored_is_flip = dex.sload(flip_order_slot + offsets::ORDER_IS_FLIP_OFFSET);
         assert_eq!(stored_is_flip, U256::from(1u8));
 
-        // Check flip_tick
         let stored_flip_tick = dex.sload(flip_order_slot + offsets::ORDER_FLIP_TICK_OFFSET);
         assert_eq!(
             stored_flip_tick,
             U256::from(flip_tick_value as i128 as u128)
         );
 
-        // Check tick on flip order too
         let stored_flip_order_tick = dex.sload(flip_order_slot + offsets::ORDER_TICK_OFFSET);
         assert_eq!(
             stored_flip_order_tick,
@@ -347,11 +325,9 @@ mod tests {
 
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
-        // Initially pending_order_id should be 0
         let initial_pending = dex.sload(slots::PENDING_ORDER_ID);
         assert_eq!(initial_pending, U256::ZERO);
 
-        // Place first order
         let place_call = IStablecoinExchange::placeCall {
             token,
             amount: 1000,
@@ -361,15 +337,12 @@ mod tests {
         dex.call(&Bytes::from(place_call.abi_encode()), &sender)
             .unwrap();
 
-        // Check pending_order_id incremented to 1
         let pending_after_first = dex.sload(slots::PENDING_ORDER_ID);
         assert_eq!(pending_after_first, U256::from(1));
 
-        // Place second order
         dex.call(&Bytes::from(place_call.abi_encode()), &sender)
             .unwrap();
 
-        // Check pending_order_id incremented to 2
         let pending_after_second = dex.sload(slots::PENDING_ORDER_ID);
         assert_eq!(pending_after_second, U256::from(2));
     }
@@ -412,17 +385,15 @@ mod tests {
 
         setup_balance(&mut dex, sender, token, 10000);
 
-        // For ask orders, flip_tick must be < tick
         let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 2000,
-            isBid: false, // ask
+            isBid: false,
             tick: 10,
-            flipTick: 5, // flipTick < tick (valid)
+            flipTick: 5,
         };
         let result = dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender);
 
-        // Should succeed
         assert!(result.is_ok());
         let order_id = u128::abi_decode(&result.unwrap().bytes).unwrap();
         assert_eq!(order_id, 0);
@@ -437,17 +408,14 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
 
-        // For bid orders, flip_tick must be > tick
-        // This violates the constraint: flipTick (3) <= tick (10)
         let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 2000,
-            isBid: true, // bid
+            isBid: true,
             tick: 10,
-            flipTick: 3, // flipTick < tick (invalid, should be > tick)
+            flipTick: 3,
         };
 
-        // This should return an error for invalid flip tick constraint
         let result = dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender);
 
         assert!(
@@ -465,17 +433,14 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
 
-        // For ask orders, flip_tick must be < tick
-        // This violates the constraint: flipTick (15) >= tick (10)
         let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 2000,
-            isBid: false, // ask
+            isBid: false,
             tick: 10,
-            flipTick: 15, // flipTick > tick (invalid, should be < tick)
+            flipTick: 15,
         };
 
-        // This should return an error for invalid flip tick constraint
         let result = dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender);
 
         assert!(
@@ -496,7 +461,6 @@ mod tests {
 
         setup_balance(&mut dex, sender, token, 10000);
 
-        // Place order with negative tick
         let place_call = IStablecoinExchange::placeCall {
             token,
             amount: 1000,
@@ -508,11 +472,9 @@ mod tests {
             .unwrap();
         let order_id = u128::abi_decode(&result.bytes).unwrap();
 
-        // Verify negative tick is stored correctly
         let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
         let stored_tick = dex.sload(order_slot + offsets::ORDER_TICK_OFFSET);
 
-        // Cast i16 through i128 to preserve sign, then to u128 for storage
         let expected = U256::from(negative_tick as i128 as u128);
         assert_eq!(stored_tick, expected);
     }
@@ -523,11 +485,9 @@ mod tests {
         let mut dex = StablecoinExchange::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
-        // Test with invalid selector
         let result = dex.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), &sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
 
-        // Test with insufficient calldata
         let result = dex.call(&Bytes::from([0x12, 0x34]), &sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
     }
@@ -543,7 +503,6 @@ mod tests {
 
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
-        // Place an order
         let place_call = IStablecoinExchange::placeCall {
             token,
             amount: 1000,
@@ -555,7 +514,6 @@ mod tests {
             .unwrap();
         let order_id = u128::abi_decode(&result.bytes).unwrap();
 
-        // Verify sender address is stored correctly
         let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
         let stored_maker = dex.sload(order_slot + offsets::ORDER_MAKER_OFFSET);
         assert_eq!(stored_maker, sender.into_u256());
