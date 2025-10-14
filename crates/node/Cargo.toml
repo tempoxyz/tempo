@@ -70,8 +70,8 @@ alloy = { workspace = true, features = [
 rand = "0.9.2"
 futures = "0.3"
 test-case.workspace = true
-p256 = { version = "0.13", features = ["ecdsa"] }
-sha2 = "0.10"
+p256 = { workspace = true, features = ["ecdsa"] }
+sha2 = { workspace = true }
 base64.workspace = true
 
 [build-dependencies]

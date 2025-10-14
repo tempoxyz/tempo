@@ -217,6 +217,7 @@ indexmap = { version = "2.11.0" }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.0"
 multiaddr = "0.18"
+p256 = "0.13"
 pin-project-lite = "0.2.16"
 proptest = "1.7"
 proptest-arbitrary-interop = "0.1.0"
@@ -226,6 +227,7 @@ protox = "0.7"
 rand = "0.8.5"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.142"
+sha2 = "0.10"
 sha3 = "0.10"
 tempfile = "3.20.0"
 thiserror = "2.0.14"
