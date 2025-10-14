@@ -1,7 +1,10 @@
-use crate::contracts::{
-    StorageProvider,
-    tip20::TIP20Token,
-    types::{ITIP20, TIP20Error},
+use crate::{
+    STABLECOIN_EXCHANGE_ADDRESS,
+    contracts::{
+        StorageProvider,
+        tip20::TIP20Token,
+        types::{ITIP20, TIP20Error},
+    },
 };
 use alloy::primitives::{Address, U256};
 
@@ -26,43 +29,46 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         )
     }
 
-    pub fn depth(&mut self) -> u32 {
-        0
-    }
-
-    pub fn transfer(&mut self, _to: Address, _amount: U256) -> Result<bool, TIP20Error> {
-        Err(TIP20Error::transfers_disabled())
+    pub fn transfer(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::transferCall,
+    ) -> Result<bool, TIP20Error> {
+        if *msg_sender == STABLECOIN_EXCHANGE_ADDRESS {
+            self.token.transfer(msg_sender, call)
+        } else {
+            Err(TIP20Error::transfers_disabled())
+        }
     }
 
     pub fn transfer_from(
         &mut self,
-        _from: Address,
-        _to: Address,
-        _amount: U256,
+        msg_sender: &Address,
+        call: ITIP20::transferFromCall,
     ) -> Result<bool, TIP20Error> {
-        Err(TIP20Error::transfers_disabled())
+        if *msg_sender == STABLECOIN_EXCHANGE_ADDRESS {
+            self.token.transfer_from(msg_sender, call)
+        } else {
+            Err(TIP20Error::transfers_disabled())
+        }
     }
 
     pub fn transfer_with_memo(
         &mut self,
-        _to: Address,
-        _amount: U256,
-        _memo: [u8; 32],
+        _msg_sender: &Address,
+        _call: ITIP20::transferWithMemoCall,
     ) -> Result<(), TIP20Error> {
         Err(TIP20Error::transfers_disabled())
     }
 
     pub fn transfer_from_with_memo(
         &mut self,
-        _from: Address,
-        _to: Address,
-        _amount: U256,
-        _memo: [u8; 32],
+        _msg_sender: &Address,
+        _call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool, TIP20Error> {
         Err(TIP20Error::transfers_disabled())
     }
 
-    // Delegate all other methods to the underlying TIP20Token
     pub fn name(&mut self) -> String {
         self.token.name()
     }
@@ -128,7 +134,6 @@ mod tests {
 
         assert_eq!(linking_usd.name(), "LinkingUSD");
         assert_eq!(linking_usd.symbol(), "LUSD");
-        assert_eq!(linking_usd.depth(), 0);
     }
 
     #[test]
@@ -144,16 +149,52 @@ mod tests {
         let amount = U256::from(100);
         let memo = [0u8; 32];
 
-        assert!(linking_usd.transfer(account, amount).is_err());
-        assert!(linking_usd.transfer_from(account, account, amount).is_err());
         assert!(
             linking_usd
-                .transfer_with_memo(account, amount, memo)
+                .transfer(
+                    &account,
+                    ITIP20::transferCall {
+                        to: account,
+                        amount
+                    }
+                )
                 .is_err()
         );
         assert!(
             linking_usd
-                .transfer_from_with_memo(account, account, amount, memo)
+                .transfer_from(
+                    &account,
+                    ITIP20::transferFromCall {
+                        from: account,
+                        to: account,
+                        amount
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            linking_usd
+                .transfer_with_memo(
+                    &account,
+                    ITIP20::transferWithMemoCall {
+                        to: account,
+                        amount,
+                        memo: memo.into()
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            linking_usd
+                .transfer_from_with_memo(
+                    &account,
+                    ITIP20::transferFromWithMemoCall {
+                        from: account,
+                        to: account,
+                        amount,
+                        memo: memo.into()
+                    }
+                )
                 .is_err()
         );
     }

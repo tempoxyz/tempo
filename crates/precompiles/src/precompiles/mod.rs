@@ -19,7 +19,7 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use crate::{
-    STABLECOIN_DEX_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
     contracts::{
         EvmStorageProvider, LinkingUSD, StablecoinExchange, TIP20Factory, TIP20Token,
@@ -55,7 +55,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             Some(TipFeeManagerPrecompile::create(chain_id))
         } else if *address == TIP_ACCOUNT_REGISTRAR {
             Some(TipAccountRegistrarPrecompile::create(chain_id))
-        } else if *address == STABLECOIN_DEX_ADDRESS {
+        } else if *address == STABLECOIN_EXCHANGE_ADDRESS {
             Some(StablecoinExchangePrecompile::create(chain_id))
         } else {
             None

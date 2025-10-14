@@ -19,7 +19,7 @@ use revm::{
 };
 
 use crate::{
-    STABLECOIN_DEX_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
         StorageProvider, TIP20Token, address_to_token_id_unchecked,
         storage::{StorageOps, slots::mapping_slot},
@@ -43,7 +43,7 @@ pub struct StablecoinExchange<'a, S: StorageProvider> {
 impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self {
-            address: STABLECOIN_DEX_ADDRESS,
+            address: STABLECOIN_EXCHANGE_ADDRESS,
             storage,
         }
     }
@@ -1623,7 +1623,7 @@ mod tests {
     fn test_compute_book_key_deterministic() {
         let storage = HashMapStorageProvider::new(1);
         let exchange = StablecoinExchange {
-            address: STABLECOIN_DEX_ADDRESS,
+            address: STABLECOIN_EXCHANGE_ADDRESS,
             storage: &mut { storage },
         };
 
@@ -1641,7 +1641,7 @@ mod tests {
     fn test_compute_book_key_matches_expected_hash() {
         let storage = HashMapStorageProvider::new(1);
         let exchange = StablecoinExchange {
-            address: STABLECOIN_DEX_ADDRESS,
+            address: STABLECOIN_EXCHANGE_ADDRESS,
             storage: &mut { storage },
         };
 

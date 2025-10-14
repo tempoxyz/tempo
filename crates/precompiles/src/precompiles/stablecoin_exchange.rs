@@ -125,7 +125,7 @@ mod tests {
         let order_id = u128::abi_decode(&result.bytes).unwrap();
         assert_eq!(order_id, 0); // First order should have ID 0
 
-        let events = &storage.events[&crate::STABLECOIN_DEX_ADDRESS];
+        let events = &storage.events[&crate::STABLECOIN_EXCHANGE_ADDRESS];
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0],
@@ -165,7 +165,7 @@ mod tests {
         let order_id = u128::abi_decode(&result.bytes).unwrap();
         assert_eq!(order_id, 0);
 
-        let events = &storage.events[&crate::STABLECOIN_DEX_ADDRESS];
+        let events = &storage.events[&crate::STABLECOIN_EXCHANGE_ADDRESS];
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0],
