@@ -16,11 +16,7 @@ use tempo_primitives::{AASigned, TempoTxEnvelope, TxAA, TxFeeToken, transaction:
 
 /// Account Abstraction transaction environment.
 #[derive(Debug, Clone, Default)]
-#[allow(unnameable_types)]
 pub struct AATxEnv {
-    /// Nonce key for 2D nonce system
-    pub nonce_key: u64,
-
     /// Signature bytes for AA transactions
     pub signature: Bytes,
 
@@ -55,7 +51,6 @@ pub struct TempoTxEnv {
     pub fee_payer: Option<Option<Address>>,
 
     /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
-    #[allow(private_interfaces)]
     pub aa_tx_env: Option<Box<AATxEnv>>,
 }
 
@@ -252,7 +247,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             gas_limit,
             calls,
             access_list,
-            nonce_key,
+            // Ignored for now, will be used in the future
+            nonce_key: _,
             nonce,
             fee_payer_signature,
             valid_before,
@@ -295,7 +291,6 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             }),
             // Bundle AA-specific fields into AATxEnv
             aa_tx_env: Some(Box::new(AATxEnv {
-                nonce_key: *nonce_key,
                 signature: signature.to_bytes(), // Store signature bytes for gas calculation
                 valid_before: *valid_before,
                 valid_after: *valid_after,

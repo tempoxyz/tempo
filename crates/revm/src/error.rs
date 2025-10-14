@@ -78,19 +78,6 @@ pub enum TempoInvalidTransaction {
         valid_before: u64,
     },
 
-    /// Invalid nonce for 2D nonce system.
-    ///
-    /// AA transactions use a 2D nonce system with nonce_key and nonce.
-    #[error("invalid 2D nonce: expected sequence {expected} for key {nonce_key}, got {actual}")]
-    Invalid2DNonce {
-        /// The nonce key.
-        nonce_key: u64,
-        /// The expected sequence value.
-        expected: u64,
-        /// The actual sequence value from the transaction.
-        actual: u64,
-    },
-
     /// P256 signature verification failed.
     ///
     /// The P256 signature could not be verified against the transaction hash.

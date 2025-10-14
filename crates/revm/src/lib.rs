@@ -4,6 +4,10 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 mod block;
+// Suppress unused_crate_dependencies warning for tracing
+#[cfg(not(test))]
+use tracing as _;
+
 pub mod error;
 pub mod evm;
 pub mod exec;
@@ -14,4 +18,4 @@ mod tx;
 pub use block::TempoBlockEnv;
 pub use error::TempoInvalidTransaction;
 pub use evm::TempoEvm;
-pub use tx::TempoTxEnv;
+pub use tx::{AATxEnv, TempoTxEnv};

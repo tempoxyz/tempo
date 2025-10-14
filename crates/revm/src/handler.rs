@@ -11,7 +11,7 @@ use reth_evm::{
             Block, Cfg, ContextTr, Host, JournalTr, Transaction,
             result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
         },
-        handler::{EvmTr, FrameResult, FrameTr, Handler, validation},
+        handler::{EvmTr, FrameResult, FrameTr, Handler, pre_execution, validation},
         inspector::{Inspector, InspectorHandler},
         interpreter::{
             InitialAndFloorGas, instructions::utility::IntoAddress, interpreter::EthInterpreter,
@@ -21,31 +21,21 @@ use reth_evm::{
 };
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_precompiles::{
-    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider,
-        nonce::{self, NonceManager},
         storage::slots::mapping_slot,
         tip_fee_manager::{self, TipFeeManager},
         tip20,
     },
 };
 use tempo_primitives::AA_TX_TYPE_ID;
-use tracing::trace;
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
 
 /// Additional gas for P256 signature verification
 /// P256 precompile cost (6900 from EIP-7951) + 1100 for extra signature size - ecrecover savings (3000)
 const P256_VERIFY_GAS: u64 = 5_000;
-
-/// Gas cost for using an existing user nonce key (sequence > 0)
-/// Equivalent to cold SSTORE on non-zero slot (2,900 base + 2,100 cold access)
-const COLD_SSTORE_GAS: u64 = 5_000;
-
-/// Gas multiplier for each new nonce key
-/// Progressive pricing to prevent state bloat
-const NEW_NONCE_KEY_MULTIPLIER: u64 = 20_000;
 
 /// Calldata gas cost per zero byte
 const CALLDATA_ZERO_BYTE_GAS: u64 = 4;
@@ -106,7 +96,6 @@ impl<DB: reth_evm::Database, I> TempoEvmHandler<DB, I> {
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         self.fee_token = get_fee_token(evm.ctx_mut())?;
-        trace!(fee_token=%self.fee_token, caller=%evm.ctx().caller(), beneficiary=%evm.ctx().beneficiary(), "loaded fee token");
         self.fee_payer = evm.ctx().tx().fee_payer()?;
 
         Ok(())
@@ -172,16 +161,7 @@ where
 
         let mut final_result = None;
 
-        for (idx, call) in calls.iter().enumerate() {
-            trace!(
-                call_idx = idx,
-                to = ?call.to,
-                value = ?call.value,
-                input_len = call.input.len(),
-                remaining_gas,
-                "executing call"
-            );
-
+        for (_idx, call) in calls.iter().enumerate() {
             // Update TxEnv to point to this specific call
             {
                 let tx = &mut evm.ctx().tx;
@@ -197,13 +177,6 @@ where
             // Check if call succeeded
             let instruction_result = frame_result.instruction_result();
             if !instruction_result.is_ok() {
-                trace!(
-                    call_idx = idx,
-                    result = ?instruction_result,
-                    gas_used = frame_result.gas().used(),
-                    "call failed, reverting all state changes"
-                );
-
                 // Revert checkpoint - rolls back ALL state changes from ALL calls
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
@@ -221,21 +194,11 @@ where
             accumulated_gas_refund = accumulated_gas_refund.saturating_add(gas_refunded);
             remaining_gas = remaining_gas.saturating_sub(gas_used);
 
-            trace!(
-                call_idx = idx,
-                gas_used, gas_refunded, remaining_gas, accumulated_gas_refund, "call succeeded"
-            );
-
             final_result = Some(frame_result);
         }
 
         // All calls succeeded - commit checkpoint to finalize ALL state changes
         evm.ctx().journal_mut().checkpoint_commit();
-
-        trace!(
-            remaining_gas,
-            accumulated_gas_refund, "all calls succeeded, committing state"
-        );
 
         // Restore original TxEnv
         restore_tx_env(evm, original_kind, original_value, original_data, gas_limit);
@@ -277,10 +240,7 @@ where
         // Standard handler flow - execution() handles single vs multi-call dispatch
         match self.run_without_catch_error(evm) {
             Ok(output) => Ok(output),
-            Err(err) => {
-                trace!(?err, caller=%evm.ctx().caller(), "failed to transact");
-                self.catch_error(evm, err)
-            }
+            Err(err) => self.catch_error(evm, err),
         }
     }
 
@@ -308,7 +268,6 @@ where
                 .map(|aa| aa.aa_calls.clone())
                 .ok_or_else(|| EVMError::Custom("AA transaction missing calls field".into()))?;
 
-            trace!(num_calls = calls.len(), "executing AA transaction");
             self.execute_multi_call(evm, init_and_floor_gas, calls)
         } else {
             // Standard transaction - use single-call execution
@@ -342,31 +301,6 @@ where
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
 
-        // Log AA transaction details
-        if tx_type == AA_TX_TYPE_ID {
-            tracing::info!(
-                caller = %caller_addr,
-                nonce_key = tx.aa_tx_env.as_ref().unwrap().nonce_key,
-                nonce = tx.nonce(),
-                fee_payer = %self.fee_payer,
-                fee_token = ?self.fee_token,
-                "REVM handler processing AA transaction"
-            );
-        }
-
-        // For AA transactions with user nonces, validate 2D nonce before loading account (avoids borrow conflicts)
-        if !is_nonce_check_disabled && tx_type == AA_TX_TYPE_ID {
-            let nonce_key = tx.aa_tx_env.as_ref().unwrap().nonce_key;
-            if nonce_key != 0 {
-                tracing::info!(
-                    nonce_key,
-                    nonce = tx.nonce(),
-                    "Validating 2D nonce from precompile"
-                );
-                validate_2d_nonce(journal, caller_addr, nonce_key, tx.nonce())?;
-            }
-        }
-
         // Load caller's account
         let caller_account = journal.load_account_code(caller_addr)?.data;
 
@@ -378,59 +312,19 @@ where
             );
         }
 
-        // Step 1: Validate code (EIP-3607) - same for all transaction types
-        if !is_eip3607_disabled {
-            let bytecode = match caller_account.info.code.as_ref() {
-                Some(code) => code,
-                None => &Bytecode::default(),
-            };
-            // Allow EOAs whose code is a valid delegation designation
-            if !bytecode.is_empty() && !bytecode.is_eip7702() {
-                return Err(EVMError::Transaction(
-                    TempoInvalidTransaction::EthInvalidTransaction(
-                        InvalidTransaction::RejectCallerWithCode,
-                    ),
-                ));
-            }
-        }
+        // Validate account nonce and code (EIP-3607) using upstream helper
+        pre_execution::validate_account_nonce_and_code(
+            &mut caller_account.info,
+            tx.nonce(),
+            is_eip3607_disabled,
+            is_nonce_check_disabled,
+        )
+        .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
 
-        // Step 2: Validate protocol nonce (for standard txs and AA txs with key=0)
-        if !is_nonce_check_disabled {
-            let should_validate_protocol_nonce = if tx_type == AA_TX_TYPE_ID {
-                // AA transactions: only validate protocol nonce if key=0
-                tx.aa_tx_env.as_ref().unwrap().nonce_key == 0
-            } else {
-                // Standard transactions: always validate protocol nonce
-                true
-            };
-
-            if should_validate_protocol_nonce {
-                let state_nonce = caller_account.info.nonce;
-                let tx_nonce = tx.nonce();
-                if tx_nonce != state_nonce {
-                    return Err(EVMError::Transaction(
-                        TempoInvalidTransaction::EthInvalidTransaction(if tx_nonce > state_nonce {
-                            InvalidTransaction::NonceTooHigh {
-                                tx: tx_nonce,
-                                state: state_nonce,
-                            }
-                        } else {
-                            InvalidTransaction::NonceTooLow {
-                                tx: tx_nonce,
-                                state: state_nonce,
-                            }
-                        }),
-                    ));
-                }
-            }
-        }
-
-        // Step 3: Time window validation for AA transactions
+        // Time window validation for AA transactions
         if tx_type == AA_TX_TYPE_ID {
             let aa_env = tx.aa_tx_env.as_ref().unwrap();
-            if aa_env.valid_before > 0 {
-                validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
-            }
+            validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
         }
         // Note: Signature verification happens during recover_signer() before entering the pool
 
@@ -445,32 +339,7 @@ where
 
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
         if tx.kind().is_call() {
-            if tx_type == AA_TX_TYPE_ID {
-                let nonce_key = tx.aa_tx_env.as_ref().unwrap().nonce_key;
-                if nonce_key == 0 {
-                    // Protocol nonce (key 0): increment account nonce
-                    caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
-                } else {
-                    // User nonce (key 1-N): increment 2D nonce in precompile storage
-                    // Only increment if nonce checking is enabled to avoid multiple increments
-                    if !is_nonce_check_disabled {
-                        // Must release caller_account before calling increment function to avoid borrow conflicts
-                        let _ = caller_account;
-
-                        // Increment using EvmStorageProvider (same pattern as FeeManager)
-                        increment_2d_nonce(
-                            journal,
-                            &context.block,
-                            chain_id,
-                            caller_addr,
-                            nonce_key,
-                        )?;
-                    }
-                }
-            } else {
-                // Non-AA transactions always increment protocol nonce
-                caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
-            }
+            caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
         }
 
         // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
@@ -588,31 +457,26 @@ where
         Ok(())
     }
 
-    /// Validates environment and transaction gas, with custom handling for AA transactions.
+    /// Calculates initial gas costs with custom handling for AA transactions.
     ///
-    /// Overrides the default validate() to enable state access for calculating exact nonce key gas.
-    /// AA transactions require reading nonce state to determine if a key is new or existing.
+    /// AA transactions have variable intrinsic gas based on signature type:
+    /// - secp256k1 (64/65 bytes): Standard 21k base
+    /// - P256 (129 bytes): 21k base + 5k for P256 verification
+    /// - WebAuthn (>129 bytes): 21k base + 5k + calldata gas for variable data
     #[inline]
-    fn validate(&self, evm: &mut Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
-        // First, validate environment (block/tx params)
-        self.validate_env(evm)?;
-
-        // Then validate and calculate intrinsic gas
+    fn validate_initial_tx_gas(&self, evm: &Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
         validate_aa_initial_tx_gas(evm)
     }
 }
 
-/// Validates and calculates initial transaction gas for AA transactions with state access.
+/// Validates and calculates initial transaction gas for AA transactions.
 ///
 /// For AA transactions (type 0x5), calculates intrinsic gas based on:
 /// - Signature type (secp256k1: 21k, P256: 26k, WebAuthn: 26k + calldata)
-/// - Nonce key usage (protocol: 0, existing: 5k, new: num_active * 20k)
 ///
 /// For non-AA transactions, uses the default Ethereum calculation.
-///
-/// See aa-spec.md:353-410 for complete gas schedule pseudocode.
 fn validate_aa_initial_tx_gas<DB, I>(
-    evm: &mut TempoEvm<DB, I>,
+    evm: &TempoEvm<DB, I>,
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
 where
     DB: reth_evm::Database,
@@ -627,16 +491,10 @@ where
     }
 
     // For AA transactions, extract all needed data first
-    let (nonce_key, nonce, signature, caller_addr, gas_limit) = {
+    let (signature, gas_limit) = {
         let tx = evm.ctx_ref().tx();
         let aa_env = tx.aa_tx_env.as_ref().unwrap();
-        (
-            aa_env.nonce_key,
-            tx.nonce(),
-            aa_env.signature.clone(),
-            tx.caller(),
-            tx.gas_limit(),
-        )
+        (aa_env.signature.clone(), tx.gas_limit())
     };
 
     // Get signature bytes
@@ -687,53 +545,10 @@ where
         }
     };
 
-    // Calculate nonce key gas exactly as per spec pseudocode (lines 390-404)
-    let nonce_key_gas = if nonce_key == 0 {
-        // Protocol nonce (backward compatible)
-        0
-    } else {
-        // User nonce key - read from state to determine if new or existing
-        let journal = &mut evm.ctx().journaled_state;
-
-        // Inline implementation from gas::calculate_nonce_key_gas
-        // Ensure nonce precompile is loaded
-        journal
-            .load_account(NONCE_PRECOMPILE_ADDRESS)
-            .map_err(EVMError::Database)?;
-
-        // Compute storage slot for nonces[account][nonce_key]
-        let storage_key = nonce::slots::nonce_slot(&caller_addr, nonce_key);
-
-        // Read current sequence from storage (matches spec: current_sequence = get_nonce())
-        let stored_sequence = journal
-            .sload(NONCE_PRECOMPILE_ADDRESS, storage_key)
-            .map_err(EVMError::Database)?
-            .data;
-
-        if stored_sequence.is_zero() {
-            // New nonce key (sequence transitioning from 0 to 1)
-            // Progressive pricing based on number of active keys
-            // Inline get_active_nonce_key_count
-            let count_storage_key = nonce::slots::active_key_count_slot(&caller_addr);
-            let num_active_keys = journal
-                .sload(NONCE_PRECOMPILE_ADDRESS, count_storage_key)
-                .map_err(EVMError::Database)?
-                .data
-                .to::<u64>();
-
-            num_active_keys * NEW_NONCE_KEY_MULTIPLIER
-        } else {
-            // Existing nonce key (sequence > 0)
-            // Fixed cost for cold SSTORE
-            COLD_SSTORE_GAS
-        }
-    };
-
-    // Total intrinsic gas = standard_gas + additional_signature_gas + nonce_key_gas
+    // Total intrinsic gas = standard_gas + additional_signature_gas
     let total_intrinsic_gas = standard_gas
         .initial_gas
-        .saturating_add(additional_signature_gas)
-        .saturating_add(nonce_key_gas);
+        .saturating_add(additional_signature_gas);
 
     // Validate gas limit is sufficient
     if gas_limit < total_intrinsic_gas {
@@ -743,17 +558,6 @@ where
         }
         .into());
     }
-
-    trace!(
-        signature_len = sig_bytes.len(),
-        nonce_key,
-        nonce,
-        additional_signature_gas,
-        nonce_key_gas,
-        standard_gas = standard_gas.initial_gas,
-        total_intrinsic_gas,
-        "Calculated AA transaction intrinsic gas"
-    );
 
     Ok(InitialAndFloorGas::new(
         total_intrinsic_gas,
@@ -791,7 +595,6 @@ where
             .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
             .data
             .into_address();
-        trace!(sender=%ctx.caller(), validator=%ctx.beneficiary(), %validator_fee_token, "loaded validator fee token");
 
         Ok(validator_fee_token)
     } else {
@@ -879,112 +682,6 @@ where
     }
 }
 
-/// Validates 2D nonce for AA transactions (validation phase only)
-///
-/// AA transactions use a 2D nonce system with nonce_key and nonce:
-/// - nonce_key 0: Protocol nonce (stored in account state, validated separately)
-/// - nonce_key 1-N: User nonces (stored in NONCE_PRECOMPILE_ADDRESS)
-///
-/// This function ONLY validates that the nonce matches the expected value.
-/// It does NOT increment the nonce - that happens later in the execution phase.
-///
-/// This separation is critical because validation can run multiple times
-/// (during transaction pool validation, block building, etc.) on fresh state,
-/// but the increment should only happen once during actual execution.
-pub fn validate_2d_nonce<JOURNAL>(
-    journal: &mut JOURNAL,
-    caller: Address,
-    nonce_key: u64,
-    nonce: u64,
-) -> Result<(), TempoInvalidTransaction>
-where
-    JOURNAL: JournalTr,
-{
-    // Protocol nonce (key 0) is validated through standard nonce check
-    if nonce_key == 0 {
-        return Ok(());
-    }
-
-    // For user nonce keys (1-N), read from nonce precompile storage
-    journal
-        .load_account(NONCE_PRECOMPILE_ADDRESS)
-        .map_err(|e| TempoInvalidTransaction::InvalidWebAuthnSignature {
-            reason: format!("Failed to load nonce precompile: {e:?}"),
-        })?;
-
-    // Compute storage slot for nonces[caller][nonce_key]
-    let storage_key = nonce::slots::nonce_slot(&caller, nonce_key);
-
-    let stored_sequence = journal
-        .sload(NONCE_PRECOMPILE_ADDRESS, storage_key)
-        .map_err(|e| TempoInvalidTransaction::InvalidWebAuthnSignature {
-            reason: format!("Failed to read nonce from storage: {e:?}"),
-        })?
-        .data;
-
-    tracing::info!(
-        caller = %caller,
-        nonce_key = nonce_key,
-        stored_sequence = %stored_sequence,
-        nonce = nonce,
-        "2D nonce validation: checking stored vs expected"
-    );
-
-    // Validate sequence matches
-    let expected_sequence = U256::from(nonce);
-    if stored_sequence != expected_sequence {
-        return Err(TempoInvalidTransaction::Invalid2DNonce {
-            nonce_key,
-            expected: stored_sequence.to::<u64>(),
-            actual: nonce,
-        });
-    }
-
-    tracing::info!("2D nonce validation passed");
-    Ok(())
-}
-
-/// Increments 2D nonce for AA transactions
-///
-/// Uses the same EvmStorageProvider pattern as FeeManager to ensure consistent
-/// storage access. When called during pre-execution (like protocol nonce),
-/// the increment happens regardless of transaction success/failure.
-///
-/// This must be called AFTER the caller account is loaded, in the same journal
-/// context as other state operations.
-fn increment_2d_nonce<JOURNAL>(
-    journal: &mut JOURNAL,
-    block: &impl Block,
-    chain_id: u64,
-    caller: Address,
-    nonce_key: u64,
-) -> Result<(), TempoInvalidTransaction>
-where
-    JOURNAL: JournalTr + core::fmt::Debug,
-    JOURNAL::Database: reth_evm::Database,
-{
-    // Protocol nonce (key 0) is incremented through standard account nonce
-    if nonce_key == 0 {
-        return Ok(());
-    }
-
-    // Use EvmStorageProvider pattern (exactly like FeeManager)
-    let internals = EvmInternals::new(journal, block);
-    let mut storage_provider = EvmStorageProvider::new(internals, chain_id);
-    let mut nonce_manager = NonceManager::new(&mut storage_provider);
-
-    let new_nonce = nonce_manager.increment_nonce(&caller, nonce_key);
-
-    tracing::info!(
-        caller = %caller,
-        nonce_key = nonce_key,
-        new_nonce = new_nonce,
-        "2D nonce incremented"
-    );
-
-    Ok(())
-}
-
 /// Validates time window for AA transactions
 ///
 /// AA transactions can have optional validBefore and validAfter fields:
@@ -1007,8 +704,8 @@ pub fn validate_time_window(
         });
     }
 
-    // Validate validBefore constraint (0 means no constraint)
-    if valid_before > 0 && block_timestamp >= valid_before {
+    // Validate validBefore constraint
+    if block_timestamp >= valid_before {
         return Err(TempoInvalidTransaction::ValidBefore {
             current: block_timestamp,
             valid_before,
