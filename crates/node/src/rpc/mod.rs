@@ -219,13 +219,13 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
 
         // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
         // 10**9 so we must adjust by USD_DECIMAL_FACTOR
-        let adjusted_balance = fee_token_balance
+        let adjusted_balance: U256 = fee_token_balance
             .saturating_mul(USD_DECIMAL_FACTOR)
-            .saturating_to::<u64>();
+            .saturating_to();
 
         Ok(adjusted_balance
             // Calculate the amount of gas the caller can afford with the specified gas price.
-            .checked_div(U256::from(env.gas_price()))
+            .checked_div(U256::from(tx_env.inner.gas_price))
             // This will be 0 if gas price is 0. It is fine, because we check it before.
             .unwrap_or_default()
             .saturating_to())
