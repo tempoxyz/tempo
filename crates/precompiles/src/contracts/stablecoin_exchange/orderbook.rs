@@ -508,7 +508,8 @@ pub fn next_initialized_bid_tick<S: StorageProvider>(
     book_key: B256,
     tick: i16,
 ) -> (i16, bool) {
-    todo!()
+    let mut bitmap = TickBitmap::new(storage, address, book_key);
+    bitmap.next_initialized_bid_tick(tick)
 }
 
 /// Find next initialized ask tick higher than current tick
@@ -518,7 +519,8 @@ pub fn next_initialized_ask_tick<S: StorageProvider>(
     book_key: B256,
     tick: i16,
 ) -> (i16, bool) {
-    todo!()
+    let mut bitmap = TickBitmap::new(storage, address, book_key);
+    bitmap.next_initialized_ask_tick(tick)
 }
 
 #[cfg(test)]
