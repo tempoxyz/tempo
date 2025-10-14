@@ -48,7 +48,7 @@ async fn fund_address_with_fee_tokens(
         nonce: provider.get_transaction_count(funder_addr).await?,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: 0,
+        valid_before: u64::MAX,
         valid_after: None,
         access_list: Default::default(),
     };
@@ -113,12 +113,12 @@ async fn verify_tx_in_block_via_rpc(
         "Returned hash should match request hash"
     );
 
-    // Verify it's an AA transaction (type 0x5)
+    // Verify it's an AA transaction (type 0x76)
     let tx_type = tx_obj
         .get("type")
         .and_then(|v| v.as_str())
         .ok_or_else(|| eyre::eyre!("Transaction type not found in response"))?;
-    assert_eq!(tx_type, "0x5", "Transaction should be AA type (0x5)");
+    assert_eq!(tx_type, "0x76", "Transaction should be AA type (0x76)");
 
     // Verify key fields match what we expect
     if let TempoTxEnvelope::AA(expected_aa) = expected_envelope {
@@ -148,7 +148,7 @@ async fn verify_tx_in_block_via_rpc(
         }
 
         println!(
-            "✓ Transaction verified: type=0x5, chain_id={}, nonce={}, calls={}",
+            "✓ Transaction verified: type=0x76, chain_id={}, nonce={}, calls={}",
             expected_aa.tx().chain_id,
             expected_aa.tx().nonce,
             expected_aa.tx().calls.len()
@@ -249,7 +249,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
         nonce,
         fee_token: None, // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
-        valid_before: 0,
+        valid_before: u64::MAX,
         valid_after: None,
         access_list: Default::default(),
     };
@@ -350,7 +350,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: 0,
+        valid_before: u64::MAX,
         valid_after: None,
         access_list: Default::default(),
     };
@@ -400,7 +400,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         nonce: 0,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: 0,
+        valid_before: u64::MAX,
         valid_after: None,
         access_list: Default::default(),
     };
@@ -533,7 +533,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         nonce: 0,        // First transaction
         fee_token: None, // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
-        valid_before: 0,
+        valid_before: u64::MAX,
         valid_after: None,
         access_list: Default::default(),
     };
@@ -723,7 +723,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         nonce: nonce_seq,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: 0,
+        valid_before: u64::MAX,
         valid_after: None,
         access_list: Default::default(),
     };
@@ -1121,7 +1121,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         nonce: 0, // First transaction from P256 signer
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: 0,
+        valid_before: u64::MAX,
         valid_after: None,
         access_list: Default::default(),
     };
@@ -1347,7 +1347,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
         nonce: 0,        // First transaction for user
         fee_token: None, // Use DEFAULT_FEE_TOKEN
         fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)), // Placeholder
-        valid_before: 0,
+        valid_before: u64::MAX,
         valid_after: None,
         access_list: Default::default(),
     };

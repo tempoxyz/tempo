@@ -4,8 +4,8 @@ use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, k
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 
-/// Account abstraction transaction type byte (0x5)
-pub const AA_TX_TYPE_ID: u8 = 0x5;
+/// Account abstraction transaction type byte (0x76)
+pub const AA_TX_TYPE_ID: u8 = 0x76;
 
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
@@ -155,7 +155,6 @@ impl TxAA {
 
         // validBefore must be greater than validAfter if both are set
         if let Some(valid_after) = self.valid_after
-            && self.valid_before > 0
             && self.valid_before <= valid_after
         {
             return Err("valid_before must be greater than valid_after");
@@ -688,8 +687,8 @@ mod tests {
 
     #[test]
     fn test_tx_type() {
-        assert_eq!(TxAA::tx_type(), 0x05);
-        assert_eq!(AA_TX_TYPE_ID, 0x05);
+        assert_eq!(TxAA::tx_type(), 0x76);
+        assert_eq!(AA_TX_TYPE_ID, 0x76);
     }
 
     #[test]
@@ -783,7 +782,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: None,
-            valid_before: 0,
+            valid_before: 1000,
             valid_after: None,
         };
 
@@ -936,7 +935,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
-            valid_before: 0,
+            valid_before: 1000,
             valid_after: None,
             access_list: Default::default(),
         };
@@ -1013,14 +1012,14 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
-            valid_before: 0,
+            valid_before: 1000,
             valid_after: None,
             access_list: Default::default(),
         };
 
         // The fee_payer_signature_hash should start with the magic byte
         // We can't directly inspect the hash construction, but we can verify it's different
-        // from the sender signature hash which uses AA_TX_TYPE_ID (0x5)
+        // from the sender signature hash which uses AA_TX_TYPE_ID (0x76)
         let sender_hash = tx.signature_hash();
         let fee_payer_hash = tx.fee_payer_signature_hash(sender);
 
@@ -1055,7 +1054,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: None, // No fee payer
-            valid_before: 0,
+            valid_before: 1000,
             valid_after: None,
             access_list: Default::default(),
         };
@@ -1115,7 +1114,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
-            valid_before: 0,
+            valid_before: 1000,
             valid_after: None,
             access_list: Default::default(),
         };
@@ -1177,7 +1176,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: None,
-            valid_before: 0,
+            valid_before: 1000,
             valid_after: None,
             access_list: Default::default(),
         };

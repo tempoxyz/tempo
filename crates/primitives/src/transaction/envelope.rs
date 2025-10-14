@@ -51,7 +51,8 @@ pub enum TempoTxEnvelope {
     #[envelope(ty = 4)]
     Eip7702(Signed<TxEip7702>),
 
-    #[envelope(ty = 5)]
+    /// Account Abstraction transaction (type 0x76)
+    #[envelope(ty = 0x76)]
     AA(AASigned),
 
     /// Tempo fee token transaction (type 0x77)
