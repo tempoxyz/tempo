@@ -22,7 +22,7 @@ use crate::{
     STABLECOIN_DEX_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
     contracts::{
-        EvmStorageProvider, LinkingUSD, StablecoinDex, TIP20Factory, TIP20Token, TIP403Registry,
+        EvmStorageProvider, LinkingUSD, StablecoinExchange, TIP20Factory, TIP20Token, TIP403Registry,
         TIP4217Registry, TipAccountRegistrar, address_to_token_id_unchecked, is_tip20,
         tip_fee_manager::TipFeeManager,
     },
@@ -155,7 +155,7 @@ pub struct StablecoinDexPrecompile;
 
 impl StablecoinDexPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("StablecoinDex", |input| StablecoinDex::new(
+        tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
             &mut EvmStorageProvider::new(input.internals, chain_id)
         ))
     }

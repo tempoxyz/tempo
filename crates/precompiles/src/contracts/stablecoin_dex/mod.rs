@@ -23,7 +23,7 @@ use crate::{
     contracts::{
         StorageProvider, TIP20Token, address_to_token_id_unchecked,
         storage::{StorageOps, slots::mapping_slot},
-        types::{IStablecoinDex, ITIP20, StablecoinDexError, StablecoinDexEvent},
+        types::{IStablecoinExchange, ITIP20, StablecoinDexError, StablecoinDexEvent},
     },
 };
 
@@ -166,7 +166,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 }
 
-impl<'a, S: StorageProvider> StorageOps for StablecoinDex<'a, S> {
+impl<'a, S: StorageProvider> StorageOps for StablecoinExchange<'a, S> {
     fn sstore(&mut self, slot: U256, value: U256) {
         self.storage
             .sstore(self.address, slot, value)
@@ -180,7 +180,7 @@ impl<'a, S: StorageProvider> StorageOps for StablecoinDex<'a, S> {
     }
 }
 
-impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
+impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// Get user's balance for a specific token
     pub fn balance_of(&mut self, user: Address, token: Address) -> u128 {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
@@ -251,7 +251,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinDexError::pair_does_not_exist());
+            return Err(StablecoinDexError::insufficient_liquidity());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -268,7 +268,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinDexError::pair_does_not_exist());
+            return Err(StablecoinDexError::insufficient_liquidity());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -287,7 +287,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinDexError::pair_does_not_exist());
+            return Err(StablecoinDexError::insufficient_liquidity());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -312,7 +312,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinDexError::pair_does_not_exist());
+            return Err(StablecoinDexError::insufficient_liquidity());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -387,7 +387,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .emit_event(
                 self.address,
-                StablecoinDexEvent::OrderPlaced(IStablecoinDex::OrderPlaced {
+                StablecoinDexEvent::OrderPlaced(IStablecoinExchange::OrderPlaced {
                     orderId: order_id,
                     maker: *sender,
                     token,
@@ -463,7 +463,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .emit_event(
                 self.address,
-                StablecoinDexEvent::FlipOrderPlaced(IStablecoinDex::FlipOrderPlaced {
+                StablecoinDexEvent::FlipOrderPlaced(IStablecoinExchange::FlipOrderPlaced {
                     orderId: order_id,
                     maker: *sender,
                     token,
@@ -1208,7 +1208,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             self.storage
                 .emit_event(
                     self.address,
-                    StablecoinDexEvent::OrderCancelled(IStablecoinDex::OrderCancelled {
+                    StablecoinDexEvent::OrderCancelled(IStablecoinExchange::OrderCancelled {
                         orderId: order_id,
                     })
                     .into_log_data(),
@@ -1312,7 +1312,7 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         self.storage
             .emit_event(
                 self.address,
-                StablecoinDexEvent::OrderCancelled(IStablecoinDex::OrderCancelled {
+                StablecoinDexEvent::OrderCancelled(IStablecoinExchange::OrderCancelled {
                     orderId: order_id,
                 })
                 .into_log_data(),

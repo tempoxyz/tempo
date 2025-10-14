@@ -297,7 +297,7 @@ sol! {
 
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
-    interface IStablecoinDex {
+    interface IStablecoinExchange {
         // View functions
         function balanceOf(address user, address token) external view returns (uint128);
         function quoteBuy(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
@@ -537,47 +537,42 @@ impl TIP20Error {
 impl StablecoinDexError {
     /// Creates an error when an order does not exist.
     pub const fn order_does_not_exist() -> Self {
-        Self::OrderDoesNotExist(IStablecoinDex::OrderDoesNotExist {})
+        Self::OrderDoesNotExist(IStablecoinExchange::OrderDoesNotExist {})
     }
 
     /// Creates an error for unauthorized access.
     pub const fn unauthorized() -> Self {
-        Self::Unauthorized(IStablecoinDex::Unauthorized {})
+        Self::Unauthorized(IStablecoinExchange::Unauthorized {})
     }
 
     /// Creates an error for insufficient balance.
     pub const fn insufficient_balance() -> Self {
-        Self::InsufficientBalance(IStablecoinDex::InsufficientBalance {})
+        Self::InsufficientBalance(IStablecoinExchange::InsufficientBalance {})
     }
 
     /// Creates an error for invalid flip tick.
     pub const fn invalid_flip_tick() -> Self {
-        Self::InvalidFlipTick(IStablecoinDex::InvalidFlipTick {})
+        Self::InvalidFlipTick(IStablecoinExchange::InvalidFlipTick {})
     }
 
     /// Creates an error when tick is out of valid bounds.
     pub const fn tick_out_of_bounds(tick: i16) -> Self {
-        Self::TickOutOfBounds(IStablecoinDex::TickOutOfBounds { tick })
+        Self::TickOutOfBounds(IStablecoinExchange::TickOutOfBounds { tick })
     }
 
     /// Creates an error for insufficient liquidity.
     pub const fn insufficient_liquidity() -> Self {
-        Self::InsufficientLiquidity(IStablecoinDex::InsufficientLiquidity {})
+        Self::InsufficientLiquidity(IStablecoinExchange::InsufficientLiquidity {})
     }
 
     /// Creates an error when maximum input is exceeded.
     pub const fn max_input_exceeded() -> Self {
-        Self::MaxInputExceeded(IStablecoinDex::MaxInputExceeded {})
-    }
-
-    /// Creates an error when pair does not exist.
-    pub const fn pair_does_not_exist() -> Self {
-        Self::PairDoesNotExist(IStablecoinDex::PairDoesNotExist {})
+        Self::MaxInputExceeded(IStablecoinExchange::MaxInputExceeded {})
     }
 
     /// Creates an error when output is insufficient.
     pub const fn insufficient_output() -> Self {
-        Self::InsufficientOutput(IStablecoinDex::InsufficientOutput {})
+        Self::InsufficientOutput(IStablecoinExchange::InsufficientOutput {})
     }
 }
 
@@ -602,8 +597,8 @@ macro_rules! fee_manager_err {
 // Use the auto-generated error and event enums
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
-pub use IStablecoinDex::{
-    IStablecoinDexErrors as StablecoinDexError, IStablecoinDexEvents as StablecoinDexEvent,
+pub use IStablecoinExchange::{
+    IStablecoinExchangeErrors as StablecoinDexError, IStablecoinExchangeEvents as StablecoinDexEvent,
 };
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
