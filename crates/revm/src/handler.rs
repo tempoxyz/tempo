@@ -305,7 +305,7 @@ where
                 .tx()
                 .aa_tx_env
                 .as_ref()
-                .and_then(|aa| Some(aa.aa_calls.clone()))
+                .map(|aa| aa.aa_calls.clone())
                 .ok_or_else(|| EVMError::Custom("AA transaction missing calls field".into()))?;
 
             trace!(num_calls = calls.len(), "executing AA transaction");
