@@ -1,6 +1,6 @@
 {
   "label": "main",
-  "log_file": "/Users/yongkang/Code/tempo/tempo/python_analysis/logs/20251014_090154/debug_main.log",
+  "log_file": "/Users/yongkang/Code/tempo/tempo/reth-bench-compare/logs/20251014_090154/debug_main.log",
   "block_range": [
     25695,
     25835
