@@ -302,6 +302,10 @@ sol! {
         function balanceOf(address user, address token) external view returns (uint128);
         function quoteBuy(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
         function quoteSell(address tokenIn, address tokenOut, uint128 amountIn) external view returns (uint128 amountOut);
+        function pairKey(address tokenA, address tokenB) external pure returns (bytes32 key);
+        function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
+        function activeOrderId() external view returns (uint128);
+        function pendingOrderId() external view returns (uint128);
 
         // Taker functions
         function sell(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
@@ -316,6 +320,7 @@ sol! {
         function withdraw(address token, uint128 amount) external;
 
         // Events
+        event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
         event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
         event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
         event OrderCancelled(uint128 indexed orderId);

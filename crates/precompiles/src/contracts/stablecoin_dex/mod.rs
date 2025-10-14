@@ -325,6 +325,45 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         Ok(amount_in)
     }
 
+    /// Generate deterministic key for token pair
+    pub fn pair_key(&self, token_a: Address, token_b: Address) -> B256 {
+        self.compute_book_key(token_a, token_b)
+    }
+
+    /// Get tick level information
+    pub fn get_tick_level(&mut self, base: Address, tick: i16, is_bid: bool) -> (u128, u128, u128) {
+        // For now, assume quote token is passed or use a default approach
+        // This would need proper integration with TIP20 interface
+        let quote = Address::ZERO; // TODO: Get from TIP20 interface
+        let key = self.compute_book_key(base, quote);
+        
+        let level = orderbook::TickLevel::load(
+            self.storage,
+            self.address,
+            key,
+            tick,
+            is_bid,
+        );
+        
+        (level.head, level.tail, level.total_liquidity)
+    }
+
+    /// Get active order ID
+    pub fn active_order_id(&mut self) -> u128 {
+        self.storage
+            .sload(self.address, slots::NEXT_ORDER_ID)
+            .expect("TODO: handle error")
+            .to::<u128>()
+    }
+
+    /// Get pending order ID
+    pub fn pending_order_id(&mut self) -> u128 {
+        self.storage
+            .sload(self.address, slots::PENDING_ORDER_ID)
+            .expect("TODO: handle error")
+            .to::<u128>()
+    }
+
     /// Place a limit order on the orderbook
     ///
     /// Only supports placing an order on a pair between a token and its quote token.
