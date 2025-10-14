@@ -1,6 +1,6 @@
 use alloy::{
     network::EthereumWallet,
-    primitives::{Address, B256, Bytes, Signature, U256},
+    primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::{Provider, ProviderBuilder},
     signers::{SignerSync, local::MnemonicBuilder},
     sol_types::SolCall,
@@ -70,6 +70,127 @@ async fn fund_address_with_fee_tokens(
         amount,
         funding_payload.block().inner.number
     );
+
+    Ok(())
+}
+
+/// Helper function to verify a transaction exists in the blockchain via eth_getTransactionByHash
+/// and that it matches the original transaction
+async fn verify_tx_in_block_via_rpc(
+    provider: &impl Provider,
+    encoded_tx: &[u8],
+    expected_envelope: &TempoTxEnvelope,
+) -> eyre::Result<()> {
+    // Compute transaction hash from encoded bytes
+    let tx_hash = keccak256(encoded_tx);
+
+    println!("\nVerifying transaction via eth_getTransactionByHash...");
+    println!("Transaction hash: {}", B256::from(tx_hash));
+
+    // Use raw RPC call to fetch transaction since Alloy doesn't support custom tx type 0x5
+    let raw_tx: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionByHash".into(), [tx_hash])
+        .await?;
+
+    // Verify transaction exists
+    let tx_data = raw_tx.ok_or_else(|| eyre::eyre!("Transaction not found in blockchain"))?;
+
+    println!("✓ Transaction found in blockchain");
+
+    // Extract and verify key fields from the JSON response
+    let tx_obj = tx_data
+        .as_object()
+        .ok_or_else(|| eyre::eyre!("Transaction response is not an object"))?;
+
+    // Verify basic sanity checks
+    let hash_str = tx_obj
+        .get("hash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| eyre::eyre!("Transaction hash not found in response"))?;
+    let returned_hash = hash_str.parse::<B256>()?;
+    assert_eq!(
+        returned_hash, tx_hash,
+        "Returned hash should match request hash"
+    );
+
+    // Verify it's an AA transaction (type 0x5)
+    let tx_type = tx_obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| eyre::eyre!("Transaction type not found in response"))?;
+    assert_eq!(tx_type, "0x5", "Transaction should be AA type (0x5)");
+
+    // Verify key fields match what we expect
+    if let TempoTxEnvelope::AA(expected_aa) = expected_envelope {
+        // Check chain ID
+        if let Some(chain_id) = tx_obj.get("chainId").and_then(|v| v.as_str()) {
+            let chain_id_u64 = u64::from_str_radix(chain_id.trim_start_matches("0x"), 16)?;
+            assert_eq!(
+                chain_id_u64,
+                expected_aa.tx().chain_id,
+                "Chain ID should match"
+            );
+        }
+
+        // Check nonce
+        if let Some(nonce) = tx_obj.get("nonce").and_then(|v| v.as_str()) {
+            let nonce_u64 = u64::from_str_radix(nonce.trim_start_matches("0x"), 16)?;
+            assert_eq!(nonce_u64, expected_aa.tx().nonce, "Nonce should match");
+        }
+
+        // Check number of calls
+        if let Some(calls) = tx_obj.get("calls").and_then(|v| v.as_array()) {
+            assert_eq!(
+                calls.len(),
+                expected_aa.tx().calls.len(),
+                "Number of calls should match"
+            );
+        }
+
+        println!(
+            "✓ Transaction verified: type=0x5, chain_id={}, nonce={}, calls={}",
+            expected_aa.tx().chain_id,
+            expected_aa.tx().nonce,
+            expected_aa.tx().calls.len()
+        );
+    }
+
+    // Verify encoding roundtrip on our end
+    let mut encoded_slice = encoded_tx;
+    let decoded = TempoTxEnvelope::decode_2718(&mut encoded_slice)?;
+    assert!(
+        matches!(decoded, TempoTxEnvelope::AA(_)),
+        "Decoded transaction should be AA type"
+    );
+
+    println!("✓ Transaction encoding/decoding verified successfully");
+
+    Ok(())
+}
+
+/// Helper function to verify a transaction does NOT exist in the blockchain
+async fn verify_tx_not_in_block_via_rpc(
+    provider: &impl Provider,
+    encoded_tx: &[u8],
+) -> eyre::Result<()> {
+    // Compute transaction hash from encoded bytes
+    let tx_hash = keccak256(encoded_tx);
+
+    println!("\nVerifying transaction is NOT in blockchain...");
+    println!("Transaction hash: {}", B256::from(tx_hash));
+
+    // Use raw RPC call to try to fetch the transaction
+    let raw_tx: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionByHash".into(), [tx_hash])
+        .await?;
+
+    // Verify transaction does NOT exist
+    assert!(
+        raw_tx.is_none(),
+        "Transaction should not exist in blockchain (rejected transaction should not be retrievable)"
+    );
+
+    println!("✓ Confirmed: Transaction not found in blockchain (as expected)");
 
     Ok(())
 }
@@ -161,13 +282,16 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
     println!("✓ Encoding/decoding roundtrip successful");
 
     // Inject transaction and mine block
-    setup.node.rpc.inject_tx(encoded.into()).await?;
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
     let payload = setup.node.advance_block().await?;
 
     println!(
         "✓ AA transaction mined in block {}",
         payload.block().inner.number
     );
+
+    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
+    verify_tx_in_block_via_rpc(&provider, &encoded, &envelope).await?;
 
     // Verify alice's nonce incremented (protocol nonce)
     // This proves the transaction was successfully mined and executed
@@ -245,12 +369,19 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
     );
 
     // Inject transaction and mine block - should succeed
-    setup.node.rpc.inject_tx(encoded_protocol.into()).await?;
+    setup
+        .node
+        .rpc
+        .inject_tx(encoded_protocol.clone().into())
+        .await?;
     let payload = setup.node.advance_block().await?;
     println!(
         "✓ Transaction with nonce_key=0 mined in block {}",
         payload.block().inner.number
     );
+
+    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
+    verify_tx_in_block_via_rpc(&provider, &encoded_protocol, &envelope_protocol).await?;
 
     // Step 2: Verify that nonce_key != 0 is rejected
     println!("\n2. Testing nonce_key = 1 (should be rejected)");
@@ -288,7 +419,11 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
     );
 
     // Try to inject transaction - should fail due to nonce_key != 0
-    let result = setup.node.rpc.inject_tx(encoded_parallel.into()).await;
+    let result = setup
+        .node
+        .rpc
+        .inject_tx(encoded_parallel.clone().into())
+        .await;
 
     // The transaction should be rejected
     assert!(
@@ -309,6 +444,9 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             "Error should indicate nonce_key issue or decode failure, got: {error_msg}"
         );
     }
+
+    // Verify the rejected transaction is NOT available via eth_getTransactionByHash
+    verify_tx_not_in_block_via_rpc(&provider, &encoded_parallel).await?;
 
     Ok(())
 }
@@ -492,13 +630,16 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     println!("✓ Encoding/decoding roundtrip successful");
 
     // Inject transaction and mine block
-    setup.node.rpc.inject_tx(encoded.into()).await?;
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
     let payload = setup.node.advance_block().await?;
 
     println!(
         "✓ AA transaction with WebAuthn signature mined in block {}",
         payload.block().inner.number
     );
+
+    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
+    verify_tx_in_block_via_rpc(&provider, &encoded, &envelope).await?;
 
     // Verify the block contains transactions
     assert!(
@@ -853,12 +994,15 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     bad_envelope.encode_2718(&mut encoded_bad);
 
     // Try to inject - should fail
-    let inject_result = setup.node.rpc.inject_tx(encoded_bad.into()).await;
+    let inject_result = setup.node.rpc.inject_tx(encoded_bad.clone().into()).await;
     assert!(
         inject_result.is_err(),
         "Transaction with invalid signature should be rejected"
     );
     println!("✓ Transaction with invalid WebAuthn signature correctly rejected");
+
+    // Verify the rejected transaction is NOT available via eth_getTransactionByHash
+    verify_tx_not_in_block_via_rpc(&provider, &encoded_bad).await?;
 
     Ok(())
 }
@@ -1046,13 +1190,20 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     // Inject and mine the batch transaction
     println!("\nExecuting batch transaction...");
-    setup.node.rpc.inject_tx(encoded_batch.into()).await?;
+    setup
+        .node
+        .rpc
+        .inject_tx(encoded_batch.clone().into())
+        .await?;
     let batch_payload = setup.node.advance_block().await?;
 
     println!(
         "✓ Batch transaction mined in block {}",
         batch_payload.block().inner.number
     );
+
+    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
+    verify_tx_in_block_via_rpc(&provider, &encoded_batch, &batch_envelope).await?;
 
     // Verify the block contains the transaction
     assert!(
@@ -1250,13 +1401,16 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
 
     // Inject transaction and mine block
-    setup.node.rpc.inject_tx(encoded.into()).await?;
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
     let payload = setup.node.advance_block().await?;
 
     println!(
         "✓ AA fee payer transaction mined in block {}",
         payload.block().inner.number
     );
+
+    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
+    verify_tx_in_block_via_rpc(&provider, &encoded, &envelope).await?;
 
     // Verify the transaction was successful
     assert!(
