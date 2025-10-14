@@ -243,40 +243,84 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
 
     pub fn quote_buy(
         &mut self,
-        _token_in: Address,
-        _token_out: Address,
-        _amount_out: u128,
-    ) -> u128 {
-        todo!()
+        token_in: Address,
+        token_out: Address,
+        amount_out: u128,
+    ) -> Result<u128, StablecoinDexError> {
+        let book_key = self.compute_book_key(token_in, token_out);
+        let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
+        
+        if orderbook.base == Address::ZERO {
+            return Err(StablecoinDexError::pair_not_exists());
+        }
+
+        let base_for_quote = token_in == orderbook.base;
+        self.quote_exact_out(book_key, base_for_quote, amount_out)
     }
 
     pub fn quote_sell(
         &mut self,
-        _token_in: Address,
-        _token_out: Address,
-        _amount_in: u128,
-    ) -> u128 {
-        todo!()
+        token_in: Address,
+        token_out: Address,
+        amount_in: u128,
+    ) -> Result<u128, StablecoinDexError> {
+        let book_key = self.compute_book_key(token_in, token_out);
+        let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
+        
+        if orderbook.base == Address::ZERO {
+            return Err(StablecoinDexError::pair_not_exists());
+        }
+
+        let base_for_quote = token_in == orderbook.base;
+        self.quote_exact_in(book_key, base_for_quote, amount_in)
     }
 
     pub fn sell(
         &mut self,
-        _token_in: Address,
-        _token_out: Address,
-        _amount_in: u128,
-        _min_amount_out: u128,
-    ) -> u128 {
-        todo!()
+        sender: &Address,
+        token_in: Address,
+        token_out: Address,
+        amount_in: u128,
+        min_amount_out: u128,
+    ) -> Result<u128, StablecoinDexError> {
+        let book_key = self.compute_book_key(token_in, token_out);
+        let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
+        
+        if orderbook.base == Address::ZERO {
+            return Err(StablecoinDexError::pair_not_exists());
+        }
+
+        let base_for_quote = token_in == orderbook.base;
+        let amount_out = self.fill_orders_exact_in(book_key, base_for_quote, amount_in, min_amount_out)?;
+
+        self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
+        self.add_balance(*sender, token_out, amount_out);
+
+        Ok(amount_out)
     }
 
     pub fn buy(
         &mut self,
-        _token_in: Address,
-        _token_out: Address,
-        _amount_out: u128,
-        _max_amount_in: u128,
-    ) -> u128 {
-        todo!()
+        sender: &Address,
+        token_in: Address,
+        token_out: Address,
+        amount_out: u128,
+        max_amount_in: u128,
+    ) -> Result<u128, StablecoinDexError> {
+        let book_key = self.compute_book_key(token_in, token_out);
+        let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
+        
+        if orderbook.base == Address::ZERO {
+            return Err(StablecoinDexError::pair_not_exists());
+        }
+
+        let base_for_quote = token_in == orderbook.base;
+        let amount_in = self.fill_orders_exact_out(book_key, base_for_quote, amount_out, max_amount_in)?;
+
+        self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
+        self.add_balance(*sender, token_out, amount_out);
+
+        Ok(amount_in)
     }
 
     /// Place a limit order on the orderbook
@@ -1291,6 +1335,212 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
             )
             .expect("TODO: handle error");
     }
+
+    /// Quote exact output amount without executing trades
+    fn quote_exact_out(
+        &mut self,
+        book_key: B256,
+        base_for_quote: bool,
+        amount_out: u128,
+    ) -> Result<u128, StablecoinDexError> {
+        let mut remaining_out = amount_out;
+        let mut amount_in = 0u128;
+        let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
+
+        if base_for_quote {
+            // Buying quote tokens with base tokens - use bid side
+            let mut current_tick = orderbook.best_bid_tick;
+            if current_tick == i16::MIN {
+                return Err(StablecoinDexError::insufficient_liquidity());
+            }
+
+            while remaining_out > 0 {
+                let level = orderbook::TickLevel::load(
+                    self.storage,
+                    self.address,
+                    book_key,
+                    current_tick,
+                    true,
+                );
+                
+                let price = orderbook::tick_to_price(current_tick);
+                
+                // Calculate how much quote we can get from this tick's liquidity
+                let base_needed = remaining_out
+                    .checked_mul(orderbook::PRICE_SCALE as u128)
+                    .and_then(|v| v.checked_div(price as u128))
+                    .expect("Base needed calculation overflow");
+                let fill_amount = if base_needed > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    base_needed
+                };
+                let quote_out = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Quote out calculation overflow");
+
+                remaining_out -= quote_out;
+                amount_in += fill_amount;
+
+                if fill_amount == level.total_liquidity {
+                    // Move to next tick if we exhaust this level
+                    let (next_tick, initialized) =
+                        orderbook::next_initialized_bid_tick(self.storage, self.address, book_key, current_tick);
+                    if !initialized && remaining_out > 0 {
+                        return Err(StablecoinDexError::insufficient_liquidity());
+                    }
+                    current_tick = next_tick;
+                }
+            }
+        } else {
+            // Buying base tokens with quote tokens - use ask side
+            let mut current_tick = orderbook.best_ask_tick;
+            if current_tick == i16::MAX {
+                return Err(StablecoinDexError::insufficient_liquidity());
+            }
+
+            while remaining_out > 0 {
+                let level = orderbook::TickLevel::load(
+                    self.storage,
+                    self.address,
+                    book_key,
+                    current_tick,
+                    false,
+                );
+                
+                let price = orderbook::tick_to_price(current_tick);
+                
+                let fill_amount = if remaining_out > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    remaining_out
+                };
+                let quote_in = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Quote in calculation overflow");
+
+                remaining_out -= fill_amount;
+                amount_in += quote_in;
+
+                if fill_amount == level.total_liquidity {
+                    // Move to next tick if we exhaust this level
+                    let (next_tick, initialized) =
+                        orderbook::next_initialized_ask_tick(self.storage, self.address, book_key, current_tick);
+                    if !initialized && remaining_out > 0 {
+                        return Err(StablecoinDexError::insufficient_liquidity());
+                    }
+                    current_tick = next_tick;
+                }
+            }
+        }
+
+        Ok(amount_in)
+    }
+
+    /// Quote exact input amount without executing trades
+    fn quote_exact_in(
+        &mut self,
+        book_key: B256,
+        base_for_quote: bool,
+        amount_in: u128,
+    ) -> Result<u128, StablecoinDexError> {
+        let mut remaining_in = amount_in;
+        let mut amount_out = 0u128;
+        let orderbook = orderbook::Orderbook::load(self.storage, self.address, book_key);
+
+        if base_for_quote {
+            // Selling base tokens for quote tokens - use bid side
+            let mut current_tick = orderbook.best_bid_tick;
+            if current_tick == i16::MIN {
+                return Err(StablecoinDexError::insufficient_liquidity());
+            }
+
+            while remaining_in > 0 {
+                let level = orderbook::TickLevel::load(
+                    self.storage,
+                    self.address,
+                    book_key,
+                    current_tick,
+                    true,
+                );
+                
+                let price = orderbook::tick_to_price(current_tick);
+                
+                let fill_amount = if remaining_in > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    remaining_in
+                };
+                let quote_out = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Quote out calculation overflow");
+
+                remaining_in -= fill_amount;
+                amount_out += quote_out;
+
+                if fill_amount == level.total_liquidity {
+                    // Move to next tick if we exhaust this level
+                    let (next_tick, initialized) =
+                        orderbook::next_initialized_bid_tick(self.storage, self.address, book_key, current_tick);
+                    if !initialized && remaining_in > 0 {
+                        return Err(StablecoinDexError::insufficient_liquidity());
+                    }
+                    current_tick = next_tick;
+                }
+            }
+        } else {
+            // Selling quote tokens for base tokens - use ask side
+            let mut current_tick = orderbook.best_ask_tick;
+            if current_tick == i16::MAX {
+                return Err(StablecoinDexError::insufficient_liquidity());
+            }
+
+            while remaining_in > 0 {
+                let level = orderbook::TickLevel::load(
+                    self.storage,
+                    self.address,
+                    book_key,
+                    current_tick,
+                    false,
+                );
+                
+                let price = orderbook::tick_to_price(current_tick);
+                
+                // Calculate how much base we can get for remaining_in quote
+                let base_out = remaining_in
+                    .checked_mul(orderbook::PRICE_SCALE as u128)
+                    .and_then(|v| v.checked_div(price as u128))
+                    .expect("Base out calculation overflow");
+                let fill_amount = if base_out > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    base_out
+                };
+                let quote_needed = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Quote needed calculation overflow");
+
+                remaining_in -= quote_needed;
+                amount_out += fill_amount;
+
+                if fill_amount == level.total_liquidity {
+                    // Move to next tick if we exhaust this level
+                    let (next_tick, initialized) =
+                        orderbook::next_initialized_ask_tick(self.storage, self.address, book_key, current_tick);
+                    if !initialized && remaining_in > 0 {
+                        return Err(StablecoinDexError::insufficient_liquidity());
+                    }
+                    current_tick = next_tick;
+                }
+            }
+        }
+
+        Ok(amount_out)
+    }
 }
 
 #[cfg(test)]
@@ -1342,5 +1592,25 @@ mod tests {
             key, expected,
             "Computed book key should match keccak256 of sorted concatenated addresses"
         );
+    }
+
+    #[test]
+    fn test_tick_to_price() {
+        let test_ticks = [-2000i16, -1000, -100, -1, 0, 1, 100, 1000, 2000];
+        for tick in test_ticks {
+            let price = orderbook::tick_to_price(tick);
+            let expected_price = (orderbook::PRICE_SCALE as i32 + tick as i32) as u32;
+            assert_eq!(price, expected_price);
+        }
+    }
+
+    #[test]
+    fn test_price_to_tick() {
+        let test_prices = [98000u32, 99000, 99900, 99999, 100000, 100001, 100100, 101000, 102000];
+        for price in test_prices {
+            let tick = orderbook::price_to_tick(price);
+            let expected_tick = (price as i32 - orderbook::PRICE_SCALE as i32) as i16;
+            assert_eq!(tick, expected_tick);
+        }
     }
 }
