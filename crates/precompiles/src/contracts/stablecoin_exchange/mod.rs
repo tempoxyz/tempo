@@ -27,6 +27,14 @@ use crate::{
     },
 };
 
+/// Calculate quote amount from base amount and tick price using checked arithmetic
+///
+/// Returns None if overflow would occur
+fn calculate_quote_amount(amount: u128, tick: i16) -> Option<u128> {
+    let price = tick_to_price(tick) as u128;
+    amount.checked_mul(price)?.checked_div(PRICE_SCALE as u128)
+}
+
 pub struct StablecoinExchange<'a, S: StorageProvider> {
     address: Address,
     storage: &'a mut S,
@@ -394,8 +402,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let price = tick_to_price(tick);
-            let quote_amount = (amount * price as u128) / PRICE_SCALE as u128;
+            let quote_amount = calculate_quote_amount(amount, tick)
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -472,8 +480,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let price = tick_to_price(tick);
-            let quote_amount = (amount * price as u128) / PRICE_SCALE as u128;
+            let quote_amount = calculate_quote_amount(amount, tick)
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -513,7 +521,14 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Process all pending orders into the active orderbook
-    pub fn execute_block(&mut self) {
+    ///
+    /// Only callable by the protocol via system transaction (sender must be Address::ZERO)
+    pub fn execute_block(&mut self, sender: &Address) -> Result<(), StablecoinExchangeError> {
+        // Only protocol can call this
+        if *sender != Address::ZERO {
+            return Err(StablecoinExchangeError::unauthorized());
+        }
+
         let next_order_id = self
             .storage
             .sload(self.address, slots::NEXT_ORDER_ID)
@@ -535,6 +550,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 U256::from(pending_order_id),
             )
             .expect("TODO: handle error");
+
+        Ok(())
     }
 
     /// Process a single pending order into the active orderbook
@@ -1866,7 +1883,7 @@ mod tests {
         assert_eq!(order_id, 1);
 
         // Execute block to make order active
-        exchange.execute_block();
+        exchange.execute_block(&Address::ZERO).unwrap();
         assert_eq!(exchange.active_order_id(), 1);
 
         // Cancel the active order
@@ -1911,8 +1928,8 @@ mod tests {
         assert_eq!(exchange.active_order_id(), 0);
         assert_eq!(exchange.pending_order_id(), 4);
 
-        // Execute the block
-        exchange.execute_block();
+        // Execute the block (use Address::ZERO for system transaction)
+        exchange.execute_block(&Address::ZERO).unwrap();
 
         assert_eq!(exchange.active_order_id(), 4);
         assert_eq!(exchange.pending_order_id(), 4);
@@ -1980,7 +1997,7 @@ mod tests {
 
         // Place ask order and execute block
         exchange.place(&sender, token, amount, false, tick).unwrap();
-        exchange.execute_block();
+        exchange.execute_block(&Address::ZERO).unwrap();
 
         // Test quote buy
         let amount_out = 500000000000000000000u128;
@@ -2022,7 +2039,7 @@ mod tests {
 
         // Place bid order and execute block
         exchange.place(&sender, token, amount, true, tick).unwrap();
-        exchange.execute_block();
+        exchange.execute_block(&Address::ZERO).unwrap();
 
         // Test quote sell
         let amount_in = 500000000000000000000u128;
@@ -2065,7 +2082,7 @@ mod tests {
 
         // Place ask order and execute block
         exchange.place(&seller, token, amount, false, tick).unwrap();
-        exchange.execute_block();
+        exchange.execute_block(&Address::ZERO).unwrap();
 
         let price = orderbook::tick_to_price(tick);
         let max_amount_in = 1000000000000000000000u128;
@@ -2123,7 +2140,7 @@ mod tests {
 
         // Place bid order and execute block
         exchange.place(&buyer, token, amount, true, tick).unwrap();
-        exchange.execute_block();
+        exchange.execute_block(&Address::ZERO).unwrap();
 
         let price = orderbook::tick_to_price(tick);
         let min_amount_out = 400000000000000000000u128;
@@ -2191,7 +2208,7 @@ mod tests {
             .unwrap();
 
         // Execute block to make order active
-        exchange.execute_block();
+        exchange.execute_block(&Address::ZERO).unwrap();
 
         // Execute sell to trigger flip order execution
         let result = exchange.sell(&bob, token, quote_token, amount, 0);
