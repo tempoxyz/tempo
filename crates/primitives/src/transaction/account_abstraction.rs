@@ -120,6 +120,7 @@ pub struct TxAA {
 
     /// Nonce key for 2D nonce system (192 bits)
     /// Key 0 is the protocol nonce, keys 1-N are user nonces for parallelization
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub nonce_key: u64,
 
     /// Current nonce value for the nonce key

@@ -433,7 +433,6 @@ mod serde_impl {
     struct AASignedHelper<'a> {
         #[serde(flatten)]
         tx: Cow<'a, TxAA>,
-        #[serde(flatten)]
         signature: Cow<'a, AASignature>,
         hash: Cow<'a, B256>,
     }
@@ -464,6 +463,53 @@ mod serde_impl {
                     value.hash.into_owned(),
                 )
             })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::transaction::aa_signature::AASignature;
+        use crate::transaction::account_abstraction::{Call, TxAA};
+        use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+
+        #[test]
+        fn test_serde_output() {
+            // Create a simple AA transaction
+            let tx = TxAA {
+                chain_id: 1337,
+                fee_token: None,
+                max_priority_fee_per_gas: 1000000000,
+                max_fee_per_gas: 2000000000,
+                gas_limit: 21000,
+                calls: vec![Call {
+                    to: TxKind::Call(Address::repeat_byte(0x42)),
+                    value: U256::from(1000),
+                    input: Bytes::from(vec![1, 2, 3, 4]),
+                }],
+                access_list: Default::default(),
+                nonce_key: 0,
+                nonce: 5,
+                fee_payer_signature: None,
+                valid_before: None,
+                valid_after: None,
+            };
+
+            // Create a secp256k1 signature
+            let signature = AASignature::Secp256k1(Signature::test_signature());
+
+            let aa_signed = super::super::AASigned::new_unhashed(tx, signature);
+
+            // Serialize to JSON
+            let json = serde_json::to_string_pretty(&aa_signed).unwrap();
+
+            println!("\n=== AASigned JSON Output ===");
+            println!("{}", json);
+            println!("============================\n");
+
+            // Also test deserialization round-trip
+            let deserialized: super::super::AASigned = serde_json::from_str(&json).unwrap();
+            assert_eq!(aa_signed.tx(), deserialized.tx());
         }
     }
 }

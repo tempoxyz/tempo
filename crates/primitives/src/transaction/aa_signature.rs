@@ -44,7 +44,7 @@ pub struct WebAuthnSignature {
 /// AA transaction signature supporting multiple signature schemes
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "camelCase"))]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum AASignature {
     /// Standard secp256k1 ECDSA signature (65 bytes: r, s, v)
