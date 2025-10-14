@@ -14,7 +14,10 @@ use reth_evm::{
         handler::{EvmTr, FrameResult, FrameTr, Handler, pre_execution, validation},
         inspector::{Inspector, InspectorHandler},
         interpreter::{
-            InitialAndFloorGas, instructions::utility::IntoAddress, interpreter::EthInterpreter,
+            InitialAndFloorGas,
+            gas::{STANDARD_TOKEN_COST, get_tokens_in_calldata},
+            instructions::utility::IntoAddress,
+            interpreter::EthInterpreter,
         },
         state::Bytecode,
     },
@@ -34,14 +37,8 @@ use tempo_primitives::{AA_TX_TYPE_ID, transaction::AASignature};
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
 
 /// Additional gas for P256 signature verification
-/// P256 precompile cost (6900 from EIP-7951) + 1100 for extra signature size - ecrecover savings (3000)
+/// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
 const P256_VERIFY_GAS: u64 = 5_000;
-
-/// Calldata gas cost per zero byte
-const CALLDATA_ZERO_BYTE_GAS: u64 = 4;
-
-/// Calldata gas cost per non-zero byte
-const CALLDATA_NONZERO_BYTE_GAS: u64 = 16;
 
 /// Hashed account code of default 7702 delegate deployment
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
@@ -161,7 +158,7 @@ where
 
         let mut final_result = None;
 
-        for (_idx, call) in calls.iter().enumerate() {
+        for call in calls.iter() {
             // Update TxEnv to point to this specific call
             {
                 let tx = &mut evm.ctx().tx;
@@ -484,10 +481,13 @@ where
     let tx_type = evm.ctx_ref().tx().tx_type();
     let spec = evm.ctx_ref().cfg().spec();
 
+    let tx = evm.ctx_ref().tx();
+    let standard_gas = validation::validate_initial_tx_gas(tx, spec)
+        .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
+
     // For non-AA transactions, use default validation
     if tx_type != AA_TX_TYPE_ID {
-        let tx = evm.ctx_ref().tx();
-        return validation::validate_initial_tx_gas(tx, spec).map_err(From::from);
+        return Ok(standard_gas);
     }
 
     // For AA transactions, extract all needed data first
@@ -499,13 +499,6 @@ where
 
     // Get signature bytes
     let sig_bytes = &signature;
-
-    // Start with the standard intrinsic gas calculation (calldata, access list, etc.)
-    let standard_gas = {
-        let tx = evm.ctx_ref().tx();
-        validation::validate_initial_tx_gas(tx, spec)
-            .map_err(|e: InvalidTransaction| TempoInvalidTransaction::EthInvalidTransaction(e))?
-    };
 
     // Calculate AA-specific additional gas (signature + nonce key costs)
 
@@ -531,15 +524,12 @@ where
         }
         AASignature::WebAuthn(webauthn_sig) => {
             // WebAuthn signature - add P256 verification gas + calldata gas for variable data
-            // Calculate calldata gas for variable webauthn_data
-            let mut webauthn_data_gas = 0u64;
-            for &byte in webauthn_sig.webauthn_data.iter() {
-                webauthn_data_gas = webauthn_data_gas.saturating_add(if byte == 0 {
-                    CALLDATA_ZERO_BYTE_GAS
-                } else {
-                    CALLDATA_NONZERO_BYTE_GAS
-                });
-            }
+            // Calculate calldata gas using the standard revm function
+            // get_tokens_in_calldata counts zero bytes (1 token each) and non-zero bytes (4 tokens each for Istanbul)
+            // Multiply by STANDARD_TOKEN_COST (4) to get gas: zero byte = 4 gas, non-zero byte = 16 gas
+            // We subtract 129 from the tokens to account for the already paid 129 bytes in the P256_VERIFY_GAS
+            let webauthn_data_tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, true);
+            let webauthn_data_gas = (webauthn_data_tokens - 129) * STANDARD_TOKEN_COST;
             P256_VERIFY_GAS + webauthn_data_gas
         }
     };
