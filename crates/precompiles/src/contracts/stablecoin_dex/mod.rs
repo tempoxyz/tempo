@@ -783,7 +783,11 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                     .expect("TODO: handle error")
                     .to::<u128>();
 
-                let base_needed = (remaining_out * orderbook::PRICE_SCALE as u128) / price as u128;
+                let base_needed = remaining_out
+                    .checked_mul(orderbook::PRICE_SCALE as u128)
+                    .and_then(|v| v.checked_div(price as u128))
+                    .expect("Base needed calculation overflow");
+
                 let fill_amount = if base_needed > order_remaining {
                     order_remaining
                 } else {
@@ -794,7 +798,10 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                     return Err(StablecoinDexError::max_input_exceeded());
                 }
 
-                remaining_out -= (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                remaining_out -= fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Remaining out calculation overflow");
                 amount_in += fill_amount;
 
                 order_id = self.fill_order(order_id, fill_amount);
@@ -858,7 +865,10 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                 } else {
                     remaining_out
                 };
-                let quote_in = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                let quote_in = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Quote in calculation overflow");
 
                 if amount_in + quote_in > max_amount_in {
                     return Err(StablecoinDexError::max_input_exceeded());
@@ -946,7 +956,10 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                 } else {
                     remaining_in
                 };
-                let quote_out = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                let quote_out = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Quote out calculation overflow");
 
                 remaining_in -= fill_amount;
                 amount_out += quote_out;
@@ -1010,7 +1023,10 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
                     .expect("TODO: handle error")
                     .to::<u128>();
 
-                let base_out = (remaining_in * orderbook::PRICE_SCALE as u128) / price as u128;
+                let base_out = remaining_in
+                    .checked_mul(orderbook::PRICE_SCALE as u128)
+                    .and_then(|v| v.checked_div(price as u128))
+                    .expect("Base out calculation overflow");
                 let fill_amount = if base_out > order_remaining {
                     order_remaining
                 } else {
@@ -1236,7 +1252,10 @@ impl<'a, S: StorageProvider> StablecoinDex<'a, S> {
         if is_bid {
             // Bid orders are in quote token, refund quote amount
             let price = orderbook::tick_to_price(tick);
-            let quote_amount = (remaining * price as u128) / orderbook::PRICE_SCALE as u128;
+            let quote_amount = remaining
+                .checked_mul(price as u128)
+                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .expect("Quote amount calculation overflow");
             self.add_balance(maker, orderbook.quote, quote_amount);
         } else {
             // Ask orders are in base token, refund base amount
