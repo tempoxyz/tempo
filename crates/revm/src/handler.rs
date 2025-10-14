@@ -14,7 +14,7 @@ use reth_evm::{
         handler::{EvmTr, FrameResult, FrameTr, Handler, pre_execution, validation},
         inspector::{Inspector, InspectorHandler},
         interpreter::{
-            InitialAndFloorGas,
+            Gas, InitialAndFloorGas,
             gas::{STANDARD_TOKEN_COST, get_tokens_in_calldata},
             instructions::utility::IntoAddress,
             interpreter::EthInterpreter,
@@ -202,9 +202,13 @@ where
                 // Include gas from all previous successful calls + failed call
                 let gas_used_by_failed_call = frame_result.gas().used();
                 let total_gas_used = (gas_limit - remaining_gas) + gas_used_by_failed_call;
-                let gas = frame_result.gas_mut();
-                gas.set_spent(total_gas_used);
-                gas.set_refund(0); // No refunds when batch fails and all state is reverted
+
+                // Create new Gas with correct limit, because Gas does not have a set_limit method
+                // (the frame_result has the limit from just the last call)
+                let mut corrected_gas = Gas::new(gas_limit);
+                corrected_gas.set_spent(total_gas_used);
+                corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted
+                *frame_result.gas_mut() = corrected_gas;
 
                 return Ok(frame_result);
             }
@@ -227,9 +231,13 @@ where
             final_result.ok_or_else(|| EVMError::Custom("No calls executed".into()))?;
 
         let total_gas_used = gas_limit - remaining_gas;
-        let gas = result.gas_mut();
-        gas.set_spent(total_gas_used);
-        gas.set_refund(accumulated_gas_refund);
+
+        // Create new Gas with correct limit, because Gas does not have a set_limit method
+        // (the frame_result has the limit from just the last call)
+        let mut corrected_gas = Gas::new(gas_limit);
+        corrected_gas.set_spent(total_gas_used);
+        corrected_gas.set_refund(accumulated_gas_refund);
+        *result.gas_mut() = corrected_gas;
 
         Ok(result)
     }
