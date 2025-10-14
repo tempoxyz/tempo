@@ -8,7 +8,6 @@ use alloy::primitives::{Address, B256};
 
 use super::error::OrderError;
 
-
 /// Represents an order in the stablecoin DEX orderbook.
 ///
 /// This struct matches the Solidity reference implementation in StablecoinExchange.sol.
@@ -283,7 +282,7 @@ impl Order {
             order_id: new_order_id,
             maker: self.maker,
             book_key: self.book_key,
-            is_bid: !self.is_bid, // Flip the side
+            is_bid: !self.is_bid,   // Flip the side
             tick: self.flip_tick,   // Old flip_tick becomes new tick
             amount: self.amount,    // Same as original
             remaining: self.amount, // Reset remaining to original amount
@@ -303,7 +302,6 @@ mod tests {
     const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
     const TEST_BOOK_KEY: B256 =
         b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
-
 
     #[test]
     fn test_new_bid_order() {
@@ -445,8 +443,8 @@ mod tests {
             TEST_BOOK_KEY,
             1000,
             true, // Bid
-            5,  // tick
-            10, // flip_tick
+            5,    // tick
+            10,   // flip_tick
         )
         .unwrap();
 
@@ -477,8 +475,8 @@ mod tests {
             TEST_BOOK_KEY,
             1000,
             false, // Ask
-            10, // tick
-            5,  // flip_tick (< tick for ask)
+            10,    // tick
+            5,     // flip_tick (< tick for ask)
         )
         .unwrap();
 
@@ -530,8 +528,7 @@ mod tests {
     #[test]
     fn test_multiple_flips() {
         // Test that an order can flip multiple times
-        let mut order =
-            Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, true, 5, 10).unwrap();
+        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, true, 5, 10).unwrap();
 
         // First flip: bid -> ask
         order.fill(1000).unwrap();
@@ -588,8 +585,7 @@ mod tests {
 
     #[test]
     fn test_flipped_order_resets_linked_list_pointers() {
-        let mut order =
-            Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, true, 5, 10).unwrap();
+        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, true, 5, 10).unwrap();
 
         // Set linked list pointers on original order
         order.set_prev(100);
