@@ -8,7 +8,7 @@ use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
 
 use super::error::OrderError;
 use alloy::primitives::{Address, B256, U256, uint};
-use revm::interpreter::instructions::utility::IntoU256;
+use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 // Order struct field offsets (relative to order base slot)
 // Matches Solidity Order struct layout
@@ -164,6 +164,79 @@ impl Order {
         Ok(Self::new(
             order_id, maker, book_key, amount, tick, is_bid, true, flip_tick,
         ))
+    }
+
+    pub fn from_storage<S: StorageProvider>(
+        order_id: u128,
+        storage: &mut S,
+        stablecoin_exchange: Address,
+    ) -> Self {
+        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
+
+        let maker = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_MAKER_OFFSET)
+            .expect("TODO: handle error")
+            .into_address();
+
+        let book_key = B256::from(
+            storage
+                .sload(stablecoin_exchange, order_slot + ORDER_BOOK_KEY_OFFSET)
+                .expect("TODO: handle error"),
+        );
+
+        let is_bid = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_IS_BID_OFFSET)
+            .expect("TODO: handle error")
+            .to::<bool>();
+
+        let tick = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_TICK_OFFSET)
+            .expect("TODO: handle error")
+            .to::<i16>();
+
+        let amount = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_AMOUNT_OFFSET)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        let remaining = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_REMAINING_OFFSET)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        let prev = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_PREV_OFFSET)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        let next = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_NEXT_OFFSET)
+            .expect("TODO: handle error")
+            .to::<u128>();
+
+        let is_flip = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_IS_FLIP_OFFSET)
+            .expect("TODO: handle error")
+            .to::<bool>();
+
+        let flip_tick = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_IS_FLIP_OFFSET)
+            .expect("TODO: handle error")
+            .to::<i16>();
+
+        Self {
+            order_id,
+            maker,
+            book_key,
+            is_bid,
+            tick,
+            amount,
+            remaining,
+            prev,
+            next,
+            is_flip,
+            flip_tick,
+        }
     }
 
     /// Returns the order ID.

@@ -682,6 +682,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 new_order.store(self.storage, self.address);
             }
 
+            // TODO: order .next and prev
             let next = self
                 .storage
                 .sload(self.address, order_slot + offsets::ORDER_NEXT_OFFSET)
