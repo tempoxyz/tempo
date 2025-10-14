@@ -1,0 +1,58 @@
+{
+  "label": "main",
+  "log_file": "debug_main.log",
+  "block_range": [
+    21842,
+    21852
+  ],
+  "metrics": {
+    "Build Payload Time": {
+      "count": 11,
+      "mean": 427.55575,
+      "median": 419.121917,
+      "min": 32.809042,
+      "max": 771.622041,
+      "std_dev": 192.80746865834917
+    },
+    "Execution Time": {
+      "count": 11,
+      "mean": 345.1606856363636,
+      "median": 347.396292,
+      "min": 25.623917,
+      "max": 609.462125,
+      "std_dev": 159.35310420612137
+    },
+    "Builder Finish Time": {
+      "count": 11,
+      "mean": 73.44056454545455,
+      "median": 63.095459,
+      "min": 6.6445,
+      "max": 153.267125,
+      "std_dev": 37.78842127863929
+    },
+    "State Root Task": {
+      "count": 11,
+      "mean": 0.007147727272727273,
+      "median": 0.005791999999999999,
+      "min": 0.004042,
+      "max": 0.02125,
+      "std_dev": 0.004875407246393046
+    },
+    "Payload Delivery Lag": {
+      "count": 11,
+      "mean": 6.075727272727272,
+      "median": 6.509,
+      "min": 0.488,
+      "max": 9.348,
+      "std_dev": 2.411304007830995
+    },
+    "Block Added to Canonical Chain": {
+      "count": 11,
+      "mean": 1944.940681727273,
+      "median": 2168.546166,
+      "min": 316.793041,
+      "max": 2732.100667,
+      "std_dev": 708.5179202206555
+    }
+  }
+}

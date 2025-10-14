@@ -13,10 +13,22 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from statistics import mean, median, stdev
 from typing import Iterable, Optional, Sequence
 from urllib.error import URLError
 from urllib.request import Request, urlopen
+
+# Add parent directory to path for importing from lib
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from lib.log_analysis import (
+    strip_ansi_codes,
+    parse_timestamp,
+    parse_time_to_ms,
+    find_block_range,
+    compute_statistics,
+    build_summary,
+    analyze_log,
+)
 
 FEATURE_COMMIT = "1619408"
 MAIN_COMMIT = "d2070f4de34f523f6097ebc64fa9d63a04878055"
@@ -25,6 +37,7 @@ TEMPO_BIN = SCRIPT_DIR / "target" / "release" / "tempo"
 LOG_SELECTORS = re.compile(
     r"build_payload|Received block from consensus engine|State root task finished|Block added to canonical chain"
 )
+BUILD_PAYLOAD_MARKER = re.compile(r"build[_ ]payload", re.IGNORECASE)
 
 # TL;DR workflow:
 # 1. Swap the Reth git revision, then cargo update/build to rebuild tempo.
@@ -38,81 +51,6 @@ MetricsSummary = dict[str, object]
 
 
 # ---- Log analysis helpers -------------------------------------------------
-
-def parse_time_to_ms(time_str: str) -> Optional[float]:
-    """Convert time strings like 1.23ms/300µs/0.1s into milliseconds."""
-    match = re.match(r"([\d.]+)(ms|µs|s)", time_str.strip())
-    if not match:
-        return None
-
-    value, unit = match.groups()
-    value = float(value)
-    if unit == "ms":
-        return value
-    if unit == "µs":
-        return value / 1000.0
-    if unit == "s":
-        return value * 1000.0
-    return None
-
-
-ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-
-
-def strip_ansi_codes(text: str) -> str:
-    return ANSI_ESCAPE.sub("", text)
-
-
-def parse_timestamp(line: str) -> Optional[datetime]:
-    clean_line = strip_ansi_codes(line)
-    match = re.match(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)", clean_line)
-    if match:
-        return datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
-    return None
-
-
-def find_block_range(log_file: Path, min_gas: int = 1000) -> tuple[Optional[int], Optional[int]]:
-    """Detect a steady-state block range (excluding warm-up/down) based on gas usage."""
-    non_empty_blocks: list[int] = []
-
-    with log_file.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            clean_line = strip_ansi_codes(raw_line)
-            if "Block added to canonical chain" not in clean_line:
-                continue
-
-            num_match = re.search(r"number\s*=\s*(\d+)", clean_line)
-            gas_match = re.search(r"gas_used\s*=\s*([\d.]+)([KMG]?)gas", clean_line)
-            txs_match = re.search(r"txs\s*=\s*(\d+)", clean_line)
-            if not num_match or not gas_match or not txs_match:
-                continue
-
-            total_transactions = int(txs_match.group(1))
-            if total_transactions <= 1:
-                continue
-
-            block_num = int(num_match.group(1))
-            gas_val = float(gas_match.group(1))
-            gas_unit = gas_match.group(2)
-
-            if gas_unit == "K":
-                gas_used = gas_val * 1_000
-            elif gas_unit == "M":
-                gas_used = gas_val * 1_000_000
-            elif gas_unit == "G":
-                gas_used = gas_val * 1_000_000_000
-            else:
-                gas_used = gas_val
-
-            if gas_used > min_gas:
-                non_empty_blocks.append(block_num)
-
-    if len(non_empty_blocks) >= 3:
-        return non_empty_blocks[0] + 1, non_empty_blocks[-1] - 1
-    if non_empty_blocks:
-        return non_empty_blocks[0], non_empty_blocks[-1]
-    return None, None
-
 
 def print_block_decisions(block_decisions: dict[int, dict[str, object]], block_range: Optional[Sequence[int]]) -> None:
     """Print a summary of which blocks were included/excluded and why."""
@@ -151,8 +89,6 @@ def print_block_decisions(block_decisions: dict[int, dict[str, object]], block_r
         missing = []
         if not decision["has_build_time"]:
             missing.append("build_time")
-        if not decision["has_state_root_time"]:
-            missing.append("state_root")
         if not decision["has_payload_to_received_time"]:
             missing.append("payload_to_received")
         if not decision["has_block_added_time"]:
@@ -186,9 +122,15 @@ def print_block_decisions(block_decisions: dict[int, dict[str, object]], block_r
     print("="*80 + "\n")
 
 
-def parse_log_file(log_file: Path, block_range: Optional[Sequence[int]] = None) -> tuple[list[float], list[float], list[float], list[float]]:
+def parse_log_file_with_decisions(log_file: Path, block_range: Optional[Sequence[int]] = None) -> tuple[list[float], list[float], list[float], list[float], list[float], list[float]]:
+    """
+    Enhanced version of parse_log_file that tracks block decisions for debugging.
+    This is used by the benchmark comparison script to provide detailed feedback.
+    """
     build_times: list[float] = []
-    explicit_state_root_times: list[float] = []
+    execution_times: list[float] = []
+    builder_finish_times: list[float] = []
+    state_root_task_times: list[float] = []
     block_added_times: list[float] = []
     payload_to_received_times: list[float] = []
 
@@ -203,7 +145,7 @@ def parse_log_file(log_file: Path, block_range: Optional[Sequence[int]] = None) 
             timestamp = parse_timestamp(raw_line)
             clean_line = strip_ansi_codes(raw_line)
 
-            if "Built payload" in clean_line:
+            if BUILD_PAYLOAD_MARKER.search(clean_line):
                 parent_match = re.search(r"parent_number\s*=\s*(\d+)", clean_line)
                 txs_match = re.search(r"total_transactions\s*=\s*(\d+)", clean_line)
                 if parent_match and timestamp:
@@ -218,7 +160,6 @@ def parse_log_file(log_file: Path, block_range: Optional[Sequence[int]] = None) 
                         "include": include_block,
                         "reason": None,
                         "has_build_time": False,
-                        "has_state_root_time": False,
                         "has_payload_to_received_time": False,
                         "has_block_added_time": False,
                     }
@@ -245,21 +186,46 @@ def parse_log_file(log_file: Path, block_range: Optional[Sequence[int]] = None) 
                             if block_number in block_decisions:
                                 block_decisions[block_number]["has_build_time"] = True
 
+                        # Extract execution_elapsed
+                        exec_match = re.search(r"execution_elapsed\s*=\s*([\d.]+(?:ms|µs|s|ns))", clean_line)
+                        if exec_match:
+                            time_str = exec_match.group(1)
+                            # Handle nanoseconds
+                            if time_str.endswith("ns"):
+                                exec_time_ms = float(time_str[:-2]) / 1_000_000.0
+                            else:
+                                exec_time_ms = parse_time_to_ms(time_str)
+                            if exec_time_ms is not None:
+                                execution_times.append(exec_time_ms)
+
+                        # Extract builder_finish_elapsed
+                        builder_match = re.search(r"builder_finish_elapsed\s*=\s*([\d.]+(?:ms|µs|s|ns))", clean_line)
+                        if builder_match:
+                            time_str = builder_match.group(1)
+                            # Handle nanoseconds
+                            if time_str.endswith("ns"):
+                                builder_time_ms = float(time_str[:-2]) / 1_000_000.0
+                            else:
+                                builder_time_ms = parse_time_to_ms(time_str)
+                            if builder_time_ms is not None:
+                                builder_finish_times.append(builder_time_ms)
+
             elif "Received block from consensus engine" in clean_line:
                 number_match = re.search(r"number\s*=\s*(\d+)", clean_line)
                 if number_match and timestamp:
                     block_number = int(number_match.group(1))
                     block_info = built_payload_times.get(block_number)
                     if block_info:
-                        # Set current block context for subsequent state root processing
+                        # Set current block context for state root task tracking
+                        in_range = block_range is None or (block_range[0] <= block_number <= block_range[1])
                         current_block_context = {
                             "block_number": block_number,
                             "include": block_info["include"],
-                            "in_range": block_range is None or (block_range[0] <= block_number <= block_range[1])
+                            "in_range": in_range
                         }
                         if (
                             block_info["include"]
-                            and (block_range is None or (block_range[0] <= block_number <= block_range[1]))
+                            and in_range
                         ):
                             start_time = block_info["timestamp"]
                             elapsed_ms = (timestamp - start_time).total_seconds() * 1000
@@ -272,14 +238,10 @@ def parse_log_file(log_file: Path, block_range: Optional[Sequence[int]] = None) 
             elif "State root task finished" in clean_line:
                 match = re.search(r"elapsed\s*=\s*([\d.]+(?:ms|µs|s))", clean_line)
                 if match and current_block_context:
-                    # Only include state root times if the block meets the same filtering criteria as other metrics
                     if current_block_context["include"] and current_block_context["in_range"]:
                         time_ms = parse_time_to_ms(match.group(1))
                         if time_ms is not None:
-                            explicit_state_root_times.append(time_ms)
-                            block_num = current_block_context["block_number"]
-                            if block_num in block_decisions:
-                                block_decisions[block_num]["has_state_root_time"] = True
+                            state_root_task_times.append(time_ms)
 
             elif "Block added to canonical chain" in clean_line:
                 number_match = re.search(r"number\s*=\s*(\d+)", clean_line)
@@ -297,57 +259,42 @@ def parse_log_file(log_file: Path, block_range: Optional[Sequence[int]] = None) 
                             block_added_times.append(time_ms)
                             if block_number in block_decisions:
                                 block_decisions[block_number]["has_block_added_time"] = True
-                # Clear the block context after processing the block
+                # Clear block context
                 current_block_context = None
 
     # Print block decisions summary
     print_block_decisions(block_decisions, block_range)
 
-    return build_times, explicit_state_root_times, payload_to_received_times, block_added_times
-
-
-def compute_statistics(times: list[float]) -> Optional[MetricStats]:
-    if not times:
-        return None
-    values = {
-        "count": float(len(times)),
-        "mean": mean(times),
-        "median": median(times),
-        "min": min(times),
-        "max": max(times),
-        "std_dev": stdev(times) if len(times) > 1 else 0.0,
-    }
-    # Cast counts back to int when serializing; keep as float for uniform type hints.
-    values["count"] = int(values["count"])  # type: ignore[assignment]
-    return values  # type: ignore[return-value]
-
-
-def build_summary(log_file: Path, block_range: Optional[Sequence[int]], build_times: list[float], explicit_state_root_times: list[float], payload_to_received_times: list[float], block_added_times: list[float], label: Optional[str] = None) -> MetricsSummary:
-    return {
-        "label": label,
-        "log_file": str(log_file),
-        "block_range": list(block_range) if block_range else None,
-        "metrics": {
-            "Build Payload Time": compute_statistics(build_times),
-            "Payload Delivery Lag": compute_statistics(payload_to_received_times),
-            "Explicit State Root Task": compute_statistics(explicit_state_root_times),
-            "Block Added to Canonical Chain": compute_statistics(block_added_times),
-        },
-    }
+    return build_times, execution_times, builder_finish_times, state_root_task_times, payload_to_received_times, block_added_times
 
 
 def analyze_log_file(log_file: Path, *, label: Optional[str] = None, quiet: bool = True) -> MetricsSummary:
+    """
+    Analyze a log file with block decision tracking for detailed debugging.
+    Uses the enhanced parse_log_file_with_decisions function.
+    """
     if not log_file.exists():
         raise FileNotFoundError(f"Log file not found: {log_file}")
 
     first_block, last_block = find_block_range(log_file)
     block_range = (first_block, last_block) if first_block is not None and last_block is not None else None
 
-    build_times, explicit_state_root_times, payload_to_received_times, block_added_times = parse_log_file(
+    # Use the enhanced version with decision tracking
+    build_times, execution_times, builder_finish_times, state_root_task_times, payload_to_received_times, block_added_times = parse_log_file_with_decisions(
         log_file, block_range
     )
 
-    summary = build_summary(log_file, block_range, build_times, explicit_state_root_times, payload_to_received_times, block_added_times, label=label)
+    # Build metrics dict compatible with the library's build_summary function
+    metrics = {
+        "build_times": build_times,
+        "execution_times": execution_times,
+        "builder_finish_times": builder_finish_times,
+        "state_root_task_times": state_root_task_times,
+        "payload_to_received_times": payload_to_received_times,
+        "block_added_times": block_added_times,
+    }
+
+    summary = build_summary(log_file, block_range, metrics, label=label)
 
     if not quiet:
         print("")
@@ -443,7 +390,7 @@ def update_reth_revision(label: str, commit: str) -> None:
     run_command(["cargo", "build", "--release"], cwd=SCRIPT_DIR)
 
 
-def start_tempo_node(log_path: Path) -> None:
+def start_tempo_node(log_path: Path, extra_args: Optional[list[str]] = None) -> None:
     global tempo_process, tempo_thread
 
     if not TEMPO_BIN.exists():
@@ -512,8 +459,14 @@ def start_tempo_node(log_path: Path) -> None:
         "1000000",
     ]
 
+    # Add extra arguments if provided
+    if extra_args:
+        args.extend(extra_args)
+
     print("")
     print("Starting tempo node...")
+    if extra_args:
+        print(f"  Extra arguments: {' '.join(extra_args)}")
     tempo_process = subprocess.Popen(
         args,
         cwd=SCRIPT_DIR,
@@ -534,12 +487,12 @@ def start_tempo_node(log_path: Path) -> None:
             for line in stream:
                 sys.stdout.write(line)
                 sys.stdout.flush()
-                # Strip ANSI color codes before writing to bench.log
+                # Strip ANSI color codes before writing to log files
                 clean_line = strip_ansi_codes(line)
                 bench_handle.write(clean_line)
                 bench_handle.flush()
                 if LOG_SELECTORS.search(line):
-                    log_handle.write(line)
+                    log_handle.write(clean_line)
                     log_handle.flush()
 
     tempo_thread = threading.Thread(
@@ -571,11 +524,11 @@ def wait_for_tempo() -> None:
     raise RuntimeError("Tempo HTTP endpoint did not become ready in time.")
 
 
-def run_bench_cycle(label: str, commit: str, log_path: Path, metrics_path: Path) -> MetricsSummary:
+def run_bench_cycle(label: str, commit: str, log_path: Path, metrics_path: Path, extra_args: Optional[list[str]] = None) -> MetricsSummary:
     global tempo_process, tempo_thread
 
     update_reth_revision(label, commit)
-    start_tempo_node(log_path)
+    start_tempo_node(log_path, extra_args)
 
     print("")
     print(f"Running bench_and_kill.sh for {label}...")
@@ -613,14 +566,18 @@ def print_comparison(before_file: Path, after_file: Path) -> None:
     after = json.loads(after_file.read_text())
 
     # Order for rendering key tempo metrics:
-    # - Build Payload Time: proposer payload construction latency.
+    # - Build Payload Time: proposer payload construction latency (total).
+    # - Execution Time: EVM execution phase from built payload.
+    # - Builder Finish Time: builder finalization phase (may include inline state root).
+    # - State Root Task: explicit state root computation (ranges from µs cache lookups to seconds for actual computation).
     # - Payload Delivery Lag: time from payload build to consensus-engine receipt.
-    # - Explicit State Root Task: dedicated state-root worker execution.
     # - Block Added to Canonical Chain: end-to-end block import confirmation.
     metrics_order = [
         "Build Payload Time",
+        "Execution Time",
+        "Builder Finish Time",
+        "State Root Task",
         "Payload Delivery Lag",
-        "Explicit State Root Task",
         "Block Added to Canonical Chain",
     ]
 
@@ -686,9 +643,15 @@ def main() -> None:
     main_metrics = SCRIPT_DIR / "metrics_main.json"
     feature_metrics = SCRIPT_DIR / "metrics_feature.json"
 
+    # Feature-specific arguments for testing engine worker counts
+    feature_args = [
+        "--engine.account-worker-count", "64",
+        "--engine.storage-worker-count", "64",
+    ]
+
     print("Starting main -> feature bench cycles...")
     run_bench_cycle("main", MAIN_COMMIT, main_log, main_metrics)
-    run_bench_cycle("feature", FEATURE_COMMIT, feature_log, feature_metrics)
+    run_bench_cycle("feature", FEATURE_COMMIT, feature_log, feature_metrics, extra_args=feature_args)
     print("")
     print("All bench cycles completed.")
     print("")
