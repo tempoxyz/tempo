@@ -391,7 +391,9 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
         }
 
         let word_index = tick >> 8;
-        let bit_index = (tick as u8) as usize;
+        // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
+        // Casting negative i16 to u8 wraps incorrectly (e.g., -100 as u8 = 156)
+        let bit_index = (tick & 0xFF) as usize;
         let mask = U256::from(1u8) << bit_index;
 
         // Get storage slot for this word in the bitmap
@@ -415,7 +417,9 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
         }
 
         let word_index = tick >> 8;
-        let bit_index = (tick as u8) as usize;
+        // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
+        // Casting negative i16 to u8 wraps incorrectly (e.g., -100 as u8 = 156)
+        let bit_index = (tick & 0xFF) as usize;
         let mask = !(U256::from(1u8) << bit_index);
 
         // Get storage slot for this word in the bitmap
@@ -439,7 +443,9 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
         }
 
         let word_index = tick >> 8;
-        let bit_index = (tick as u8) as usize;
+        // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
+        // Casting negative i16 to u8 wraps incorrectly (e.g., -100 as u8 = 156)
+        let bit_index = (tick & 0xFF) as usize;
         let mask = U256::from(1u8) << bit_index;
 
         let bitmap_slot = self.get_bitmap_slot(word_index, is_bid);
@@ -502,7 +508,8 @@ pub fn next_initialized_bid_tick<S: StorageProvider>(
     book_key: B256,
     tick: i16,
 ) -> (i16, bool) {
-    todo!()
+    let mut bitmap = TickBitmap::new(storage, address, book_key);
+    bitmap.next_initialized_bid_tick(tick)
 }
 
 /// Find next initialized ask tick higher than current tick
@@ -512,7 +519,8 @@ pub fn next_initialized_ask_tick<S: StorageProvider>(
     book_key: B256,
     tick: i16,
 ) -> (i16, bool) {
-    todo!()
+    let mut bitmap = TickBitmap::new(storage, address, book_key);
+    bitmap.next_initialized_ask_tick(tick)
 }
 
 #[cfg(test)]
