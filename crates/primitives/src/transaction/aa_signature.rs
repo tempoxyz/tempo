@@ -14,32 +14,47 @@ use sha2::{Digest, Sha256};
 pub const SIGNATURE_TYPE_P256: u8 = 0x01;
 pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 
+/// P256 signature with pre-hash flag
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct P256SignatureWithPreHash {
+    pub r: B256,
+    pub s: B256,
+    pub pub_key_x: B256,
+    pub pub_key_y: B256,
+    pub pre_hash: bool,
+}
+
+/// WebAuthn signature with authenticator data
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct WebAuthnSignature {
+    pub r: B256,
+    pub s: B256,
+    pub pub_key_x: B256,
+    pub pub_key_y: B256,
+    /// authenticatorData || clientDataJSON (variable length)
+    pub webauthn_data: Bytes,
+}
+
 /// AA transaction signature supporting multiple signature schemes
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum AASignature {
     /// Standard secp256k1 ECDSA signature (65 bytes: r, s, v)
     Secp256k1(Signature),
 
     /// P256 signature with embedded public key (129 bytes)
-    P256 {
-        r: B256,
-        s: B256,
-        pub_key_x: B256,
-        pub_key_y: B256,
-        pre_hash: bool,
-    },
+    P256(P256SignatureWithPreHash),
 
     /// WebAuthn signature with variable-length authenticator data
-    WebAuthn {
-        /// authenticatorData || clientDataJSON (variable length)
-        webauthn_data: Bytes,
-        r: B256,
-        s: B256,
-        pub_key_x: B256,
-        pub_key_y: B256,
-    },
+    WebAuthn(WebAuthnSignature),
 }
 
 impl AASignature {
@@ -69,26 +84,26 @@ impl AASignature {
                 if sig_data.len() != P256_SIGNATURE_LENGTH {
                     return Err("Invalid P256 signature length");
                 }
-                Ok(Self::P256 {
+                Ok(Self::P256(P256SignatureWithPreHash {
                     r: B256::from_slice(&sig_data[0..32]),
                     s: B256::from_slice(&sig_data[32..64]),
                     pub_key_x: B256::from_slice(&sig_data[64..96]),
                     pub_key_y: B256::from_slice(&sig_data[96..128]),
                     pre_hash: sig_data[128] != 0,
-                })
+                }))
             }
             SIGNATURE_TYPE_WEBAUTHN => {
                 let len = sig_data.len();
                 if !(128..=MAX_WEBAUTHN_SIGNATURE_LENGTH).contains(&len) {
                     return Err("Invalid WebAuthn signature length");
                 }
-                Ok(Self::WebAuthn {
-                    webauthn_data: Bytes::copy_from_slice(&sig_data[..len - 128]),
+                Ok(Self::WebAuthn(WebAuthnSignature {
                     r: B256::from_slice(&sig_data[len - 128..len - 96]),
                     s: B256::from_slice(&sig_data[len - 96..len - 64]),
                     pub_key_x: B256::from_slice(&sig_data[len - 64..len - 32]),
                     pub_key_y: B256::from_slice(&sig_data[len - 32..]),
-                })
+                    webauthn_data: Bytes::copy_from_slice(&sig_data[..len - 128]),
+                }))
             }
             _ => Err("Unknown signature type identifier"),
         }
@@ -103,42 +118,26 @@ impl AASignature {
         match self {
             Self::Secp256k1(sig) => {
                 // Backward compatibility: no type identifier for secp256k1
-                let mut bytes = Vec::with_capacity(65);
-                bytes.extend_from_slice(&sig.r().to_be_bytes::<32>());
-                bytes.extend_from_slice(&sig.s().to_be_bytes::<32>());
-                bytes.push(27 + sig.v() as u8);
-                Bytes::from(bytes)
+                Bytes::copy_from_slice(&sig.as_bytes())
             }
-            Self::P256 {
-                r,
-                s,
-                pub_key_x,
-                pub_key_y,
-                pre_hash,
-            } => {
+            Self::P256(p256_sig) => {
                 let mut bytes = Vec::with_capacity(1 + 129);
                 bytes.push(SIGNATURE_TYPE_P256);
-                bytes.extend_from_slice(r.as_slice());
-                bytes.extend_from_slice(s.as_slice());
-                bytes.extend_from_slice(pub_key_x.as_slice());
-                bytes.extend_from_slice(pub_key_y.as_slice());
-                bytes.push(if *pre_hash { 1 } else { 0 });
+                bytes.extend_from_slice(p256_sig.r.as_slice());
+                bytes.extend_from_slice(p256_sig.s.as_slice());
+                bytes.extend_from_slice(p256_sig.pub_key_x.as_slice());
+                bytes.extend_from_slice(p256_sig.pub_key_y.as_slice());
+                bytes.push(if p256_sig.pre_hash { 1 } else { 0 });
                 Bytes::from(bytes)
             }
-            Self::WebAuthn {
-                webauthn_data,
-                r,
-                s,
-                pub_key_x,
-                pub_key_y,
-            } => {
-                let mut bytes = Vec::with_capacity(1 + webauthn_data.len() + 128);
+            Self::WebAuthn(webauthn_sig) => {
+                let mut bytes = Vec::with_capacity(1 + webauthn_sig.webauthn_data.len() + 128);
                 bytes.push(SIGNATURE_TYPE_WEBAUTHN);
-                bytes.extend_from_slice(webauthn_data);
-                bytes.extend_from_slice(r.as_slice());
-                bytes.extend_from_slice(s.as_slice());
-                bytes.extend_from_slice(pub_key_x.as_slice());
-                bytes.extend_from_slice(pub_key_y.as_slice());
+                bytes.extend_from_slice(&webauthn_sig.webauthn_data);
+                bytes.extend_from_slice(webauthn_sig.r.as_slice());
+                bytes.extend_from_slice(webauthn_sig.s.as_slice());
+                bytes.extend_from_slice(webauthn_sig.pub_key_x.as_slice());
+                bytes.extend_from_slice(webauthn_sig.pub_key_y.as_slice());
                 Bytes::from(bytes)
             }
         }
@@ -152,8 +151,8 @@ impl AASignature {
     pub fn length(&self) -> usize {
         match self {
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
-            Self::P256 { .. } => 1 + P256_SIGNATURE_LENGTH,
-            Self::WebAuthn { webauthn_data, .. } => 1 + webauthn_data.len() + 128,
+            Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
+            Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
         }
     }
 
@@ -161,8 +160,8 @@ impl AASignature {
     pub fn signature_type(&self) -> SignatureType {
         match self {
             Self::Secp256k1(_) => SignatureType::Secp256k1,
-            Self::P256 { .. } => SignatureType::P256,
-            Self::WebAuthn { .. } => SignatureType::WebAuthn,
+            Self::P256(_) => SignatureType::P256,
+            Self::WebAuthn(_) => SignatureType::WebAuthn,
         }
     }
 
@@ -182,15 +181,9 @@ impl AASignature {
                 // This simultaneously verifies the signature AND recovers the address
                 Ok(sig.recover_address_from_prehash(sig_hash)?)
             }
-            Self::P256 {
-                r,
-                s,
-                pub_key_x,
-                pub_key_y,
-                pre_hash,
-            } => {
+            Self::P256(p256_sig) => {
                 // Prepare message hash for verification
-                let message_hash = if *pre_hash {
+                let message_hash = if p256_sig.pre_hash {
                     // Some P256 implementations (like Web Crypto) require pre-hashing
                     B256::from_slice(&Sha256::digest(sig_hash.as_slice()))
                 } else {
@@ -199,40 +192,41 @@ impl AASignature {
 
                 // Verify P256 signature cryptographically
                 verify_p256_signature_internal(
-                    r.as_slice(),
-                    s.as_slice(),
-                    pub_key_x.as_slice(),
-                    pub_key_y.as_slice(),
+                    p256_sig.r.as_slice(),
+                    p256_sig.s.as_slice(),
+                    p256_sig.pub_key_x.as_slice(),
+                    p256_sig.pub_key_y.as_slice(),
                     &message_hash,
                 )
                 .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Derive and return address
-                Ok(derive_p256_address(pub_key_x, pub_key_y))
+                Ok(derive_p256_address(
+                    &p256_sig.pub_key_x,
+                    &p256_sig.pub_key_y,
+                ))
             }
-            Self::WebAuthn {
-                webauthn_data,
-                r,
-                s,
-                pub_key_x,
-                pub_key_y,
-            } => {
+            Self::WebAuthn(webauthn_sig) => {
                 // Parse and verify WebAuthn data, compute challenge hash
-                let message_hash = verify_webauthn_data_internal(webauthn_data, sig_hash)
-                    .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                let message_hash =
+                    verify_webauthn_data_internal(&webauthn_sig.webauthn_data, sig_hash)
+                        .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Verify P256 signature over the computed message hash
                 verify_p256_signature_internal(
-                    r.as_slice(),
-                    s.as_slice(),
-                    pub_key_x.as_slice(),
-                    pub_key_y.as_slice(),
+                    webauthn_sig.r.as_slice(),
+                    webauthn_sig.s.as_slice(),
+                    webauthn_sig.pub_key_x.as_slice(),
+                    webauthn_sig.pub_key_y.as_slice(),
                     &message_hash,
                 )
                 .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Derive and return address
-                Ok(derive_p256_address(pub_key_x, pub_key_y))
+                Ok(derive_p256_address(
+                    &webauthn_sig.pub_key_x,
+                    &webauthn_sig.pub_key_y,
+                ))
             }
         }
     }
@@ -731,5 +725,79 @@ mod tests {
         // Verify roundtrip
         let decoded3 = AASignature::from_bytes(&encoded3).unwrap();
         assert_eq!(sig3, decoded3);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_aa_signature_serde_roundtrip() {
+        // Test serde roundtrip for all signature types
+
+        // Test Secp256k1
+        let r_bytes = hex!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+        let s_bytes = hex!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
+        let sig = Signature::new(
+            alloy_primitives::U256::from_be_slice(&r_bytes),
+            alloy_primitives::U256::from_be_slice(&s_bytes),
+            false,
+        );
+        let secp256k1_sig = AASignature::Secp256k1(sig);
+
+        let json = serde_json::to_string(&secp256k1_sig).unwrap();
+        let decoded: AASignature = serde_json::from_str(&json).unwrap();
+        assert_eq!(secp256k1_sig, decoded, "Secp256k1 serde roundtrip failed");
+
+        // Test P256
+        let p256_sig = AASignature::P256(P256SignatureWithPreHash {
+            r: B256::from([1u8; 32]),
+            s: B256::from([2u8; 32]),
+            pub_key_x: B256::from([3u8; 32]),
+            pub_key_y: B256::from([4u8; 32]),
+            pre_hash: true,
+        });
+
+        let json = serde_json::to_string(&p256_sig).unwrap();
+        let decoded: AASignature = serde_json::from_str(&json).unwrap();
+        assert_eq!(p256_sig, decoded, "P256 serde roundtrip failed");
+
+        // Verify camelCase naming
+        assert!(
+            json.contains("\"pubKeyX\""),
+            "Should use camelCase for pubKeyX"
+        );
+        assert!(
+            json.contains("\"pubKeyY\""),
+            "Should use camelCase for pubKeyY"
+        );
+        assert!(
+            json.contains("\"preHash\""),
+            "Should use camelCase for preHash"
+        );
+
+        // Test WebAuthn
+        let webauthn_sig = AASignature::WebAuthn(WebAuthnSignature {
+            r: B256::from([5u8; 32]),
+            s: B256::from([6u8; 32]),
+            pub_key_x: B256::from([7u8; 32]),
+            pub_key_y: B256::from([8u8; 32]),
+            webauthn_data: Bytes::from(vec![9u8; 50]),
+        });
+
+        let json = serde_json::to_string(&webauthn_sig).unwrap();
+        let decoded: AASignature = serde_json::from_str(&json).unwrap();
+        assert_eq!(webauthn_sig, decoded, "WebAuthn serde roundtrip failed");
+
+        // Verify camelCase naming
+        assert!(
+            json.contains("\"pubKeyX\""),
+            "Should use camelCase for pubKeyX"
+        );
+        assert!(
+            json.contains("\"pubKeyY\""),
+            "Should use camelCase for pubKeyY"
+        );
+        assert!(
+            json.contains("\"webauthnData\""),
+            "Should use camelCase for webauthnData"
+        );
     }
 }

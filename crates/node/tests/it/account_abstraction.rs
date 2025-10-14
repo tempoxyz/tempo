@@ -11,7 +11,10 @@ use tempo_precompiles::{DEFAULT_FEE_TOKEN, contracts::ITIP20::transferCall};
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
-        TxAA, aa_signature::AASignature, aa_signed::AASigned, account_abstraction::Call,
+        TxAA,
+        aa_signature::{AASignature, P256SignatureWithPreHash, WebAuthnSignature},
+        aa_signed::AASigned,
+        account_abstraction::Call,
     },
 };
 
@@ -441,13 +444,13 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     webauthn_data.extend_from_slice(client_data_json.as_bytes());
 
     // Create WebAuthn AA signature
-    let aa_signature = AASignature::WebAuthn {
+    let aa_signature = AASignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data),
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
         s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
         pub_key_x,
         pub_key_y,
-    };
+    });
 
     println!("Created WebAuthn signature");
 
@@ -618,13 +621,13 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     webauthn_data1.extend_from_slice(&authenticator_data1);
     webauthn_data1.extend_from_slice(client_data_json1.as_bytes());
 
-    let aa_signature1 = AASignature::WebAuthn {
+    let aa_signature1 = AASignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data1),
         r: alloy::primitives::B256::from_slice(&sig_bytes1[0..32]),
         s: alloy::primitives::B256::from_slice(&sig_bytes1[32..64]),
         pub_key_x: wrong_pub_key_x, // WRONG public key
         pub_key_y: wrong_pub_key_y, // WRONG public key
-    };
+    });
 
     // Try to verify - should fail
     let recovery_result1 = aa_signature1.recover_signer(&sig_hash1);
@@ -668,13 +671,13 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     webauthn_data2.extend_from_slice(&authenticator_data2);
     webauthn_data2.extend_from_slice(client_data_json2.as_bytes());
 
-    let aa_signature2 = AASignature::WebAuthn {
+    let aa_signature2 = AASignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data2),
         r: alloy::primitives::B256::from_slice(&sig_bytes2[0..32]),
         s: alloy::primitives::B256::from_slice(&sig_bytes2[32..64]),
         pub_key_x: correct_pub_key_x, // Correct public key
         pub_key_y: correct_pub_key_y, // But signature is from wrong private key
-    };
+    });
 
     // Try to verify - should fail
     let recovery_result2 = aa_signature2.recover_signer(&sig_hash2);
@@ -718,13 +721,13 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     webauthn_data3.extend_from_slice(&authenticator_data3);
     webauthn_data3.extend_from_slice(client_data_json3.as_bytes());
 
-    let aa_signature3 = AASignature::WebAuthn {
+    let aa_signature3 = AASignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data3),
         r: alloy::primitives::B256::from_slice(&sig_bytes3[0..32]),
         s: alloy::primitives::B256::from_slice(&sig_bytes3[32..64]),
         pub_key_x: correct_pub_key_x,
         pub_key_y: correct_pub_key_y,
-    };
+    });
 
     // Try to verify - should fail during WebAuthn data validation
     let recovery_result3 = aa_signature3.recover_signer(&sig_hash3);
@@ -767,13 +770,13 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     webauthn_data4.extend_from_slice(&authenticator_data4);
     webauthn_data4.extend_from_slice(client_data_json4.as_bytes());
 
-    let aa_signature4 = AASignature::WebAuthn {
+    let aa_signature4 = AASignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data4),
         r: alloy::primitives::B256::from_slice(&sig_bytes4[0..32]),
         s: alloy::primitives::B256::from_slice(&sig_bytes4[32..64]),
         pub_key_x: correct_pub_key_x,
         pub_key_y: correct_pub_key_y,
-    };
+    });
 
     // Try to verify - should fail during WebAuthn data validation
     let recovery_result4 = aa_signature4.recover_signer(&sig_hash4);
@@ -836,13 +839,13 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     bad_webauthn_data.extend_from_slice(&bad_auth_data);
     bad_webauthn_data.extend_from_slice(bad_client_data.as_bytes());
 
-    let bad_aa_signature = AASignature::WebAuthn {
+    let bad_aa_signature = AASignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(bad_webauthn_data),
         r: alloy::primitives::B256::from_slice(&bad_sig_bytes[0..32]),
         s: alloy::primitives::B256::from_slice(&bad_sig_bytes[32..64]),
         pub_key_x: correct_pub_key_x,
         pub_key_y: correct_pub_key_y,
-    };
+    });
 
     let signed_bad_tx = AASigned::new_unhashed(bad_tx, bad_aa_signature);
     let bad_envelope: TempoTxEnvelope = signed_bad_tx.into();
@@ -992,13 +995,13 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     let sig_bytes = p256_signature.to_bytes();
 
     // Create P256 AA signature
-    let aa_batch_signature = AASignature::P256 {
+    let aa_batch_signature = AASignature::P256(P256SignatureWithPreHash {
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
         s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
         pub_key_x,
         pub_key_y,
         pre_hash: true, // We pre-hashed the message
-    };
+    });
 
     println!("✓ Created P256 signature for batch transaction");
 
@@ -1072,7 +1075,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
         // Verify it used P256 signature
         match aa_tx.signature() {
-            AASignature::P256 { pre_hash, .. } => {
+            AASignature::P256(P256SignatureWithPreHash { pre_hash, .. }) => {
                 assert!(*pre_hash, "Should have pre_hash flag set");
                 println!("✓ Transaction used P256 signature with pre-hash");
             }
