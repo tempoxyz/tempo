@@ -19,8 +19,8 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use crate::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
     contracts::{
         EvmStorageProvider, LinkingUSD, StablecoinExchange, TIP20Factory, TIP20Token,
         TIP403Registry, TIP4217Registry, TipAccountRegistrar, address_to_token_id_unchecked,
