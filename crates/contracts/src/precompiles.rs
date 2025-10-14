@@ -570,6 +570,11 @@ impl StablecoinDexError {
         Self::MaxInputExceeded(IStablecoinDex::MaxInputExceeded {})
     }
 
+    /// Creates an error when pair does not exist.
+    pub const fn pair_does_not_exist() -> Self {
+        Self::PairDoesNotExist(IStablecoinDex::PairDoesNotExist {})
+    }
+
     /// Creates an error when output is insufficient.
     pub const fn insufficient_output() -> Self {
         Self::InsufficientOutput(IStablecoinDex::InsufficientOutput {})

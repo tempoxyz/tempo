@@ -3,13 +3,13 @@
 //! This module provides the precompile interface for the Stablecoin DEX.
 
 use crate::{
-    contracts::{stablecoin_dex::StablecoinDex, storage::StorageProvider, types::IStablecoinDex},
+    contracts::{stablecoin_dex::StablecoinExchange, storage::StorageProvider, types::IStablecoinExchange},
     precompiles::{Precompile, mutate},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-impl<'a, S: StorageProvider> Precompile for StablecoinDex<'a, S> {
+impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
@@ -20,15 +20,15 @@ impl<'a, S: StorageProvider> Precompile for StablecoinDex<'a, S> {
             .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
 
         match selector {
-            IStablecoinDex::placeCall::SELECTOR => {
-                mutate::<IStablecoinDex::placeCall, IStablecoinDex::IStablecoinDexErrors>(
+            IStablecoinExchange::placeCall::SELECTOR => {
+                mutate::<IStablecoinExchange::placeCall, IStablecoinExchange::IStablecoinExchangeErrors>(
                     calldata,
                     msg_sender,
                     |s, call| self.place(s, call.token, call.amount, call.isBid, call.tick),
                 )
             }
-            IStablecoinDex::placeFlipCall::SELECTOR => {
-                mutate::<IStablecoinDex::placeFlipCall, IStablecoinDex::IStablecoinDexErrors>(
+            IStablecoinExchange::placeFlipCall::SELECTOR => {
+                mutate::<IStablecoinExchange::placeFlipCall, IStablecoinExchange::IStablecoinExchangeErrors>(
                     calldata,
                     msg_sender,
                     |s, call| {
@@ -44,25 +44,25 @@ impl<'a, S: StorageProvider> Precompile for StablecoinDex<'a, S> {
                 )
             }
 
-            IStablecoinDex::balanceOfCall::SELECTOR => Err(PrecompileError::Other(
+            IStablecoinExchange::balanceOfCall::SELECTOR => Err(PrecompileError::Other(
                 "balanceOf not yet implemented".to_string(),
             )),
-            IStablecoinDex::withdrawCall::SELECTOR => Err(PrecompileError::Other(
+            IStablecoinExchange::withdrawCall::SELECTOR => Err(PrecompileError::Other(
                 "withdraw not yet implemented".to_string(),
             )),
-            IStablecoinDex::cancelCall::SELECTOR => Err(PrecompileError::Other(
+            IStablecoinExchange::cancelCall::SELECTOR => Err(PrecompileError::Other(
                 "cancel not yet implemented".to_string(),
             )),
-            IStablecoinDex::sellCall::SELECTOR => Err(PrecompileError::Other(
+            IStablecoinExchange::sellCall::SELECTOR => Err(PrecompileError::Other(
                 "sell not yet implemented".to_string(),
             )),
-            IStablecoinDex::buyCall::SELECTOR => Err(PrecompileError::Other(
+            IStablecoinExchange::buyCall::SELECTOR => Err(PrecompileError::Other(
                 "buy not yet implemented".to_string(),
             )),
-            IStablecoinDex::quoteSellCall::SELECTOR => Err(PrecompileError::Other(
+            IStablecoinExchange::quoteSellCall::SELECTOR => Err(PrecompileError::Other(
                 "quoteSell not yet implemented".to_string(),
             )),
-            IStablecoinDex::quoteBuyCall::SELECTOR => Err(PrecompileError::Other(
+            IStablecoinExchange::quoteBuyCall::SELECTOR => Err(PrecompileError::Other(
                 "quoteBuy not yet implemented".to_string(),
             )),
 
@@ -80,7 +80,7 @@ mod tests {
         HashMapStorageProvider,
         stablecoin_dex::{offsets, slots},
         storage::{StorageOps, slots::mapping_slot},
-        types::StablecoinDexEvent,
+        types::StablecoinExchangeEvent,
     };
     use alloy::{
         primitives::{Bytes, IntoLogData, U256},
@@ -90,7 +90,7 @@ mod tests {
 
     /// Helper to set internal DEX balance for a user (avoids TIP20 transfer in tests)
     fn setup_balance(
-        dex: &mut StablecoinDex<'_, HashMapStorageProvider>,
+        dex: &mut StablecoinExchange<'_, HashMapStorageProvider>,
         user: Address,
         token: Address,
         amount: u128,
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn test_place_function() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -113,7 +113,7 @@ mod tests {
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
         // Create a place call
-        let place_call = IStablecoinDex::placeCall {
+        let place_call = IStablecoinExchange::placeCall {
             token,
             amount: 1000,
             isBid: true,
@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0],
-            StablecoinDexEvent::OrderPlaced(IStablecoinDex::OrderPlaced {
+            StablecoinExchangeEvent::OrderPlaced(IStablecoinExchange::OrderPlaced {
                 orderId: order_id,
                 maker: sender,
                 token,
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn test_place_flip_function() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -157,7 +157,7 @@ mod tests {
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
         // Create a placeFlip call (bid: flip_tick must be > tick)
-        let place_flip_call = IStablecoinDex::placeFlipCall {
+        let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 2000,
             isBid: true,
@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0],
-            StablecoinDexEvent::FlipOrderPlaced(IStablecoinDex::FlipOrderPlaced {
+            StablecoinExchangeEvent::FlipOrderPlaced(IStablecoinExchange::FlipOrderPlaced {
                 orderId: order_id,
                 maker: sender,
                 token,
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn test_multiple_orders_increment_ids() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -204,7 +204,7 @@ mod tests {
         setup_balance(&mut dex, sender, token, 10000);
 
         // Place first order
-        let place_call = IStablecoinDex::placeCall {
+        let place_call = IStablecoinExchange::placeCall {
             token,
             amount: 1000,
             isBid: true,
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(order_id_1, 0);
 
         // Place second order
-        let place_call_2 = IStablecoinDex::placeCall {
+        let place_call_2 = IStablecoinExchange::placeCall {
             token,
             amount: 2000,
             isBid: false,
@@ -230,7 +230,7 @@ mod tests {
         assert_eq!(order_id_2, 1);
 
         // Place third order (flip)
-        let place_flip_call = IStablecoinDex::placeFlipCall {
+        let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 3000,
             isBid: true,
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_order_storage_persistence() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -258,7 +258,7 @@ mod tests {
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
         // Place a regular order
-        let place_call = IStablecoinDex::placeCall {
+        let place_call = IStablecoinExchange::placeCall {
             token,
             amount,
             isBid: true,
@@ -297,7 +297,7 @@ mod tests {
         let flip_order_tick = 5i16;
         let flip_tick_value = 12i16;
 
-        let place_flip_call = IStablecoinDex::placeFlipCall {
+        let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: flip_amount,
             isBid: true,
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_pending_order_id_tracking() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(initial_pending, U256::ZERO);
 
         // Place first order
-        let place_call = IStablecoinDex::placeCall {
+        let place_call = IStablecoinExchange::placeCall {
             token,
             amount: 1000,
             isBid: true,
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn test_place_flip_bid_with_valid_flip_tick() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -381,7 +381,7 @@ mod tests {
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
         // For bid orders, flip_tick must be > tick
-        let place_flip_call = IStablecoinDex::placeFlipCall {
+        let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 2000,
             isBid: true, // bid
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn test_place_flip_ask_with_valid_flip_tick() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -408,7 +408,7 @@ mod tests {
         setup_balance(&mut dex, sender, token, 10000);
 
         // For ask orders, flip_tick must be < tick
-        let place_flip_call = IStablecoinDex::placeFlipCall {
+        let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 2000,
             isBid: false, // ask
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn test_place_flip_bid_with_invalid_flip_tick_returns_error() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -434,7 +434,7 @@ mod tests {
 
         // For bid orders, flip_tick must be > tick
         // This violates the constraint: flipTick (3) <= tick (10)
-        let place_flip_call = IStablecoinDex::placeFlipCall {
+        let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 2000,
             isBid: true, // bid
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn test_place_flip_ask_with_invalid_flip_tick_returns_error() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -462,7 +462,7 @@ mod tests {
 
         // For ask orders, flip_tick must be < tick
         // This violates the constraint: flipTick (15) >= tick (10)
-        let place_flip_call = IStablecoinDex::placeFlipCall {
+        let place_flip_call = IStablecoinExchange::placeFlipCall {
             token,
             amount: 2000,
             isBid: false, // ask
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn test_negative_ticks_are_stored_correctly() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([1u8; 20]);
@@ -492,7 +492,7 @@ mod tests {
         setup_balance(&mut dex, sender, token, 10000);
 
         // Place order with negative tick
-        let place_call = IStablecoinDex::placeCall {
+        let place_call = IStablecoinExchange::placeCall {
             token,
             amount: 1000,
             isBid: false,
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn test_invalid_selector() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
         // Test with invalid selector
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn test_sender_address_stored_correctly() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinDex::new(&mut storage);
+        let mut dex = StablecoinExchange::new(&mut storage);
         dex.initialize();
 
         let sender = Address::from([0xAB; 20]);
@@ -539,7 +539,7 @@ mod tests {
         setup_balance(&mut dex, sender, Address::ZERO, 10000);
 
         // Place an order
-        let place_call = IStablecoinDex::placeCall {
+        let place_call = IStablecoinExchange::placeCall {
             token,
             amount: 1000,
             isBid: true,
