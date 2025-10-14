@@ -1,0 +1,58 @@
+{
+  "label": "main",
+  "log_file": "/Users/yongkang/Code/tempo/tempo/debug_main.log",
+  "block_range": [
+    22101,
+    22111
+  ],
+  "metrics": {
+    "Build Payload Time": {
+      "count": 11,
+      "mean": 374.453981,
+      "median": 365.013416,
+      "min": 104.790917,
+      "max": 807.487167,
+      "std_dev": 165.53967776194378
+    },
+    "Execution Time": {
+      "count": 11,
+      "mean": 305.2922991818182,
+      "median": 304.4875,
+      "min": 82.485291,
+      "max": 725.817083,
+      "std_dev": 155.59921612986005
+    },
+    "Payload Finalization": {
+      "count": 11,
+      "mean": 57.857738636363635,
+      "median": 56.617708,
+      "min": 21.158042,
+      "max": 79.807709,
+      "std_dev": 15.370735339585925
+    },
+    "State Root Task": {
+      "count": 11,
+      "mean": 0.01071609090909091,
+      "median": 0.00575,
+      "min": 0.0049169999999999995,
+      "max": 0.057792,
+      "std_dev": 0.015662121787641325
+    },
+    "Payload Delivery Lag": {
+      "count": 11,
+      "mean": 5.801545454545455,
+      "median": 5.912,
+      "min": 2.523,
+      "max": 9.976,
+      "std_dev": 2.0302738910618126
+    },
+    "Block Added to Canonical Chain": {
+      "count": 11,
+      "mean": 2172.639170636364,
+      "median": 2115.428209,
+      "min": 683.130667,
+      "max": 3107.743458,
+      "std_dev": 677.152030698366
+    }
+  }
+}

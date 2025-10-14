@@ -91,7 +91,7 @@ The analysis extracts these timing metrics from logs:
 
 1. **Build Payload Time** - Total time to build a payload (from "Built payload" log)
 2. **Execution Time** - Execution phase duration (from `execution_elapsed` field)
-3. **Builder Finish Time** - Builder finish phase duration (from `builder_finish_elapsed` field)
+3. **Payload Finalization** - Builder finish phase duration captured by `builder_finish_elapsed` (includes inline state root when applicable)
 4. **State Root Task** - Explicit state root task duration (from "State root task finished" log)
 5. **Payload Delivery Lag** - Time between "Built payload" and "Received block from consensus engine"
 6. **Block Added to Canonical Chain** - Total time to add block to chain (from "Block added" log)

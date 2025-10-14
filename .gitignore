@@ -14,3 +14,8 @@ data/
 # Debug logs
 debug*.log
 *.log
+
+# Python
+*.pyc
+*.pyo
+__pycache__/

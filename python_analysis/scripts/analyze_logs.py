@@ -34,7 +34,7 @@ def compare_logs(before_summary: dict, after_summary: dict) -> None:
     metrics_order = [
         "Build Payload Time",
         "Execution Time",
-        "Builder Finish Time",
+        "Payload Finalization",
         "State Root Task",
         "Payload Delivery Lag",
         "Block Added to Canonical Chain",

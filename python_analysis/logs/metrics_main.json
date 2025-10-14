@@ -22,7 +22,7 @@
       "max": 609.462125,
       "std_dev": 159.35310420612137
     },
-    "Builder Finish Time": {
+    "Payload Finalization": {
       "count": 11,
       "mean": 73.44056454545455,
       "median": 63.095459,

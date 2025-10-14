@@ -97,7 +97,7 @@ def parse_log_file(log_file: Path, block_range: Optional[tuple[int, int]] = None
         Dict with lists of timing values:
             - build_times: Build Payload Time
             - execution_times: Execution Time (from Built payload)
-            - builder_finish_times: Builder Finish Time (from Built payload)
+            - builder_finish_times: Payload Finalization
             - state_root_task_times: State Root Task (explicit task)
             - payload_to_received_times: Payload Delivery Lag
             - block_added_times: Block Added to Canonical Chain
@@ -178,6 +178,8 @@ def parse_log_file(log_file: Path, block_range: Optional[tuple[int, int]] = None
                             payload_to_received_times.append(elapsed_ms)
 
                         del built_payload_times[block_number]
+                    else:
+                        current_block_context = None
                 continue
 
             # Parse "State root task finished"
@@ -191,6 +193,7 @@ def parse_log_file(log_file: Path, block_range: Optional[tuple[int, int]] = None
 
             # Parse "Block added to canonical chain"
             elif "Block added to canonical chain" in clean_line:
+                current_block_context = None
                 number_match = re.search(r"number\s*=\s*(\d+)", clean_line)
                 txs_match = re.search(r"txs\s*=\s*(\d+)", clean_line)
                 match = re.search(r"elapsed\s*=\s*([\d.]+(?:ms|µs|s))", clean_line)
@@ -207,9 +210,6 @@ def parse_log_file(log_file: Path, block_range: Optional[tuple[int, int]] = None
                         time_ms = parse_time_to_ms(match.group(1))
                         if time_ms is not None:
                             block_added_times.append(time_ms)
-
-                # Clear block context
-                current_block_context = None
 
     return {
         "build_times": build_times,
@@ -256,7 +256,7 @@ def build_summary(log_file: Path, block_range: Optional[tuple[int, int]], metric
         "metrics": {
             "Build Payload Time": compute_statistics(metrics["build_times"]),
             "Execution Time": compute_statistics(metrics["execution_times"]),
-            "Builder Finish Time": compute_statistics(metrics["builder_finish_times"]),
+            "Payload Finalization": compute_statistics(metrics["builder_finish_times"]),
             "State Root Task": compute_statistics(metrics["state_root_task_times"]),
             "Payload Delivery Lag": compute_statistics(metrics["payload_to_received_times"]),
             "Block Added to Canonical Chain": compute_statistics(metrics["block_added_times"]),

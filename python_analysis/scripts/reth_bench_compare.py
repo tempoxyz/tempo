@@ -32,7 +32,8 @@ from lib.log_analysis import (
 
 FEATURE_COMMIT = "1619408"
 MAIN_COMMIT = "d2070f4de34f523f6097ebc64fa9d63a04878055"
-SCRIPT_DIR = Path(__file__).resolve().parent
+# Navigate to repo root (2 levels up from scripts/)
+SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
 TEMPO_BIN = SCRIPT_DIR / "target" / "release" / "tempo"
 LOG_SELECTORS = re.compile(
     r"build_payload|Received block from consensus engine|State root task finished|Block added to canonical chain"
@@ -568,14 +569,14 @@ def print_comparison(before_file: Path, after_file: Path) -> None:
     # Order for rendering key tempo metrics:
     # - Build Payload Time: proposer payload construction latency (total).
     # - Execution Time: EVM execution phase from built payload.
-    # - Builder Finish Time: builder finalization phase (may include inline state root).
+    # - Payload Finalization: builder finalization phase that merges transitions and may compute the state root synchronously.
     # - State Root Task: explicit state root computation (ranges from µs cache lookups to seconds for actual computation).
     # - Payload Delivery Lag: time from payload build to consensus-engine receipt.
     # - Block Added to Canonical Chain: end-to-end block import confirmation.
     metrics_order = [
         "Build Payload Time",
         "Execution Time",
-        "Builder Finish Time",
+        "Payload Finalization",
         "State Root Task",
         "Payload Delivery Lag",
         "Block Added to Canonical Chain",
