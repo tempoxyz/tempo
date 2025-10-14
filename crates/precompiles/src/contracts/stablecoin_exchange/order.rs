@@ -4,9 +4,34 @@
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
-use alloy::primitives::{Address, B256};
+use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
 
 use super::error::OrderError;
+use alloy::primitives::{Address, B256, U256, uint};
+use revm::interpreter::instructions::utility::IntoU256;
+
+// Order struct field offsets (relative to order base slot)
+// Matches Solidity Order struct layout
+/// Maker address field offset
+pub const ORDER_MAKER_OFFSET: U256 = uint!(0_U256);
+/// Orderbook key field offset
+pub const ORDER_BOOK_KEY_OFFSET: U256 = uint!(1_U256);
+/// Is bid boolean field offset
+pub const ORDER_IS_BID_OFFSET: U256 = uint!(2_U256);
+/// Tick field offset
+pub const ORDER_TICK_OFFSET: U256 = uint!(3_U256);
+/// Original amount field offset
+pub const ORDER_AMOUNT_OFFSET: U256 = uint!(4_U256);
+/// Remaining amount field offset
+pub const ORDER_REMAINING_OFFSET: U256 = uint!(5_U256);
+/// Previous order ID field offset
+pub const ORDER_PREV_OFFSET: U256 = uint!(6_U256);
+/// Next order ID field offset
+pub const ORDER_NEXT_OFFSET: U256 = uint!(7_U256);
+/// Is flip order boolean field offset
+pub const ORDER_IS_FLIP_OFFSET: U256 = uint!(8_U256);
+/// Flip tick field offset
+pub const ORDER_FLIP_TICK_OFFSET: U256 = uint!(9_U256);
 
 /// Represents an order in the stablecoin DEX orderbook.
 ///
@@ -237,6 +262,80 @@ impl Order {
         }
         *self.remaining_mut() = self.remaining.saturating_sub(fill_amount);
         Ok(())
+    }
+
+    pub fn store<S: StorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
+        let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_MAKER_OFFSET,
+                self.maker().into_u256(),
+            )
+            .expect("Storage write failed");
+
+        // Store book_key
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_BOOK_KEY_OFFSET,
+                U256::from_be_bytes(self.book_key().0),
+            )
+            .expect("Storage write failed");
+
+        // Store is_bid boolean
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_IS_BID_OFFSET,
+                U256::from(self.is_bid() as u8),
+            )
+            .expect("Storage write failed");
+
+        // Store tick
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_TICK_OFFSET,
+                U256::from(self.tick() as i128 as u128), // Cast i16 through i128 to preserve sign
+            )
+            .expect("Storage write failed");
+
+        // Store original amount
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_AMOUNT_OFFSET,
+                U256::from(self.amount()),
+            )
+            .expect("Storage write failed");
+
+        // Store remaining amount
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_REMAINING_OFFSET,
+                U256::from(self.remaining()),
+            )
+            .expect("Storage write failed");
+
+        // Store is_flip boolean
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_IS_FLIP_OFFSET,
+                U256::from(self.is_flip() as u8),
+            )
+            .expect("Storage write failed");
+
+        // Store flip_tick (always store, even if 0 for non-flip orders)
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_FLIP_TICK_OFFSET,
+                U256::from(self.flip_tick() as i128 as u128),
+            )
+            .expect("Storage write failed");
     }
 
     /// Creates a flipped order from a fully filled flip order.

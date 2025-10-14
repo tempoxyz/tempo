@@ -95,83 +95,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         buf[20..].copy_from_slice(token_b.as_slice());
         keccak256(buf)
     }
-
-    /// Store a pending order
-    fn store_pending_order(&mut self, order_id: u128, order: &Order) {
-        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
-
-        // Store maker address
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_MAKER_OFFSET,
-                order.maker().into_u256(),
-            )
-            .expect("Storage write failed");
-
-        // Store book_key
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_BOOK_KEY_OFFSET,
-                U256::from_be_bytes(order.book_key().0),
-            )
-            .expect("Storage write failed");
-
-        // Store is_bid boolean
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_IS_BID_OFFSET,
-                U256::from(order.is_bid() as u8),
-            )
-            .expect("Storage write failed");
-
-        // Store tick
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_TICK_OFFSET,
-                U256::from(order.tick() as i128 as u128), // Cast i16 through i128 to preserve sign
-            )
-            .expect("Storage write failed");
-
-        // Store original amount
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_AMOUNT_OFFSET,
-                U256::from(order.amount()),
-            )
-            .expect("Storage write failed");
-
-        // Store remaining amount
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_REMAINING_OFFSET,
-                U256::from(order.remaining()),
-            )
-            .expect("Storage write failed");
-
-        // Store is_flip boolean
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_IS_FLIP_OFFSET,
-                U256::from(order.is_flip() as u8),
-            )
-            .expect("Storage write failed");
-
-        // Store flip_tick (always store, even if 0 for non-flip orders)
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_FLIP_TICK_OFFSET,
-                U256::from(order.flip_tick() as i128 as u128),
-            )
-            .expect("Storage write failed");
-    }
 }
 
 impl<'a, S: StorageProvider> StorageOps for StablecoinExchange<'a, S> {
@@ -422,7 +345,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         };
 
         // Store in pending queue
-        self.store_pending_order(order_id, &order);
+        order.store(self.storage, self.address);
 
         // Emit OrderPlaced event
         self.storage
@@ -497,7 +420,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .expect("Invalid flip tick");
 
         // Store in pending queue
-        self.store_pending_order(order_id, &order);
+        order.store(self.storage, self.address);
 
         // Emit FlipOrderPlaced event
         self.storage
@@ -756,7 +679,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 )
                 .expect("Invalid flip order");
 
-                self.store_pending_order(new_order_id, &new_order);
+                new_order.store(self.storage, self.address);
             }
 
             let next = self
@@ -1688,16 +1611,17 @@ mod tests {
 
     #[test]
     fn test_place_bid_order() {
-        // let mut storage = HashMapStorageProvider::new(1);
-        // let mut exchange = StablecoinExchange::new(&mut storage);
-        // exchange.initialize();
-        //
-        // let alice = Address::random();
-        // let admin = Address::random();
-        // let base_token = Address::random();
-        // let quote_token = Address::random();
-        // let amount = 1_000_000_000_000_000_000u128; // 1e18
-        // let tick = 100i16;
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let base_token = Address::random();
+        let quote_token = Address::random();
+        let amount = 1_000_000_000_000_000_000u128; // 1e18
+        let tick = 100i16;
+
         //
         // // Initialize base token
         // let token_id = address_to_token_id_unchecked(&base_token);
