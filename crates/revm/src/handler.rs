@@ -191,7 +191,7 @@ where
                 tx.inner.gas_limit = gas_limit;
             }
 
-            let frame_result = frame_result?;
+            let mut frame_result = frame_result?;
 
             // Check if call succeeded
             let instruction_result = frame_result.instruction_result();
@@ -199,7 +199,13 @@ where
                 // Revert checkpoint - rolls back ALL state changes from ALL calls
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
-                // Return the failure result (gas accounting already correct for failed call)
+                // Include gas from all previous successful calls + failed call
+                let gas_used_by_failed_call = frame_result.gas().used();
+                let total_gas_used = (gas_limit - remaining_gas) + gas_used_by_failed_call;
+                let gas = frame_result.gas_mut();
+                gas.set_spent(total_gas_used);
+                gas.set_refund(0); // No refunds when batch fails and all state is reverted
+
                 return Ok(frame_result);
             }
 
