@@ -135,7 +135,7 @@ def parse_log_file(log_file: Path, block_range: Optional[Sequence[int]] = None) 
                     block_number = parent_number + 1
                     total_transactions = int(txs_match.group(1)) if txs_match else 0
                     include_block = total_transactions > 1 and block_number != 1
-                    if block_number != 1:
+                    if include_block or block_number > 1:
                         built_payload_times[block_number] = {"timestamp": timestamp, "include": include_block}
 
                 match = re.search(r"elapsed\s*=\s*([\d.]+(?:ms|µs|s))", clean_line)
