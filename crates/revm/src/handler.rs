@@ -29,7 +29,7 @@ use tempo_precompiles::{
         tip20,
     },
 };
-use tempo_primitives::AA_TX_TYPE_ID;
+use tempo_primitives::{AA_TX_TYPE_ID, transaction::AASignature};
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
 
@@ -509,26 +509,31 @@ where
 
     // Calculate AA-specific additional gas (signature + nonce key costs)
 
+    // Parse the signature using AASignature to determine type from prefix
+    let aa_signature = AASignature::from_bytes(sig_bytes).map_err(|e| {
+        TempoInvalidTransaction::InvalidWebAuthnSignature {
+            reason: format!("Failed to parse signature: {e}"),
+        }
+    })?;
+
     // Calculate additional signature verification gas beyond the base 21k
-    // secp256k1 (64 or 65 bytes): 0 additional (already included in base)
-    // P256 (129 bytes): 5,000 additional
-    // WebAuthn (>129 bytes): 5,000 + calldata gas for variable data
-    let additional_signature_gas = match sig_bytes.len() {
-        64 | 65 => {
-            // secp256k1 signature - no additional gas needed
+    // secp256k1: 0 additional (already included in base)
+    // P256: 5,000 additional
+    // WebAuthn: 5,000 + calldata gas for variable data
+    let additional_signature_gas = match aa_signature {
+        AASignature::Secp256k1(_) => {
+            // secp256k1 signature - no additional gas needed (already included in base 21k)
             0
         }
-        129 => {
+        AASignature::P256(_) => {
             // P256 signature - add P256 verification gas
             P256_VERIFY_GAS
         }
-        len if len > 129 && len <= 2048 => {
-            // WebAuthn signature format: webauthn_data || r (32) || s (32) || pubKeyX (32) || pubKeyY (32)
-            // Charge calldata gas for variable webauthn_data (everything except last 128 bytes)
-            let webauthn_data = &sig_bytes[..sig_bytes.len() - 128];
-            // Calculate calldata gas inline
+        AASignature::WebAuthn(webauthn_sig) => {
+            // WebAuthn signature - add P256 verification gas + calldata gas for variable data
+            // Calculate calldata gas for variable webauthn_data
             let mut webauthn_data_gas = 0u64;
-            for &byte in webauthn_data {
+            for &byte in webauthn_sig.webauthn_data.iter() {
                 webauthn_data_gas = webauthn_data_gas.saturating_add(if byte == 0 {
                     CALLDATA_ZERO_BYTE_GAS
                 } else {
@@ -536,12 +541,6 @@ where
                 });
             }
             P256_VERIFY_GAS + webauthn_data_gas
-        }
-        _ => {
-            return Err(TempoInvalidTransaction::InvalidWebAuthnSignature {
-                reason: format!("Invalid signature length: {}", sig_bytes.len()),
-            }
-            .into());
         }
     };
 
