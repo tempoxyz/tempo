@@ -57,9 +57,11 @@ The execution driver must be epoch aware and only serve requests (from the
 consensus engine) for its epoch:
 
 1. genesis is always the last height of the previous epoch (so for epoch 0
-genesis is height 0, for epoch 1 genesis is H, for nd so on).
+genesis is height 0, for epoch 1 genesis is H, and so on).
 2. when requested to propose on top of the last height in its epoch, the
-parent digest will be reshared.
+proposer will not create a new block but instead re-propose the last block.
+This means, if asked to propose on top of `parent.digest`, it will return
+`proposal = parent.digest`.
 3. at the epoch boundary, the execution driver *must not update* the execution
 layer (no forkchoice-updates, no new-payload).
 4. verification will only permit blocks within its defined epoch (reshared
@@ -67,7 +69,7 @@ blocks at the epoch boundary are accepted).
 5. when receiving a finalization at the epoch boundary, a `epoch-transition`
 event is emitted to the orchestrator.
 
-Resharing the last proposed block at the epoch boundary is critical: the
+Re-prosoing the last proposed block at the epoch boundary is critical: the
 state machine itself will not make progress, but new notarizations will be
 generated (even if the proposals are the same).
 This ensures that other validators can indirectly finalize older blocks even
@@ -131,7 +133,7 @@ the number of players).
 3. at the midpoint of epoch `R` (at `height % K == K / 2`), construct the deal
 outcome - a tuple `outcome := (commitment, acks, reveals)`, where
 `acks := [ack]` the acknowledgements received by all players, and
-`reaveals := [share]` the shares for which no acknowledgement was received.
+`reveals := [share]` the shares for which no acknowledgement was received.
 4. write `outcome` to a block.
 5. read and process the `outcome`s of all other dealers from blocks.
 6. at the end of epoch `R`, finalize all outcomes and recover the new group
