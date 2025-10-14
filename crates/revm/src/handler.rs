@@ -103,6 +103,37 @@ impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: reth_evm::Database,
 {
+    /// Generic single-call execution that works with both standard and inspector exec loops.
+    ///
+    /// This is the core implementation that both `execute_single_call` and inspector-aware
+    /// execution can use by providing the appropriate exec loop function.
+    fn execute_single_call_with<F>(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        init_and_floor_gas: &InitialAndFloorGas,
+        mut run_loop: F,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
+    where
+        F: FnMut(
+            &mut Self,
+            &mut TempoEvm<DB, I>,
+            <<TempoEvm<DB, I> as EvmTr>::Frame as FrameTr>::FrameInit,
+        ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
+    {
+        let gas_limit = evm.ctx().tx().gas_limit() - init_and_floor_gas.initial_gas;
+
+        // Create first frame action
+        let first_frame_input = self.first_frame_input(evm, gas_limit)?;
+
+        // Run execution loop (standard or inspector)
+        let mut frame_result = run_loop(self, evm, first_frame_input)?;
+
+        // Handle last frame result
+        self.last_frame_result(evm, &mut frame_result)?;
+
+        Ok(frame_result)
+    }
+
     /// Executes a standard single-call transaction using the default handler logic.
     ///
     /// This calls the same helper methods used by the default Handler::execution() implementation.
@@ -111,24 +142,15 @@ where
         evm: &mut TempoEvm<DB, I>,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
-        // Standard execution flow from Handler::execution() default impl
-        let gas_limit = evm.ctx().tx().gas_limit() - init_and_floor_gas.initial_gas;
-
-        // Create first frame action
-        let first_frame_input = self.first_frame_input(evm, gas_limit)?;
-
-        // Run execution loop
-        let mut frame_result = self.run_exec_loop(evm, first_frame_input)?;
-
-        // Handle last frame result
-        self.last_frame_result(evm, &mut frame_result)?;
-
-        Ok(frame_result)
+        self.execute_single_call_with(evm, init_and_floor_gas, Self::run_exec_loop)
     }
 
-    /// Executes a multi-call AA transaction atomically.
+    /// Generic multi-call execution that works with both standard and inspector exec loops.
     ///
-    /// This method provides atomic batch execution for AA transactions with multiple calls:
+    /// This is the core implementation for atomic batch execution that both `execute_multi_call`
+    /// and inspector-aware execution can use by providing the appropriate single-call function.
+    ///
+    /// Provides atomic batch execution for AA transactions with multiple calls:
     /// 1. Creates a checkpoint before executing any calls
     /// 2. Executes each call sequentially, updating gas tracking
     /// 3. If ANY call fails, reverts ALL state changes atomically
@@ -138,12 +160,20 @@ where
     /// - Each individual call creates its own internal checkpoint
     /// - The outer checkpoint (created here) captures state before any calls execute
     /// - Reverting the outer checkpoint undoes all nested changes
-    fn execute_multi_call(
+    fn execute_multi_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
         init_and_floor_gas: &InitialAndFloorGas,
         calls: Vec<tempo_primitives::transaction::Call>,
-    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
+        mut execute_single: F,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
+    where
+        F: FnMut(
+            &mut Self,
+            &mut TempoEvm<DB, I>,
+            &InitialAndFloorGas,
+        ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
+    {
         // Create checkpoint for atomic execution - captures state before any calls
         let checkpoint = evm.ctx().journal_mut().checkpoint();
 
@@ -168,8 +198,8 @@ where
                 tx.inner.gas_limit = remaining_gas + init_and_floor_gas.initial_gas;
             }
 
-            // Execute this call using standard single-call execution
-            let frame_result = self.execute_single_call(evm, init_and_floor_gas)?;
+            // Execute this call using the provided single-call function
+            let frame_result = execute_single(self, evm, init_and_floor_gas)?;
 
             // Check if call succeeded
             let instruction_result = frame_result.instruction_result();
@@ -210,6 +240,52 @@ where
         gas.set_refund(accumulated_gas_refund);
 
         Ok(result)
+    }
+
+    /// Executes a multi-call AA transaction atomically.
+    fn execute_multi_call(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        init_and_floor_gas: &InitialAndFloorGas,
+        calls: Vec<tempo_primitives::transaction::Call>,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
+        self.execute_multi_call_with(evm, init_and_floor_gas, calls, Self::execute_single_call)
+    }
+
+    /// Executes a standard single-call transaction with inspector support.
+    ///
+    /// This is the inspector-aware version of execute_single_call that uses
+    /// inspect_run_exec_loop instead of run_exec_loop.
+    fn inspect_execute_single_call(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        init_and_floor_gas: &InitialAndFloorGas,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
+    where
+        I: Inspector<TempoContext<DB>, EthInterpreter>,
+    {
+        self.execute_single_call_with(evm, init_and_floor_gas, Self::inspect_run_exec_loop)
+    }
+
+    /// Executes a multi-call AA transaction atomically with inspector support.
+    ///
+    /// This is the inspector-aware version of execute_multi_call that uses
+    /// inspect_execute_single_call instead of execute_single_call.
+    fn inspect_execute_multi_call(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        init_and_floor_gas: &InitialAndFloorGas,
+        calls: Vec<tempo_primitives::transaction::Call>,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
+    where
+        I: Inspector<TempoContext<DB>, EthInterpreter>,
+    {
+        self.execute_multi_call_with(
+            evm,
+            init_and_floor_gas,
+            calls,
+            Self::inspect_execute_single_call,
+        )
     }
 }
 
@@ -667,6 +743,39 @@ where
         match self.inspect_run_without_catch_error(evm) {
             Ok(output) => Ok(output),
             Err(e) => self.catch_error(evm, e),
+        }
+    }
+
+    /// Overridden execution method with inspector support that handles AA vs standard transactions.
+    ///
+    /// Dispatches based on transaction type:
+    /// - AA transactions (type 0x76): Use batch execution path with calls field
+    /// - All other transactions: Use standard single-call execution
+    ///
+    /// This mirrors the logic in Handler::execution but uses inspector-aware execution methods.
+    #[inline]
+    fn inspect_execution(
+        &mut self,
+        evm: &mut Self::Evm,
+        init_and_floor_gas: &InitialAndFloorGas,
+    ) -> Result<FrameResult, Self::Error> {
+        // Check transaction type to determine execution path
+        let tx_type = evm.ctx().tx().tx_type();
+
+        if tx_type == AA_TX_TYPE_ID {
+            // AA transaction - use batch execution with calls field
+            let calls = evm
+                .ctx()
+                .tx()
+                .aa_tx_env
+                .as_ref()
+                .map(|aa| aa.aa_calls.clone())
+                .ok_or_else(|| EVMError::Custom("AA transaction missing calls field".into()))?;
+
+            self.inspect_execute_multi_call(evm, init_and_floor_gas, calls)
+        } else {
+            // Standard transaction - use single-call execution
+            self.inspect_execute_single_call(evm, init_and_floor_gas)
         }
     }
 }
