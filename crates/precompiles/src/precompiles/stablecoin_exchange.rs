@@ -283,13 +283,15 @@ mod tests {
         let stored_tick = dex.sload(order_slot + offsets::ORDER_TICK_OFFSET);
         assert_eq!(stored_tick, U256::from(tick as i128 as u128));
 
-        // Check side (Bid = 0, Ask = 1)
-        let stored_side = dex.sload(order_slot + offsets::ORDER_SIDE_OFFSET);
-        assert_eq!(stored_side, U256::from(0u8)); // Bid = 0
+        let is_bid = dex
+            .sload(order_slot + offsets::ORDER_IS_BID_OFFSET)
+            .to::<bool>();
+        assert!(is_bid);
 
-        // Check is_flip (false = 0)
-        let stored_is_flip = dex.sload(order_slot + offsets::ORDER_IS_FLIP_OFFSET);
-        assert_eq!(stored_is_flip, U256::ZERO);
+        let is_flip = dex
+            .sload(order_slot + offsets::ORDER_IS_FLIP_OFFSET)
+            .to::<bool>();
+        assert!(!is_flip);
 
         // Check flip_tick (should be 0 for non-flip orders)
         let stored_flip_tick = dex.sload(order_slot + offsets::ORDER_FLIP_TICK_OFFSET);
