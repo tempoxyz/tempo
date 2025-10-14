@@ -1,7 +1,7 @@
 # Tempo Benchmark: Main vs Feature Reth Revisions
 
 ## Test Context
-- **Script**: `./reth-bench-compare.sh`
+- **Script**: `./reth_bench_compare.py`
 - **Bench tool**: `cargo run --bin tempo-bench run-max-tps`
 - **HTTP endpoint**: `http://localhost:8545`
 - **TPS target**: 20k, chain id 1337
@@ -21,7 +21,7 @@
 |  | Min | 252.534 ms | 240.773 ms | -11.761 ms | -4.7% |
 |  | Max | 578.119 ms | 404.723 ms | -173.396 ms | -30.0% |
 |  | Std Dev | 103.123 ms | 48.856 ms | -54.267 ms | -52.6% |
-| **State Root Computation** | Average | 6.872 ms | 4.594 ms | -2.278 ms | -33.1% |
+| **Payload Delivery Lag** | Average | 6.872 ms | 4.594 ms | -2.278 ms | -33.1% |
 |  | Median | 4.785 ms | 4.399 ms | -0.386 ms | -8.1% |
 |  | Min | 2.892 ms | 2.940 ms | +0.048 ms | +1.7% |
 |  | Max | 25.717 ms | 6.628 ms | -19.089 ms | -74.2% |

@@ -6,6 +6,7 @@ LOG_FILE="${TEMPO_LOG_FILE:-debug.log}"
 JSON_OUTPUT=""
 ANALYZE_LABEL=""
 QUIET_ANALYZE=0
+SKIP_ANALYSIS=0
 
 usage() {
   cat <<EOF
@@ -16,6 +17,7 @@ Options:
   --json-output <path>   Write summary metrics JSON to the given path
   --label <name>         Label to include in the metrics JSON
   --quiet                Suppress verbose analysis output
+  --skip-analysis        Skip the log analysis step (use when orchestrator handles it)
   -h, --help             Show this help message
 EOF
 }
@@ -36,6 +38,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --quiet)
       QUIET_ANALYZE=1
+      shift
+      ;;
+    --skip-analysis)
+      SKIP_ANALYSIS=1
       shift
       ;;
     -h|--help)
@@ -73,6 +79,12 @@ echo "Step 3: Killing tempo node..."
 kill "$TEMPO_PID"
 
 echo "Tempo process killed successfully"
+
+if [[ ${SKIP_ANALYSIS} -eq 1 ]]; then
+  echo ""
+  echo "Skipping log analysis step (requested via --skip-analysis)."
+  exit 0
+fi
 
 echo ""
 echo "Step 4: Analyzing logs (${LOG_FILE})..."
