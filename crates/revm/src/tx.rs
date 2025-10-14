@@ -21,7 +21,7 @@ pub struct AATxEnv {
     pub signature: Bytes,
 
     /// validBefore timestamp
-    pub valid_before: u64,
+    pub valid_before: Option<u64>,
 
     /// validAfter timestamp
     pub valid_after: Option<u64>,

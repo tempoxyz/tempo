@@ -680,7 +680,7 @@ where
 /// This ensures transactions are only valid within a specific time window.
 pub fn validate_time_window(
     valid_after: Option<u64>,
-    valid_before: u64,
+    valid_before: Option<u64>,
     block_timestamp: u64,
 ) -> Result<(), TempoInvalidTransaction> {
     // Validate validAfter constraint
@@ -694,10 +694,12 @@ pub fn validate_time_window(
     }
 
     // Validate validBefore constraint
-    if block_timestamp >= valid_before {
+    if let Some(before) = valid_before
+        && block_timestamp >= before
+    {
         return Err(TempoInvalidTransaction::ValidBefore {
             current: block_timestamp,
-            valid_before,
+            valid_before: before,
         });
     }
 

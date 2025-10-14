@@ -23,6 +23,15 @@ pub enum SignatureType {
     WebAuthn,
 }
 
+/// Helper function to create an RLP header for a list with the given payload length
+#[inline]
+fn rlp_header(payload_length: usize) -> alloy_rlp::Header {
+    alloy_rlp::Header {
+        list: true,
+        payload_length,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -37,11 +46,7 @@ pub struct Call {
 impl Encodable for Call {
     fn encode(&self, out: &mut dyn BufMut) {
         let payload_length = self.to.length() + self.value.length() + self.input.length();
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .encode(out);
+        rlp_header(payload_length).encode(out);
         self.to.encode(out);
         self.value.encode(out);
         self.input.encode(out);
@@ -49,11 +54,7 @@ impl Encodable for Call {
 
     fn length(&self) -> usize {
         let payload_length = self.to.length() + self.value.length() + self.input.length();
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .length_with_payload()
+        rlp_header(payload_length).length_with_payload()
     }
 }
 
@@ -131,8 +132,8 @@ pub struct TxAA {
     pub fee_payer_signature: Option<Signature>,
 
     /// Transaction can only be included in a block before this timestamp
-    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
-    pub valid_before: u64,
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
+    pub valid_before: Option<u64>,
 
     /// Transaction can only be included in a block after this timestamp
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
@@ -155,7 +156,8 @@ impl TxAA {
 
         // validBefore must be greater than validAfter if both are set
         if let Some(valid_after) = self.valid_after
-            && self.valid_before <= valid_after
+            && let Some(valid_before) = self.valid_before
+            && valid_before <= valid_after
         {
             return Err("valid_before must be greater than valid_after");
         }
@@ -202,23 +204,13 @@ impl TxAA {
         // Use helper functions for consistent encoding
         let payload_length = self.rlp_encoded_fields_length(|_| sender.length(), false);
 
-        let mut buf = Vec::with_capacity(
-            1 + alloy_rlp::Header {
-                list: true,
-                payload_length,
-            }
-            .length_with_payload(),
-        );
+        let mut buf = Vec::with_capacity(1 + rlp_header(payload_length).length_with_payload());
 
         // Magic byte for fee payer signature (like TxFeeToken)
         buf.put_u8(FEE_PAYER_SIGNATURE_MAGIC_BYTE);
 
         // RLP header
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .encode(&mut buf);
+        rlp_header(payload_length).encode(&mut buf);
 
         // Encode fields using helper (skip_fee_token = false, so fee_token IS included)
         self.rlp_encode_fields(
@@ -255,7 +247,11 @@ impl TxAA {
             // nonce
             self.nonce.length() +
             // valid_before
-            self.valid_before.length() +
+            if let Some(valid_before) = self.valid_before {
+                valid_before.length()
+            } else {
+                1 // EMPTY_STRING_CODE
+            } +
             // valid_after (optional u64)
             if let Some(valid_after) = self.valid_after {
                 valid_after.length()
@@ -294,7 +290,11 @@ impl TxAA {
         self.nonce.encode(out);
 
         // Encode valid_before
-        self.valid_before.encode(out);
+        if let Some(valid_before) = self.valid_before {
+            valid_before.encode(out);
+        } else {
+            out.put_u8(EMPTY_STRING_CODE);
+        }
 
         // Encode valid_after
         if let Some(valid_after) = self.valid_after {
@@ -322,11 +322,7 @@ impl TxAA {
         self.rlp_encoded_fields_length(
             |signature| {
                 signature.map_or(1, |s| {
-                    alloy_rlp::Header {
-                        list: true,
-                        payload_length: s.rlp_rs_len() + s.v().length(),
-                    }
-                    .length_with_payload()
+                    rlp_header(s.rlp_rs_len() + s.v().length()).length_with_payload()
                 })
             },
             false,
@@ -340,11 +336,7 @@ impl TxAA {
             |signature, out| {
                 if let Some(signature) = signature {
                     let payload_length = signature.rlp_rs_len() + signature.v().length();
-                    alloy_rlp::Header {
-                        list: true,
-                        payload_length,
-                    }
-                    .encode(out);
+                    rlp_header(payload_length).encode(out);
                     signature.write_rlp_vrs(out, signature.v());
                 } else {
                     out.put_u8(EMPTY_STRING_CODE);
@@ -366,7 +358,17 @@ impl TxAA {
         let access_list = Decodable::decode(buf)?;
         let nonce_key = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
-        let valid_before = Decodable::decode(buf)?;
+
+        let valid_before = if let Some(first) = buf.first() {
+            if *first == EMPTY_STRING_CODE {
+                buf.advance(1);
+                None
+            } else {
+                Some(Decodable::decode(buf)?)
+            }
+        } else {
+            return Err(alloy_rlp::Error::InputTooShort);
+        };
 
         let valid_after = if let Some(first) = buf.first() {
             if *first == EMPTY_STRING_CODE {
@@ -553,11 +555,7 @@ impl SignableTransaction<Signature> for TxAA {
         // Compute payload length using helper
         let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
 
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .encode(out);
+        rlp_header(payload_length).encode(out);
 
         // Encode fields using helper
         self.rlp_encode_fields(
@@ -577,11 +575,7 @@ impl SignableTransaction<Signature> for TxAA {
         let skip_fee_token = self.fee_payer_signature.is_some();
         let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
 
-        1 + alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .length_with_payload()
+        1 + rlp_header(payload_length).length_with_payload()
     }
 }
 
@@ -589,21 +583,13 @@ impl Encodable for TxAA {
     fn encode(&self, out: &mut dyn BufMut) {
         // Encode as RLP list of fields
         let payload_length = self.rlp_encoded_fields_length_default();
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .encode(out);
+        rlp_header(payload_length).encode(out);
         self.rlp_encode_fields_default(out);
     }
 
     fn length(&self) -> usize {
         let payload_length = self.rlp_encoded_fields_length_default();
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .length_with_payload()
+        rlp_header(payload_length).length_with_payload()
     }
 }
 
@@ -644,7 +630,7 @@ mod tests {
 
         // Valid: valid_before > valid_after
         let tx1 = TxAA {
-            valid_before: 100,
+            valid_before: Some(100),
             valid_after: Some(50),
             calls: vec![dummy_call.clone()],
             ..Default::default()
@@ -653,7 +639,7 @@ mod tests {
 
         // Invalid: valid_before <= valid_after
         let tx2 = TxAA {
-            valid_before: 50,
+            valid_before: Some(50),
             valid_after: Some(100),
             calls: vec![dummy_call.clone()],
             ..Default::default()
@@ -662,7 +648,7 @@ mod tests {
 
         // Invalid: valid_before == valid_after
         let tx3 = TxAA {
-            valid_before: 100,
+            valid_before: Some(100),
             valid_after: Some(100),
             calls: vec![dummy_call.clone()],
             ..Default::default()
@@ -671,7 +657,7 @@ mod tests {
 
         // Valid: no valid_after
         let tx4 = TxAA {
-            valid_before: 100,
+            valid_before: Some(100),
             valid_after: None,
             calls: vec![dummy_call],
             ..Default::default()
@@ -732,7 +718,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
-            valid_before: 1000000,
+            valid_before: Some(1000000),
             valid_after: Some(500000),
         };
 
@@ -782,7 +768,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: None,
-            valid_before: 1000,
+            valid_before: Some(1000),
             valid_after: None,
         };
 
@@ -935,7 +921,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
-            valid_before: 1000,
+            valid_before: Some(1000),
             valid_after: None,
             access_list: Default::default(),
         };
@@ -1012,7 +998,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
-            valid_before: 1000,
+            valid_before: Some(1000),
             valid_after: None,
             access_list: Default::default(),
         };
@@ -1054,7 +1040,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: None, // No fee payer
-            valid_before: 1000,
+            valid_before: Some(1000),
             valid_after: None,
             access_list: Default::default(),
         };
@@ -1114,7 +1100,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
-            valid_before: 1000,
+            valid_before: Some(1000),
             valid_after: None,
             access_list: Default::default(),
         };
@@ -1176,7 +1162,7 @@ mod tests {
             nonce_key: 0,
             nonce: 1,
             fee_payer_signature: None,
-            valid_before: 1000,
+            valid_before: Some(1000),
             valid_after: None,
             access_list: Default::default(),
         };
