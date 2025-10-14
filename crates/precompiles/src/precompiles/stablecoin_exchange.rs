@@ -3,7 +3,10 @@
 //! This module provides the precompile interface for the Stablecoin DEX.
 
 use crate::{
-    contracts::{stablecoin_dex::StablecoinExchange, storage::StorageProvider, types::IStablecoinExchange},
+    contracts::{
+        stablecoin_exchange::StablecoinExchange, storage::StorageProvider,
+        types::IStablecoinExchange,
+    },
     precompiles::{Precompile, mutate},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -21,27 +24,27 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
 
         match selector {
             IStablecoinExchange::placeCall::SELECTOR => {
-                mutate::<IStablecoinExchange::placeCall, IStablecoinExchange::IStablecoinExchangeErrors>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.place(s, call.token, call.amount, call.isBid, call.tick),
-                )
+                mutate::<
+                    IStablecoinExchange::placeCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |s, call| {
+                    self.place(s, call.token, call.amount, call.isBid, call.tick)
+                })
             }
             IStablecoinExchange::placeFlipCall::SELECTOR => {
-                mutate::<IStablecoinExchange::placeFlipCall, IStablecoinExchange::IStablecoinExchangeErrors>(
-                    calldata,
-                    msg_sender,
-                    |s, call| {
-                        self.place_flip(
-                            s,
-                            call.token,
-                            call.amount,
-                            call.isBid,
-                            call.tick,
-                            call.flipTick,
-                        )
-                    },
-                )
+                mutate::<
+                    IStablecoinExchange::placeFlipCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |s, call| {
+                    self.place_flip(
+                        s,
+                        call.token,
+                        call.amount,
+                        call.isBid,
+                        call.tick,
+                        call.flipTick,
+                    )
+                })
             }
 
             IStablecoinExchange::balanceOfCall::SELECTOR => Err(PrecompileError::Other(
@@ -78,9 +81,9 @@ mod tests {
     use super::*;
     use crate::contracts::{
         HashMapStorageProvider,
-        stablecoin_dex::{offsets, slots},
+        stablecoin_exchange::{offsets, slots},
         storage::{StorageOps, slots::mapping_slot},
-        types::StablecoinExchangeEvent,
+        types::StablecoinExchangeEvents,
     };
     use alloy::{
         primitives::{Bytes, IntoLogData, U256},
@@ -133,7 +136,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0],
-            StablecoinExchangeEvent::OrderPlaced(IStablecoinExchange::OrderPlaced {
+            StablecoinExchangeEvents::OrderPlaced(IStablecoinExchange::OrderPlaced {
                 orderId: order_id,
                 maker: sender,
                 token,
@@ -178,7 +181,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0],
-            StablecoinExchangeEvent::FlipOrderPlaced(IStablecoinExchange::FlipOrderPlaced {
+            StablecoinExchangeEvents::FlipOrderPlaced(IStablecoinExchange::FlipOrderPlaced {
                 orderId: order_id,
                 maker: sender,
                 token,

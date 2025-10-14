@@ -10,7 +10,7 @@ use revm::{
 };
 
 pub mod linking_usd;
-pub mod stablecoin_dex;
+pub mod stablecoin_exchange;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
@@ -22,9 +22,9 @@ use crate::{
     STABLECOIN_DEX_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
     contracts::{
-        EvmStorageProvider, LinkingUSD, StablecoinExchange, TIP20Factory, TIP20Token, TIP403Registry,
-        TIP4217Registry, TipAccountRegistrar, address_to_token_id_unchecked, is_tip20,
-        tip_fee_manager::TipFeeManager,
+        EvmStorageProvider, LinkingUSD, StablecoinExchange, TIP20Factory, TIP20Token,
+        TIP403Registry, TIP4217Registry, TipAccountRegistrar, address_to_token_id_unchecked,
+        is_tip20, tip_fee_manager::TipFeeManager,
     },
 };
 

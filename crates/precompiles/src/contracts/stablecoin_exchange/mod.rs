@@ -23,7 +23,7 @@ use crate::{
     contracts::{
         StorageProvider, TIP20Token, address_to_token_id_unchecked,
         storage::{StorageOps, slots::mapping_slot},
-        types::{IStablecoinExchange, ITIP20, StablecoinDexError, StablecoinDexEvent},
+        types::{IStablecoinExchange, ITIP20, StablecoinExchangeError, StablecoinExchangeEvents},
     },
 };
 

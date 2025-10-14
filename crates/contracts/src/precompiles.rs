@@ -539,7 +539,7 @@ impl TIP20Error {
     }
 }
 
-impl StablecoinDexError {
+impl StablecoinExchangeError {
     /// Creates an error when an order does not exist.
     pub const fn order_does_not_exist() -> Self {
         Self::OrderDoesNotExist(IStablecoinExchange::OrderDoesNotExist {})
@@ -603,7 +603,8 @@ macro_rules! fee_manager_err {
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use IStablecoinExchange::{
-    IStablecoinExchangeErrors as StablecoinDexError, IStablecoinExchangeEvents as StablecoinDexEvent,
+    IStablecoinExchangeErrors as StablecoinExchangeError,
+    IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
