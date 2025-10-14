@@ -39,7 +39,10 @@ use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
-use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::IFeeManager::executeBlockCall};
+use tempo_precompiles::{
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    contracts::{IFeeManager::executeBlockCall, types::IStablecoinExchange},
+};
 use tempo_primitives::{
     TempoHeader, TempoPrimitives, TempoTxEnvelope,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
@@ -93,6 +96,32 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
                     gas_price: 0,
                     gas_limit: 0,
                     to: TIP_FEE_MANAGER_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input,
+                },
+                TEMPO_SYSTEM_TX_SIGNATURE,
+            )),
+            TEMPO_SYSTEM_TX_SENDER,
+        )
+    }
+
+    /// Builds system transaction to StablecoinExchange to commit pending orders.
+    fn build_stablecoin_dex_system_tx(&self, block_env: &BlockEnv) -> Recovered<TempoTxEnvelope> {
+        // append encoded block number to the calldata to ensure that system transactions hashes do not collide
+        let input = IStablecoinExchange::executeBlockCall {}
+            .abi_encode()
+            .into_iter()
+            .chain(block_env.number.to_be_bytes_vec())
+            .collect();
+
+        Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    chain_id: Some(self.provider.chain_spec().chain().id()),
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 0,
+                    to: STABLECOIN_EXCHANGE_ADDRESS.into(),
                     value: U256::ZERO,
                     input,
                 },
@@ -363,9 +392,15 @@ where
             });
         }
 
-        // Include the seal block transaction in the block
+        // Include system transactions in the block
+        // 1. Fee manager executeBlock
         builder
             .execute_transaction(self.build_seal_block_tx(builder.evm().block()))
+            .map_err(PayloadBuilderError::evm)?;
+
+        // 2. Stablecoin DEX executeBlock
+        builder
+            .execute_transaction(self.build_stablecoin_dex_system_tx(builder.evm().block()))
             .map_err(PayloadBuilderError::evm)?;
 
         let builder_finish_start = Instant::now();
