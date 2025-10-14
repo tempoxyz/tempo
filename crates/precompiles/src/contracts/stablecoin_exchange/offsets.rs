@@ -28,8 +28,8 @@ pub const ORDERBOOK_BEST_ASK_TICK_OFFSET: U256 = uint!(5_U256);
 pub const ORDER_MAKER_OFFSET: U256 = uint!(0_U256);
 /// Orderbook key field offset
 pub const ORDER_BOOK_KEY_OFFSET: U256 = uint!(1_U256);
-/// Side (bid/ask) field offset
-pub const ORDER_SIDE_OFFSET: U256 = uint!(2_U256);
+/// Is bid boolean field offset
+pub const ORDER_IS_BID_OFFSET: U256 = uint!(2_U256);
 /// Tick field offset
 pub const ORDER_TICK_OFFSET: U256 = uint!(3_U256);
 /// Original amount field offset

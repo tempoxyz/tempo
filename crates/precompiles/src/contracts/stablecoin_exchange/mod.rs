@@ -7,7 +7,7 @@ pub mod orderbook;
 pub mod slots;
 
 pub use error::OrderError;
-pub use order::{Order, Side};
+pub use order::Order;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickBitmap, TickLevel, price_to_tick, tick_to_price,
 };
@@ -118,12 +118,12 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             )
             .expect("Storage write failed");
 
-        // Store side (Bid = 0, Ask = 1)
+        // Store is_bid boolean
         self.storage
             .sstore(
                 self.address,
-                order_slot + offsets::ORDER_SIDE_OFFSET,
-                order.side().into(),
+                order_slot + offsets::ORDER_IS_BID_OFFSET,
+                U256::from(order.is_bid() as u8),
             )
             .expect("Storage write failed");
 
@@ -493,8 +493,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
         // Create the flip order (with validation)
         let order_id = self.get_and_increment_pending_order_id();
-        let side = if is_bid { Side::Bid } else { Side::Ask };
-        let order = Order::new_flip(order_id, *sender, book_key, amount, side, tick, flip_tick)
+        let order = Order::new_flip(order_id, *sender, book_key, amount, is_bid, tick, flip_tick)
             .expect("Invalid flip tick");
 
         // Store in pending queue
@@ -571,11 +570,11 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .sload(self.address, order_slot + offsets::ORDER_BOOK_KEY_OFFSET)
             .expect("TODO: handle error");
 
-        let side_u256 = self
+        let is_bid = self
             .storage
-            .sload(self.address, order_slot + offsets::ORDER_SIDE_OFFSET)
-            .expect("TODO: handle error");
-        let is_bid = side_u256.is_zero();
+            .sload(self.address, order_slot + offsets::ORDER_IS_BID_OFFSET)
+            .expect("TODO: handle error")
+            .to::<bool>();
 
         let tick = self
             .storage
@@ -667,11 +666,11 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .sload(self.address, order_slot + offsets::ORDER_BOOK_KEY_OFFSET)
             .expect("TODO: handle error");
 
-        let side_u256 = self
+        let is_bid = self
             .storage
-            .sload(self.address, order_slot + offsets::ORDER_SIDE_OFFSET)
-            .expect("TODO: handle error");
-        let is_bid = side_u256.is_zero();
+            .sload(self.address, order_slot + offsets::ORDER_IS_BID_OFFSET)
+            .expect("TODO: handle error")
+            .to::<bool>();
 
         let tick = self
             .storage
@@ -745,14 +744,13 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 // Bid becomes Ask, Ask becomes Bid
                 // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
                 let new_order_id = self.get_and_increment_pending_order_id();
-                let new_side = if is_bid { Side::Ask } else { Side::Bid };
 
                 let new_order = Order::new_flip(
                     new_order_id,
                     maker,
                     B256::from(book_key),
                     original_amount,
-                    new_side,
+                    !is_bid, // Flip the side
                     flip_tick, // New tick is the old flip_tick
                     tick,      // New flip_tick is the old tick
                 )
@@ -1199,11 +1197,11 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .sload(self.address, order_slot + offsets::ORDER_BOOK_KEY_OFFSET)
             .expect("TODO: handle error");
 
-        let side_u256 = self
+        let is_bid = self
             .storage
-            .sload(self.address, order_slot + offsets::ORDER_SIDE_OFFSET)
-            .expect("TODO: handle error");
-        let is_bid = side_u256.is_zero();
+            .sload(self.address, order_slot + offsets::ORDER_IS_BID_OFFSET)
+            .expect("TODO: handle error")
+            .to::<bool>();
 
         let tick = self
             .storage
