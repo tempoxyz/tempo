@@ -57,7 +57,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .expect("TODO: handle error");
     }
 
-    /// Read pending order ID (last order placed but not yet processed)
+    /// Read pending order ID
     fn get_pending_order_id(&mut self) -> u128 {
         self.storage
             .sload(self.address, slots::PENDING_ORDER_ID)
@@ -65,14 +65,18 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>()
     }
 
-    /// Get current pending order ID and increment for next use
-    fn get_and_increment_pending_order_id(&mut self) -> u128 {
-        let current = self.get_pending_order_id();
-        let next_id = current + 1;
+    /// Set pending order ID
+    fn set_pending_order_id(&mut self, order_id: u128) {
         self.storage
-            .sstore(self.address, slots::PENDING_ORDER_ID, U256::from(next_id))
+            .sstore(self.address, slots::PENDING_ORDER_ID, U256::from(order_id))
             .expect("Storage write failed");
-        current
+    }
+
+    /// Increment and return the pending order id
+    fn increment_pending_order_id(&mut self) -> u128 {
+        let next_id = self.get_pending_order_id() + 1;
+        self.set_pending_order_id(next_id);
+        next_id
     }
 
     /// Compute deterministic book key from token pair
@@ -157,17 +161,17 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.set_balance(user, token, 0);
             let remaining = amount - user_balance;
 
-            dbg!("getting there");
+            // TODO: This should account for linking token
             TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
                 .transfer_from(
-                    &user,
+                    &self.address,
                     ITIP20::transferFromCall {
                         from: user,
                         to: self.address,
                         amount: U256::from(remaining),
                     },
                 )
-                // TODO: this should be updated to be more descriptive, this masks other errors
+                // TODO: Right now error handling is not bubbling up TIP20 errors
                 .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
         }
         Ok(())
@@ -339,7 +343,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount)?;
 
         // Create the order
-        let order_id = self.get_and_increment_pending_order_id();
+        let order_id = self.increment_pending_order_id();
         let order = if is_bid {
             Order::new_bid(order_id, *sender, book_key, amount, tick)
         } else {
@@ -418,8 +422,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         // Debit from user's balance or transfer from wallet
         self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount)?;
 
-        // Create the flip order (with validation)
-        let order_id = self.get_and_increment_pending_order_id();
+        // Create the flip order
+        let order_id = self.increment_pending_order_id();
         let order = Order::new_flip(order_id, *sender, book_key, amount, tick, is_bid, flip_tick)
             .expect("Invalid flip tick");
 
@@ -570,7 +574,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 // Create a new flip order with flipped side and swapped ticks
                 // Bid becomes Ask, Ask becomes Bid
                 // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
-                let new_order_id = self.get_and_increment_pending_order_id();
+                let new_order_id = self.increment_pending_order_id();
 
                 let new_order = Order::new_flip(
                     new_order_id,
@@ -1343,7 +1347,7 @@ mod tests {
         // Grant issuer role to admin for quote token
         let mut quote_roles = quote.get_roles_contract();
         quote_roles.grant_role_internal(admin, *tip20::ISSUER_ROLE);
-        // quote_roles.grant_role_internal(user, *linking_usd::TRANSFE);
+        quote_roles.grant_role_internal(user, *linking_usd::TRANSFER_ROLE);
 
         // Mint tokens to user
         quote
@@ -1471,7 +1475,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let amount = 1_000_000u128; // Use smaller amount for easier debugging
+        let amount = 1_000_000u128;
         let tick = 100i16;
 
         let price = orderbook::tick_to_price(tick);
@@ -1483,7 +1487,7 @@ mod tests {
             &admin,
             &alice,
             exchange.address,
-            expected_escrow * 10,
+            expected_escrow,
         );
 
         // Place the bid order
@@ -1491,13 +1495,8 @@ mod tests {
             .place(&alice, base_token, amount, true, tick)
             .expect("Place bid order should succeed");
 
-        // Verify order ID is 1 (since it's the first order)
         assert_eq!(order_id, 1);
-
-        // Verify activeOrderId is still 0 (orders are pending until executeBlock)
         assert_eq!(exchange.active_order_id(), 0);
-
-        // Verify pendingOrderId is 1
         assert_eq!(exchange.pending_order_id(), 1);
 
         // Verify the order was stored correctly
@@ -1511,42 +1510,29 @@ mod tests {
         assert_eq!(stored_order.prev(), 0);
         assert_eq!(stored_order.next(), 0);
 
-        // Verify the order is not yet in the active orderbook (pending state)
+        // Verify the order is not yet in the active orderbook
         let book_key = exchange.compute_book_key(base_token, quote_token);
-        let level = TickLevel::from_storage(
-            exchange.storage,
-            exchange.address,
-            book_key,
-            tick,
-            true, // is_bid
-        );
-        assert_eq!(level.head, 0); // Should be empty since order is pending
+        let level =
+            TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
+        assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);
 
-        // Verify alice's balance was reduced by the escrow amount
+        // Verify balance was reduced by the escrow amount
         {
             let mut quote_tip20 = TIP20Token::new(
                 address_to_token_id_unchecked(&quote_token),
                 exchange.storage,
             );
-            let remaining_balance = quote_tip20
-                .balance_of(crate::contracts::types::ITIP20::balanceOfCall { account: alice });
-            let expected_remaining = (expected_escrow * 2) - expected_escrow;
-            assert_eq!(
-                remaining_balance,
-                alloy::primitives::U256::from(expected_remaining)
-            );
+            let remaining_balance =
+                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice });
+            assert_eq!(remaining_balance, U256::ZERO);
 
             // Verify exchange received the tokens
-            let exchange_balance =
-                quote_tip20.balance_of(crate::contracts::types::ITIP20::balanceOfCall {
-                    account: exchange.address,
-                });
-            assert_eq!(
-                exchange_balance,
-                alloy::primitives::U256::from(expected_escrow)
-            );
+            let exchange_balance = quote_tip20.balance_of(ITIP20::balanceOfCall {
+                account: exchange.address,
+            });
+            assert_eq!(exchange_balance, U256::from(expected_escrow));
         }
     }
 
