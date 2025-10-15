@@ -351,7 +351,7 @@ impl Decodable2718 for AASigned {
     }
 }
 
-#[cfg(feature = "arbitrary")]
+#[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for AASigned {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let tx = TxAA::arbitrary(u)?;
