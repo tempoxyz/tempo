@@ -10,7 +10,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP403_REGISTRY_ADDRESS,
     contracts::{
-        ITIP20::{self},
+        ITIP20::{self, ITIP20Errors},
         types::ITIP403Registry,
     },
 };
@@ -71,6 +71,24 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     for (account, _, expected_balance) in &account_data {
         let balance = token.balanceOf(*account).call().await?;
         assert_eq!(balance, *expected_balance);
+    }
+
+    // Attempt to transfer more than the balance
+    for (account, _, _) in &account_data {
+        let balance = token.balanceOf(*account).call().await?;
+        let Err(result) = token
+            .transfer(Address::random(), balance + U256::ONE)
+            .call()
+            .await
+        else {
+            panic!("expected error");
+        };
+        assert_eq!(
+            result.as_decoded_interface_error::<ITIP20Errors>(),
+            Some(ITIP20Errors::InsufficientBalance(
+                ITIP20::InsufficientBalance {}
+            ))
+        );
     }
 
     // Transfer all balances to target address
@@ -194,7 +212,12 @@ async fn test_tip20_mint() -> eyre::Result<()> {
 
     // TODO: Update to assert the actual error once Precompile errors are propagated through revm
     let err = max_mint_result.unwrap_err();
-    assert!(err.to_string().contains("PrecompileError"));
+    assert_eq!(
+        err.as_decoded_interface_error::<ITIP20Errors>(),
+        Some(ITIP20Errors::SupplyCapExceeded(
+            ITIP20::SupplyCapExceeded {}
+        ))
+    );
 
     Ok(())
 }
