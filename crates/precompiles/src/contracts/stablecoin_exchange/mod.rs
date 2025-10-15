@@ -1445,6 +1445,9 @@ mod tests {
             expected_escrow,
         );
 
+        // Create the pair before placing orders
+        exchange.create_pair(&base_token);
+
         // Place the bid order
         let order_id = exchange
             .place(&alice, base_token, amount, true, tick)
@@ -1505,6 +1508,8 @@ mod tests {
         // Setup tokens with enough base token balance for the order
         let (base_token, quote_token) =
             setup_test_tokens(exchange.storage, &admin, &alice, exchange.address, amount);
+        // Create the pair before placing orders
+        exchange.create_pair(&base_token);
 
         let order_id = exchange
             .place(&alice, base_token, amount, false, tick) // is_bid = false for ask
@@ -1571,6 +1576,7 @@ mod tests {
             exchange.address,
             expected_escrow,
         );
+        exchange.create_pair(&base_token);
 
         let order_id = exchange
             .place_flip(&alice, base_token, amount, true, tick, flip_tick)
@@ -1641,6 +1647,7 @@ mod tests {
             exchange.address,
             expected_escrow,
         );
+        exchange.create_pair(&base_token);
 
         // Place the bid order
         let order_id = exchange
