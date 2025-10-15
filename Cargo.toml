@@ -221,7 +221,7 @@ proptest-arbitrary-interop = "0.1.0"
 prost = "0.13"
 prost-build = "0.13"
 protox = "0.7"
-rand = "0.9"
+rand = "0.8.5"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.142"
 sha3 = "0.10"

@@ -43,7 +43,7 @@ test-fuzz.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
-rand.workspace = true
+rand = "0.9"
 
 [features]
 default = ["serde", "reth-codec", "serde-bincode-compat", "rpc", "cli"]
