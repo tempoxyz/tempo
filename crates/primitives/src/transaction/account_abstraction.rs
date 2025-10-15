@@ -74,12 +74,23 @@ impl Decodable for Call {
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
         }
+        let remaining = buf.len();
 
-        Ok(Self {
+        if header.payload_length > remaining {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+
+        let this = Self {
             to: Decodable::decode(buf)?,
             value: Decodable::decode(buf)?,
             input: Decodable::decode(buf)?,
-        })
+        };
+
+        if buf.len() + header.payload_length != remaining {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+
+        Ok(this)
     }
 }
 /// Account abstraction transaction following the Tempo spec.
@@ -610,7 +621,19 @@ impl Decodable for TxAA {
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
         }
-        Self::rlp_decode_fields(buf)
+        let remaining = buf.len();
+
+        if header.payload_length > remaining {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+
+        let this = Self::rlp_decode_fields(buf)?;
+
+        if buf.len() + header.payload_length != remaining {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+
+        Ok(this)
     }
 }
 
@@ -1218,5 +1241,79 @@ mod tests {
         // Hashes without fee_payer should differ from hashes with fee_payer
         // (because skip_fee_token logic changes)
         assert_ne!(hash1, hash3, "User hash changes when fee_payer is added");
+    }
+
+    #[test]
+    fn test_call_decode_rejects_malformed_rlp() {
+        // Test that Call decoding rejects RLP with mismatched header length
+        let call = Call {
+            to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
+            value: U256::from(1000),
+            input: Bytes::from(vec![1, 2, 3, 4]),
+        };
+
+        // Encode the call normally
+        let mut buf = Vec::new();
+        call.encode(&mut buf);
+
+        // Corrupt the header to claim less payload than actually encoded
+        // This simulates the case where header.payload_length doesn't match actual consumed bytes
+        let original_len = buf.len();
+        buf.truncate(original_len - 2); // Remove 2 bytes from the end
+
+        let result = Call::decode(&mut buf.as_slice());
+        assert!(
+            result.is_err(),
+            "Decoding should fail when header length doesn't match"
+        );
+        // The error could be InputTooShort or UnexpectedLength depending on what field is truncated
+        assert!(matches!(
+            result.unwrap_err(),
+            alloy_rlp::Error::InputTooShort | alloy_rlp::Error::UnexpectedLength
+        ));
+    }
+
+    #[test]
+    fn test_txaa_decode_rejects_malformed_rlp() {
+        // Test that TxAA decoding rejects RLP with mismatched header length
+        let call = Call {
+            to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
+            value: U256::from(1000),
+            input: Bytes::from(vec![1, 2, 3, 4]),
+        };
+
+        let tx = TxAA {
+            chain_id: 1,
+            fee_token: Some(address!("0000000000000000000000000000000000000001")),
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![call],
+            access_list: Default::default(),
+            nonce_key: 0,
+            nonce: 1,
+            fee_payer_signature: Some(Signature::test_signature()),
+            valid_before: Some(1000000),
+            valid_after: Some(500000),
+        };
+
+        // Encode the transaction normally
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+
+        // Corrupt by truncating - simulates header claiming more bytes than available
+        let original_len = buf.len();
+        buf.truncate(original_len - 5); // Remove 5 bytes from the end
+
+        let result = TxAA::decode(&mut buf.as_slice());
+        assert!(
+            result.is_err(),
+            "Decoding should fail when data is truncated"
+        );
+        // The error could be InputTooShort or UnexpectedLength depending on what field is truncated
+        assert!(matches!(
+            result.unwrap_err(),
+            alloy_rlp::Error::InputTooShort | alloy_rlp::Error::UnexpectedLength
+        ));
     }
 }
