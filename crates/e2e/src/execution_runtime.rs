@@ -123,6 +123,12 @@ impl ExecutionRuntime {
     }
 }
 
+impl Default for ExecutionRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A handle to the execution runtime.
 ///
 /// Can be used to spawn nodes.
