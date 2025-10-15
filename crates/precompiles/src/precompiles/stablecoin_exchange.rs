@@ -52,6 +52,11 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     self.balance_of(call.user, call.token)
                 })
             }
+            IStablecoinExchange::pairKeyCall::SELECTOR => {
+                view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {
+                    self.pair_key(call.tokenA, call.tokenB)
+                })
+            }
             IStablecoinExchange::createPairCall::SELECTOR => {
                 mutate::<
                     IStablecoinExchange::createPairCall,
