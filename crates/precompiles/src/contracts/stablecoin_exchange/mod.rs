@@ -153,7 +153,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exsist());
+            return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -170,7 +170,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exsist());
+            return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -189,7 +189,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exsist());
+            return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -225,7 +225,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exsist());
+            return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -324,7 +324,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let book_key = compute_book_key(token, quote_token);
         let book = Orderbook::from_storage(book_key, self.storage, self.address);
         if book.base.is_zero() {
-            return Err(StablecoinExchangeError::pair_does_not_exsist());
+            return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
         // Validate tick is within bounds
@@ -1465,7 +1465,7 @@ mod tests {
         );
 
         let result = exchange.place(&alice, base_token, amount, true, tick);
-        assert_eq!(result, Err(StablecoinExchangeError::pair_does_not_exsist()));
+        assert_eq!(result, Err(StablecoinExchangeError::pair_does_not_exist()));
     }
 
     #[test]

@@ -547,7 +547,7 @@ impl StablecoinExchangeError {
     }
 
     /// Creates an error when an order does not exist.
-    pub const fn pair_does_not_exsist() -> Self {
+    pub const fn pair_does_not_exist() -> Self {
         Self::PairDoesNotExist(IStablecoinExchange::PairDoesNotExist {})
     }
 
