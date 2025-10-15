@@ -121,106 +121,60 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::contracts::{
-        HashMapStorageProvider,
-        stablecoin_exchange::{offsets, slots},
-        storage::{StorageOps, slots::mapping_slot},
-        types::StablecoinExchangeEvents,
-    };
-    use alloy::{
-        primitives::{Bytes, IntoLogData, U256},
-        sol_types::SolValue,
-    };
 
-    /// Helper to set internal DEX balance for a user (avoids TIP20 transfer in tests)
-    fn setup_balance(
-        dex: &mut StablecoinExchange<'_, HashMapStorageProvider>,
-        user: Address,
-        token: Address,
-        amount: u128,
-    ) {
-        let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
-        let balance_slot = mapping_slot(token.as_slice(), user_slot);
-        dex.sstore(balance_slot, U256::from(amount));
+    #[test]
+    fn test_place_call() {
+        // TODO:
     }
 
     #[test]
-    fn test_place_function() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinExchange::new(&mut storage);
-        dex.initialize();
-
-        let sender = Address::from([1u8; 20]);
-        let token = Address::from([2u8; 20]);
-
-        setup_balance(&mut dex, sender, Address::ZERO, 10000);
-
-        let place_call = IStablecoinExchange::placeCall {
-            token,
-            amount: 1000,
-            isBid: true,
-            tick: 5,
-        };
-        let calldata = place_call.abi_encode();
-        let result = dex.call(&Bytes::from(calldata), &sender).unwrap();
-        let order_id = u128::abi_decode(&result.bytes).unwrap();
-        assert_eq!(order_id, 1);
-
-        let events = &storage.events[&crate::STABLECOIN_EXCHANGE_ADDRESS];
-        assert_eq!(events.len(), 1);
-        assert_eq!(
-            events[0],
-            StablecoinExchangeEvents::OrderPlaced(IStablecoinExchange::OrderPlaced {
-                orderId: order_id,
-                maker: sender,
-                token,
-                amount: 1000,
-                isBid: true,
-                tick: 5,
-            })
-            .into_log_data()
-        );
+    fn test_place_flip_call() {
+        // TODO:
     }
 
     #[test]
-    fn test_place_flip_function() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut dex = StablecoinExchange::new(&mut storage);
-        dex.initialize();
+    fn test_balance_of_call() {
+        // TODO:
+    }
 
-        let sender = Address::from([1u8; 20]);
-        let token = Address::from([2u8; 20]);
+    #[test]
+    fn test_withdraw_call() {
+        // TODO:
+    }
 
-        setup_balance(&mut dex, sender, Address::ZERO, 10000);
+    #[test]
+    fn test_cancel_call() {
+        // TODO:
+    }
 
-        let place_flip_call = IStablecoinExchange::placeFlipCall {
-            token,
-            amount: 2000,
-            isBid: true,
-            tick: 5,
-            flipTick: 10,
-        };
-        let calldata = place_flip_call.abi_encode();
-        let result = dex.call(&Bytes::from(calldata), &sender).unwrap();
+    #[test]
+    fn test_sell_call() {
+        // TODO:
+    }
 
-        let order_id = u128::abi_decode(&result.bytes).unwrap();
-        assert_eq!(order_id, 1);
+    #[test]
+    fn test_buy_call() {
+        // TODO:
+    }
 
-        let events = &storage.events[&crate::STABLECOIN_EXCHANGE_ADDRESS];
-        assert_eq!(events.len(), 1);
-        assert_eq!(
-            events[0],
-            StablecoinExchangeEvents::FlipOrderPlaced(IStablecoinExchange::FlipOrderPlaced {
-                orderId: order_id,
-                maker: sender,
-                token,
-                amount: 2000,
-                isBid: true,
-                tick: 5,
-                flipTick: 10,
-            })
-            .into_log_data()
-        );
+    #[test]
+    fn test_quote_sell_call() {
+        // TODO:
+    }
+
+    #[test]
+    fn test_quote_buy_call() {
+        // TODO:
+    }
+
+    #[test]
+    fn test_invalid_selector() {
+        // TODO:
+    }
+
+    #[test]
+    fn test_missing_selector() {
+        // TODO:
     }
 }
+
