@@ -8,10 +8,12 @@ use std::{
 };
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{marshal, threshold_simplex};
+use commonware_consensus::marshal;
 use commonware_cryptography::Signer as _;
 use commonware_p2p::{Blocker, Receiver, Sender};
-use commonware_runtime::{Handle, Metrics, Pacer, Spawner, Storage, buffer::PoolRef};
+use commonware_runtime::{
+    Clock, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
+};
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
@@ -20,9 +22,9 @@ use tempo_commonware_node_cryptography::{
 };
 use tempo_node::TempoFullNode;
 
-use crate::config::{
-    BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, NUMBER_CONCURRENT_FETCHES,
-    NUMBER_MAX_FETCHES, RESOLVER_LIMIT,
+use crate::{
+    config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
+    orchestrator,
 };
 
 use super::{block::Block, supervisor::Supervisor};
@@ -71,20 +73,29 @@ pub struct Builder<
     pub mailbox_size: usize,
     pub deque_size: usize,
 
-    pub leader_timeout: Duration,
-    pub notarization_timeout: Duration,
-    pub nullify_retry: Duration,
-    pub fetch_timeout: Duration,
-    pub activity_timeout: u64,
-    pub skip_timeout: u64,
+    pub heights_per_epoch: u64,
+
+    pub time_to_propose: Duration,
+    pub time_to_collect_notarizations: Duration,
+    pub time_to_retry_nullify_broadcast: Duration,
+    pub time_for_peer_response: Duration,
+    pub views_to_track: u64,
+    pub views_until_leader_skip: u64,
     pub new_payload_wait_time: Duration,
-    // pub indexer: Option<TIndexer>,
 }
 
 impl<TBlocker, TContext> Builder<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Clock
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Pacer
+        + Spawner
+        + Storage
+        + Metrics
+        + Network,
 {
     pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
         let supervisor = Supervisor::new(
@@ -132,7 +143,7 @@ where
                     partition_prefix: self.partition_prefix.clone(),
                     mailbox_size: self.mailbox_size,
                     view_retention_timeout: self
-                        .activity_timeout
+                        .views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                     namespace: crate::config::NAMESPACE.to_vec(),
                     prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
@@ -142,7 +153,9 @@ where
                     freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
                     freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
                     freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
+
                     freezer_journal_buffer_pool: buffer_pool.clone(),
+
                     replay_buffer: REPLAY_BUFFER,
                     write_buffer: WRITE_BUFFER,
                     codec_config: (),
@@ -159,44 +172,31 @@ where
             syncer: syncer_mailbox.clone(),
             execution_node: self.execution_node,
             new_payload_wait_time: self.new_payload_wait_time,
-            // chainspec: self.chainspec,
-            // engine_handle: self.execution_engine,
-            // payload_builder: self.execution_payload_builder,
+            heights_per_epoch: self.heights_per_epoch,
         }
         .build()
         .wrap_err("failed initializing execution driver")?;
 
         let execution_driver_mailbox = execution_driver.mailbox().clone();
 
-        // Create the consensus engine
-        let consensus = threshold_simplex::Engine::new(
-            self.context.with_label("consensus"),
-            threshold_simplex::Config {
-                // TODO(janis): make configuration epoch aware.
-                epoch: 0,
-                namespace: crate::config::NAMESPACE.to_vec(),
-                crypto: self.signer,
-                automaton: execution_driver.mailbox().clone(),
-                relay: execution_driver.mailbox().clone(),
-                // XXX: this is where the `indexer` would usually go (in alto)
-                reporter: syncer_mailbox,
-                supervisor,
-                partition: format!("{}-consensus", self.partition_prefix),
+        let (orchestrator, orchestrator_mailbox) = orchestrator::init(
+            orchestrator::Config {
+                application: execution_driver_mailbox.clone(),
+                blocker: self.blocker.clone(),
+                buffer_pool: buffer_pool.clone(),
+                time_for_peer_response: self.time_for_peer_response,
+                time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
-                leader_timeout: self.leader_timeout,
-                notarization_timeout: self.notarization_timeout,
-                nullify_retry: self.nullify_retry,
-                fetch_timeout: self.fetch_timeout,
-                activity_timeout: self.activity_timeout,
-                skip_timeout: self.skip_timeout,
-                max_fetch_count: NUMBER_MAX_FETCHES,
-                fetch_concurrent: NUMBER_CONCURRENT_FETCHES,
-                fetch_rate_per_peer: RESOLVER_LIMIT,
-                replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
-                blocker: self.blocker,
-                buffer_pool,
+                marshal: syncer_mailbox,
+                time_to_collect_notarizations: self.time_to_collect_notarizations,
+                time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
+                partition_prefix: self.partition_prefix.clone(),
+                signer: self.signer,
+                supervisor: supervisor.clone(),
+                views_to_track: self.views_to_track,
+                views_until_leader_skip: self.views_until_leader_skip,
             },
+            self.context.with_label("orchestrator"),
         );
 
         Ok(Engine {
@@ -211,7 +211,8 @@ where
             resolver_config,
             syncer,
 
-            consensus,
+            orchestrator,
+            orchestrator_mailbox,
         })
     }
 }
@@ -219,7 +220,15 @@ where
 pub struct Engine<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Clock
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Metrics
+        + Network
+        + Pacer
+        + Spawner
+        + Storage,
     // XXX: alto also defines an Indexer trait (not part of commonwarexyz itself); we will
     // not define it for now.
     // TIndexer,
@@ -242,13 +251,22 @@ where
     /// local node.
     syncer: marshal::Actor<Block, TContext, BlsScheme>,
 
-    consensus: crate::consensus::Consensus<TContext, TBlocker>,
+    orchestrator: orchestrator::Actor<TBlocker, TContext>,
+    orchestrator_mailbox: orchestrator::Mailbox,
 }
 
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Clock
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Metrics
+        + Network
+        + Pacer
+        + Spawner
+        + Storage,
 {
     pub fn start(
         self,
@@ -311,21 +329,22 @@ where
         ),
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_network);
-        let execution_driver = self.execution_driver.start();
+        let execution_driver = self.execution_driver.start(self.orchestrator_mailbox);
 
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
+
         let syncer = self.syncer.start(
             self.execution_driver_mailbox,
             self.broadcast_mailbox,
             resolver,
         );
 
-        let simplex = self
-            .consensus
-            .start(pending_network, recovered_network, resolver_network);
+        let orchestrator =
+            self.orchestrator
+                .start(pending_network, recovered_network, resolver_network);
 
-        try_join_all(vec![broadcast, execution_driver, simplex, syncer])
+        try_join_all(vec![broadcast, execution_driver, orchestrator, syncer])
             .await
             .map(|_| ())
             // TODO: look into adding error context so that we know which

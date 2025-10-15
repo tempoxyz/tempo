@@ -38,8 +38,8 @@ pub struct Setup {
     pub seed: u64,
     /// The linkage between individual validators.
     pub linkage: Link,
-    /// The height that a test has to reach to be considered a success.
-    pub height_to_reach: u64,
+    /// The number of heights in an epoch.
+    pub heights_per_epoch: u64,
 }
 
 /// Runs a test configured by [`Setup`].
@@ -48,8 +48,9 @@ pub fn run(
         how_many,
         seed,
         linkage,
-        height_to_reach,
+        heights_per_epoch,
     }: Setup,
+    stop_condition: impl Fn(&str, &str) -> bool,
 ) -> String {
     let threshold = quorum(how_many);
     let cfg = deterministic::Config::default().with_seed(seed);
@@ -107,13 +108,14 @@ pub fn run(
                 participants: validators.clone(),
                 mailbox_size: 1024,
                 deque_size: 10,
-                leader_timeout: Duration::from_secs(2),
-                notarization_timeout: Duration::from_secs(3),
-                nullify_retry: Duration::from_secs(10),
-                fetch_timeout: Duration::from_secs(2),
-                activity_timeout: 10,
-                skip_timeout: 5,
+                time_to_propose: Duration::from_secs(2),
+                time_to_collect_notarizations: Duration::from_secs(3),
+                time_to_retry_nullify_broadcast: Duration::from_secs(10),
+                time_for_peer_response: Duration::from_secs(2),
+                views_to_track: 10,
+                views_until_leader_skip: 5,
                 new_payload_wait_time: Duration::from_millis(750),
+                heights_per_epoch,
             }
             .try_init()
             .await
@@ -146,14 +148,9 @@ pub fn run(
                     assert_eq!(value, 0);
                 }
 
-                // TODO(janis): commonware calls this marshal, we call this sync.
-                // We should rename this to marshal (the actor, that is).
-                if metric.ends_with("_sync_processed_height") {
-                    let value = value.parse::<u64>().unwrap();
-                    if value >= height_to_reach {
-                        success = true;
-                        break;
-                    }
+                if stop_condition(metric, value) {
+                    success = true;
+                    break;
                 }
             }
 

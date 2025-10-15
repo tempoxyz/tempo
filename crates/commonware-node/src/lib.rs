@@ -6,6 +6,7 @@
 pub(crate) mod config;
 pub mod consensus;
 pub mod metrics;
+pub(crate) mod orchestrator;
 
 use std::net::SocketAddr;
 
@@ -67,14 +68,15 @@ pub async fn run_consensus_stack(
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
 
-        leader_timeout: config.timeouts.time_to_propose,
-        notarization_timeout: config.timeouts.time_to_collect_notarizations,
-        nullify_retry: config.timeouts.time_to_retry_nullify_broadcast,
-        fetch_timeout: config.timeouts.time_for_peer_response,
-        activity_timeout: config.timeouts.views_to_track,
-        skip_timeout: config.timeouts.views_until_leader_skip,
+        heights_per_epoch: config.heights_per_epoch,
+
+        time_to_propose: config.timeouts.time_to_propose,
+        time_to_collect_notarizations: config.timeouts.time_to_collect_notarizations,
+        time_to_retry_nullify_broadcast: config.timeouts.time_to_retry_nullify_broadcast,
+        time_for_peer_response: config.timeouts.time_for_peer_response,
+        views_to_track: config.timeouts.views_to_track,
+        views_until_leader_skip: config.timeouts.views_until_leader_skip,
         new_payload_wait_time: config.timeouts.new_payload_wait_time,
-        // indexer: Option<TIndexer>,
     }
     .try_init()
     .await

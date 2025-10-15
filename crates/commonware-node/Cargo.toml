@@ -32,7 +32,8 @@ commonware-cryptography.workspace = true
 commonware-macros.workspace = true
 commonware-p2p.workspace = true
 commonware-resolver.workspace = true
-commonware-runtime.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
+commonware-storage.workspace = true
 commonware-utils.workspace = true
 
 eyre.workspace = true
@@ -40,8 +41,8 @@ futures.workspace = true
 governor.workspace = true
 indexmap.workspace = true
 
+prometheus-client.workspace = true
 rand.workspace = true
-reth.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-primitives-traits.workspace = true

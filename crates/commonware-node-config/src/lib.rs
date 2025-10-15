@@ -58,6 +58,11 @@ pub struct Config {
     pub storage_directory: camino::Utf8PathBuf,
     pub worker_threads: usize,
 
+    /// The number of heights H that make up an epoch E.
+    /// The heights starting from (E-1) * H + 1 up to and including E * H make
+    /// up the epoch E.
+    pub heights_per_epoch: u64,
+
     // XXX: alto has a config `allowed_peers`, which it does not make any use of, instead relying
     // on a "peers" file.
     //
@@ -167,6 +172,8 @@ struct DeserConfig {
     storage_directory: camino::Utf8PathBuf,
     worker_threads: usize,
 
+    heights_per_epoch: u64,
+
     // XXX: alto has a config `allowed_peers`, which it does not make any use of, instead relying
     // on a "peers" file.
     //
@@ -210,6 +217,7 @@ impl TryFrom<DeserConfig> for Config {
             deque_size,
             fee_recipient,
             timeouts,
+            heights_per_epoch,
         } = value;
 
         let threshold = quorum(peers.len() as u32);
@@ -237,6 +245,7 @@ impl TryFrom<DeserConfig> for Config {
             deque_size,
             fee_recipient,
             timeouts,
+            heights_per_epoch,
         })
     }
 }

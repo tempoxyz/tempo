@@ -33,22 +33,20 @@ use futures::{
     future::{Either, always_ready, try_join},
 };
 use rand::{CryptoRng, Rng};
-use reth::payload::EthBuiltPayload;
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::{BlockNumReader as _, BlockReader as _};
-use tempo_primitives::TempoPrimitives;
 use tokio::sync::RwLock;
-use tracing::{Level, info, instrument};
+use tracing::{Level, debug, error, error_span, info, instrument, warn};
 
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 mod executor;
 
-use crate::consensus::execution_driver::executor::ExecutorMailbox;
+use crate::{consensus::execution_driver::executor::ExecutorMailbox, orchestrator};
 
 use super::block::Block;
 
@@ -72,6 +70,11 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
 
     /// The minimum amount of time to wait before resolving a new payload from the builder
     pub(super) new_payload_wait_time: Duration,
+
+    /// The number of heights H in an epoch. For a given epoch E, all heights
+    /// `E*H+1` to and including `(E+1)*H` make up the epoch. The block at
+    /// `E*H` is said to be the genesis (or seed) of the epoch.
+    pub(super) heights_per_epoch: u64,
 }
 
 impl<TContext> ExecutionDriverBuilder<TContext>
@@ -97,6 +100,7 @@ where
 
             inner: Inner {
                 fee_recipient: self.fee_recipient,
+                heights_per_epoch: self.heights_per_epoch,
                 new_payload_wait_time: self.new_payload_wait_time,
 
                 my_mailbox,
@@ -130,7 +134,7 @@ where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Runs the execution driver until it is externally stopped.
-    async fn run_until_stopped(self) {
+    async fn run_until_stopped(self, orchestrator: orchestrator::Mailbox) {
         let Self {
             context,
             mailbox,
@@ -138,7 +142,7 @@ where
         } = self;
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
-        let Ok(initialized) = inner.into_initialized(context.clone()).await else {
+        let Ok(initialized) = inner.into_initialized(context.clone(), orchestrator).await else {
             // XXX: relies on into_initialized generating an error event before exit.
             return;
         };
@@ -152,8 +156,8 @@ where
         .await
     }
 
-    pub(super) fn start(mut self) -> Handle<()> {
-        spawn_cell!(self.context, self.run_until_stopped().await)
+    pub(super) fn start(mut self, orchestrator: orchestrator::Mailbox) -> Handle<()> {
+        spawn_cell!(self.context, self.run_until_stopped(orchestrator).await)
     }
 }
 
@@ -165,8 +169,8 @@ where
     async fn run_until_stopped(mut self) {
         while let Some(msg) = self.mailbox.next().await {
             if let Err(error) = self.handle_message(msg) {
-                tracing::error_span!("handle message").in_scope(|| {
-                    tracing::error!(
+                error_span!("handle message").in_scope(|| {
+                    error!(
                         %error,
                         "critical error occurred while handling message; exiting"
                     )
@@ -191,7 +195,12 @@ where
                     .handle_finalized(*finalized)
                     .wrap_err("failed finalizing block")?;
             }
-            Message::Genesis(genesis) => _ = self.inner.handle_genesis(genesis),
+            Message::Genesis(genesis) => {
+                self.context.with_label("genesis").spawn({
+                    let inner = self.inner.clone();
+                    move |_| inner.handle_genesis(genesis)
+                });
+            }
             Message::Propose(propose) => {
                 self.context.with_label("propose").spawn({
                     let inner = self.inner.clone();
@@ -212,6 +221,7 @@ where
 #[derive(Clone)]
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
+    heights_per_epoch: u64,
     new_payload_wait_time: Duration,
 
     my_mailbox: ExecutionDriverMailbox,
@@ -245,8 +255,32 @@ impl Inner<Init> {
         Ok(())
     }
 
+    #[instrument(
+        skip_all,
+        fields(
+            block.digest = %finalized.block.digest(),
+            block.height = %finalized.block.height(),
+            derived_epoch = epoch_of_height(finalized.block.height(), self.heights_per_epoch),
+        ),
+    )]
     /// Pushes a `finalized` request to the back of the finalization queue.
     fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
+        if let Some(epoch) = epoch_of_height(finalized.block.height(), self.heights_per_epoch) {
+            if is_last_height_of_epoch(finalized.block.height(), epoch, self.heights_per_epoch)
+                && let Err(error) = self
+                    .state
+                    .orchestrator
+                    .epoch_boundary_reached(epoch, finalized.block.digest())
+            {
+                warn!(%error, "could not signal that the end of an epoch was reached");
+            }
+
+            if is_first_height_of_epoch(finalized.block.height(), epoch, self.heights_per_epoch)
+                && let Err(error) = self.state.orchestrator.epoch_entered(epoch)
+            {
+                warn!(%error, "could not signal that a new epoch was entered");
+            }
+        }
         self.state.executor_mailbox.forward_finalized(finalized)
     }
 
@@ -258,12 +292,21 @@ impl Inner<Init> {
         ret(Display),
         err(level = Level::WARN)
     )]
-    fn handle_genesis(&mut self, genesis: Genesis) -> eyre::Result<Digest> {
-        let genesis_digest = self.genesis_block.digest();
-        genesis.response.send(genesis_digest).map_err(|_| {
-            eyre!("failed returning genesis block digest: return channel was already closed")
+    async fn handle_genesis(mut self, genesis: Genesis) -> eyre::Result<Digest> {
+        let source = if genesis.epoch == 0 {
+            self.genesis_block.digest()
+        } else {
+            let height = calculate_source_height_of_epoch(genesis.epoch, self.heights_per_epoch);
+            let Some((_, digest)) = self.syncer.get_info(height).await else {
+                // TODO(janis): should we just put the response channel into a map and respond later? Or fail?
+                bail!("no information on the source block at height `{height}` exists yet");
+            };
+            digest
+        };
+        genesis.response.send(source).map_err(|_| {
+            eyre!("failed returning seed digest for epoch: return channel was already closed")
         })?;
-        Ok(genesis_digest)
+        Ok(source)
     }
 
     /// Handles a [`Propose`] request.
@@ -283,7 +326,7 @@ impl Inner<Init> {
         context: TContext,
     ) -> eyre::Result<()> {
         let Propose {
-            parent,
+            parent: (parent_view, parent_digest),
             mut response,
             round,
         } = request;
@@ -295,22 +338,27 @@ impl Inner<Init> {
                 ))
            },
 
-            res = self.clone().propose(context, parent, round) => {
+            res = self.clone().propose(context, parent_view, parent_digest, round) => {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
 
-        let consensus_block = Block::from_execution_block(proposal.block().clone());
-        let proposed_block_digest = consensus_block.digest();
+        let proposed_block_digest = proposal.digest();
         response.send(proposed_block_digest).map_err(|_| {
             eyre!(
                 "failed returning proposal to consensus engine: response channel was already closed"
             )
         })?;
 
+        // If re-proposing, then don't store the parent for broadcasting and
+        // don't touch the execution layer.
+        if proposed_block_digest == parent_digest {
+            return Ok(());
+        }
+
         {
             let mut lock = self.state.latest_proposed_block.write().await;
-            *lock = Some(consensus_block);
+            *lock = Some(proposal);
         }
 
         if let Err(error) = self
@@ -318,7 +366,7 @@ impl Inner<Init> {
             .executor_mailbox
             .canonicalize(None, proposed_block_digest)
         {
-            tracing::warn!(
+            warn!(
                 %error,
                 %proposed_block_digest,
                 "failed making the proposal the head of the canonical chain",
@@ -367,14 +415,17 @@ impl Inner<Init> {
             }
         );
 
-        // 1. respond with the verification result ASAP. Also generates
+        // Respond with the verification result ASAP. Also generates
         // the event reporting the result of the verification.
         let _ = report_verification_result(response, &result);
 
-        // 2. make the forkchoice state available && cache the block
         if let Ok((block, true)) = result {
-            if let Err(error) = self.state.executor_mailbox.canonicalize(None, payload) {
-                tracing::warn!(
+            // Only make the verified block canonical when not doing a
+            // re-propose at the end of an epoch.
+            if parent.1 != payload
+                && let Err(error) = self.state.executor_mailbox.canonicalize(None, payload)
+            {
+                warn!(
                     %error,
                     "failed making the verified proposal the head of the canonical chain",
                 );
@@ -386,35 +437,45 @@ impl Inner<Init> {
     async fn propose<TContext: Pacer>(
         mut self,
         context: TContext,
-        parent: (View, Digest),
+        parent_view: View,
+        parent_digest: Digest,
         round: Round,
-    ) -> eyre::Result<EthBuiltPayload<TempoPrimitives>> {
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize(Some(Round::new(round.epoch(), parent.0)), parent.1)
-        {
-            tracing::warn!(
-                %error,
-                "failed making the proposal's parent the head of the canonical chain",
-            );
-        }
+    ) -> eyre::Result<Block> {
         let genesis_block = self.genesis_block.clone();
-        let parent_request = if parent.1 == genesis_block.digest() {
+        let parent_request = if parent_digest == genesis_block.digest() {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
                 self.syncer
-                    .subscribe(Some(Round::new(round.epoch(), parent.0)), parent.1)
+                    .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
                     .await,
             )
         };
         let parent = parent_request
-                .await
-                .map_err(|_| eyre!(
-                    "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
-                ))?;
+            .await
+            .map_err(|_| eyre!(
+                "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
+            ))?;
 
+        debug!(height = parent.height(), "retrieved parent block",);
+
+        // On the last height of the epoch, re-propose the parent instead of
+        // constructing a new one.
+        if is_last_height_of_epoch(parent.height(), round.epoch(), self.heights_per_epoch) {
+            info!("last height of epoch reached; re-proposing parent");
+            return Ok(parent);
+        }
+
+        if let Err(error) = self
+            .state
+            .executor_mailbox
+            .canonicalize(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+        {
+            warn!(
+                %error,
+                "failed making the proposal's parent the head of the canonical chain",
+            );
+        }
         let attrs = TempoPayloadBuilderAttributes::new(
             // XXX: derives the payload ID from the parent so that
             // overlong payload builds will eventually succeed on the
@@ -441,7 +502,7 @@ impl Inner<Init> {
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
             .wrap_err("failed requesting new payload from the execution layer")?;
 
-        tracing::debug!(
+        debug!(
             timeout_ms = self.new_payload_wait_time.as_millis(),
             "sleeping for payload builder timeout"
         );
@@ -473,34 +534,23 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
-        Ok(payload)
+        Ok(Block::from_execution_block(payload.block().clone()))
     }
 
     async fn verify<TContext: Pacer>(
         mut self,
         context: TContext,
-        parent: (View, Digest),
+        (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         round: Round,
     ) -> eyre::Result<(Block, bool)> {
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize(Some(Round::new(round.epoch(), parent.0)), parent.1)
-        {
-            tracing::warn!(
-                %error,
-                "failed setting the proposal's parent as the head of the canonical chain",
-            );
-        }
-
         let genesis_block = self.genesis_block.clone();
-        let parent_request = if parent.1 == genesis_block.digest() {
+        let parent_request = if parent_digest == genesis_block.digest() {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
                 self.syncer
-                    .subscribe(Some(Round::new(round.epoch(), parent.0)), parent.1)
+                    .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
                     .await
                     .map_err(|_| eyre!("syncer dropped channel before the parent block was sent")),
             )
@@ -515,8 +565,35 @@ impl Inner<Init> {
             .await
             .wrap_err("failed getting required blocks from syncer")?;
 
+        // Can only repropose at the end of an epoch.
+        //
+        // NOTE: fetching block and parent twice (in the case block == parent)
+        // seems wasteful, but both run concurrently, should finish almost
+        // immediately, and happen very rarely. It's better to optimize for the
+        // general case.
+        if payload == parent_digest {
+            if is_last_height_of_epoch(block.height(), round.epoch(), self.heights_per_epoch) {
+                return Ok((block, true));
+            } else {
+                return Ok((block, false));
+            }
+        }
+
+        if let Err(error) = self
+            .state
+            .executor_mailbox
+            .canonicalize(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+        {
+            warn!(
+                %error,
+                "failed setting the proposal's parent as the head of the canonical chain",
+            );
+        }
+
         let is_good = verify_block(
             context,
+            round.epoch(),
+            self.heights_per_epoch,
             self.execution_node
                 .add_ons_handle
                 .beacon_engine_handle
@@ -542,6 +619,7 @@ impl Inner<Uninit> {
     async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
         mut self,
         context: TContext,
+        orchestrator: orchestrator::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
@@ -584,6 +662,7 @@ impl Inner<Uninit> {
 
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
+            heights_per_epoch: self.heights_per_epoch,
             new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
             syncer: self.syncer,
@@ -592,6 +671,7 @@ impl Inner<Uninit> {
             state: Init {
                 latest_proposed_block: Arc::new(RwLock::new(None)),
                 executor_mailbox: executor.mailbox().clone(),
+                orchestrator,
             },
         };
 
@@ -610,6 +690,7 @@ pub(super) struct Uninit(());
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<Block>>>,
     executor_mailbox: ExecutorMailbox,
+    orchestrator: orchestrator::Mailbox,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
@@ -623,6 +704,8 @@ struct Init {
 #[instrument(
     skip_all,
     fields(
+        epoch,
+        heights_per_epoch,
         block.parent_digest = %block.parent_digest(),
         block.digest = %block.digest(),
         block.height = block.height(),
@@ -634,11 +717,17 @@ struct Init {
 )]
 async fn verify_block<TContext: Pacer>(
     context: TContext,
+    epoch: Epoch,
+    heights_per_epoch: u64,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
     parent: &Block,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
+    if !is_height_in_epoch(block.height(), epoch, heights_per_epoch) {
+        info!("block does not belong to this epoch");
+        return Ok(false);
+    }
     if block.parent_digest() != parent.digest() {
         info!(
             "parent digest stored in block must match the digest of the parent \
@@ -787,7 +876,7 @@ impl Reporter for ExecutionDriverMailbox {
 }
 
 #[derive(Clone)]
-pub(super) struct ExecutionDriverMailbox {
+pub(crate) struct ExecutionDriverMailbox {
     to_execution_driver: mpsc::Sender<Message>,
 }
 
@@ -905,4 +994,208 @@ fn report_verification_result(
         }
     }
     Ok(())
+}
+
+/// Returns the first height of `epoch` given `heights_per_epoch`.
+fn calculate_first_height_of_epoch(epoch: Epoch, heights_per_epoch: u64) -> u64 {
+    epoch.saturating_mul(heights_per_epoch).saturating_add(1)
+}
+
+/// Returns the last height of `epoch` given `heights_per_epoch`.
+fn calculate_last_height_of_epoch(epoch: Epoch, heights_per_epoch: u64) -> u64 {
+    epoch.saturating_add(1).saturating_mul(heights_per_epoch)
+}
+
+/// Returns the source or parent height of `epoch` given `heights_per_epoch`.
+fn calculate_source_height_of_epoch(epoch: Epoch, heights_per_epoch: u64) -> u64 {
+    let first_height_of_epoch = calculate_first_height_of_epoch(epoch, heights_per_epoch);
+    first_height_of_epoch.saturating_sub(1)
+}
+
+/// Returns the epoch of `height` given `heights_per_epoch`.
+///
+/// Returns `None` if `height == 0` because it does not fall into any epoch.
+fn epoch_of_height(height: u64, heights_per_epoch: u64) -> Option<Epoch> {
+    (height != 0).then(|| height.saturating_sub(1).saturating_div(heights_per_epoch))
+}
+
+fn is_first_height_of_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
+    height == calculate_first_height_of_epoch(epoch, heights_per_epoch)
+}
+
+/// Returns if the `height` falls inside `epoch`, given `heights_per_epoch`.
+fn is_height_in_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
+    epoch_of_height(height, heights_per_epoch).is_some_and(|calc_epoch| calc_epoch == epoch)
+}
+
+fn is_last_height_of_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
+    height == calculate_last_height_of_epoch(epoch, heights_per_epoch)
+}
+
+#[cfg(test)]
+mod tests {
+    use commonware_consensus::types::Epoch;
+
+    use crate::consensus::execution_driver::{
+        calculate_first_height_of_epoch, calculate_last_height_of_epoch,
+        calculate_source_height_of_epoch, epoch_of_height, is_height_in_epoch,
+    };
+
+    #[track_caller]
+    fn assert_first_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
+        assert_eq!(
+            expected,
+            calculate_first_height_of_epoch(epoch, heights_per_epoch)
+        );
+    }
+
+    #[test]
+    fn first_heights_are_correctly_calculated() {
+        assert_first_height(1, 0, 10);
+        assert_first_height(1, 0, 100);
+        assert_first_height(1, 0, 1000);
+
+        assert_first_height(11, 1, 10);
+        assert_first_height(21, 2, 10);
+        assert_first_height(31, 3, 10);
+
+        assert_first_height(101, 1, 100);
+        assert_first_height(201, 2, 100);
+        assert_first_height(301, 3, 100);
+
+        assert_first_height(1001, 1, 1000);
+        assert_first_height(2001, 2, 1000);
+        assert_first_height(3001, 3, 1000);
+    }
+
+    #[track_caller]
+    fn assert_last_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
+        assert_eq!(
+            expected,
+            calculate_last_height_of_epoch(epoch, heights_per_epoch)
+        );
+    }
+
+    #[test]
+    fn last_heights_are_correctly_calculated() {
+        assert_last_height(10, 0, 10);
+        assert_last_height(100, 0, 100);
+        assert_last_height(1000, 0, 1000);
+
+        assert_last_height(20, 1, 10);
+        assert_last_height(30, 2, 10);
+        assert_last_height(40, 3, 10);
+
+        assert_last_height(200, 1, 100);
+        assert_last_height(300, 2, 100);
+        assert_last_height(400, 3, 100);
+
+        assert_last_height(2000, 1, 1000);
+        assert_last_height(3000, 2, 1000);
+        assert_last_height(4000, 3, 1000);
+    }
+
+    #[track_caller]
+    fn assert_source_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
+        assert_eq!(
+            expected,
+            calculate_source_height_of_epoch(epoch, heights_per_epoch)
+        );
+    }
+
+    #[test]
+    fn source_heights_are_correctly_calculated() {
+        assert_source_height(0, 0, 10);
+        assert_source_height(0, 0, 100);
+        assert_source_height(0, 0, 1000);
+
+        assert_source_height(10, 1, 10);
+        assert_source_height(20, 2, 10);
+        assert_source_height(30, 3, 10);
+
+        assert_source_height(100, 1, 100);
+        assert_source_height(200, 2, 100);
+        assert_source_height(300, 3, 100);
+
+        assert_source_height(1000, 1, 1000);
+        assert_source_height(2000, 2, 1000);
+        assert_source_height(3000, 3, 1000);
+    }
+
+    #[track_caller]
+    fn assert_source_of_epoch_is_last_of_previous(epoch: Epoch, heights_per_epoch: u64) {
+        assert_eq!(
+            calculate_last_height_of_epoch(epoch, heights_per_epoch),
+            calculate_source_height_of_epoch(epoch + 1, heights_per_epoch),
+        );
+    }
+
+    #[test]
+    fn source_heights_are_last_heights() {
+        assert_source_of_epoch_is_last_of_previous(1, 10);
+        assert_source_of_epoch_is_last_of_previous(2, 10);
+        assert_source_of_epoch_is_last_of_previous(3, 10);
+
+        assert_source_of_epoch_is_last_of_previous(1, 100);
+        assert_source_of_epoch_is_last_of_previous(2, 100);
+        assert_source_of_epoch_is_last_of_previous(3, 100);
+
+        assert_source_of_epoch_is_last_of_previous(1, 1000);
+        assert_source_of_epoch_is_last_of_previous(2, 1000);
+        assert_source_of_epoch_is_last_of_previous(3, 1000);
+    }
+
+    #[track_caller]
+    fn assert_height_of_epoch(expected: Epoch, height: u64, heights_per_epoch: u64) {
+        assert_eq!(Some(expected), epoch_of_height(height, heights_per_epoch),)
+    }
+
+    #[test]
+    fn height_epochs_are_correctly_calculated() {
+        assert_eq!(None, epoch_of_height(0, 10), "height 0 has no epoch");
+        assert_eq!(None, epoch_of_height(0, 100), "height 0 has no epoch");
+
+        assert_height_of_epoch(0, 1, 10);
+        assert_height_of_epoch(0, 1, 100);
+        assert_height_of_epoch(0, 1, 1000);
+
+        assert_height_of_epoch(0, 9, 10);
+        assert_height_of_epoch(1, 19, 10);
+        assert_height_of_epoch(2, 29, 10);
+
+        assert_height_of_epoch(0, 99, 100);
+        assert_height_of_epoch(1, 199, 100);
+        assert_height_of_epoch(2, 299, 100);
+
+        assert_height_of_epoch(0, 999, 1000);
+        assert_height_of_epoch(1, 1999, 1000);
+        assert_height_of_epoch(2, 2999, 1000);
+    }
+
+    #[track_caller]
+    fn assert_height_in_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) {
+        assert!(is_height_in_epoch(height, epoch, heights_per_epoch));
+    }
+
+    #[test]
+    fn height_falls_into_correct_epoch() {
+        assert!(!is_height_in_epoch(0, 0, 10), "height 0 is in no epoch");
+        assert!(!is_height_in_epoch(0, 0, 100), "height 0 is in no epoch");
+
+        assert_height_in_epoch(1, 0, 10);
+        assert_height_in_epoch(1, 0, 100);
+        assert_height_in_epoch(1, 0, 1000);
+
+        assert_height_in_epoch(9, 0, 10);
+        assert_height_in_epoch(19, 1, 10);
+        assert_height_in_epoch(29, 2, 10);
+
+        assert_height_in_epoch(99, 0, 100);
+        assert_height_in_epoch(199, 1, 100);
+        assert_height_in_epoch(299, 2, 100);
+
+        assert_height_in_epoch(999, 0, 1000);
+        assert_height_in_epoch(1999, 1, 1000);
+        assert_height_in_epoch(2999, 2, 1000);
+    }
 }

@@ -193,6 +193,7 @@ commonware-macros = "0.0.62"
 commonware-p2p = "0.0.62"
 commonware-resolver = "0.0.62"
 commonware-runtime = "0.0.62"
+commonware-storage = "0.0.62"
 commonware-utils = "0.0.62"
 
 anyhow = "1.0.98"
@@ -219,6 +220,7 @@ metrics = "0.24.0"
 multiaddr = "0.18"
 p256 = "0.13"
 pin-project-lite = "0.2.16"
+prometheus-client = "0.22.3"
 proptest = "1.7"
 proptest-arbitrary-interop = "0.1.0"
 prost = "0.13"
@@ -253,4 +255,5 @@ commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "
 commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "0124b5fb2b3859a702f0ae6d9678ce37ac906db4" }
 commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "0124b5fb2b3859a702f0ae6d9678ce37ac906db4" }
 commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "0124b5fb2b3859a702f0ae6d9678ce37ac906db4" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "0124b5fb2b3859a702f0ae6d9678ce37ac906db4" }
 commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "0124b5fb2b3859a702f0ae6d9678ce37ac906db4" }

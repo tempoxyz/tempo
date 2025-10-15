@@ -30,18 +30,45 @@ fn only_good_links() {
             how_many: 5,
             seed,
             linkage: link.clone(),
-            height_to_reach: 5,
+            heights_per_epoch: 100,
         };
-        let _first = run(setup.clone());
+        let _first = run(setup.clone(), |metric, value| {
+            // // TODO(janis): commonware calls this marshal, we call this sync.
+            // // We should rename this to marshal (the actor, that is).
+            if metric.ends_with("_sync_processed_height") {
+                let value = value.parse::<u64>().unwrap();
+                value >= 5
+            } else {
+                false
+            }
+        });
 
         // FIXME(janis): there is some non-determinism and hence the runs are
         // sometimes flaky.
         //
-        // let first = run(setup.clone());
+        // let first = run(setup.clone(), |metric, value| {
+        //     // // TODO(janis): commonware calls this marshal, we call this sync.
+        //     // // We should rename this to marshal (the actor, that is).
+        //     if metric.ends_with("_sync_processed_height") {
+        //         let value = value.parse::<u64>().unwrap();
+        //         value >= 5
+        //     } else {
+        //         false
+        //     }
+        // });
 
         // std::thread::sleep(Duration::from_secs(1));
 
-        // let second = run(setup);
+        // let second = run(setup.clone(), |metric, value| {
+        //     // // TODO(janis): commonware calls this marshal, we call this sync.
+        //     // // We should rename this to marshal (the actor, that is).
+        //     if metric.ends_with("_sync_processed_height") {
+        //         let value = value.parse::<u64>().unwrap();
+        //         value >= 5
+        //     } else {
+        //         false
+        //     }
+        // });
         // assert_eq!(first, second);
     }
 }
@@ -71,9 +98,18 @@ fn many_bad_links() {
             how_many: 5,
             seed,
             linkage: link.clone(),
-            height_to_reach: 5,
+            heights_per_epoch: 100,
         };
-        let _first = run(setup.clone());
+        let _first = run(setup.clone(), |metric, value| {
+            // // TODO(janis): commonware calls this marshal, we call this sync.
+            // // We should rename this to marshal (the actor, that is).
+            if metric.ends_with("_sync_processed_height") {
+                let value = value.parse::<u64>().unwrap();
+                value >= 5
+            } else {
+                false
+            }
+        });
 
         // FIXME(janis): the events are currently not fully deterministic, so
         // two runs will not reproduce the exact same audit.
@@ -103,7 +139,18 @@ fn reach_height_20_with_a_few_bad_links() {
         how_many: 10,
         seed: 0,
         linkage: link,
-        height_to_reach: 20,
+        heights_per_epoch: 100,
     };
-    let _first = run(setup);
+    let _first = run(setup, |metric, value| {
+        // // TODO(janis): commonware calls this marshal, we call this sync.
+        // // We should rename this to marshal (the actor, that is).
+        if metric.ends_with("_sync_processed_height") {
+            let value = value.parse::<u64>().unwrap();
+            value >= 20
+        } else {
+            false
+        }
+    });
+
+    std::thread::sleep(Duration::from_secs(1));
 }
