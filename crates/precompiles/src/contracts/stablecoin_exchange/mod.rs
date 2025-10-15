@@ -2010,7 +2010,52 @@ mod tests {
 
     #[test]
     fn test_sell() {
-        // TODO:
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let bob = Address::random();
+        let admin = Address::random();
+        let amount_in = 500_000u128;
+        let tick = 1;
+
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            2_000_000u128,
+        );
+        exchange.create_pair(&base_token);
+
+        let order_amount = 1_000_000u128;
+        exchange
+            .place(&alice, base_token, order_amount, true, tick)
+            .expect("Order should succeed");
+
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Execute block should succeed");
+
+        exchange.set_balance(bob, base_token, 2_000_000u128);
+
+        let price = orderbook::tick_to_price(tick);
+        let min_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let amount_out = exchange
+            .sell(&bob, base_token, quote_token, amount_in, min_amount_out)
+            .expect("Sell should succeed");
+
+        let mut quote_tip20 = TIP20Token::new(
+            address_to_token_id_unchecked(&quote_token),
+            exchange.storage,
+        );
+        let bob_quote_balance = quote_tip20.balance_of(ITIP20::balanceOfCall { account: bob });
+        assert_eq!(bob_quote_balance, U256::from(amount_out));
+
+        let alice_base_exchange_balance = exchange.balance_of(alice, base_token);
+        assert_eq!(alice_base_exchange_balance, amount_in);
     }
 
     #[test]
