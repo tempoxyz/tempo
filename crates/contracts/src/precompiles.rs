@@ -335,6 +335,7 @@ sol! {
         error InsufficientLiquidity();
         error MaxInputExceeded();
         error InsufficientOutput();
+        error PairDoesNotExist();
     }
 }
 
@@ -543,6 +544,11 @@ impl StablecoinExchangeError {
     /// Creates an error when an order does not exist.
     pub const fn order_does_not_exist() -> Self {
         Self::OrderDoesNotExist(IStablecoinExchange::OrderDoesNotExist {})
+    }
+
+    /// Creates an error when an order does not exist.
+    pub const fn pair_does_not_exsist() -> Self {
+        Self::PairDoesNotExist(IStablecoinExchange::PairDoesNotExist {})
     }
 
     /// Creates an error for unauthorized access.
