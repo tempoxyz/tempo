@@ -6,7 +6,7 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::Block,
-    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub mod linking_usd;
