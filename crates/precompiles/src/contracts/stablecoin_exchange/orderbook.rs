@@ -583,7 +583,7 @@ mod tests {
         #[test]
         fn test_set_and_check_positive_ticks() {
             let mut storage = HashMapStorageProvider::new(1);
-            let address = address!("0x1111111111111111111111111111111111111111");
+            let address = Address::random();
             let book_key = B256::ZERO;
 
             // Set various positive ticks and verify they're marked as initialized
@@ -602,7 +602,7 @@ mod tests {
         #[test]
         fn test_set_and_check_negative_ticks() {
             let mut storage = HashMapStorageProvider::new(1);
-            let address = address!("0x1111111111111111111111111111111111111111");
+            let address = Address::random();
             let book_key = B256::ZERO;
 
             // Set various negative ticks and verify they're marked as initialized
@@ -621,7 +621,7 @@ mod tests {
         #[test]
         fn test_set_clear_and_check() {
             let mut storage = HashMapStorageProvider::new(1);
-            let address = address!("0x1111111111111111111111111111111111111111");
+            let address = Address::random();
             let book_key = B256::ZERO;
 
             // Test setting and clearing both positive and negative ticks
@@ -660,7 +660,7 @@ mod tests {
         #[test]
         fn test_boundary_ticks() {
             let mut storage = HashMapStorageProvider::new(1);
-            let address = address!("0x1111111111111111111111111111111111111111");
+            let address = Address::random();
             let book_key = B256::ZERO;
 
             // Test MIN_TICK
@@ -697,7 +697,7 @@ mod tests {
         #[test]
         fn test_bid_and_ask_separate() {
             let mut storage = HashMapStorageProvider::new(1);
-            let address = address!("0x1111111111111111111111111111111111111111");
+            let address = Address::random();
             let book_key = B256::ZERO;
             let tick = 100;
 
@@ -733,7 +733,7 @@ mod tests {
         #[test]
         fn test_ticks_in_same_word() {
             let mut storage = HashMapStorageProvider::new(1);
-            let address = address!("0x1111111111111111111111111111111111111111");
+            let address = Address::random();
             let book_key = B256::ZERO;
 
             // Ticks in the same 256-tick word (word_index = 0)
@@ -755,7 +755,7 @@ mod tests {
         #[test]
         fn test_ticks_across_word_boundary() {
             let mut storage = HashMapStorageProvider::new(1);
-            let address = address!("0x1111111111111111111111111111111111111111");
+            let address = Address::random();
             let book_key = B256::ZERO;
 
             // Ticks that span word boundary at 256
@@ -771,7 +771,7 @@ mod tests {
         #[test]
         fn test_negative_ticks_different_words() {
             let mut storage = HashMapStorageProvider::new(1);
-            let address = address!("0x1111111111111111111111111111111111111111");
+            let address = Address::random();
             let book_key = B256::ZERO;
 
             // Test negative ticks in different words
