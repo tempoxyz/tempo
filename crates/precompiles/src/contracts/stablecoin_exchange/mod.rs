@@ -1329,7 +1329,9 @@ impl<'a, S: StorageProvider> StorageOps for StablecoinExchange<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{HashMapStorageProvider, LinkingUSD, linking_usd, tip20};
+    use crate::contracts::{
+        HashMapStorageProvider, LinkingUSD, linking_usd, tip20, types::StablecoinExchangeError,
+    };
 
     fn setup_test_tokens<S: StorageProvider>(
         storage: &mut S,
@@ -1420,6 +1422,32 @@ mod tests {
             let expected_tick = (price as i32 - orderbook::PRICE_SCALE as i32) as i16;
             assert_eq!(tick, expected_tick);
         }
+    }
+
+    #[test]
+    fn test_place_order_pair_does_not_exist() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let amount = 1_000_000u128;
+        let tick = 100i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            expected_escrow,
+        );
+
+        let result = exchange.place(&alice, base_token, amount, true, tick);
+        assert_eq!(result, Err(StablecoinExchangeError::pair_does_not_exsist()));
     }
 
     #[test]
