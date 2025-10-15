@@ -159,7 +159,7 @@ async fn instantiate_network(
 async fn resolve_all_peers(
     peers: impl IntoIterator<Item = (&PublicKey, &String)>,
 ) -> eyre::Result<IndexMap<PublicKey, (String, SocketAddr)>> {
-    use futures_util::stream::{FuturesOrdered, TryStreamExt as _};
+    use futures::stream::{FuturesOrdered, TryStreamExt as _};
     let resolve_all = peers
         .into_iter()
         .map(|(peer, name)| async move {

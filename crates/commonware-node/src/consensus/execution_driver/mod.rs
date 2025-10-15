@@ -26,10 +26,11 @@ use commonware_runtime::{
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
-use futures_channel::{mpsc, oneshot};
-use futures_util::{
-    SinkExt as _, StreamExt as _, TryFutureExt,
-    future::{Either, try_join},
+use futures::future::{Either, try_join};
+use futures::{SinkExt as _, StreamExt as _, TryFutureExt as _};
+use futures::{
+    channel::{mpsc, oneshot},
+    future::always_ready,
 };
 use rand::{CryptoRng, Rng};
 use reth::payload::EthBuiltPayload;
@@ -402,9 +403,7 @@ impl Inner<Init> {
         }
         let genesis_block = self.genesis_block.clone();
         let parent_request = if parent.1 == genesis_block.digest() {
-            Either::Left(futures_util::future::always_ready({
-                move || Ok((*genesis_block).clone())
-            }))
+            Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
                 self.syncer
@@ -505,9 +504,7 @@ impl Inner<Init> {
 
         let genesis_block = self.genesis_block.clone();
         let parent_request = if parent.1 == genesis_block.digest() {
-            Either::Left(futures_util::future::always_ready({
-                move || Ok((*genesis_block).clone())
-            }))
+            Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
                 self.syncer

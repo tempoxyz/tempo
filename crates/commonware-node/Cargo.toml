@@ -36,8 +36,7 @@ commonware-runtime.workspace = true
 commonware-utils.workspace = true
 
 eyre.workspace = true
-futures-channel.workspace = true
-futures-util.workspace = true
+futures.workspace = true
 governor.workspace = true
 indexmap.workspace = true
 

@@ -13,11 +13,12 @@ use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use commonware_consensus::{Block as _, marshal, types::Round};
 use commonware_runtime::{FutureExt, Pacer};
 use eyre::{WrapErr as _, ensure};
-use futures_channel::{
-    mpsc::{UnboundedReceiver, UnboundedSender},
-    oneshot,
+use futures::{
+    StreamExt as _,
+    channel::{mpsc, oneshot},
+    select_biased,
+    stream::FuturesUnordered,
 };
-use futures_util::{StreamExt as _, select_biased, stream::FuturesUnordered};
 use reth_provider::BlockNumReader as _;
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_node::{TempoExecutionData, TempoFullNode};
@@ -53,7 +54,7 @@ impl Builder {
             marshal,
         } = self;
 
-        let (to_me, from_execution_driver) = futures_channel::mpsc::unbounded();
+        let (to_me, from_execution_driver) = mpsc::unbounded();
 
         let my_mailbox = ExecutorMailbox { inner: to_me };
 
@@ -93,7 +94,7 @@ pub(super) struct Executor {
 
     /// The channel over which the agent will receive new commands from the
     /// execution driver.
-    mailbox: UnboundedReceiver<Message>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
     marshal: marshal::Mailbox<BlsScheme, Block>,
@@ -366,7 +367,7 @@ impl Executor {
 
 #[derive(Clone, Debug)]
 pub(super) struct ExecutorMailbox {
-    inner: UnboundedSender<Message>,
+    inner: mpsc::UnboundedSender<Message>,
 }
 
 impl ExecutorMailbox {
