@@ -2060,6 +2060,57 @@ mod tests {
 
     #[test]
     fn test_flip_order_execution() {
-        // TODO:
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let bob = Address::random();
+        let admin = Address::random();
+        let amount = 1_000_000u128;
+        let tick = 100i16;
+        let flip_tick = 200i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            expected_escrow * 2,
+        );
+        exchange.create_pair(&base_token);
+
+        // Place a flip bid order
+        let flip_order_id = exchange
+            .place_flip(&alice, base_token, amount, true, tick, flip_tick)
+            .expect("Place flip order should succeed");
+
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Execute block should succeed");
+
+        exchange.set_balance(bob, base_token, amount);
+
+        exchange
+            .sell(&bob, base_token, quote_token, amount, 0)
+            .expect("Sell should succeed");
+
+        // Assert that the order has filled
+        let filled_order = Order::from_storage(flip_order_id, exchange.storage, exchange.address);
+        assert_eq!(filled_order.maker(), Address::ZERO);
+
+        let new_order_id = exchange.pending_order_id();
+        assert_eq!(new_order_id, flip_order_id + 1);
+
+        let new_order = Order::from_storage(new_order_id, exchange.storage, exchange.address);
+        assert_eq!(new_order.maker(), alice);
+        assert_eq!(new_order.tick(), flip_tick);
+        assert_eq!(new_order.flip_tick(), tick);
+        assert!(new_order.is_ask());
+        assert_eq!(new_order.amount(), amount);
+        assert_eq!(new_order.remaining(), amount);
     }
 }
