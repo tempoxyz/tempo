@@ -498,7 +498,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
             let mut bitmap =
                 orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
-            bitmap.set_tick_bit(order.tick(), order.is_bid());
+            bitmap
+                .set_tick_bit(order.tick(), order.is_bid())
+                .expect("Tick is valid");
 
             if order.is_bid() {
                 if order.tick() > orderbook.best_bid_tick {
@@ -610,7 +612,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             if level.head == 0 {
                 let mut bitmap =
                     orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
-                bitmap.clear_tick_bit(order.tick(), order.is_bid());
+                bitmap
+                    .clear_tick_bit(order.tick(), order.is_bid())
+                    .expect("Tick is valid");
 
                 0
             } else {
@@ -1027,7 +1031,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         if level.head == 0 {
             let mut bitmap =
                 orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
-            bitmap.clear_tick_bit(order.tick(), order.is_bid());
+            bitmap
+                .clear_tick_bit(order.tick(), order.is_bid())
+                .expect("Tick is valid");
         }
 
         level.store(
