@@ -152,8 +152,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         token: Address,
         amount: u128,
     ) -> Result<(), StablecoinExchangeError> {
-        dbg!("getting here");
-
         let user_balance = self.balance_of(user, token);
         if user_balance >= amount {
             self.sub_balance(user, token, amount);
@@ -788,7 +786,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         Ok(amount_in)
     }
 
-    // TODO: clean up
     /// Fill orders for exact input amount
     #[allow(dead_code)]
     fn fill_orders_exact_in(
@@ -1538,8 +1535,58 @@ mod tests {
 
     #[test]
     fn test_place_ask_order() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
 
-        // TODO:
+        let alice = Address::random();
+        let admin = Address::random();
+        let amount = 1_000_000u128;
+        let tick = 50i16; // Use positive tick to avoid conversion issues
+
+        // Setup tokens with enough base token balance for the order
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, &admin, &alice, exchange.address, amount);
+
+        let order_id = exchange
+            .place(&alice, base_token, amount, false, tick) // is_bid = false for ask
+            .expect("Place ask order should succeed");
+
+        assert_eq!(order_id, 1);
+        assert_eq!(exchange.active_order_id(), 0);
+        assert_eq!(exchange.pending_order_id(), 1);
+
+        // Verify the order was stored correctly
+        let stored_order = Order::from_storage(order_id, exchange.storage, exchange.address);
+        assert_eq!(stored_order.maker(), alice);
+        assert_eq!(stored_order.amount(), amount);
+        assert_eq!(stored_order.remaining(), amount);
+        assert_eq!(stored_order.tick(), tick);
+        assert!(!stored_order.is_bid());
+        assert!(!stored_order.is_flip());
+        assert_eq!(stored_order.prev(), 0);
+        assert_eq!(stored_order.next(), 0);
+
+        let book_key = exchange.compute_book_key(base_token, quote_token);
+        let level =
+            TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, false); // is_bid = false for ask
+        assert_eq!(level.head, 0);
+        assert_eq!(level.tail, 0);
+        assert_eq!(level.total_liquidity, 0);
+
+        // Verify balance was reduced by the escrow amount
+        {
+            let mut base_tip20 =
+                TIP20Token::new(address_to_token_id_unchecked(&base_token), exchange.storage);
+            let remaining_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: alice });
+            assert_eq!(remaining_balance, U256::ZERO); // All tokens should be escrowed
+
+            // Verify exchange received the base tokens
+            let exchange_balance = base_tip20.balance_of(ITIP20::balanceOfCall {
+                account: exchange.address,
+            });
+            assert_eq!(exchange_balance, U256::from(amount));
+        }
     }
 
     #[test]

@@ -16,7 +16,6 @@ use alloy::{
     primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
     sol_types::SolStruct,
 };
-use reth_storage_api::errors::db;
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
@@ -549,7 +548,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool, TIP20Error> {
-        dbg!("transferfrom");
         self._transfer_from(msg_sender, call.from, call.to, call.amount)
     }
 
@@ -608,7 +606,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         // Check and update allowance
         let allowed = self.get_allowance(&from, msg_sender);
         if amount > allowed {
-            dbg!("insufficnet allowance");
             return Err(TIP20Error::insufficient_allowance());
         }
 
