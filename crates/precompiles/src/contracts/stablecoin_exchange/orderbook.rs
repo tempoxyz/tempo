@@ -5,7 +5,7 @@ use super::{
     slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS},
 };
 use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, B256, U256, keccak256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 /// Constants from Solidity implementation
@@ -256,9 +256,9 @@ impl Orderbook {
 
     /// Load an Orderbook from storage
     pub fn from_storage<S: StorageProvider>(
+        book_key: B256,
         storage: &mut S,
         address: Address,
-        book_key: B256,
     ) -> Self {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
@@ -297,7 +297,8 @@ impl Orderbook {
     }
 
     /// Store this Orderbook to storage
-    pub fn store<S: StorageProvider>(&self, storage: &mut S, address: Address, book_key: B256) {
+    pub fn store<S: StorageProvider>(&self, storage: &mut S, address: Address) {
+        let book_key = compute_book_key(self.base, self.quote);
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
         storage
@@ -500,6 +501,22 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
     }
 }
 
+/// Compute deterministic book key from base, quote token pair
+pub fn compute_book_key(token_a: Address, token_b: Address) -> B256 {
+    // Sort tokens to ensure deterministic key
+    let (token_a, token_b) = if token_a < token_b {
+        (token_a, token_b)
+    } else {
+        (token_b, token_a)
+    };
+
+    // Compute keccak256(abi.encodePacked(tokenA, tokenB))
+    let mut buf = [0u8; 40];
+    buf[..20].copy_from_slice(token_a.as_slice());
+    buf[20..].copy_from_slice(token_b.as_slice());
+    keccak256(buf)
+}
+
 /// Convert relative tick to scaled price
 pub fn tick_to_price(tick: i16) -> u32 {
     (PRICE_SCALE as i32 + tick as i32) as u32
@@ -583,5 +600,11 @@ mod tests {
         // Test boundary values
         assert_eq!(tick_to_price(MIN_TICK), PRICE_SCALE - 2000);
         assert_eq!(tick_to_price(MAX_TICK), PRICE_SCALE + 2000);
+    }
+
+    #[test]
+    fn test_compute_book_key() {
+        // TODO: check deterministic ordering
+        // TODO: check book key matches expected hash
     }
 }

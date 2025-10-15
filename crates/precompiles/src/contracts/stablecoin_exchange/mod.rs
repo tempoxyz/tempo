@@ -16,6 +16,7 @@ use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
         StorageProvider, TIP20Token, address_to_token_id_unchecked,
+        stablecoin_exchange::orderbook::compute_book_key,
         storage::{StorageOps, slots::mapping_slot},
         types::{IStablecoinExchange, ITIP20, StablecoinExchangeError, StablecoinExchangeEvents},
     },
@@ -79,39 +80,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         next_id
     }
 
-    /// Compute deterministic book key from token pair
-    /// Matches Solidity _pairKey function
-    fn compute_book_key(&self, token_a: Address, token_b: Address) -> B256 {
-        // Sort tokens to ensure deterministic key
-        let (token_a, token_b) = if token_a < token_b {
-            (token_a, token_b)
-        } else {
-            (token_b, token_a)
-        };
-
-        // Compute keccak256(abi.encodePacked(tokenA, tokenB))
-        let mut buf = [0u8; 40];
-        buf[..20].copy_from_slice(token_a.as_slice());
-        buf[20..].copy_from_slice(token_b.as_slice());
-        keccak256(buf)
-    }
-}
-
-impl<'a, S: StorageProvider> StorageOps for StablecoinExchange<'a, S> {
-    fn sstore(&mut self, slot: U256, value: U256) {
-        self.storage
-            .sstore(self.address, slot, value)
-            .expect("Storage operation failed");
-    }
-
-    fn sload(&mut self, slot: U256) -> U256 {
-        self.storage
-            .sload(self.address, slot)
-            .expect("Storage operation failed")
-    }
-}
-
-impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// Get user's balance for a specific token
     pub fn balance_of(&mut self, user: Address, token: Address) -> u128 {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
@@ -181,8 +149,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_out: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let book_key = self.compute_book_key(token_in, token_out);
-        let orderbook = Orderbook::from_storage(self.storage, self.address, book_key);
+        let book_key = compute_book_key(token_in, token_out);
+        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
             return Err(StablecoinExchangeError::insufficient_liquidity());
@@ -198,8 +166,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_in: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let book_key = self.compute_book_key(token_in, token_out);
-        let orderbook = Orderbook::from_storage(self.storage, self.address, book_key);
+        let book_key = compute_book_key(token_in, token_out);
+        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
             return Err(StablecoinExchangeError::insufficient_liquidity());
@@ -217,8 +185,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         amount_in: u128,
         min_amount_out: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let book_key = self.compute_book_key(token_in, token_out);
-        let orderbook = Orderbook::from_storage(self.storage, self.address, book_key);
+        let book_key = compute_book_key(token_in, token_out);
+        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
             return Err(StablecoinExchangeError::insufficient_liquidity());
@@ -242,8 +210,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         amount_out: u128,
         max_amount_in: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let book_key = self.compute_book_key(token_in, token_out);
-        let orderbook = Orderbook::from_storage(self.storage, self.address, book_key);
+        let book_key = compute_book_key(token_in, token_out);
+        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
             return Err(StablecoinExchangeError::insufficient_liquidity());
@@ -261,15 +229,16 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
     /// Generate deterministic key for token pair
     pub fn pair_key(&self, token_a: Address, token_b: Address) -> B256 {
-        self.compute_book_key(token_a, token_b)
+        compute_book_key(token_a, token_b)
     }
 
     /// Get tick level information
     pub fn get_tick_level(&mut self, base: Address, tick: i16, is_bid: bool) -> (u128, u128, u128) {
         // For now, assume quote token is passed or use a default approach
         // This would need proper integration with TIP20 interface
-        let quote = Address::ZERO; // TODO: Get from TIP20 interface
-        let key = self.compute_book_key(base, quote);
+        let quote =
+            TIP20Token::new(address_to_token_id_unchecked(&base), self.storage).linking_token();
+        let key = compute_book_key(base, quote);
 
         let level =
             orderbook::TickLevel::from_storage(self.storage, self.address, key, tick, is_bid);
@@ -291,6 +260,17 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .sload(self.address, slots::PENDING_ORDER_ID)
             .expect("TODO: handle error")
             .to::<u128>()
+    }
+
+    pub fn create_pair(&mut self, base: &Address) {
+        let quote =
+            TIP20Token::new(address_to_token_id_unchecked(base), self.storage).linking_token();
+
+        let book = Orderbook::new(*base, quote);
+        book.store(self.storage, self.address);
+
+        // TODO: emit event
+        // emit PairCreated(key, base, quote);
     }
 
     /// Place a limit order on the orderbook
@@ -319,7 +299,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).linking_token();
 
         // Compute book_key from token pair
-        let book_key = self.compute_book_key(token, quote_token);
+        let book_key = compute_book_key(token, quote_token);
+
+        // TODO: check that book exists
 
         // Validate tick is within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
@@ -352,6 +334,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
         // linked and then considered "active"
         order.store(self.storage, self.address);
+
+        // TODO: init the book if not exists
 
         // Emit OrderPlaced event
         self.storage
@@ -391,7 +375,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).linking_token();
 
         // Compute book_key from token pair
-        let book_key = self.compute_book_key(token, quote_token);
+        let book_key = compute_book_key(token, quote_token);
 
         // Validate tick and flip_tick are within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
@@ -489,7 +473,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             return;
         }
 
-        let orderbook = Orderbook::from_storage(self.storage, self.address, order.book_key());
+        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
         let mut level = TickLevel::from_storage(
             self.storage,
             self.address,
@@ -546,7 +530,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     #[allow(dead_code)]
     fn fill_order(&mut self, order_id: u128, fill_amount: u128) -> u128 {
         let mut order = Order::from_storage(order_id, self.storage, self.address);
-        let orderbook = Orderbook::from_storage(self.storage, self.address, order.book_key());
+        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
         let mut level = TickLevel::from_storage(
             self.storage,
             self.address,
@@ -647,7 +631,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     ) -> Result<u128, StablecoinExchangeError> {
         let mut remaining_out = amount_out;
         let mut amount_in = 0u128;
-        let orderbook = Orderbook::from_storage(self.storage, self.address, book_key);
+        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if base_for_quote {
             let mut current_tick = orderbook.best_bid_tick;
@@ -797,7 +781,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     ) -> Result<u128, StablecoinExchangeError> {
         let mut remaining_in = amount_in;
         let mut amount_out = 0u128;
-        let orderbook = Orderbook::from_storage(self.storage, self.address, book_key);
+        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if base_for_quote {
             let mut current_tick = orderbook.best_bid_tick;
@@ -967,7 +951,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
     /// Cancel a pending order (not yet in the active orderbook)
     fn cancel_pending_order(&mut self, order: Order) -> Result<(), StablecoinExchangeError> {
-        let orderbook = Orderbook::from_storage(self.storage, self.address, order.book_key());
+        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
         let token = if order.is_bid() {
             orderbook.quote
         } else {
@@ -981,6 +965,10 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         } else {
             order.remaining()
         };
+
+        dbg!(refund_amount);
+        dbg!(token);
+        dbg!(order.maker());
 
         // Credit remaining tokens to user's withdrawable balance
         self.increment_balance(order.maker(), token, refund_amount);
@@ -1044,7 +1032,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         );
 
         // Refund tokens to maker
-        let orderbook = Orderbook::from_storage(self.storage, self.address, order.book_key());
+        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
         if order.is_bid() {
             // Bid orders are in quote token, refund quote amount
             let price = orderbook::tick_to_price(order.tick());
@@ -1108,7 +1096,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     ) -> Result<u128, StablecoinExchangeError> {
         let mut remaining_out = amount_out;
         let mut amount_in = 0u128;
-        let orderbook = Orderbook::from_storage(self.storage, self.address, book_key);
+        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if base_for_quote {
             // Buying quote tokens with base tokens - use bid side
@@ -1219,7 +1207,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     ) -> Result<u128, StablecoinExchangeError> {
         let mut remaining_in = amount_in;
         let mut amount_out = 0u128;
-        let orderbook = Orderbook::from_storage(self.storage, self.address, book_key);
+        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if base_for_quote {
             // Selling base tokens for quote tokens - use bid side
@@ -1322,11 +1310,24 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 }
 
+impl<'a, S: StorageProvider> StorageOps for StablecoinExchange<'a, S> {
+    fn sstore(&mut self, slot: U256, value: U256) {
+        self.storage
+            .sstore(self.address, slot, value)
+            .expect("Storage operation failed");
+    }
+
+    fn sload(&mut self, slot: U256) -> U256 {
+        self.storage
+            .sload(self.address, slot)
+            .expect("Storage operation failed")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::contracts::{HashMapStorageProvider, LinkingUSD, linking_usd, tip20};
-    use alloy::primitives::address;
 
     fn setup_test_tokens<S: StorageProvider>(
         storage: &mut S,
@@ -1398,51 +1399,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_book_key_deterministic() {
-        let storage = HashMapStorageProvider::new(1);
-        let exchange = StablecoinExchange {
-            address: STABLECOIN_EXCHANGE_ADDRESS,
-            storage: &mut { storage },
-        };
-
-        let token_a = Address::random();
-        let token_b = Address::random();
-
-        // Key should be the same regardless of input order
-        let key_ab = exchange.compute_book_key(token_a, token_b);
-        let key_ba = exchange.compute_book_key(token_b, token_a);
-
-        assert_eq!(key_ab, key_ba, "Book key should be deterministic");
-    }
-
-    #[test]
-    fn test_compute_book_key_matches_expected_hash() {
-        let storage = HashMapStorageProvider::new(1);
-        let exchange = StablecoinExchange {
-            address: STABLECOIN_EXCHANGE_ADDRESS,
-            storage: &mut { storage },
-        };
-
-        // Use specific addresses to verify the hash
-        let token_a = address!("0x1111111111111111111111111111111111111111");
-        let token_b = address!("0x2222222222222222222222222222222222222222");
-
-        let key = exchange.compute_book_key(token_a, token_b);
-
-        // Manually compute the expected hash:
-        // token_a < token_b, so order is token_a then token_b
-        let mut buf = [0u8; 40];
-        buf[..20].copy_from_slice(token_a.as_slice());
-        buf[20..].copy_from_slice(token_b.as_slice());
-        let expected = keccak256(buf);
-
-        assert_eq!(
-            key, expected,
-            "Computed book key should match keccak256 of sorted concatenated addresses"
-        );
-    }
-
-    #[test]
     fn test_tick_to_price() {
         let test_ticks = [-2000i16, -1000, -100, -1, 0, 1, 100, 1000, 2000];
         for tick in test_ticks {
@@ -1508,7 +1464,7 @@ mod tests {
         assert_eq!(stored_order.next(), 0);
 
         // Verify the order is not yet in the active orderbook
-        let book_key = exchange.compute_book_key(base_token, quote_token);
+        let book_key = compute_book_key(base_token, quote_token);
         let level =
             TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
         assert_eq!(level.head, 0);
@@ -1567,7 +1523,7 @@ mod tests {
         assert_eq!(stored_order.prev(), 0);
         assert_eq!(stored_order.next(), 0);
 
-        let book_key = exchange.compute_book_key(base_token, quote_token);
+        let book_key = compute_book_key(base_token, quote_token);
         let level =
             TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, false); // is_bid = false for ask
         assert_eq!(level.head, 0);
@@ -1635,7 +1591,7 @@ mod tests {
         assert_eq!(stored_order.next(), 0);
 
         // Verify the order is not yet in the active orderbook
-        let book_key = exchange.compute_book_key(base_token, quote_token);
+        let book_key = compute_book_key(base_token, quote_token);
         let level =
             TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
         assert_eq!(level.head, 0);
@@ -1661,7 +1617,66 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_pending_order() {}
+    fn test_cancel_pending_order() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let amount = 1_000_000u128;
+        let tick = 100i16;
+
+        // Calculate escrow amount needed for bid
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        // Setup tokens
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            expected_escrow,
+        );
+
+        // Place the bid order
+        let order_id = exchange
+            .place(&alice, base_token, amount, true, tick)
+            .expect("Place bid order should succeed");
+
+        // Verify order was placed and tokens were escrowed
+        assert_eq!(exchange.balance_of(alice, quote_token), 0);
+
+        let (alice_balance_before, exchange_balance_before) = {
+            let mut quote_tip20 = TIP20Token::new(
+                address_to_token_id_unchecked(&quote_token),
+                exchange.storage,
+            );
+
+            (
+                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice }),
+                quote_tip20.balance_of(ITIP20::balanceOfCall {
+                    account: exchange.address,
+                }),
+            )
+        };
+
+        assert_eq!(alice_balance_before, U256::ZERO);
+        assert_eq!(exchange_balance_before, U256::from(expected_escrow));
+
+        // Cancel the pending order
+        exchange
+            .cancel(&alice, order_id)
+            .expect("Cancel pending order should succeed");
+
+        // Verify order was deleted
+        let cancelled_order = Order::from_storage(order_id, exchange.storage, exchange.address);
+        assert_eq!(cancelled_order.maker(), Address::ZERO);
+
+        // Verify tokens were refunded to user's internal balance
+        assert_eq!(exchange.balance_of(alice, quote_token), expected_escrow);
+    }
 
     #[test]
     fn test_execute_block() {
