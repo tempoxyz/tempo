@@ -2,6 +2,7 @@ use super::account_abstraction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
+use alloy_rlp::{BufMut, Encodable};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     EncodedPoint,
@@ -56,6 +57,24 @@ pub enum AASignature {
 
     /// WebAuthn signature with variable-length authenticator data
     WebAuthn(WebAuthnSignature),
+}
+
+impl Default for AASignature {
+    fn default() -> Self {
+        Self::Secp256k1(Signature::test_signature())
+    }
+}
+
+impl Encodable for AASignature {
+    fn encode(&self, out: &mut dyn BufMut) {
+        let bytes = self.to_bytes();
+        Encodable::encode(&bytes, out);
+    }
+
+    fn length(&self) -> usize {
+        let bytes = self.to_bytes();
+        Encodable::length(&bytes)
+    }
 }
 
 impl AASignature {
@@ -435,10 +454,8 @@ mod tests {
 
     #[test]
     fn test_p256_signature_verification_valid() {
-        use p256::{
-            ecdsa::{SigningKey, signature::Signer},
-            elliptic_curve::rand_core::OsRng,
-        };
+        use p256::ecdsa::signature::hazmat::PrehashSigner;
+        use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
         use sha2::{Digest, Sha256};
 
         // Generate a valid key pair
@@ -450,7 +467,8 @@ mod tests {
         let message_hash = B256::from_slice(&Sha256::digest(message));
 
         // Sign the message
-        let signature: p256::ecdsa::Signature = signing_key.sign(message_hash.as_slice());
+        let signature: p256::ecdsa::Signature =
+            signing_key.sign_prehash(message_hash.as_slice()).unwrap();
         let sig_bytes = signature.to_bytes();
         let r = &sig_bytes[0..32];
         let s = &sig_bytes[32..64];

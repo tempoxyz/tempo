@@ -43,18 +43,28 @@ pub struct Call {
     pub input: Bytes,
 }
 
+impl Call {
+    /// Returns the RLP header for this call, encapsulating both length calculation and header creation
+    #[inline]
+    fn rlp_header(&self) -> alloy_rlp::Header {
+        let payload_length = self.to.length() + self.value.length() + self.input.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+    }
+}
+
 impl Encodable for Call {
     fn encode(&self, out: &mut dyn BufMut) {
-        let payload_length = self.to.length() + self.value.length() + self.input.length();
-        rlp_header(payload_length).encode(out);
+        self.rlp_header().encode(out);
         self.to.encode(out);
         self.value.encode(out);
         self.input.encode(out);
     }
 
     fn length(&self) -> usize {
-        let payload_length = self.to.length() + self.value.length() + self.input.length();
-        rlp_header(payload_length).length_with_payload()
+        self.rlp_header().length_with_payload()
     }
 }
 
