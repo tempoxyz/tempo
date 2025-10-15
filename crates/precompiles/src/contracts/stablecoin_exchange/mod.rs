@@ -552,7 +552,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// Returns the next order ID to process. If there is no more liquidity at the current tick,
     /// then, 0 will be returned instead.
     #[allow(dead_code)]
-    fn fill_order(&mut self, order_id: u128, fill_amount: u128) -> u128 {
+    fn fill_order(&mut self, order_id: u128, fill_amount: u128) -> Result<u128, OrderError> {
         let mut order = Order::from_storage(order_id, self.storage, self.address);
         let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
         let mut level = TickLevel::from_storage(
@@ -590,8 +590,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                     order.flip_tick(),
                     !order.is_bid(),
                     order.tick(),
-                )
-                .expect("TODO: error handling");
+                )?;
 
                 new_order.store(self.storage, self.address);
             }
@@ -625,11 +624,11 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             if level.head == 0 {
                 let mut bitmap =
                     orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
-                bitmap.clear_tick_bit(order.tick(), order.is_bid());
+                bitmap.clear_tick_bit(order.tick(), order.is_bid())?;
 
-                0
+                Ok(0)
             } else {
-                order.next()
+                Ok(order.next())
             }
         } else {
             level.store(
@@ -640,7 +639,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 order.is_bid(),
             );
 
-            order_id
+            Ok(order_id)
         }
     }
 
@@ -695,7 +694,10 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                     .expect("Remaining out calculation overflow");
                 amount_in += fill_amount;
 
-                order_id = self.fill_order(order_id, fill_amount);
+                // TODO: update error handling to convert OrderError to StablecoinExchangeError
+                order_id = self
+                    .fill_order(order_id, fill_amount)
+                    .map_err(|_| StablecoinExchangeError::fill_failed())?;
 
                 if remaining_out == 0 {
                     return Ok(amount_in);
@@ -759,7 +761,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 remaining_out -= fill_amount;
                 amount_in += quote_in;
 
-                order_id = self.fill_order(order_id, fill_amount);
+                order_id = self
+                    .fill_order(order_id, fill_amount)
+                    .map_err(|_| StablecoinExchangeError::order_does_not_exist())?;
 
                 if remaining_out == 0 {
                     return Ok(amount_in);
@@ -837,7 +841,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 remaining_in -= fill_amount;
                 amount_out += quote_out;
 
-                order_id = self.fill_order(order_id, fill_amount);
+                order_id = self
+                    .fill_order(order_id, fill_amount)
+                    .map_err(|_| StablecoinExchangeError::order_does_not_exist())?;
 
                 if remaining_in == 0 {
                     if amount_out < min_amount_out {
@@ -900,7 +906,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 remaining_in -= (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
                 amount_out += fill_amount;
 
-                order_id = self.fill_order(order_id, fill_amount);
+                order_id = self
+                    .fill_order(order_id, fill_amount)
+                    .map_err(|_| StablecoinExchangeError::order_does_not_exist())?;
 
                 if remaining_in == 0 {
                     if amount_out < min_amount_out {
