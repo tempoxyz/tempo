@@ -212,7 +212,12 @@ async fn test_tip20_mint() -> eyre::Result<()> {
 
     // TODO: Update to assert the actual error once Precompile errors are propagated through revm
     let err = max_mint_result.unwrap_err();
-    assert!(err.to_string().contains("PrecompileError"));
+    assert_eq!(
+        err.as_decoded_interface_error::<ITIP20Errors>(),
+        Some(ITIP20Errors::SupplyCapExceeded(
+            ITIP20::SupplyCapExceeded {}
+        ))
+    );
 
     Ok(())
 }
