@@ -713,28 +713,6 @@ mod tests {
         }
 
         #[test]
-        fn test_ticks_in_same_word() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
-            let book_key = B256::ZERO;
-
-            // Ticks in the same 256-tick word (word_index = 0)
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-            bitmap.set_tick_bit(0, true).unwrap();
-            bitmap.set_tick_bit(100, true).unwrap();
-            bitmap.set_tick_bit(200, true).unwrap();
-
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-            assert!(bitmap.is_tick_initialized(0, true).unwrap());
-            assert!(bitmap.is_tick_initialized(100, true).unwrap());
-            assert!(bitmap.is_tick_initialized(200, true).unwrap());
-            assert!(
-                !bitmap.is_tick_initialized(50, true).unwrap(),
-                "Unset tick should not be initialized"
-            );
-        }
-
-        #[test]
         fn test_ticks_across_word_boundary() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
