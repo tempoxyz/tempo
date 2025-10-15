@@ -6,7 +6,15 @@ use crate::{
         types::{ITIP20, TIP20Error},
     },
 };
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, B256, U256, keccak256};
+use std::sync::LazyLock;
+
+pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
+pub static RECEIVE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
+
+const NAME: &str = "LinkingUSD";
+const SYMBOL: &str = "LUSD";
+const CURRENCY: &str = "USD";
 
 pub struct LinkingUSD<'a, S: StorageProvider> {
     pub token: TIP20Token<'a, S>,
@@ -20,13 +28,8 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
     }
 
     pub fn initialize(&mut self, admin: &Address) -> Result<(), TIP20Error> {
-        self.token.initialize(
-            "LinkingUSD",
-            "LUSD",
-            "USD",
-            Address::ZERO, // No linking token for LinkingUSD
-            admin,
-        )
+        self.token
+            .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
     }
 
     pub fn transfer(
@@ -34,7 +37,10 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferCall,
     ) -> Result<bool, TIP20Error> {
-        if *msg_sender == STABLECOIN_EXCHANGE_ADDRESS {
+        if self.token.has_role(msg_sender, *TRANSFER_ROLE)
+            || self.token.has_role(&call.to, *RECEIVE_ROLE)
+            || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
+        {
             self.token.transfer(msg_sender, call)
         } else {
             Err(TIP20Error::transfers_disabled())
@@ -46,7 +52,10 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool, TIP20Error> {
-        if *msg_sender == STABLECOIN_EXCHANGE_ADDRESS {
+        if self.token.has_role(&call.from, *TRANSFER_ROLE)
+            || self.token.has_role(&call.to, *RECEIVE_ROLE)
+            || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
+        {
             self.token.transfer_from(msg_sender, call)
         } else {
             Err(TIP20Error::transfers_disabled())
@@ -55,18 +64,32 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
 
     pub fn transfer_with_memo(
         &mut self,
-        _msg_sender: &Address,
-        _call: ITIP20::transferWithMemoCall,
+        msg_sender: &Address,
+        call: ITIP20::transferWithMemoCall,
     ) -> Result<(), TIP20Error> {
-        Err(TIP20Error::transfers_disabled())
+        if self.token.has_role(msg_sender, *TRANSFER_ROLE)
+            || self.token.has_role(&call.to, *RECEIVE_ROLE)
+            || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
+        {
+            self.token.transfer_with_memo(msg_sender, call)
+        } else {
+            Err(TIP20Error::transfers_disabled())
+        }
     }
 
     pub fn transfer_from_with_memo(
         &mut self,
-        _msg_sender: &Address,
-        _call: ITIP20::transferFromWithMemoCall,
+        msg_sender: &Address,
+        call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool, TIP20Error> {
-        Err(TIP20Error::transfers_disabled())
+        if self.token.has_role(&call.from, *TRANSFER_ROLE)
+            || self.token.has_role(&call.to, *RECEIVE_ROLE)
+            || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
+        {
+            self.token.transfer_from_with_memo(msg_sender, call)
+        } else {
+            Err(TIP20Error::transfers_disabled())
+        }
     }
 
     pub fn name(&mut self) -> String {
