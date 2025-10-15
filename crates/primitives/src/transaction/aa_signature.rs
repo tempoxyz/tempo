@@ -6,8 +6,7 @@ use alloy_rlp::{BufMut, Encodable};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     EncodedPoint,
-    ecdsa::signature::hazmat::PrehashVerifier,
-    ecdsa::{Signature as P256Signature, VerifyingKey},
+    ecdsa::{Signature as P256Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
 };
 use sha2::{Digest, Sha256};
 
@@ -454,8 +453,10 @@ mod tests {
 
     #[test]
     fn test_p256_signature_verification_valid() {
-        use p256::ecdsa::signature::hazmat::PrehashSigner;
-        use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
+        use p256::{
+            ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
+            elliptic_curve::rand_core::OsRng,
+        };
         use sha2::{Digest, Sha256};
 
         // Generate a valid key pair
