@@ -8,6 +8,7 @@ pub mod error;
 pub mod evm;
 pub mod exec;
 pub mod handler;
+mod instructions;
 mod tx;
 
 pub use block::TempoBlockEnv;

@@ -1,4 +1,4 @@
-use crate::{TempoBlockEnv, TempoTxEnv};
+use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use reth_evm::{
     Database,
     precompiles::PrecompilesMap,
@@ -37,7 +37,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self(Evm {
             ctx,
             inspector,
-            instruction: EthInstructions::new_mainnet(),
+            instruction: instructions::tempo_instructions(),
             precompiles: PrecompilesMap::from_static(EthPrecompiles::default().precompiles),
             frame_stack: FrameStack::new(),
         })
@@ -155,13 +155,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, U256, bytes};
     use reth_evm::revm::{
         ExecuteEvm,
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
         primitives::hardfork::SpecId,
-        state::Bytecode,
+        state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
@@ -185,6 +185,40 @@ mod tests {
         assert_eq!(
             account.info.code.unwrap(),
             Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_access_millis_timestamp() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut ctx = TempoContext::new(db, SpecId::default()).modify_block_chained(|block| {
+            block.timestamp = U256::from(1000);
+            block.timestamp_millis_part = 100;
+        });
+        let contract = Address::random();
+
+        // Create a simple contract that returns output of the opcode.
+        ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                // MILLISTIMESTAMP PUSH0 MSTORE PUSH1 0x20 PUSH0 RETURN
+                code: Some(Bytecode::new_raw(bytes!("0x4F5F5260205FF3"))),
+                ..Default::default()
+            },
+        );
+        let mut tempo_evm = TempoEvm::new(ctx, ());
+
+        let tx_env = TxEnv {
+            kind: contract.into(),
+            ..Default::default()
+        };
+        let res = tempo_evm.transact_one(tx_env.into())?;
+        assert!(res.is_success());
+        assert_eq!(
+            U256::from_be_slice(res.output().unwrap()),
+            U256::from(1000100)
         );
 
         Ok(())

@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, U256, uint};
 use reth_evm::{
     env::BlockEnvironment,
     revm::{
@@ -17,6 +17,16 @@ pub struct TempoBlockEnv {
 
     /// Milliseconds portion of the timestamp.
     pub timestamp_millis_part: u64,
+}
+
+impl TempoBlockEnv {
+    /// Returns the current timestamp in milliseconds.
+    pub fn timestamp_millis(&self) -> U256 {
+        self.inner
+            .timestamp
+            .saturating_mul(uint!(1000_U256))
+            .saturating_add(U256::from(self.timestamp_millis_part))
+    }
 }
 
 impl Block for TempoBlockEnv {
