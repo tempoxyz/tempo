@@ -30,6 +30,7 @@ impl EvmFactory for TempoEvmFactory {
         EVMError<DBError, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
+    type BlockEnv = BlockEnv;
     type Precompiles = PrecompilesMap;
 
     fn create_evm<DB: Database>(
@@ -134,6 +135,7 @@ where
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
+    type BlockEnv = BlockEnv;
     type Precompiles = PrecompilesMap;
     type Inspector = I;
 
