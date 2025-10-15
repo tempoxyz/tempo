@@ -6,6 +6,7 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
+use p256::ecdsa::signature::hazmat::PrehashSigner;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, contracts::ITIP20::transferCall};
 use tempo_primitives::{
@@ -454,7 +455,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     use p256::{
-        ecdsa::{SigningKey, signature::Signer},
+        ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
         elliptic_curve::rand_core::OsRng,
     };
     use sha2::{Digest, Sha256};
@@ -572,8 +573,8 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     final_hasher.update(client_data_hash);
     let message_hash = final_hasher.finalize();
 
-    // Sign the message hash with P256
-    let signature: p256::ecdsa::Signature = signing_key.sign(&message_hash);
+    // Sign the message hash with P256 (use sign_prehash since message_hash is already hashed)
+    let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&message_hash)?;
     let sig_bytes = signature.to_bytes();
 
     // Construct WebAuthn data: authenticatorData || clientDataJSON
@@ -1009,10 +1010,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_p256_call_batching() -> eyre::Result<()> {
-    use p256::{
-        ecdsa::{SigningKey, signature::Signer},
-        elliptic_curve::rand_core::OsRng,
-    };
+    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use sha2::{Digest, Sha256};
     use tempo_precompiles::contracts::ITIP20;
 
@@ -1135,7 +1133,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     let pre_hashed = Sha256::digest(batch_sig_hash.as_slice());
 
     // Sign the pre-hashed message
-    let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed);
+    let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = p256_signature.to_bytes();
 
     // Create P256 AA signature

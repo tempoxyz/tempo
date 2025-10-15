@@ -5,7 +5,8 @@ use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     EncodedPoint,
-    ecdsa::{Signature as P256Signature, VerifyingKey, signature::Verifier},
+    ecdsa::signature::hazmat::PrehashVerifier,
+    ecdsa::{Signature as P256Signature, VerifyingKey},
 };
 use sha2::{Digest, Sha256};
 
