@@ -307,6 +307,9 @@ sol! {
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
 
+        // Pair management
+        function createPair(address base) external returns (bytes32 key);
+
         // Taker functions
         function sell(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
         function buy(address tokenIn, address tokenOut, uint128 amountOut, uint128 maxAmountIn) external returns (uint128 amountIn);
@@ -627,10 +630,10 @@ pub use IStablecoinExchange::{
     IStablecoinExchangeErrors as StablecoinExchangeError,
     IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
-pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };
 pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
 pub use ITipAccountRegistrar::ITipAccountRegistrarErrors as TipAccountRegistrarError;
+pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};

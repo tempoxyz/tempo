@@ -7,7 +7,7 @@ use crate::{
         stablecoin_exchange::StablecoinExchange, storage::StorageProvider,
         types::IStablecoinExchange,
     },
-    precompiles::{Precompile, mutate, mutate_void, view},
+    precompiles::{mutate, mutate_void, view, Precompile},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -50,6 +50,15 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
             IStablecoinExchange::balanceOfCall::SELECTOR => {
                 view::<IStablecoinExchange::balanceOfCall>(calldata, |call| {
                     self.balance_of(call.user, call.token)
+                })
+            }
+            IStablecoinExchange::createPairCall::SELECTOR => {
+                mutate::<
+                    IStablecoinExchange::createPairCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |_s, call| {
+                    let key = self.create_pair(&call.base);
+                    Ok(key)
                 })
             }
             IStablecoinExchange::withdrawCall::SELECTOR => {
@@ -142,6 +151,11 @@ mod tests {
 
     #[test]
     fn test_balance_of_call() {
+        // TODO:
+    }
+
+    #[test]
+    fn test_create_pair_call() {
         // TODO:
     }
 
