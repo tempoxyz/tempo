@@ -729,26 +729,48 @@ mod tests {
         }
 
         #[test]
-        fn test_negative_ticks_different_words() {
+        fn test_ticks_different_words() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
             let book_key = B256::ZERO;
 
-            // Test negative ticks in different words
+            // Test ticks in different words (both positive and negative)
             let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
+
+            // Negative ticks in different words
             bitmap.set_tick_bit(-1, true).unwrap(); // word_index = -1, bit_index = 255
             bitmap.set_tick_bit(-100, true).unwrap(); // word_index = -1, bit_index = 156
             bitmap.set_tick_bit(-256, true).unwrap(); // word_index = -1, bit_index = 0
             bitmap.set_tick_bit(-257, true).unwrap(); // word_index = -2, bit_index = 255
 
+            // Positive ticks in different words
+            bitmap.set_tick_bit(1, true).unwrap(); // word_index = 0, bit_index = 1
+            bitmap.set_tick_bit(100, true).unwrap(); // word_index = 0, bit_index = 100
+            bitmap.set_tick_bit(256, true).unwrap(); // word_index = 1, bit_index = 0
+            bitmap.set_tick_bit(512, true).unwrap(); // word_index = 2, bit_index = 0
+
             let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
+
+            // Verify negative ticks
             assert!(bitmap.is_tick_initialized(-1, true).unwrap());
             assert!(bitmap.is_tick_initialized(-100, true).unwrap());
             assert!(bitmap.is_tick_initialized(-256, true).unwrap());
             assert!(bitmap.is_tick_initialized(-257, true).unwrap());
+
+            // Verify positive ticks
+            assert!(bitmap.is_tick_initialized(1, true).unwrap());
+            assert!(bitmap.is_tick_initialized(100, true).unwrap());
+            assert!(bitmap.is_tick_initialized(256, true).unwrap());
+            assert!(bitmap.is_tick_initialized(512, true).unwrap());
+
+            // Verify unset ticks
             assert!(
                 !bitmap.is_tick_initialized(-50, true).unwrap(),
                 "Unset negative tick should not be initialized"
+            );
+            assert!(
+                !bitmap.is_tick_initialized(50, true).unwrap(),
+                "Unset positive tick should not be initialized"
             );
         }
 
