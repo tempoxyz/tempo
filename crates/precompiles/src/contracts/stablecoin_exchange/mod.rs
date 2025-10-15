@@ -1901,7 +1901,41 @@ mod tests {
 
     #[test]
     fn test_quote_sell() {
-        // TODO:
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let amount_in = 500_000u128;
+        let tick = 1;
+
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            2_000_000u128,
+        );
+        exchange.create_pair(&base_token);
+
+        let order_amount = 1_000_000u128;
+        exchange
+            .place(&alice, base_token, order_amount, true, tick)
+            .expect("Place bid order should succeed");
+
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Execute block should succeed");
+
+        let amount_out = exchange
+            .quote_sell(base_token, quote_token, amount_in)
+            .expect("Could not quote sell");
+
+        // Calculate expected amount_out based on tick price
+        let price = orderbook::tick_to_price(tick);
+        let expected_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
+        assert_eq!(amount_out, expected_amount_out);
     }
 
     #[test]
