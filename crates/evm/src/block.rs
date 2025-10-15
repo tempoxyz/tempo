@@ -114,7 +114,7 @@ where
                 .into_iter()
                 .chain(block)
                 .collect::<Bytes>();
-            if *tx.input() == dex_input && self.seen_fee_manager_system_tx {
+            if *tx.input() == dex_input && self.seen_stablecoin_dex_system_tx {
                 Err(BlockValidationError::msg(
                     "duplicate stablecoin DEX system transaction",
                 ))
