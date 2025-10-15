@@ -3,10 +3,7 @@ use alloy_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
-        context::{
-            BlockEnv,
-            result::{EVMError, HaltReason, ResultAndState},
-        },
+        context::result::{EVMError, HaltReason, ResultAndState},
         handler::EthPrecompiles,
         inspector::NoOpInspector,
         primitives::hardfork::SpecId,
@@ -17,6 +14,8 @@ use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionRes
 use std::ops::{Deref, DerefMut};
 use tempo_precompiles::precompiles::extend_tempo_precompiles;
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
+
+use crate::TempoBlockEnv;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -30,13 +29,13 @@ impl EvmFactory for TempoEvmFactory {
         EVMError<DBError, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
-    type BlockEnv = BlockEnv;
+    type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
 
     fn create_evm<DB: Database>(
         &self,
         db: DB,
-        input: EvmEnv<Self::Spec>,
+        input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         TempoEvm::new(db, input)
     }
@@ -44,7 +43,7 @@ impl EvmFactory for TempoEvmFactory {
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
         &self,
         db: DB,
-        input: EvmEnv<Self::Spec>,
+        input: EvmEnv<Self::Spec, Self::BlockEnv>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
         TempoEvm::new(db, input).with_inspector(inspector)
@@ -64,7 +63,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
-    pub fn new(db: DB, input: EvmEnv) -> Self {
+    pub fn new(db: DB, input: EvmEnv<SpecId, TempoBlockEnv>) -> Self {
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -135,11 +134,11 @@ where
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
-    type BlockEnv = BlockEnv;
+    type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
     type Inspector = I;
 
-    fn block(&self) -> &BlockEnv {
+    fn block(&self) -> &Self::BlockEnv {
         &self.block
     }
 
@@ -194,7 +193,7 @@ where
         self.inner.system_call_with_caller(caller, contract, data)
     }
 
-    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
+    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec, Self::BlockEnv>) {
         let Context {
             block: block_env,
             cfg: cfg_env,
@@ -229,6 +228,7 @@ where
 #[cfg(test)]
 mod tests {
     use reth_evm::revm::{context::TxEnv, database::EmptyDB};
+    use reth_revm::context::BlockEnv;
 
     use super::*;
 
@@ -237,8 +237,11 @@ mod tests {
         let mut evm = TempoEvm::new(
             EmptyDB::default(),
             EvmEnv {
-                block_env: BlockEnv {
-                    basefee: 1,
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        basefee: 1,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 ..Default::default()

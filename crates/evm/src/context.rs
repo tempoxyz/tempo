@@ -10,8 +10,6 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub inner: EthBlockExecutionCtx<'a>,
     /// Non-payment gas limit for the block.
     pub general_gas_limit: u64,
-    /// Milliseconds portion of the timestamp.
-    pub timestamp_millis_part: u64,
 }
 
 /// Context required for next block environment.

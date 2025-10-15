@@ -8,11 +8,12 @@ use alloy::{
 use alloy_network::TxSigner;
 use alloy_primitives::{Address, Signature};
 use alloy_rpc_types_eth::TransactionRequest;
-use reth_evm::revm::context::{BlockEnv, CfgEnv};
+use reth_evm::revm::context::CfgEnv;
 use reth_rpc_convert::{
     EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv,
 };
 use serde::{Deserialize, Serialize};
+use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{TempoTxEnvelope, TxFeeToken, transaction::TempoTypedTransaction};
 use tempo_revm::TempoTxEnv;
 
@@ -100,16 +101,16 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     }
 }
 
-impl TryIntoTxEnv<TempoTxEnv> for TempoTransactionRequest {
+impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
     type Err = EthTxEnvError;
 
     fn try_into_tx_env<Spec>(
         self,
         cfg_env: &CfgEnv<Spec>,
-        block_env: &BlockEnv,
+        block_env: &TempoBlockEnv,
     ) -> Result<TempoTxEnv, Self::Err> {
         Ok(TempoTxEnv {
-            inner: self.inner.try_into_tx_env(cfg_env, block_env)?,
+            inner: self.inner.try_into_tx_env(cfg_env, &block_env.inner)?,
             fee_token: self.fee_token,
             is_system_tx: false,
             fee_payer: None,

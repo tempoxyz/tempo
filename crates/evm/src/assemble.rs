@@ -39,7 +39,6 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                 TempoBlockExecutionCtx {
                     inner,
                     general_gas_limit,
-                    timestamp_millis_part,
                 },
             parent,
             transactions,
@@ -51,6 +50,8 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
         } = input;
 
         let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
+
+        let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
 
         // Delegate block building to the inner assembler
         let block = self.inner.assemble_block(BlockAssemblerInput::<
