@@ -616,6 +616,31 @@ mod tests {
         assert_eq!(tick_to_price(MAX_TICK), PRICE_SCALE + 2000);
     }
 
+    #[test]
+    fn test_compute_book_key() {
+        let token_a = address!("0x1111111111111111111111111111111111111111");
+        let token_b = address!("0x2222222222222222222222222222222222222222");
+
+        let key_ab = compute_book_key(token_a, token_b);
+        let key_ba = compute_book_key(token_b, token_a);
+        assert_eq!(key_ab, key_ba);
+
+        assert_eq!(
+            key_ab, key_ba,
+            "Book key should be the same regardless of address order"
+        );
+
+        let mut buf = [0u8; 40];
+        buf[..20].copy_from_slice(token_a.as_slice());
+        buf[20..].copy_from_slice(token_b.as_slice());
+        let expected_hash = keccak256(buf);
+
+        assert_eq!(
+            key_ab, expected_hash,
+            "Book key should match manual keccak256 computation"
+        );
+    }
+
     mod bitmap_tests {
         use super::*;
         use crate::contracts::HashMapStorageProvider;
