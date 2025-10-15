@@ -587,7 +587,7 @@ impl Inner<Uninit> {
             latest_finalized_digest: finalized_consensus_digest,
             marshal: self.syncer.clone(),
         }
-        .build();
+        .build(context.with_label("executor"));
 
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
@@ -602,9 +602,7 @@ impl Inner<Uninit> {
             },
         };
 
-        context
-            .with_label("executor")
-            .spawn(move |context| executor.run(context));
+        executor.start();
 
         Ok(initialized)
     }

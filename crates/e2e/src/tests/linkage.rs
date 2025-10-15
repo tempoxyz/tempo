@@ -81,10 +81,12 @@ fn many_bad_links() {
     }
 }
 
-// TODO(janis): would be great to reach height 1000, but it takes toon long right now.
-// There are a lot of nullifications and view timeouts.
+// TODO(janis): would be great to reach height 1000, but the way the execution
+// layer is configured proposing takes roughly 1 to 2s *real time*. This means
+// that <height-to-reach> * 2s (in this case, 40s) is a realistic runtime for
+// this test.
 #[test_traced]
-fn reach_height_100_with_a_few_bad_links() {
+fn reach_height_20_with_a_few_bad_links() {
     let _ = tempo_eyre::install();
 
     let link = Link {
@@ -97,7 +99,7 @@ fn reach_height_100_with_a_few_bad_links() {
         how_many: 10,
         seed: 0,
         linkage: link,
-        height_to_reach: 100,
+        height_to_reach: 20,
     };
     let _first = run(setup);
 }
