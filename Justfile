@@ -19,6 +19,46 @@ build-release binary extra_args="": (build binary "-r " + extra_args)
 build binary extra_args="":
     {{cargo_build_binary}} build {{extra_args}} --bin {{binary}}
 
+[group('localnet')]
+[doc('Generates a genesis file')]
+genesis accounts="1000" output="genesis.json":
+    cargo run --bin tempo-bench --profile maxperf -- generate-genesis --output {{output}} -a {{accounts}}
+
+[group('localnet')]
+[doc('Deletes local network data and launches a new localnet')]
+[confirm('This will wipe your data directory (unless you have reset=false) - please confirm before proceeding (y/n):')]
+localnet accounts="1000" reset="true":
+    #!/bin/bash
+    if [[ "{{reset}}" = "true" ]]; then
+        rm -r ./localnet/ || true
+        mkdir ./localnet/
+        just genesis {{accounts}} ./localnet/genesis.json
+    fi;
+    cargo run --bin tempo node \
+                      --chain ./localnet/genesis.json \
+                      --dev \
+                      --dev.block-time 1sec \
+                      --datadir ./localnet/reth \
+                      --http \
+                      --http.addr 0.0.0.0 \
+                      --http.port 8545 \
+                      --http.api all \
+                      --engine.disable-precompile-cache \
+                      --builder.gaslimit 3000000000 \
+                      --builder.max-tasks 8 \
+                      --builder.deadline 3 \
+                      --log.file.directory ./localnet/logs \
+                      --txpool.pending-max-count 10000000000000 \
+                      --txpool.basefee-max-count 10000000000000 \
+                      --txpool.queued-max-count 10000000000000 \
+                      --txpool.pending-max-size 10000 \
+                      --txpool.basefee-max-size 10000 \
+                      --txpool.queued-max-size 10000 \
+                      --faucet.enabled \
+                      --faucet.private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+                      --faucet.amount 1000000000000 \
+                      --faucet.address 0x20c0000000000000000000000000000000000001 \
+
 mod scripts
 
 [group('dev')]

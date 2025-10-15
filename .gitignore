@@ -7,3 +7,4 @@ scripts/data
 .idea
 **/.env
 **/.envrc
+localnet/**
