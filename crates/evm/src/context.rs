@@ -10,6 +10,8 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub inner: EthBlockExecutionCtx<'a>,
     /// Non-payment gas limit for the block.
     pub general_gas_limit: u64,
+    /// Milliseconds portion of the timestamp.
+    pub timestamp_millis_part: u64,
 }
 
 /// Context required for next block environment.
@@ -20,6 +22,8 @@ pub struct TempoNextBlockEnvAttributes {
     pub inner: NextBlockEnvAttributes,
     /// Non-payment gas limit for the block.
     pub general_gas_limit: u64,
+    /// Milliseconds portion of the timestamp.
+    pub timestamp_millis_part: u64,
 }
 
 #[cfg(feature = "rpc")]
@@ -32,6 +36,7 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<TempoHeader>
         Self {
             inner: NextBlockEnvAttributes::build_pending_env(parent),
             general_gas_limit: parent.gas_limit() / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR,
+            timestamp_millis_part: parent.timestamp_millis_part,
         }
     }
 }

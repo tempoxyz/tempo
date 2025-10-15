@@ -319,6 +319,9 @@ sol! {
         // Balance management
         function withdraw(address token, uint128 amount) external;
 
+        // System transaction called at the end of the block to finalize pending limit orders
+        function executeBlock() external;
+
         // Events
         event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
         event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
