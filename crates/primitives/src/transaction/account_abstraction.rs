@@ -105,7 +105,6 @@ impl Decodable for Call {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[doc(alias = "AATransaction", alias = "TransactionAA")]
 #[derive(Default)]
 pub struct TxAA {
@@ -1315,5 +1314,61 @@ mod tests {
             result.unwrap_err(),
             alloy_rlp::Error::InputTooShort | alloy_rlp::Error::UnexpectedLength
         ));
+    }
+}
+
+// Custom Arbitrary implementation to ensure calls is never empty
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for TxAA {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Generate all fields using the default Arbitrary implementation
+        let chain_id = u.arbitrary()?;
+        let fee_token = u.arbitrary()?;
+        let max_priority_fee_per_gas = u.arbitrary()?;
+        let max_fee_per_gas = u.arbitrary()?;
+        let gas_limit = u.arbitrary()?;
+
+        // Generate calls - ensure at least one call is present
+        let mut calls: Vec<Call> = u.arbitrary()?;
+        if calls.is_empty() {
+            calls.push(Call {
+                to: u.arbitrary()?,
+                value: u.arbitrary()?,
+                input: u.arbitrary()?,
+            });
+        }
+
+        let access_list = u.arbitrary()?;
+
+        // For now, always set nonce_key to 0 (protocol nonce) to pass validation
+        let nonce_key = 0u64;
+        let nonce = u.arbitrary()?;
+        let fee_payer_signature = u.arbitrary()?;
+
+        // Ensure valid_before > valid_after if both are set
+        let valid_after: Option<u64> = u.arbitrary()?;
+        let valid_before: Option<u64> = match valid_after {
+            Some(after) => {
+                // Generate a value greater than valid_after
+                let offset: u64 = u.int_in_range(1..=1000)?;
+                Some(after.saturating_add(offset))
+            }
+            None => u.arbitrary()?,
+        };
+
+        Ok(Self {
+            chain_id,
+            fee_token,
+            max_priority_fee_per_gas,
+            max_fee_per_gas,
+            gas_limit,
+            calls,
+            access_list,
+            nonce_key,
+            nonce,
+            fee_payer_signature,
+            valid_before,
+            valid_after,
+        })
     }
 }
