@@ -1135,7 +1135,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     let pre_hashed = Sha256::digest(batch_sig_hash.as_slice());
 
     // Sign the pre-hashed message
-    let p256_signature: p256::ecdsa::Signature = signing_key.sign(&pre_hashed);
+    let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed);
     let sig_bytes = p256_signature.to_bytes();
 
     // Create P256 AA signature

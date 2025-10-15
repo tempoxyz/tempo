@@ -279,7 +279,7 @@ fn verify_p256_signature_internal(
 
     // Verify signature
     verifying_key
-        .verify(message_hash.as_slice(), &signature)
+        .verify_prehash(message_hash.as_slice(), &signature)
         .map_err(|_| "P256 signature verification failed")
 }
 
