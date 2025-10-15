@@ -17,11 +17,6 @@ pub const PRICE_SCALE: u32 = 100_000;
 /// Orders are maintained in FIFO order at each tick level
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TickLevel {
-    // TODO: add tick
-    // TODO: add bid or ask
-    // TODO: add book key
-    //
-    //
     /// Order ID of the first order at this tick (0 if empty)
     pub head: u128,
     /// Order ID of the last order at this tick (0 if empty)
