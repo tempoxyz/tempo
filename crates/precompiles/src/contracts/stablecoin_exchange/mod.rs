@@ -659,12 +659,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             while remaining_out > 0 {
                 let price = orderbook::tick_to_price(current_tick);
 
-                let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
-                let order_remaining = self
-                    .storage
-                    .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
-                    .expect("TODO: handle error")
-                    .to::<u128>();
+                let order = Order::from_storage(order_id, self.storage, self.address);
+                let order_remaining = order.remaining();
 
                 let base_needed = remaining_out
                     .checked_mul(orderbook::PRICE_SCALE as u128)
@@ -731,12 +727,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             while remaining_out > 0 {
                 let price = orderbook::tick_to_price(current_tick);
 
-                let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
-                let order_remaining = self
-                    .storage
-                    .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
-                    .expect("TODO: handle error")
-                    .to::<u128>();
+                let order = Order::from_storage(order_id, self.storage, self.address);
+                let order_remaining = order.remaining();
 
                 let fill_amount = if remaining_out > order_remaining {
                     order_remaining
@@ -818,12 +810,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             while remaining_in > 0 {
                 let price = orderbook::tick_to_price(current_tick);
 
-                let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
-                let order_remaining = self
-                    .storage
-                    .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
-                    .expect("TODO: handle error")
-                    .to::<u128>();
+                let order = Order::from_storage(order_id, self.storage, self.address);
+                let order_remaining = order.remaining();
 
                 let fill_amount = if remaining_in > order_remaining {
                     order_remaining
@@ -885,12 +873,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             while remaining_in > 0 {
                 let price = orderbook::tick_to_price(current_tick);
 
-                let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
-                let order_remaining = self
-                    .storage
-                    .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
-                    .expect("TODO: handle error")
-                    .to::<u128>();
+                let order = Order::from_storage(order_id, self.storage, self.address);
+                let order_remaining = order.remaining();
 
                 let base_out = remaining_in
                     .checked_mul(orderbook::PRICE_SCALE as u128)
@@ -1091,7 +1075,12 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Withdraw tokens from exchange balance
-    pub fn withdraw(&mut self, user: Address, token: Address, amount: u128) {
+    pub fn withdraw(
+        &mut self,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<(), StablecoinExchangeError> {
         let current_balance = self.balance_of(user, token);
         assert!(current_balance >= amount, "Insufficient balance");
         self.sub_balance(user, token, amount);
@@ -1104,6 +1093,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 },
             )
             .expect("TODO: handle error");
+
+        Ok(())
     }
 
     /// Quote exact output amount without executing trades

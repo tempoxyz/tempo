@@ -7,7 +7,7 @@ use crate::{
         stablecoin_exchange::StablecoinExchange, storage::StorageProvider,
         types::IStablecoinExchange,
     },
-    precompiles::{Precompile, mutate},
+    precompiles::{Precompile, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -47,27 +47,70 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                 })
             }
 
-            IStablecoinExchange::balanceOfCall::SELECTOR => Err(PrecompileError::Other(
-                "balanceOf not yet implemented".to_string(),
-            )),
-            IStablecoinExchange::withdrawCall::SELECTOR => Err(PrecompileError::Other(
-                "withdraw not yet implemented".to_string(),
-            )),
-            IStablecoinExchange::cancelCall::SELECTOR => Err(PrecompileError::Other(
-                "cancel not yet implemented".to_string(),
-            )),
-            IStablecoinExchange::sellCall::SELECTOR => Err(PrecompileError::Other(
-                "sell not yet implemented".to_string(),
-            )),
-            IStablecoinExchange::buyCall::SELECTOR => Err(PrecompileError::Other(
-                "buy not yet implemented".to_string(),
-            )),
-            IStablecoinExchange::quoteSellCall::SELECTOR => Err(PrecompileError::Other(
-                "quoteSell not yet implemented".to_string(),
-            )),
-            IStablecoinExchange::quoteBuyCall::SELECTOR => Err(PrecompileError::Other(
-                "quoteBuy not yet implemented".to_string(),
-            )),
+            IStablecoinExchange::balanceOfCall::SELECTOR => {
+                view::<IStablecoinExchange::balanceOfCall>(calldata, |call| {
+                    self.balance_of(call.user, call.token)
+                })
+            }
+            IStablecoinExchange::withdrawCall::SELECTOR => {
+                mutate_void::<
+                    IStablecoinExchange::withdrawCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |s, call| {
+                    self.withdraw(*s, call.token, call.amount)
+                })
+            }
+            IStablecoinExchange::cancelCall::SELECTOR => {
+                mutate_void::<
+                    IStablecoinExchange::cancelCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |s, call| self.cancel(s, call.orderId))
+            }
+            IStablecoinExchange::sellCall::SELECTOR => {
+                mutate::<
+                    IStablecoinExchange::sellCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |s, call| {
+                    self.sell(
+                        s,
+                        call.tokenIn,
+                        call.tokenOut,
+                        call.amountIn,
+                        call.minAmountOut,
+                    )
+                })
+            }
+            IStablecoinExchange::buyCall::SELECTOR => {
+                mutate::<IStablecoinExchange::buyCall, IStablecoinExchange::IStablecoinExchangeErrors>(
+                    calldata,
+                    msg_sender,
+                    |s, call| {
+                        self.buy(
+                            s,
+                            call.tokenIn,
+                            call.tokenOut,
+                            call.amountOut,
+                            call.maxAmountIn,
+                        )
+                    },
+                )
+            }
+            IStablecoinExchange::quoteSellCall::SELECTOR => {
+                mutate::<
+                    IStablecoinExchange::quoteSellCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |_, call| {
+                    self.quote_sell(call.tokenIn, call.tokenOut, call.amountIn)
+                })
+            }
+            IStablecoinExchange::quoteBuyCall::SELECTOR => {
+                mutate::<
+                    IStablecoinExchange::quoteBuyCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |_, call| {
+                    self.quote_buy(call.tokenIn, call.tokenOut, call.amountOut)
+                })
+            }
 
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
