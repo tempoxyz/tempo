@@ -112,6 +112,15 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                 })
             }
 
+            IStablecoinExchange::executeBlockCall::SELECTOR => {
+                mutate_void::<
+                    IStablecoinExchange::executeBlockCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |_s, _call| {
+                    self.execute_block(msg_sender)
+                })
+            }
+
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
             )),
