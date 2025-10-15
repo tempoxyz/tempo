@@ -273,7 +273,7 @@ impl Orderbook {
                 orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
             )
             .expect("TODO: handle error")
-            .to::<u16>() as i16;
+            .to::<i16>();
 
         let best_ask_tick = storage
             .sload(
@@ -281,7 +281,7 @@ impl Orderbook {
                 orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
             )
             .expect("TODO: handle error")
-            .to::<u16>() as i16;
+            .to::<i16>();
 
         Self {
             base,
