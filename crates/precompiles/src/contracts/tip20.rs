@@ -20,7 +20,6 @@ use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
 };
-use tempo_contracts::precompiles::IRolesAuth;
 use tracing::trace;
 
 pub mod slots {
