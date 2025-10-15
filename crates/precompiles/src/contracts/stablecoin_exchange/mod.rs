@@ -968,10 +968,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             order.remaining()
         };
 
-        dbg!(refund_amount);
-        dbg!(token);
-        dbg!(order.maker());
-
         // Credit remaining tokens to user's withdrawable balance
         self.increment_balance(order.maker(), token, refund_amount);
 
@@ -1809,7 +1805,60 @@ mod tests {
 
     #[test]
     fn test_withdraw() {
-        // TODO:
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let amount = 1_000_000u128;
+        let tick = 100i16;
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        // Setup tokens
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            expected_escrow,
+        );
+        exchange.create_pair(&base_token);
+
+        // Place the bid order and cancel
+        let order_id = exchange
+            .place(&alice, base_token, amount, true, tick)
+            .expect("Place bid order should succeed");
+
+        exchange
+            .cancel(&alice, order_id)
+            .expect("Cancel pending order should succeed");
+
+        assert_eq!(exchange.balance_of(alice, quote_token), expected_escrow);
+
+        // Get balances before withdrawal
+        exchange
+            .withdraw(alice, quote_token, expected_escrow)
+            .expect("Withdraw should succeed");
+        assert_eq!(exchange.balance_of(alice, quote_token), 0);
+
+        // Verify wallet balances changed correctly
+        let mut quote_tip20 = TIP20Token::new(
+            address_to_token_id_unchecked(&quote_token),
+            exchange.storage,
+        );
+
+        assert_eq!(
+            quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice }),
+            expected_escrow
+        );
+        assert_eq!(
+            quote_tip20.balance_of(ITIP20::balanceOfCall {
+                account: exchange.address
+            }),
+            0
+        );
     }
 
     #[test]
