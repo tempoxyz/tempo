@@ -52,9 +52,7 @@ pub fn run(
     }: Setup,
 ) -> String {
     let threshold = quorum(how_many);
-    let cfg = deterministic::Config::default()
-        .with_seed(seed)
-        .with_realtime(true);
+    let cfg = deterministic::Config::default().with_seed(seed);
     let executor = Runner::from(cfg);
 
     executor.start(|mut context| async move {

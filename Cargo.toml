@@ -243,12 +243,12 @@ vergen = "9"
 vergen-git2 = "1"
 
 [patch.crates-io]
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "9b1f9cf5590f02aeab8f7736a4278715621bd11f" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "b500737b20e75b6e5f486d8da3b5d236e5cb9449" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "b500737b20e75b6e5f486d8da3b5d236e5cb9449" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "b500737b20e75b6e5f486d8da3b5d236e5cb9449" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "b500737b20e75b6e5f486d8da3b5d236e5cb9449" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "b500737b20e75b6e5f486d8da3b5d236e5cb9449" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "b500737b20e75b6e5f486d8da3b5d236e5cb9449" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "b500737b20e75b6e5f486d8da3b5d236e5cb9449" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "b500737b20e75b6e5f486d8da3b5d236e5cb9449" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "b500737b20e75b6e5f486d8da3b5d236e5cb9449" }

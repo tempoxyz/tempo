@@ -11,7 +11,7 @@ alloy-primitives.workspace = true
 
 commonware-cryptography.workspace = true
 commonware-p2p.workspace = true
-commonware-runtime.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 
 eyre.workspace = true
