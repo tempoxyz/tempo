@@ -226,20 +226,19 @@ fn mutate_void<T: SolCall, E: SolInterface>(
 }
 
 #[cfg(test)]
-pub fn expect_precompile_error<E>(result: &PrecompileResult, expected_error: E)
+pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
 where
     E: SolInterface + PartialEq + std::fmt::Debug,
 {
     match result {
-        Err(PrecompileError::Other(hex_string)) => {
-            let bytes = alloy::primitives::hex::decode(hex_string)
-                .expect("invalid hex string in PrecompileError::Other");
-            let decoded: E = E::abi_decode(&bytes)
-                .expect("failed to decode precompile error as expected interface error");
+        Ok(result) => {
+            assert!(result.reverted);
+            let decoded = E::abi_decode(&result.bytes).unwrap();
             assert_eq!(decoded, expected_error);
         }
-        Ok(_) => panic!("expected error, got Ok result"),
-        Err(other) => panic!("expected encoded interface error, got: {other:?}"),
+        Err(other) => {
+            panic!("expected reverted output, got: {other:?}");
+        }
     }
 }
 

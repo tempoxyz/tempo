@@ -112,7 +112,7 @@ mod tests {
             token_id_to_address,
             types::{IFeeManager, ITIP20, ITIPFeeAMM, TIPFeeAMMError},
         },
-        precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
+        precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert},
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -190,7 +190,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &validator);
-        expect_precompile_error(&result, TIPFeeAMMError::invalid_token());
+        expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
 
         Ok(())
     }
@@ -229,7 +229,7 @@ mod tests {
         }
         .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), &user);
-        expect_precompile_error(&result, TIPFeeAMMError::invalid_token());
+        expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
     }
 
     #[test]
@@ -326,13 +326,13 @@ mod tests {
             token: Address::ZERO,
         };
         let result = fee_manager.call(&Bytes::from(set_validator_call.abi_encode()), &validator);
-        expect_precompile_error(&result, fee_manager_err!(InvalidToken));
+        expect_precompile_revert(&result, fee_manager_err!(InvalidToken));
 
         let set_user_call = IFeeManager::setUserTokenCall {
             token: Address::ZERO,
         };
         let result = fee_manager.call(&Bytes::from(set_user_call.abi_encode()), &user);
-        expect_precompile_error(&result, fee_manager_err!(InvalidToken));
+        expect_precompile_revert(&result, fee_manager_err!(InvalidToken));
     }
 
     #[test]
