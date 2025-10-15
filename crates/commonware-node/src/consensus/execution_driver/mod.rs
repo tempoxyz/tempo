@@ -27,11 +27,10 @@ use commonware_runtime::{
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
-use futures::future::{Either, try_join};
-use futures::{SinkExt as _, StreamExt as _, TryFutureExt as _};
 use futures::{
+    SinkExt as _, StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
-    future::always_ready,
+    future::{Either, always_ready, try_join},
 };
 use rand::{CryptoRng, Rng};
 use reth::payload::EthBuiltPayload;
