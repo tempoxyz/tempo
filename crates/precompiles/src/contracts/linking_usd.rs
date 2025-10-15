@@ -32,15 +32,29 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
             .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
     }
 
+    fn is_transfer_authorized(&mut self, sender: &Address, recipient: &Address) -> bool {
+        *sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role(sender, *TRANSFER_ROLE)
+            || self.token.has_role(recipient, *RECEIVE_ROLE)
+    }
+
+    fn is_transfer_from_authorized(
+        &mut self,
+        sender: &Address,
+        from: &Address,
+        recipient: &Address,
+    ) -> bool {
+        *sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role(from, *TRANSFER_ROLE)
+            || self.token.has_role(recipient, *RECEIVE_ROLE)
+    }
+
     pub fn transfer(
         &mut self,
         msg_sender: &Address,
         call: ITIP20::transferCall,
     ) -> Result<bool, TIP20Error> {
-        if *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
-            || self.token.has_role(msg_sender, *TRANSFER_ROLE)
-            || self.token.has_role(&call.to, *RECEIVE_ROLE)
-        {
+        if self.is_transfer_authorized(msg_sender, &call.to) {
             self.token.transfer(msg_sender, call)
         } else {
             Err(TIP20Error::transfers_disabled())
@@ -52,8 +66,7 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool, TIP20Error> {
-        if self.token.has_role(&call.from, *TRANSFER_ROLE)
-            || self.token.has_role(&call.to, *RECEIVE_ROLE)
+        if self.is_transfer_from_authorized(msg_sender, &call.from, &call.to)
             || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from(msg_sender, call)
@@ -67,10 +80,7 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<(), TIP20Error> {
-        if self.token.has_role(msg_sender, *TRANSFER_ROLE)
-            || self.token.has_role(&call.to, *RECEIVE_ROLE)
-            || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
-        {
+        if self.is_transfer_authorized(msg_sender, &call.to) {
             self.token.transfer_with_memo(msg_sender, call)
         } else {
             Err(TIP20Error::transfers_disabled())
@@ -82,8 +92,7 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool, TIP20Error> {
-        if self.token.has_role(&call.from, *TRANSFER_ROLE)
-            || self.token.has_role(&call.to, *RECEIVE_ROLE)
+        if self.is_transfer_from_authorized(msg_sender, &call.from, &call.to)
             || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from_with_memo(msg_sender, call)
