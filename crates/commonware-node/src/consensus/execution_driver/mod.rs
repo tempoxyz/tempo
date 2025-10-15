@@ -20,6 +20,7 @@ use commonware_consensus::{
     threshold_simplex::types::Context,
     types::{Epoch, Round, View},
 };
+use commonware_macros::select;
 use commonware_runtime::{
     ContextCell, FutureExt as _, Handle, Metrics, Pacer, Spawner, Storage, spawn_cell,
 };
@@ -287,7 +288,7 @@ impl Inner<Init> {
             mut response,
             round,
         } = request;
-        let proposal = commonware_macros::select!(
+        let proposal = select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
@@ -354,15 +355,13 @@ impl Inner<Init> {
             mut response,
             round,
         } = verify;
-        let result = tokio::select!(
-            biased;
-
+        let result = select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "verification return channel was closed by consensus \
                     engine before block could be validated; aborting"
                 ))
-            }
+            },
 
             res = self.clone().verify(context, parent, payload, round) => {
                 res.wrap_err("block verification failed")

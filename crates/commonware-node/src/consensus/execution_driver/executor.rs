@@ -11,12 +11,12 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use commonware_consensus::{Block as _, marshal, types::Round};
+use commonware_macros::select;
 use commonware_runtime::{FutureExt, Pacer};
 use eyre::{WrapErr as _, ensure};
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
-    select_biased,
     stream::FuturesUnordered,
 };
 use reth_provider::BlockNumReader as _;
@@ -121,7 +121,7 @@ impl Executor {
     pub(super) async fn run<TContext: Pacer>(mut self, context: TContext) {
         loop {
             // TODO: also listen to shutdown signals from the runtime here.
-            select_biased! {
+            select! {
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else { break; };
                     // XXX: updating forkchoice and finalizing blocks must
@@ -131,7 +131,7 @@ impl Executor {
                     // Backfills will be put on a queue and can happen anytime
                     // in between.
                     self.handle_message(&context, msg).await;
-                }
+                },
 
                 // Only exists to drain the queue
                 _backfill = self.running_backfills.next() => {}
