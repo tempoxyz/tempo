@@ -275,6 +275,9 @@ impl Orderbook {
             .expect("TODO: handle error")
             .to::<u16>() as i16;
 
+        // `tick` is stored into the least significant 16 bits of U256.
+        // When loading from storage, we first load as u16
+        // and then cast to i16 to reinterpret those bits as a signed value.
         let best_ask_tick = storage
             .sload(
                 address,
