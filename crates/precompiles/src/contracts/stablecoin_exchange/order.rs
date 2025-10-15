@@ -294,7 +294,86 @@ impl Order {
 
     pub fn delete<S: StorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-        todo!()
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_MAKER_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_BOOK_KEY_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_IS_BID_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_TICK_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_AMOUNT_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_REMAINING_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_PREV_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_NEXT_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_IS_FLIP_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_FLIP_TICK_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
     }
 
     /// Returns the order ID.
@@ -513,6 +592,7 @@ impl Order {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::HashMapStorageProvider;
     use alloy::primitives::{address, b256};
 
     const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
@@ -764,5 +844,50 @@ mod tests {
         // Flipped order should have reset pointers
         assert_eq!(flipped.prev(), 0);
         assert_eq!(flipped.next(), 0);
+    }
+
+    #[test]
+    fn test_store_order() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let exchange_address = Address::random();
+
+        let order = Order::new_flip(42, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+        order.store(&mut storage, exchange_address);
+
+        let loaded_order = Order::from_storage(42, &mut storage, exchange_address);
+        assert_eq!(loaded_order.order_id(), 42);
+        assert_eq!(loaded_order.maker(), TEST_MAKER);
+        assert_eq!(loaded_order.book_key(), TEST_BOOK_KEY);
+        assert_eq!(loaded_order.amount(), 1000);
+        assert_eq!(loaded_order.remaining(), 1000);
+        assert_eq!(loaded_order.tick(), 5);
+        assert!(loaded_order.is_bid());
+        assert!(loaded_order.is_flip());
+        assert_eq!(loaded_order.flip_tick(), 10);
+        assert_eq!(loaded_order.prev(), 0);
+        assert_eq!(loaded_order.next(), 0);
+    }
+
+    #[test]
+    fn test_delete_order() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let exchange_address = Address::random();
+
+        let order = Order::new_flip(42, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+        order.store(&mut storage, exchange_address);
+        order.delete(&mut storage, exchange_address);
+
+        let deleted_order = Order::from_storage(42, &mut storage, exchange_address);
+        assert_eq!(deleted_order.order_id(), 42);
+        assert_eq!(deleted_order.maker(), Address::ZERO);
+        assert_eq!(deleted_order.book_key(), B256::ZERO);
+        assert_eq!(deleted_order.amount(), 0);
+        assert_eq!(deleted_order.remaining(), 0);
+        assert_eq!(deleted_order.tick(), 0);
+        assert!(!deleted_order.is_bid());
+        assert!(!deleted_order.is_flip());
+        assert_eq!(deleted_order.flip_tick(), 0);
+        assert_eq!(deleted_order.prev(), 0);
+        assert_eq!(deleted_order.next(), 0);
     }
 }

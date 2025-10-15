@@ -345,7 +345,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             Order::new_ask(order_id, *sender, book_key, amount, tick)
         };
 
-        // Store in pending queue
+        // Store in pending queue. Orders are stored as a DLL at each tick level and are initially
+        // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
+        // linked and then considered "active"
         order.store(self.storage, self.address);
 
         // Emit OrderPlaced event
@@ -630,6 +632,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         }
     }
 
+    // TODO: clean up
     /// Fill orders for exact output amount
     #[allow(dead_code)]
     fn fill_orders_exact_out(
@@ -788,6 +791,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         Ok(amount_in)
     }
 
+    // TODO: clean up
     /// Fill orders for exact input amount
     #[allow(dead_code)]
     fn fill_orders_exact_in(
@@ -947,46 +951,17 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         sender: &Address,
         order_id: u128,
     ) -> Result<(), StablecoinExchangeError> {
-        let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
+        let order = Order::from_storage(order_id, self.storage, self.address);
 
-        let maker = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_MAKER_OFFSET)
-            .expect("TODO: handle error")
-            .into_address();
-
-        if maker.is_zero() {
+        if order.maker().is_zero() {
             return Err(StablecoinExchangeError::order_does_not_exist());
         }
 
-        if maker != *sender {
+        if order.maker() != *sender {
             return Err(StablecoinExchangeError::unauthorized());
         }
 
-        let book_key = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_BOOK_KEY_OFFSET)
-            .expect("TODO: handle error");
-
-        let is_bid = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_IS_BID_OFFSET)
-            .expect("TODO: handle error")
-            .to::<bool>();
-
-        let tick = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_TICK_OFFSET)
-            .expect("TODO: handle error")
-            .to::<i16>();
-
-        let remaining = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_REMAINING_OFFSET)
-            .expect("TODO: handle error")
-            .to::<u128>();
-
-        if remaining == 0 {
+        if order.remaining() == 0 {
             return Err(StablecoinExchangeError::order_does_not_exist());
         }
 
@@ -997,145 +972,116 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .expect("TODO: handle error")
             .to::<u128>();
 
-        // If the order is pending, delete it without touching the orderbook
-        if order_id > next_order_id {
-            let orderbook =
-                Orderbook::from_storage(self.storage, self.address, B256::from(book_key));
-            let token = if is_bid {
-                orderbook.quote
-            } else {
-                orderbook.base
-            };
-
-            // For bids, calculate quote amount to refund; for asks, refund base amount
-            let refund_amount = if is_bid {
-                let price = orderbook::tick_to_price(tick);
-                (remaining * price as u128) / orderbook::PRICE_SCALE as u128
-            } else {
-                remaining
-            };
-
-            // Credit remaining tokens to user's withdrawable balance
-            self.increment_balance(maker, token, refund_amount);
-
-            // Clear the order from storage
-            self.storage
-                .sstore(
-                    self.address,
-                    order_slot + offsets::ORDER_MAKER_OFFSET,
-                    U256::ZERO,
-                )
-                .expect("TODO: handle error");
-
-            // Emit OrderCancelled event
-            self.storage
-                .emit_event(
-                    self.address,
-                    StablecoinExchangeEvents::OrderCancelled(IStablecoinExchange::OrderCancelled {
-                        orderId: order_id,
-                    })
-                    .into_log_data(),
-                )
-                .expect("Event emission failed");
-
-            return Ok(());
-        }
-
-        let prev = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_PREV_OFFSET)
-            .expect("TODO: handle error")
-            .to::<u128>();
-
-        let next = self
-            .storage
-            .sload(self.address, order_slot + offsets::ORDER_NEXT_OFFSET)
-            .expect("TODO: handle error")
-            .to::<u128>();
-
-        let mut level = TickLevel::from_storage(
-            self.storage,
-            self.address,
-            B256::from(book_key),
-            tick,
-            is_bid,
-        );
-
-        // Update linked list
-        if prev != 0 {
-            let prev_slot = mapping_slot(prev.to_be_bytes(), slots::ORDERS);
-            self.storage
-                .sstore(
-                    self.address,
-                    prev_slot + offsets::ORDER_NEXT_OFFSET,
-                    U256::from(next),
-                )
-                .expect("TODO: handle error");
+        if order.order_id() > next_order_id {
+            self.cancel_pending_order(order)
         } else {
-            level.head = next;
+            self.cancel_active_order(order)
         }
+    }
 
-        if next != 0 {
-            let next_slot = mapping_slot(next.to_be_bytes(), slots::ORDERS);
-            self.storage
-                .sstore(
-                    self.address,
-                    next_slot + offsets::ORDER_PREV_OFFSET,
-                    U256::from(prev),
-                )
-                .expect("TODO: handle error");
+    /// Cancel a pending order (not yet in the active orderbook)
+    fn cancel_pending_order(&mut self, order: Order) -> Result<(), StablecoinExchangeError> {
+        let orderbook = Orderbook::from_storage(self.storage, self.address, order.book_key());
+        let token = if order.is_bid() {
+            orderbook.quote
         } else {
-            level.tail = prev;
-        }
+            orderbook.base
+        };
 
-        // Update level liquidity
-        level.total_liquidity -= remaining;
+        // For bids, calculate quote amount to refund; for asks, refund base amount
+        let refund_amount = if order.is_bid() {
+            let price = orderbook::tick_to_price(order.tick());
+            (order.remaining() * price as u128) / orderbook::PRICE_SCALE as u128
+        } else {
+            order.remaining()
+        };
 
-        // If this was the last order at this tick, clear the bitmap bit
-        if level.head == 0 {
-            let mut bitmap =
-                orderbook::TickBitmap::new(self.storage, self.address, B256::from(book_key));
-            bitmap.clear_tick_bit(tick, is_bid);
-        }
-
-        level.store(
-            self.storage,
-            self.address,
-            B256::from(book_key),
-            tick,
-            is_bid,
-        );
+        // Credit remaining tokens to user's withdrawable balance
+        self.increment_balance(order.maker(), token, refund_amount);
 
         // Clear the order from storage
-        self.storage
-            .sstore(
-                self.address,
-                order_slot + offsets::ORDER_MAKER_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
-
-        // Refund tokens to maker
-        let orderbook = Orderbook::from_storage(self.storage, self.address, B256::from(book_key));
-        if is_bid {
-            // Bid orders are in quote token, refund quote amount
-            let price = orderbook::tick_to_price(tick);
-            let quote_amount = remaining
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .expect("Quote amount calculation overflow");
-            self.increment_balance(maker, orderbook.quote, quote_amount);
-        } else {
-            // Ask orders are in base token, refund base amount
-            self.increment_balance(maker, orderbook.base, remaining);
-        }
+        order.delete(self.storage, self.address);
 
         // Emit OrderCancelled event
         self.storage
             .emit_event(
                 self.address,
                 StablecoinExchangeEvents::OrderCancelled(IStablecoinExchange::OrderCancelled {
-                    orderId: order_id,
+                    orderId: order.order_id(),
+                })
+                .into_log_data(),
+            )
+            .expect("Event emission failed");
+
+        Ok(())
+    }
+
+    /// Cancel an active order (already in the orderbook)
+    fn cancel_active_order(&mut self, order: Order) -> Result<(), StablecoinExchangeError> {
+        let mut level = TickLevel::from_storage(
+            self.storage,
+            self.address,
+            order.book_key(),
+            order.tick(),
+            order.is_bid(),
+        );
+
+        // Update linked list
+        if order.prev() != 0 {
+            Order::update_next_order(order.prev(), order.next(), self.storage, self.address);
+        } else {
+            level.head = order.next();
+        }
+
+        if order.next() != 0 {
+            Order::update_prev_order(order.next(), order.prev(), self.storage, self.address);
+        } else {
+            level.tail = order.prev();
+        }
+
+        // Update level liquidity
+        level.total_liquidity -= order.remaining();
+
+        // If this was the last order at this tick, clear the bitmap bit
+        if level.head == 0 {
+            let mut bitmap =
+                orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
+            bitmap.clear_tick_bit(order.tick(), order.is_bid());
+        }
+
+        level.store(
+            self.storage,
+            self.address,
+            order.book_key(),
+            order.tick(),
+            order.is_bid(),
+        );
+
+        // Refund tokens to maker
+        let orderbook = Orderbook::from_storage(self.storage, self.address, order.book_key());
+        if order.is_bid() {
+            // Bid orders are in quote token, refund quote amount
+            let price = orderbook::tick_to_price(order.tick());
+            let quote_amount = order
+                .remaining()
+                .checked_mul(price as u128)
+                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .expect("Quote amount calculation overflow");
+            self.increment_balance(order.maker(), orderbook.quote, quote_amount);
+        } else {
+            // Ask orders are in base token, refund base amount
+            self.increment_balance(order.maker(), orderbook.base, order.remaining());
+        }
+
+        // Clear the order from storage
+        order.delete(self.storage, self.address);
+
+        // Emit OrderCancelled event
+        self.storage
+            .emit_event(
+                self.address,
+                StablecoinExchangeEvents::OrderCancelled(IStablecoinExchange::OrderCancelled {
+                    orderId: order.order_id(),
                 })
                 .into_log_data(),
             )
