@@ -300,8 +300,10 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
-
-        // TODO: check that book exists
+        let book = Orderbook::from_storage(book_key, self.storage, self.address);
+        if book.base.is_zero() {
+            // TODO: return error
+        }
 
         // Validate tick is within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
