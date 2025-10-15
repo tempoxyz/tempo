@@ -146,15 +146,26 @@ mod tests {
     use super::*;
     use crate::contracts::{storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE};
 
-    #[test]
-    fn test_metadata() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+    fn transfer_test_setup(
+        storage: &mut HashMapStorageProvider,
+    ) -> (LinkingUSD<'_, HashMapStorageProvider>, Address) {
+        let mut linking_usd = LinkingUSD::new(storage);
         let admin = Address::random();
 
         linking_usd
             .initialize(&admin)
             .expect("LinkingUSD initialization should succeed");
+
+        let mut roles = linking_usd.token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+
+        (linking_usd, admin)
+    }
+
+    #[test]
+    fn test_metadata() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
         assert_eq!(linking_usd.name(), "linkingUSD");
         assert_eq!(linking_usd.symbol(), "linkingUSD");
@@ -165,21 +176,13 @@ mod tests {
     #[test]
     fn test_transfer_reverts() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
-        let admin = Address::random();
-        let sender = Address::random();
-        let recipient = Address::random();
-        let amount = U256::random();
-
-        linking_usd
-            .initialize(&admin)
-            .expect("LinkingUSD initialization should succeed");
+        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = linking_usd.transfer(
-            &sender,
+            &Address::random(),
             ITIP20::transferCall {
-                to: recipient,
-                amount,
+                to: Address::random(),
+                amount: U256::random(),
             },
         );
 
@@ -189,42 +192,30 @@ mod tests {
     #[test]
     fn test_transfer_from_reverts() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
-        let admin = Address::random();
-        let sender = Address::random();
-        let from = Address::random();
-        let to = Address::random();
-        let amount = U256::random();
+        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
-        linking_usd
-            .initialize(&admin)
-            .expect("LinkingUSD initialization should succeed");
-
-        let result =
-            linking_usd.transfer_from(&sender, ITIP20::transferFromCall { from, to, amount });
+        let result = linking_usd.transfer_from(
+            &Address::random(),
+            ITIP20::transferFromCall {
+                from: Address::random(),
+                to: Address::random(),
+                amount: U256::random(),
+            },
+        );
         assert_eq!(result.unwrap_err(), TIP20Error::transfers_disabled());
     }
 
     #[test]
     fn test_transfer_with_memo_reverts() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
-        let admin = Address::random();
-        let sender = Address::random();
-        let recipient = Address::random();
-        let amount = U256::from(100);
-        let memo = [0u8; 32];
-
-        linking_usd
-            .initialize(&admin)
-            .expect("LinkingUSD initialization should succeed");
+        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = linking_usd.transfer_with_memo(
-            &sender,
+            &Address::random(),
             ITIP20::transferWithMemoCall {
-                to: recipient,
-                amount,
-                memo: memo.into(),
+                to: Address::random(),
+                amount: U256::from(100),
+                memo: [0u8; 32].into(),
             },
         );
         assert_eq!(result.unwrap_err(), TIP20Error::transfers_disabled());
@@ -233,25 +224,15 @@ mod tests {
     #[test]
     fn test_transfer_from_with_memo_reverts() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
-        let admin = Address::random();
-        let sender = Address::random();
-        let from = Address::random();
-        let to = Address::random();
-        let amount = U256::from(100);
-        let memo = [0u8; 32];
-
-        linking_usd
-            .initialize(&admin)
-            .expect("LinkingUSD initialization should succeed");
+        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = linking_usd.transfer_from_with_memo(
-            &sender,
+            &Address::random(),
             ITIP20::transferFromWithMemoCall {
-                from,
-                to,
-                amount,
-                memo: memo.into(),
+                from: Address::random(),
+                to: Address::random(),
+                amount: U256::from(100),
+                memo: [0u8; 32].into(),
             },
         );
         assert_eq!(result.unwrap_err(), TIP20Error::transfers_disabled());
@@ -260,16 +241,9 @@ mod tests {
     #[test]
     fn test_mint() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
-        let admin = Address::random();
+        let (mut linking_usd, admin) = transfer_test_setup(&mut storage);
         let recipient = Address::random();
         let amount = U256::from(1000);
-
-        linking_usd
-            .initialize(&admin)
-            .expect("LinkingUSD initialization should succeed");
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
 
         let balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
 
