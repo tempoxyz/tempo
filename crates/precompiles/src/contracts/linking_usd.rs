@@ -20,13 +20,8 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
     }
 
     pub fn initialize(&mut self, admin: &Address) -> Result<(), TIP20Error> {
-        self.token.initialize(
-            "LinkingUSD",
-            "LUSD",
-            "USD",
-            Address::ZERO, // No linking token for LinkingUSD
-            admin,
-        )
+        self.token
+            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
     }
 
     pub fn transfer(
