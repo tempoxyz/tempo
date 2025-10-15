@@ -319,7 +319,7 @@ sol! {
         // Balance management
         function withdraw(address token, uint128 amount) external;
 
-        // System transaction
+        // System transaction called at the end of the block to finalize pending limit orders
         function executeBlock() external;
 
         // Events
