@@ -1940,7 +1940,52 @@ mod tests {
 
     #[test]
     fn test_buy() {
-        // TODO:
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let bob = Address::random();
+        let admin = Address::random();
+        let amount_out = 500_000u128;
+        let tick = 1;
+
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            2_000_000u128,
+        );
+        exchange.create_pair(&base_token);
+
+        let order_amount = 1_000_000u128;
+        exchange
+            .place(&alice, base_token, order_amount, false, tick)
+            .expect("Order should succeed");
+
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Execute block should succeed");
+
+        exchange.set_balance(bob, quote_token, 2_000_000u128);
+
+        let bob_quote_before = exchange.balance_of(bob, quote_token);
+        let bob_base_before = exchange.balance_of(bob, base_token);
+
+        let price = orderbook::tick_to_price(tick);
+        let max_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let amount_in = exchange
+            .buy(&bob, quote_token, base_token, amount_out, max_amount_in)
+            .expect("Buy should succeed");
+
+        let bob_quote_after = exchange.balance_of(bob, quote_token);
+        let bob_base_after = exchange.balance_of(bob, base_token);
+
+        assert_eq!(bob_base_after, bob_base_before + amount_out);
+        assert_eq!(bob_quote_after, bob_quote_before - amount_in);
+        assert_eq!(amount_in, max_amount_in);
     }
 
     #[test]
