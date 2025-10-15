@@ -284,11 +284,16 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>()
     }
 
-    pub fn create_pair(&mut self, base: &Address) -> B256 {
+    pub fn create_pair(&mut self, base: &Address) -> Result<B256, StablecoinExchangeError> {
         let quote =
             TIP20Token::new(address_to_token_id_unchecked(base), self.storage).linking_token();
 
         let book_key = compute_book_key(*base, quote);
+
+        if Orderbook::exists(book_key, self.storage, self.address) {
+            return Err(StablecoinExchangeError::pair_already_exists());
+        }
+
         let book = Orderbook::new(*base, quote);
         book.store(self.storage, self.address);
 
@@ -305,7 +310,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             )
             .expect("Event emission failed");
 
-        book_key
+        Ok(book_key)
     }
 
     /// Place a limit order on the orderbook
@@ -2152,7 +2157,9 @@ mod tests {
         );
 
         // Create the pair
-        let key = exchange.create_pair(&base_token);
+        let key = exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         // Verify PairCreated event was emitted
         let events = &exchange.storage.events[&exchange.address];

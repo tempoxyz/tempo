@@ -367,7 +367,7 @@ impl Orderbook {
     }
 
     /// Check if this orderbook exists in storage
-    pub fn exists<S: StorageProvider>(storage: &mut S, address: Address, book_key: B256) -> bool {
+    pub fn exists<S: StorageProvider>(book_key: B256, storage: &mut S, address: Address) -> bool {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
         let base = storage
             .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)

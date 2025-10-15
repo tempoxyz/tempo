@@ -62,8 +62,7 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     IStablecoinExchange::createPairCall,
                     IStablecoinExchange::IStablecoinExchangeErrors,
                 >(calldata, msg_sender, |_s, call| {
-                    let key = self.create_pair(&call.base);
-                    Ok(key)
+                    self.create_pair(&call.base)
                 })
             }
             IStablecoinExchange::withdrawCall::SELECTOR => {
