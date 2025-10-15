@@ -1,16 +1,23 @@
+use commonware_macros::test_traced;
 use reth_ethereum::{rpc::types::engine::ForkchoiceState, storage::BlockReader as _};
-use tracing::Level;
 
 use crate::ExecutionRuntime;
 
 mod linkage;
 
-#[test]
+#[test_traced]
 fn spawning_execution_node_works() {
-    let _telemetry = tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
-        .with_test_writer()
-        .try_init();
+    // NOTE: to debug the node instance running in tokio, it is useful to
+    // isolate the tracing subscriber and install it globally (the
+    // `test_traced` tests defined by commonware are thread-local
+    //
+    // #[test]
+    // fn spawning_execution_node_works() {
+    // let _telemetry = tracing_subscriber::fmt()
+    //     .with_max_level(Level::DEBUG)
+    //     .with_test_writer()
+    //     .try_init();
+    // <rest>
 
     let runtime = ExecutionRuntime::new();
     let handle = runtime.handle();

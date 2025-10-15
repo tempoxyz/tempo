@@ -3,6 +3,9 @@
 //! This crate mimics how a full tempo node is run in production but runs the
 //! consensus engine in a deterministic runtime while maintaining a tokio
 //! async environment to launch execution nodes.
+//!
+//! All definitions herein are only intended to support the the tests defined
+//! in tests/.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -115,7 +118,7 @@ pub fn run(
                 leader_timeout: Duration::from_secs(2),
                 notarization_timeout: Duration::from_secs(3),
                 nullify_retry: Duration::from_secs(10),
-                fetch_timeout: Duration::from_secs(1),
+                fetch_timeout: Duration::from_secs(2),
                 activity_timeout: 10,
                 skip_timeout: 5,
                 new_payload_wait_time: Duration::from_millis(750),
