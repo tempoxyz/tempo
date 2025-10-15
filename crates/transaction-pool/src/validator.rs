@@ -1,5 +1,4 @@
 use crate::transaction::TempoPooledTransaction;
-use alloy_primitives::{U256, uint};
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -10,8 +9,6 @@ use reth_transaction_pool::{
     TransactionValidator,
 };
 use tempo_precompiles::contracts::provider::TIPFeeStateProviderExt;
-
-pub const USD_DECIMAL_FACTOR: U256 = uint!(1000_U256);
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -58,7 +55,7 @@ where
         };
 
         // Get the tx cost and adjust for fee token decimals
-        let cost = transaction.fee_token_cost().div_ceil(USD_DECIMAL_FACTOR);
+        let cost = transaction.fee_token_cost();
         if balance < cost {
             return TransactionValidationOutcome::Invalid(
                 transaction,
@@ -201,7 +198,7 @@ mod tests {
             .validate_transaction(TransactionOrigin::External, transaction.clone())
             .await;
 
-        let expected_cost = transaction.fee_token_cost().div_ceil(USD_DECIMAL_FACTOR);
+        let expected_cost = transaction.fee_token_cost();
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             assert!(matches!(
                 err,
@@ -216,7 +213,7 @@ mod tests {
         let fee_token = token_id_to_address(1);
         let storage = vec![(
             mapping_slot(transaction.sender(), tip20::slots::BALANCES).into(),
-            transaction.fee_token_cost().div_ceil(USD_DECIMAL_FACTOR),
+            transaction.fee_token_cost(),
         )];
         let fee_token_acct = ExtendedAccount::new(0, U256::ZERO).extend_storage(storage);
         provider.add_account(fee_token, fee_token_acct);
