@@ -93,39 +93,40 @@ where
 
     /// Validates a system transaction.
     fn validate_system_tx(&self, tx: &TempoTxEnvelope) -> Result<(), BlockValidationError> {
-        let fee_manager_calldata = executeBlockCall
+        let block = self.evm().block().number.to_be_bytes_vec();
+        let fee_input = executeBlockCall
             .abi_encode()
             .into_iter()
-            .chain(self.evm().block().number.to_be_bytes_vec())
+            .chain(block.clone())
             .collect::<Bytes>();
-
-        let stablecoin_dex_calldata = IStablecoinExchange::executeBlockCall {}
+        let dex_input = IStablecoinExchange::executeBlockCall {}
             .abi_encode()
             .into_iter()
-            .chain(self.evm().block().number.to_be_bytes_vec())
+            .chain(block)
             .collect::<Bytes>();
-
-        // Check if this is a fee manager system transaction
-        if tx.to() == Some(TIP_FEE_MANAGER_ADDRESS) && tx.input() == &fee_manager_calldata {
-            if self.seen_fee_manager_system_tx {
-                return Err(BlockValidationError::msg(
-                    "duplicate fee manager system transaction",
-                ));
+        let to = tx.to();
+        let input = tx.input();
+        match to {
+            Some(TIP_FEE_MANAGER_ADDRESS) if input == &fee_input => {
+                if self.seen_fee_manager_system_tx {
+                    Err(BlockValidationError::msg(
+                        "duplicate fee manager system transaction",
+                    ))
+                } else {
+                    Ok(())
+                }
             }
-            return Ok(());
-        }
-
-        // Check if this is a stablecoin DEX system transaction
-        if tx.to() == Some(STABLECOIN_EXCHANGE_ADDRESS) && tx.input() == &stablecoin_dex_calldata {
-            if self.seen_stablecoin_dex_system_tx {
-                return Err(BlockValidationError::msg(
-                    "duplicate stablecoin DEX system transaction",
-                ));
+            Some(STABLECOIN_EXCHANGE_ADDRESS) if input == &dex_input => {
+                if self.seen_stablecoin_dex_system_tx {
+                    Err(BlockValidationError::msg(
+                        "duplicate stablecoin DEX system transaction",
+                    ))
+                } else {
+                    Ok(())
+                }
             }
-            return Ok(());
+            _ => Err(BlockValidationError::msg("invalid system transaction")),
         }
-
-        Err(BlockValidationError::msg("invalid system transaction"))
     }
 }
 
