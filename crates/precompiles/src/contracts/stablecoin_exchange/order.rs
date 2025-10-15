@@ -193,7 +193,7 @@ impl Order {
         let tick = storage
             .sload(stablecoin_exchange, order_slot + ORDER_TICK_OFFSET)
             .expect("TODO: handle error")
-            .to::<i16>();
+            .to::<u16>() as i16;
 
         let amount = storage
             .sload(stablecoin_exchange, order_slot + ORDER_AMOUNT_OFFSET)
@@ -223,7 +223,7 @@ impl Order {
         let flip_tick = storage
             .sload(stablecoin_exchange, order_slot + ORDER_FLIP_TICK_OFFSET)
             .expect("TODO: handle error")
-            .to::<i16>();
+            .to::<u16>() as i16;
 
         Self {
             order_id,
