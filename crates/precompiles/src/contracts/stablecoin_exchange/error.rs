@@ -125,9 +125,6 @@ mod tests {
             max: 2000,
         };
         let msg = err.to_string();
-        assert!(msg.contains("3000"));
-        assert!(msg.contains("-2000"));
-        assert!(msg.contains("2000"));
-        assert!(msg.contains("out of bounds"));
+        assert_eq!(msg, "tick 3000 is out of bounds (min: -2000, max: 2000)");
     }
 }
