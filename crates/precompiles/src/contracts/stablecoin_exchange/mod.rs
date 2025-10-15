@@ -1717,7 +1717,84 @@ mod tests {
 
     #[test]
     fn test_execute_block() {
-        // TODO:
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let amount = 1_000_000u128;
+        let tick = 100i16;
+
+        // Calculate escrow amount needed for both orders
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        // Setup tokens with enough balance for two orders
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            expected_escrow * 2,
+        );
+
+        // Create the pair
+        exchange.create_pair(&base_token);
+
+        let order_id_0 = exchange
+            .place(&alice, base_token, amount, true, tick)
+            .expect("Order should exceed");
+
+        let order_id_1 = exchange
+            .place(&alice, base_token, amount, true, tick)
+            .expect("Order should exceed");
+        assert_eq!(order_id_0, 1);
+        assert_eq!(order_id_1, 2);
+        assert_eq!(exchange.active_order_id(), 0);
+        assert_eq!(exchange.pending_order_id(), 2);
+
+        // Verify orders are in pending state
+        let order_1 = Order::from_storage(order_id_1, exchange.storage, exchange.address);
+        let order_2 = Order::from_storage(order_id_1, exchange.storage, exchange.address);
+        assert_eq!(order_1.prev(), 0);
+        assert_eq!(order_1.next(), 0);
+        assert_eq!(order_2.prev(), 0);
+        assert_eq!(order_2.next(), 0);
+
+        // Verify tick level is empty before execute_block
+        let book_key = compute_book_key(base_token, quote_token);
+        let level_before =
+            TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
+        assert_eq!(level_before.head, 0);
+        assert_eq!(level_before.tail, 0);
+        assert_eq!(level_before.total_liquidity, 0);
+
+        // Execute block and assert that orders have been linked
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Execute block should succeed");
+
+        assert_eq!(exchange.active_order_id(), 2);
+        assert_eq!(exchange.pending_order_id(), 2);
+
+        let order_0 = Order::from_storage(order_id_0, exchange.storage, exchange.address);
+        let order_1 = Order::from_storage(order_id_1, exchange.storage, exchange.address);
+        assert_eq!(order_0.prev(), 0);
+        assert_eq!(order_0.next(), order_1.order_id());
+        assert_eq!(order_1.prev(), order_0.order_id());
+        assert_eq!(order_1.next(), 0);
+
+        // Assert tick level is updated
+        let level_after =
+            TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
+        assert_eq!(level_after.head, order_0.order_id());
+        assert_eq!(level_after.tail, order_1.order_id());
+        assert_eq!(level_after.total_liquidity, amount * 2);
+
+        // Verify orderbook best bid tick is updated
+        let orderbook = Orderbook::from_storage(book_key, exchange.storage, exchange.address);
+        assert_eq!(orderbook.best_bid_tick, tick);
     }
 
     #[test]
