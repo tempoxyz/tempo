@@ -597,51 +597,17 @@ mod tests {
         use crate::contracts::HashMapStorageProvider;
 
         #[test]
-        fn test_set_and_check_positive_ticks() {
+        fn test_tick_lifecycle() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
             let book_key = B256::ZERO;
 
-            // Set various positive ticks and verify they're marked as initialized
-            for tick in [0, 1, 100, 255, 256, 500, 1000, MAX_TICK] {
-                let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-                bitmap.set_tick_bit(tick, true).unwrap();
-
-                let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-                assert!(
-                    bitmap.is_tick_initialized(tick, true).unwrap(),
-                    "Tick {tick} should be initialized"
-                );
-            }
-        }
-
-        #[test]
-        fn test_set_and_check_negative_ticks() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
-            let book_key = B256::ZERO;
-
-            // Set various negative ticks and verify they're marked as initialized
-            for tick in [-1, -100, -256, -257, -500, -1000, MIN_TICK] {
-                let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-                bitmap.set_tick_bit(tick, true).unwrap();
-
-                let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-                assert!(
-                    bitmap.is_tick_initialized(tick, true).unwrap(),
-                    "Tick {tick} should be initialized"
-                );
-            }
-        }
-
-        #[test]
-        fn test_set_clear_and_check() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
-            let book_key = B256::ZERO;
-
-            // Test setting and clearing both positive and negative ticks
-            let test_ticks = [100, -100, 255, -256, 1000, -1000];
+            // Test full lifecycle (set, check, clear, check) for positive and negative ticks
+            // Include boundary cases, word boundaries, and various representative values
+            let test_ticks = [
+                MIN_TICK, -1000, -500, -257, -256, -100, -1, 0, 1, 100, 255, 256, 500, 1000,
+                MAX_TICK,
+            ];
 
             for &tick in &test_ticks {
                 // Initially not set
