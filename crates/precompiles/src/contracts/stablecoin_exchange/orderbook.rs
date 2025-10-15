@@ -753,7 +753,7 @@ mod tests {
         }
 
         #[test]
-        fn test_out_of_bounds_tick_set() {
+        fn test_set_tick_bit_out_of_bounds() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
             let book_key = B256::ZERO;
@@ -778,7 +778,7 @@ mod tests {
         }
 
         #[test]
-        fn test_out_of_bounds_tick_clear() {
+        fn test_clear_tick_bit_out_of_bounds() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
             let book_key = B256::ZERO;
@@ -803,7 +803,7 @@ mod tests {
         }
 
         #[test]
-        fn test_out_of_bounds_tick_is_initialized() {
+        fn test_is_tick_initialized_out_of_bounds() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
             let book_key = B256::ZERO;
