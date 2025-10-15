@@ -183,12 +183,16 @@ where
     ) -> Result<u64, BlockExecutionError> {
         let gas_used = self.inner.commit_transaction(output, &tx)?;
 
-        if tx.tx().is_system_tx() {
-            // Mark which system transaction we've seen based on the target address
-            if tx.tx().to() == Some(TIP_FEE_MANAGER_ADDRESS) {
-                self.seen_fee_manager_system_tx = true;
-            } else if tx.tx().to() == Some(STABLECOIN_EXCHANGE_ADDRESS) {
-                self.seen_stablecoin_dex_system_tx = true;
+        let inner_tx = tx.tx();
+        if inner_tx.is_system_tx() {
+            match inner_tx.to() {
+                Some(addr) if addr == TIP_FEE_MANAGER_ADDRESS => {
+                    self.seen_fee_manager_system_tx = true;
+                }
+                Some(addr) if addr == STABLECOIN_EXCHANGE_ADDRESS => {
+                    self.seen_stablecoin_dex_system_tx = true;
+                }
+                _ => {}
             }
         }
 
