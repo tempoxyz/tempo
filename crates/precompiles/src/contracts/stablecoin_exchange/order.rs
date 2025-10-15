@@ -87,6 +87,7 @@ pub struct Order {
 
 impl Order {
     /// Creates a new order with `prev` and `next` initialized to 0.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         order_id: u128,
         maker: Address,
@@ -538,7 +539,7 @@ impl Order {
             )
             .expect("Storage write failed");
 
-        // Store flip_tick (always store, even if 0 for non-flip orders)
+        // Store flip_tick
         storage
             .sstore(
                 stablecoin_exchange,

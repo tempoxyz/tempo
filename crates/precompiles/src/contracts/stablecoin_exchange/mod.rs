@@ -21,7 +21,7 @@ use crate::{
         types::{IStablecoinExchange, ITIP20, StablecoinExchangeError, StablecoinExchangeEvents},
     },
 };
-use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256};
+use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
