@@ -341,7 +341,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             Order::new_ask(order_id, *sender, book_key, amount, tick)
         };
 
-        // Store in pending queue. Orders are stored as a DLL at each tick level and are initially
+        // Store in pending queue. Orders are stored as a doubly-linked list at each tick level and are initially
         // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
         // linked and then considered "active"
         order.store(self.storage, self.address);
