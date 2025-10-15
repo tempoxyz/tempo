@@ -37,9 +37,9 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         msg_sender: &Address,
         call: ITIP20::transferCall,
     ) -> Result<bool, TIP20Error> {
-        if self.token.has_role(msg_sender, *TRANSFER_ROLE)
+        if *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role(msg_sender, *TRANSFER_ROLE)
             || self.token.has_role(&call.to, *RECEIVE_ROLE)
-            || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer(msg_sender, call)
         } else {
