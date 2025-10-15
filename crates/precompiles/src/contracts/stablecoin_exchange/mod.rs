@@ -153,7 +153,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::insufficient_liquidity());
+            return Err(StablecoinExchangeError::pair_does_not_exsist());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -170,7 +170,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::insufficient_liquidity());
+            return Err(StablecoinExchangeError::pair_does_not_exsist());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -189,7 +189,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::insufficient_liquidity());
+            return Err(StablecoinExchangeError::pair_does_not_exsist());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -197,7 +197,18 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.fill_orders_exact_in(book_key, base_for_quote, amount_in, min_amount_out)?;
 
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
-        self.increment_balance(*sender, token_out, amount_out);
+
+        let mut token_out =
+            TIP20Token::new(address_to_token_id_unchecked(&token_out), self.storage);
+        token_out
+            .transfer(
+                &self.address,
+                ITIP20::transferCall {
+                    to: *sender,
+                    amount: U256::from(amount_out),
+                },
+            )
+            .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
 
         Ok(amount_out)
     }
@@ -214,7 +225,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::insufficient_liquidity());
+            return Err(StablecoinExchangeError::pair_does_not_exsist());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -222,7 +233,18 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.fill_orders_exact_out(book_key, base_for_quote, amount_out, max_amount_in)?;
 
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
-        self.increment_balance(*sender, token_out, amount_out);
+
+        let mut token_out =
+            TIP20Token::new(address_to_token_id_unchecked(&token_out), self.storage);
+        token_out
+            .transfer(
+                &self.address,
+                ITIP20::transferCall {
+                    to: *sender,
+                    amount: U256::from(amount_out),
+                },
+            )
+            .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
 
         Ok(amount_in)
     }
@@ -1970,9 +1992,6 @@ mod tests {
 
         exchange.set_balance(bob, quote_token, 2_000_000u128);
 
-        let bob_quote_before = exchange.balance_of(bob, quote_token);
-        let bob_base_before = exchange.balance_of(bob, base_token);
-
         let price = orderbook::tick_to_price(tick);
         let max_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
 
@@ -1980,12 +1999,13 @@ mod tests {
             .buy(&bob, quote_token, base_token, amount_out, max_amount_in)
             .expect("Buy should succeed");
 
-        let bob_quote_after = exchange.balance_of(bob, quote_token);
-        let bob_base_after = exchange.balance_of(bob, base_token);
+        let mut base_tip20 =
+            TIP20Token::new(address_to_token_id_unchecked(&base_token), exchange.storage);
+        let bob_base_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: bob });
+        assert_eq!(bob_base_balance, U256::from(amount_out));
 
-        assert_eq!(bob_base_after, bob_base_before + amount_out);
-        assert_eq!(bob_quote_after, bob_quote_before - amount_in);
-        assert_eq!(amount_in, max_amount_in);
+        let alice_quote_exchange_balance = exchange.balance_of(alice, quote_token);
+        assert_eq!(alice_quote_exchange_balance, amount_in);
     }
 
     #[test]
