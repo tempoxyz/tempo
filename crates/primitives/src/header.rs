@@ -12,15 +12,29 @@ use reth_primitives_traits::{InMemorySize, serde_bincode_compat::RlpBincode};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub general_gas_limit: u64,
 
+    /// Sub-second (milliseconds) portion of the timestamp.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub timestamp_millis_part: u64,
+
     /// Inner Ethereum [`Header`].
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub inner: Header,
+}
+
+impl TempoHeader {
+    /// Returns the timestamp in milliseconds.
+    pub fn timestamp_millis(&self) -> u64 {
+        self.inner
+            .timestamp()
+            .saturating_mul(1000)
+            .saturating_add(self.timestamp_millis_part)
+    }
 }
 
 impl AsRef<Self> for TempoHeader {
@@ -122,8 +136,9 @@ impl InMemorySize for TempoHeader {
         let Self {
             inner,
             general_gas_limit,
+            timestamp_millis_part,
         } = self;
-        inner.size() + general_gas_limit.size()
+        inner.size() + general_gas_limit.size() + timestamp_millis_part.size()
     }
 }
 

@@ -39,6 +39,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                 TempoBlockExecutionCtx {
                     inner,
                     general_gas_limit,
+                    timestamp_millis_part,
                 },
             parent,
             transactions,
@@ -68,6 +69,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
         Ok(block.map_header(|inner| TempoHeader {
             inner,
             general_gas_limit,
+            timestamp_millis_part,
         }))
     }
 }
