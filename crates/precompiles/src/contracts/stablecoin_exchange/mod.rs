@@ -12,12 +12,6 @@ pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickBitmap, TickLevel, price_to_tick, tick_to_price,
 };
 
-use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256};
-use revm::{
-    interpreter::instructions::utility::{IntoAddress, IntoU256},
-    state::Bytecode,
-};
-
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
@@ -26,6 +20,8 @@ use crate::{
         types::{IStablecoinExchange, ITIP20, StablecoinExchangeError, StablecoinExchangeEvents},
     },
 };
+use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256};
+use revm::state::Bytecode;
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
