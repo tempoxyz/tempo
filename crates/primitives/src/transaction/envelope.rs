@@ -24,7 +24,13 @@ pub const TEMPO_SYSTEM_TX_SENDER: Address = Address::ZERO;
 /// - EIP-7702 authorization list transactions
 /// - Tempo fee token transactions (0x77)
 #[derive(Clone, Debug, alloy_consensus::TransactionEnvelope)]
-#[envelope(tx_type_name = TempoTxType, typed = TempoTypedTransaction, arbitrary_cfg(feature = "arbitrary"), serde_cfg(feature = "serde"))]
+#[envelope(
+    tx_type_name = TempoTxType,
+    typed = TempoTypedTransaction,
+    arbitrary_cfg(any(test, feature = "arbitrary")),
+    serde_cfg(feature = "serde")
+)]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub enum TempoTxEnvelope {
     /// Legacy transaction (type 0x00)
     #[envelope(ty = 0)]
