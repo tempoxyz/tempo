@@ -12,13 +12,15 @@ use reth_evm::{
         },
     },
 };
-use tempo_primitives::{AASigned, TempoTxEnvelope, TxAA, TxFeeToken, transaction::Call};
+use tempo_primitives::{
+    AASignature, AASigned, TempoTxEnvelope, TxAA, TxFeeToken, transaction::Call,
+};
 
 /// Account Abstraction transaction environment.
 #[derive(Debug, Clone, Default)]
 pub struct AATxEnv {
     /// Signature bytes for AA transactions
-    pub signature: Bytes,
+    pub signature: AASignature,
 
     /// validBefore timestamp
     pub valid_before: Option<u64>,
@@ -291,7 +293,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             }),
             // Bundle AA-specific fields into AATxEnv
             aa_tx_env: Some(Box::new(AATxEnv {
-                signature: signature.to_bytes(), // Store signature bytes for gas calculation
+                signature: signature.clone(),
                 valid_before: *valid_before,
                 valid_after: *valid_after,
                 aa_calls: calls.clone(),

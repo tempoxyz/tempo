@@ -32,7 +32,7 @@ use tempo_precompiles::{
         tip20,
     },
 };
-use tempo_primitives::{AA_TX_TYPE_ID, transaction::AASignature};
+use tempo_primitives::transaction::AASignature;
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
 
@@ -543,32 +543,22 @@ fn validate_aa_initial_tx_gas<DB, I>(
 where
     DB: reth_evm::Database,
 {
-    let tx_type = evm.ctx_ref().tx().tx_type();
     let spec = evm.ctx_ref().cfg().spec();
 
     let tx = evm.ctx_ref().tx();
     let standard_gas = validation::validate_initial_tx_gas(tx, spec)
         .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
 
-    // For non-AA transactions, use default validation
-    if tx_type != AA_TX_TYPE_ID {
+    let Some(aa_env) = tx.aa_tx_env.as_ref() else {
+        // For non-AA transactions, use default validation
         return Ok(standard_gas);
-    }
+    };
 
     // For AA transactions, extract signature reference and gas limit
-    let tx = evm.ctx_ref().tx();
-    let aa_env = tx.aa_tx_env.as_ref().unwrap();
-    let signature_bytes = &aa_env.signature;
+    let aa_signature = &aa_env.signature;
     let gas_limit = tx.gas_limit();
 
     // Calculate AA-specific additional gas (signature + nonce key costs)
-
-    // Parse the signature using AASignature to determine type from prefix
-    let aa_signature = AASignature::from_bytes(signature_bytes).map_err(|e| {
-        TempoInvalidTransaction::InvalidWebAuthnSignature {
-            reason: format!("Failed to parse signature: {e}"),
-        }
-    })?;
 
     // Calculate additional signature verification gas beyond the base 21k
     // secp256k1: 0 additional (already included in base)
