@@ -193,7 +193,7 @@ impl Order {
         let tick = storage
             .sload(stablecoin_exchange, order_slot + ORDER_TICK_OFFSET)
             .expect("TODO: handle error")
-            .to::<i16>();
+            .to::<u16>() as i16;
 
         let amount = storage
             .sload(stablecoin_exchange, order_slot + ORDER_AMOUNT_OFFSET)
@@ -223,7 +223,7 @@ impl Order {
         let flip_tick = storage
             .sload(stablecoin_exchange, order_slot + ORDER_FLIP_TICK_OFFSET)
             .expect("TODO: handle error")
-            .to::<i16>();
+            .to::<u16>() as i16;
 
         Self {
             order_id,
@@ -240,57 +240,78 @@ impl Order {
         }
     }
 
-    /// Update the order's remaining value in memory and storage
-    pub fn update_remaining<S: StorageProvider>(
-        &mut self,
-        new_remaining: u128,
-        storage: &mut S,
-        stablecoin_exchange: Address,
-    ) {
-        self.remaining = new_remaining;
-
+    pub fn store<S: StorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
         storage
             .sstore(
                 stablecoin_exchange,
+                order_slot + ORDER_MAKER_OFFSET,
+                self.maker().into_u256(),
+            )
+            .expect("Storage write failed");
+
+        // Store book_key
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_BOOK_KEY_OFFSET,
+                U256::from_be_bytes(self.book_key().0),
+            )
+            .expect("Storage write failed");
+
+        // Store is_bid boolean
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_IS_BID_OFFSET,
+                U256::from(self.is_bid() as u8),
+            )
+            .expect("Storage write failed");
+
+        // Store tick
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_TICK_OFFSET,
+                U256::from(self.tick() as u16),
+            )
+            .expect("Storage write failed");
+
+        // Store original amount
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_AMOUNT_OFFSET,
+                U256::from(self.amount()),
+            )
+            .expect("Storage write failed");
+
+        // Store remaining amount
+        storage
+            .sstore(
+                stablecoin_exchange,
                 order_slot + ORDER_REMAINING_OFFSET,
-                U256::from(new_remaining),
+                U256::from(self.remaining()),
             )
-            .expect("TODO: handle error");
-    }
+            .expect("Storage write failed");
 
-    pub fn update_next_order<S: StorageProvider>(
-        order_id: u128,
-        new_next: u128,
-        storage: &mut S,
-        stablecoin_exchange: Address,
-    ) {
-        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
-
+        // Store is_flip boolean
         storage
             .sstore(
                 stablecoin_exchange,
-                order_slot + ORDER_NEXT_OFFSET,
-                U256::from(new_next),
+                order_slot + ORDER_IS_FLIP_OFFSET,
+                U256::from(self.is_flip() as u8),
             )
-            .expect("TODO: handle error");
-    }
+            .expect("Storage write failed");
 
-    pub fn update_prev_order<S: StorageProvider>(
-        order_id: u128,
-        new_prev: u128,
-        storage: &mut S,
-        stablecoin_exchange: Address,
-    ) {
-        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
-
+        // Store flip_tick
         storage
             .sstore(
                 stablecoin_exchange,
-                order_slot + ORDER_PREV_OFFSET,
-                U256::from(new_prev),
+                order_slot + ORDER_FLIP_TICK_OFFSET,
+                U256::from(self.flip_tick() as u16),
             )
-            .expect("TODO: handle error");
+            .expect("Storage write failed");
     }
 
     pub fn delete<S: StorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
@@ -373,6 +394,59 @@ impl Order {
                 stablecoin_exchange,
                 order_slot + ORDER_FLIP_TICK_OFFSET,
                 U256::ZERO,
+            )
+            .expect("TODO: handle error");
+    }
+
+    /// Update the order's remaining value in memory and storage
+    pub fn update_remaining<S: StorageProvider>(
+        &mut self,
+        new_remaining: u128,
+        storage: &mut S,
+        stablecoin_exchange: Address,
+    ) {
+        self.remaining = new_remaining;
+
+        let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_REMAINING_OFFSET,
+                U256::from(new_remaining),
+            )
+            .expect("TODO: handle error");
+    }
+
+    pub fn update_next_order<S: StorageProvider>(
+        order_id: u128,
+        new_next: u128,
+        storage: &mut S,
+        stablecoin_exchange: Address,
+    ) {
+        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_NEXT_OFFSET,
+                U256::from(new_next),
+            )
+            .expect("TODO: handle error");
+    }
+
+    pub fn update_prev_order<S: StorageProvider>(
+        order_id: u128,
+        new_prev: u128,
+        storage: &mut S,
+        stablecoin_exchange: Address,
+    ) {
+        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
+
+        storage
+            .sstore(
+                stablecoin_exchange,
+                order_slot + ORDER_PREV_OFFSET,
+                U256::from(new_prev),
             )
             .expect("TODO: handle error");
     }
@@ -473,80 +547,6 @@ impl Order {
         }
         *self.remaining_mut() = self.remaining.saturating_sub(fill_amount);
         Ok(())
-    }
-
-    pub fn store<S: StorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
-        let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_MAKER_OFFSET,
-                self.maker().into_u256(),
-            )
-            .expect("Storage write failed");
-
-        // Store book_key
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_BOOK_KEY_OFFSET,
-                U256::from_be_bytes(self.book_key().0),
-            )
-            .expect("Storage write failed");
-
-        // Store is_bid boolean
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_BID_OFFSET,
-                U256::from(self.is_bid() as u8),
-            )
-            .expect("Storage write failed");
-
-        // Store tick
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_TICK_OFFSET,
-                U256::from(self.tick() as i128 as u128), // Cast i16 through i128 to preserve sign
-            )
-            .expect("Storage write failed");
-
-        // Store original amount
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_AMOUNT_OFFSET,
-                U256::from(self.amount()),
-            )
-            .expect("Storage write failed");
-
-        // Store remaining amount
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_REMAINING_OFFSET,
-                U256::from(self.remaining()),
-            )
-            .expect("Storage write failed");
-
-        // Store is_flip boolean
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_FLIP_OFFSET,
-                U256::from(self.is_flip() as u8),
-            )
-            .expect("Storage write failed");
-
-        // Store flip_tick
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_FLIP_TICK_OFFSET,
-                U256::from(self.flip_tick() as i128 as u128),
-            )
-            .expect("Storage write failed");
     }
 
     /// Creates a flipped order from a fully filled flip order.
