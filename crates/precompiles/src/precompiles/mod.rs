@@ -171,8 +171,9 @@ fn metadata<T: SolCall>(result: T::Return) -> PrecompileResult {
 
 #[inline]
 fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> T::Return) -> PrecompileResult {
-    let call = T::abi_decode(calldata)
-        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    let Ok(call) = T::abi_decode(calldata) else {
+        return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
+    };
     Ok(PrecompileOutput::new(
         VIEW_FUNC_GAS,
         T::abi_encode_returns(&f(call)).into(),
@@ -185,18 +186,20 @@ pub fn mutate<T: SolCall, E: SolInterface>(
     sender: &Address,
     f: impl FnOnce(&Address, T) -> Result<T::Return, E>,
 ) -> PrecompileResult {
-    let call = T::abi_decode(calldata)
-        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    let Ok(call) = T::abi_decode(calldata) else {
+        return Ok(PrecompileOutput::new_reverted(
+            MUTATE_FUNC_GAS,
+            Bytes::new(),
+        ));
+    };
     match f(sender, call) {
         Ok(result) => Ok(PrecompileOutput::new(
             MUTATE_FUNC_GAS,
             T::abi_encode_returns(&result).into(),
         )),
-        Err(e) => Err(PrecompileError::Other(
-            E::abi_encode(&e)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
+        Err(e) => Ok(PrecompileOutput::new_reverted(
+            MUTATE_FUNC_GAS,
+            E::abi_encode(&e).into(),
         )),
     }
 }
@@ -207,15 +210,17 @@ fn mutate_void<T: SolCall, E: SolInterface>(
     sender: &Address,
     f: impl FnOnce(&Address, T) -> Result<(), E>,
 ) -> PrecompileResult {
-    let call = T::abi_decode(calldata)
-        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    let Ok(call) = T::abi_decode(calldata) else {
+        return Ok(PrecompileOutput::new_reverted(
+            MUTATE_FUNC_GAS,
+            Bytes::new(),
+        ));
+    };
     match f(sender, call) {
         Ok(()) => Ok(PrecompileOutput::new(MUTATE_FUNC_GAS, Bytes::new())),
-        Err(e) => Err(PrecompileError::Other(
-            E::abi_encode(&e)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
+        Err(e) => Ok(PrecompileOutput::new_reverted(
+            MUTATE_FUNC_GAS,
+            E::abi_encode(&e).into(),
         )),
     }
 }
