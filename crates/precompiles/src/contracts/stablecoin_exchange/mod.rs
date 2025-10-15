@@ -645,7 +645,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         }
     }
 
-    // TODO: clean up
     /// Fill orders for exact output amount
     #[allow(dead_code)]
     fn fill_orders_exact_out(
