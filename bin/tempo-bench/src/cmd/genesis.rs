@@ -22,7 +22,7 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
         linking_usd::LinkingUSD, stablecoin_exchange::StablecoinExchange,
