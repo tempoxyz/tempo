@@ -1798,6 +1798,16 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_block_unauthorized() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let result = exchange.execute_block(&Address::random());
+        assert_eq!(result, Err(StablecoinExchangeError::unauthorized()));
+    }
+
+    #[test]
     fn test_withdraw() {
         // TODO:
     }
