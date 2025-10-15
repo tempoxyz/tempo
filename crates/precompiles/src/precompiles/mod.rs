@@ -6,7 +6,7 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::Block,
-    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub mod linking_usd;
@@ -171,8 +171,9 @@ fn metadata<T: SolCall>(result: T::Return) -> PrecompileResult {
 
 #[inline]
 fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> T::Return) -> PrecompileResult {
-    let call = T::abi_decode(calldata)
-        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    let Ok(call) = T::abi_decode(calldata) else {
+        return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
+    };
     Ok(PrecompileOutput::new(
         VIEW_FUNC_GAS,
         T::abi_encode_returns(&f(call)).into(),
@@ -185,18 +186,20 @@ pub fn mutate<T: SolCall, E: SolInterface>(
     sender: &Address,
     f: impl FnOnce(&Address, T) -> Result<T::Return, E>,
 ) -> PrecompileResult {
-    let call = T::abi_decode(calldata)
-        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    let Ok(call) = T::abi_decode(calldata) else {
+        return Ok(PrecompileOutput::new_reverted(
+            MUTATE_FUNC_GAS,
+            Bytes::new(),
+        ));
+    };
     match f(sender, call) {
         Ok(result) => Ok(PrecompileOutput::new(
             MUTATE_FUNC_GAS,
             T::abi_encode_returns(&result).into(),
         )),
-        Err(e) => Err(PrecompileError::Other(
-            E::abi_encode(&e)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
+        Err(e) => Ok(PrecompileOutput::new_reverted(
+            MUTATE_FUNC_GAS,
+            E::abi_encode(&e).into(),
         )),
     }
 }
@@ -207,34 +210,35 @@ fn mutate_void<T: SolCall, E: SolInterface>(
     sender: &Address,
     f: impl FnOnce(&Address, T) -> Result<(), E>,
 ) -> PrecompileResult {
-    let call = T::abi_decode(calldata)
-        .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
+    let Ok(call) = T::abi_decode(calldata) else {
+        return Ok(PrecompileOutput::new_reverted(
+            MUTATE_FUNC_GAS,
+            Bytes::new(),
+        ));
+    };
     match f(sender, call) {
         Ok(()) => Ok(PrecompileOutput::new(MUTATE_FUNC_GAS, Bytes::new())),
-        Err(e) => Err(PrecompileError::Other(
-            E::abi_encode(&e)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
+        Err(e) => Ok(PrecompileOutput::new_reverted(
+            MUTATE_FUNC_GAS,
+            E::abi_encode(&e).into(),
         )),
     }
 }
 
 #[cfg(test)]
-pub fn expect_precompile_error<E>(result: &PrecompileResult, expected_error: E)
+pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
 where
     E: SolInterface + PartialEq + std::fmt::Debug,
 {
     match result {
-        Err(PrecompileError::Other(hex_string)) => {
-            let bytes = alloy::primitives::hex::decode(hex_string)
-                .expect("invalid hex string in PrecompileError::Other");
-            let decoded: E = E::abi_decode(&bytes)
-                .expect("failed to decode precompile error as expected interface error");
+        Ok(result) => {
+            assert!(result.reverted);
+            let decoded = E::abi_decode(&result.bytes).unwrap();
             assert_eq!(decoded, expected_error);
         }
-        Ok(_) => panic!("expected error, got Ok result"),
-        Err(other) => panic!("expected encoded interface error, got: {other:?}"),
+        Err(other) => {
+            panic!("expected reverted output, got: {other:?}");
+        }
     }
 }
 
