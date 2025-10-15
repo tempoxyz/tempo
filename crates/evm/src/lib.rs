@@ -160,6 +160,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
             },
             general_gas_limit: block.header().general_gas_limit,
+            timestamp_millis_part: block.header().timestamp_millis_part,
         })
     }
 
@@ -176,6 +177,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
             },
             general_gas_limit: attributes.general_gas_limit,
+            timestamp_millis_part: attributes.timestamp_millis_part,
         })
     }
 }

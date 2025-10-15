@@ -639,6 +639,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 order.tick(),
                 order.is_bid(),
             );
+
             order_id
         }
     }
