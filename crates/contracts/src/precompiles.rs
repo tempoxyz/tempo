@@ -630,10 +630,10 @@ pub use IStablecoinExchange::{
     IStablecoinExchangeErrors as StablecoinExchangeError,
     IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
+pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };
 pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
 pub use ITipAccountRegistrar::ITipAccountRegistrarErrors as TipAccountRegistrarError;
-pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};

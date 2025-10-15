@@ -122,10 +122,10 @@ impl GenesisArgs {
 
         println!("Initializing fee manager");
         initialize_fee_manager(alpha_token_address, addresses, &mut evm);
-        
+
         println!("Initializing stablecoin exchange");
         initialize_stablecoin_exchange(&mut evm)?;
-        
+
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
             alpha_token_address,
@@ -389,9 +389,7 @@ fn initialize_fee_manager(
         .expect("Could not 0x00 validator fee token");
 }
 
-fn initialize_stablecoin_exchange(
-    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-) -> eyre::Result<()> {
+fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmStorageProvider::new(evm_internals, 1);

@@ -9,20 +9,19 @@ pub mod slots;
 pub use error::OrderError;
 pub use order::Order;
 pub use orderbook::{
-    price_to_tick, tick_to_price, Orderbook, TickBitmap, TickLevel, MAX_TICK, MIN_TICK, PRICE_SCALE,
+    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickBitmap, TickLevel, price_to_tick, tick_to_price,
 };
 
 use crate::{
-    contracts::{
-        address_to_token_id_unchecked,
-        stablecoin_exchange::orderbook::compute_book_key,
-        storage::{slots::mapping_slot, StorageOps},
-        types::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents, ITIP20},
-        StorageProvider, TIP20Token,
-    },
     STABLECOIN_EXCHANGE_ADDRESS,
+    contracts::{
+        StorageProvider, TIP20Token, address_to_token_id_unchecked,
+        stablecoin_exchange::orderbook::compute_book_key,
+        storage::{StorageOps, slots::mapping_slot},
+        types::{IStablecoinExchange, ITIP20, StablecoinExchangeError, StablecoinExchangeEvents},
+    },
 };
-use alloy::primitives::{Address, Bytes, IntoLogData, B256, U256};
+use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
@@ -1368,7 +1367,7 @@ impl<'a, S: StorageProvider> StorageOps for StablecoinExchange<'a, S> {
 mod tests {
     use super::*;
     use crate::contracts::{
-        linking_usd, tip20, types::StablecoinExchangeError, HashMapStorageProvider, LinkingUSD,
+        HashMapStorageProvider, LinkingUSD, linking_usd, tip20, types::StablecoinExchangeError,
     };
 
     fn setup_test_tokens<S: StorageProvider>(

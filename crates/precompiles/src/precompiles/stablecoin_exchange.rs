@@ -7,7 +7,7 @@ use crate::{
         stablecoin_exchange::StablecoinExchange, storage::StorageProvider,
         types::IStablecoinExchange,
     },
-    precompiles::{mutate, mutate_void, view, Precompile},
+    precompiles::{Precompile, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
