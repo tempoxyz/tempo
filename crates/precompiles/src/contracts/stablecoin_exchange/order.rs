@@ -220,7 +220,7 @@ impl Order {
             .to::<bool>();
 
         let flip_tick = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_IS_FLIP_OFFSET)
+            .sload(stablecoin_exchange, order_slot + ORDER_FLIP_TICK_OFFSET)
             .expect("TODO: handle error")
             .to::<i16>();
 
@@ -538,7 +538,7 @@ impl Order {
             )
             .expect("Storage write failed");
 
-        // Store flip_tick (always store, even if 0 for non-flip orders)
+        // Store flip_tick
         storage
             .sstore(
                 stablecoin_exchange,
