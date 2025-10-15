@@ -538,7 +538,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
         let mut current_order_id = next_order_id + 1;
         while current_order_id <= pending_order_id {
-            self.process_pending_order(current_order_id);
+            self.process_pending_order(current_order_id)?;
             current_order_id += 1;
         }
 
@@ -554,7 +554,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Process a single pending order into the active orderbook
-    fn process_pending_order(&mut self, order_id: u128) {
+    fn process_pending_order(&mut self, order_id: u128) -> Result<(), StablecoinExchangeError> {
         let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
 
         let maker = self
@@ -562,7 +562,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .sload(self.address, order_slot + offsets::ORDER_MAKER_OFFSET)
             .expect("TODO: handle error");
         if maker.is_zero() {
-            return;
+            return Ok(());
         }
 
         let book_key = self
@@ -605,7 +605,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
             let mut bitmap =
                 orderbook::TickBitmap::new(self.storage, self.address, B256::from(book_key));
-            bitmap.set_tick_bit(tick, is_bid).unwrap();
+            bitmap
+                .set_tick_bit(tick, is_bid)
+                .map_err(|_| StablecoinExchangeError::tick_out_of_bounds(tick))?;
 
             if is_bid {
                 if tick > orderbook.best_bid_tick {
@@ -653,12 +655,18 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             tick,
             is_bid,
         );
+
+        Ok(())
     }
 
     /// Fill an order and handle cleanup when fully filled
     /// Returns the next order ID to process (0 if no more liquidity at this tick)
     #[allow(dead_code)]
-    fn fill_order(&mut self, order_id: u128, fill_amount: u128) -> u128 {
+    fn fill_order(
+        &mut self,
+        order_id: u128,
+        fill_amount: u128,
+    ) -> Result<u128, StablecoinExchangeError> {
         let order_slot = mapping_slot(order_id.to_be_bytes(), slots::ORDERS);
 
         let book_key = self
@@ -808,7 +816,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             if level.head == 0 {
                 let mut bitmap =
                     orderbook::TickBitmap::new(self.storage, self.address, B256::from(book_key));
-                bitmap.clear_tick_bit(tick, is_bid).unwrap();
+                bitmap
+                    .clear_tick_bit(tick, is_bid)
+                    .map_err(|_| StablecoinExchangeError::tick_out_of_bounds(tick))?;
                 level.store(
                     self.storage,
                     self.address,
@@ -816,7 +826,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                     tick,
                     is_bid,
                 );
-                return 0;
+                return Ok(0);
             }
 
             level.store(
@@ -826,7 +836,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 tick,
                 is_bid,
             );
-            next
+            Ok(next)
         } else {
             level.store(
                 self.storage,
@@ -835,7 +845,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 tick,
                 is_bid,
             );
-            order_id
+            Ok(order_id)
         }
     }
 
@@ -898,7 +908,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                     .expect("Remaining out calculation overflow");
                 amount_in += fill_amount;
 
-                order_id = self.fill_order(order_id, fill_amount);
+                order_id = self.fill_order(order_id, fill_amount)?;
 
                 if remaining_out == 0 {
                     return Ok(amount_in);
@@ -971,7 +981,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 remaining_out -= fill_amount;
                 amount_in += quote_in;
 
-                order_id = self.fill_order(order_id, fill_amount);
+                order_id = self.fill_order(order_id, fill_amount)?;
 
                 if remaining_out == 0 {
                     return Ok(amount_in);
@@ -1058,7 +1068,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 remaining_in -= fill_amount;
                 amount_out += quote_out;
 
-                order_id = self.fill_order(order_id, fill_amount);
+                order_id = self.fill_order(order_id, fill_amount)?;
 
                 if remaining_in == 0 {
                     if amount_out < min_amount_out {
@@ -1130,7 +1140,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 remaining_in -= (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
                 amount_out += fill_amount;
 
-                order_id = self.fill_order(order_id, fill_amount);
+                order_id = self.fill_order(order_id, fill_amount)?;
 
                 if remaining_in == 0 {
                     if amount_out < min_amount_out {
@@ -1324,7 +1334,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         if level.head == 0 {
             let mut bitmap =
                 orderbook::TickBitmap::new(self.storage, self.address, B256::from(book_key));
-            bitmap.clear_tick_bit(tick, is_bid).unwrap();
+            bitmap
+                .clear_tick_bit(tick, is_bid)
+                .map_err(|_| StablecoinExchangeError::tick_out_of_bounds(tick))?;
         }
 
         level.store(
