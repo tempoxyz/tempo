@@ -30,5 +30,5 @@ large networks), the execution layers fail with errors like these:
 > `failed to open the database: unknown error code: 12 (12)`
 
 The source of this issue is not yet clear. It is therefore recommended to run
-the tests sequentially. Alternatiely, running tests in different processes also
+the tests sequentially. Alternatively, running tests in different processes also
 seems to help, as is done by [`nextest`](https://nexte.st).
