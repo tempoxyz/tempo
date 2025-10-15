@@ -148,12 +148,16 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         token: Address,
         amount: u128,
     ) -> Result<(), StablecoinExchangeError> {
+        dbg!("getting here");
+
         let user_balance = self.balance_of(user, token);
         if user_balance >= amount {
             self.sub_balance(user, token, amount);
         } else {
             self.set_balance(user, token, 0);
             let remaining = amount - user_balance;
+
+            dbg!("getting there");
             TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
                 .transfer_from(
                     &user,
@@ -163,6 +167,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                         amount: U256::from(remaining),
                     },
                 )
+                // TODO: this should be updated to be more descriptive, this masks other errors
                 .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
         }
         Ok(())
@@ -1319,8 +1324,77 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::HashMapStorageProvider;
+    use crate::contracts::{HashMapStorageProvider, LinkingUSD, linking_usd, tip20};
     use alloy::primitives::address;
+
+    fn setup_test_tokens<S: StorageProvider>(
+        storage: &mut S,
+        admin: &Address,
+        user: &Address,
+        exchange_address: Address,
+        amount: u128,
+    ) -> (Address, Address) {
+        // Initialize quote token (LinkingUSD)
+        let mut quote = LinkingUSD::new(storage);
+        quote
+            .initialize(admin)
+            .expect("Quote token initialization failed");
+
+        // Grant issuer role to admin for quote token
+        let mut quote_roles = quote.get_roles_contract();
+        quote_roles.grant_role_internal(admin, *tip20::ISSUER_ROLE);
+        // quote_roles.grant_role_internal(user, *linking_usd::TRANSFE);
+
+        // Mint tokens to user
+        quote
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: *user,
+                    amount: U256::from(amount),
+                },
+            )
+            .expect("Quote mint failed");
+
+        // Approve exchange to spend user's tokens
+        quote
+            .approve(
+                user,
+                ITIP20::approveCall {
+                    spender: exchange_address,
+                    amount: U256::from(amount),
+                },
+            )
+            .expect("Quote approve failed");
+
+        // Initialize base token  and mint amount
+        let mut base = TIP20Token::new(1, quote.token.storage);
+        base.initialize("BASE", "BASE", "USD", quote.token.token_address, admin)
+            .expect("Base token initialization failed");
+
+        let mut base_roles = base.get_roles_contract();
+        base_roles.grant_role_internal(admin, *crate::contracts::tip20::ISSUER_ROLE);
+
+        base.approve(
+            user,
+            ITIP20::approveCall {
+                spender: exchange_address,
+                amount: U256::from(amount),
+            },
+        )
+        .expect("Base approve failed");
+
+        base.mint(
+            admin,
+            ITIP20::mintCall {
+                to: *user,
+                amount: U256::from(amount),
+            },
+        )
+        .expect("Base mint failed");
+
+        (base.token_address, quote.token.token_address)
+    }
 
     #[test]
     fn test_compute_book_key_deterministic() {
@@ -1397,84 +1471,83 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let base_token = Address::random();
-        let quote_token = Address::random();
-        let amount = 1_000_000_000_000_000_000u128; // 1e18
+        let amount = 1_000_000u128; // Use smaller amount for easier debugging
         let tick = 100i16;
 
-        //
-        // // Initialize base token
-        // let token_id = address_to_token_id_unchecked(&base_token);
-        // let mut base_tip20 = TIP20Token::new(token_id, exchange.storage);
-        // base_tip20
-        //     .initialize("BASE", "BASE", "USD", quote_token, &admin)
-        //     .expect("Base token initialization should succeed");
-        //
-        // // Initialize quote token (linking token)
-        // let quote_token_id = address_to_token_id_unchecked(&quote_token);
-        // let mut quote_tip20 = TIP20Token::new(quote_token_id, base_tip20.storage);
-        // quote_tip20
-        //     .initialize("linkingUSD", "linkingUSD", "USD", Address::ZERO, &admin)
-        //     .expect("Quote token initialization should succeed");
-        //
-        // // Grant issuer role to admin for quote token
-        // let mut roles = quote_tip20.get_roles_contract();
-        // roles.grant_role_internal(&admin, *crate::contracts::tip20::ISSUER_ROLE);
-        //
-        // // Calculate escrow amount needed for bid
-        // let price = orderbook::tick_to_price(tick);
-        // let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
-        //
-        // // Mint quote tokens to alice
-        // quote_tip20
-        //     .mint(
-        //         &admin,
-        //         crate::contracts::types::ITIP20::mintCall {
-        //             to: alice,
-        //             amount: alloy::primitives::U256::from(expected_escrow),
-        //         },
-        //     )
-        //     .expect("Mint should succeed");
-        //
-        // // Approve exchange to spend alice's quote tokens
-        // quote_tip20
-        //     .approve(
-        //         &alice,
-        //         crate::contracts::types::ITIP20::approveCall {
-        //             spender: exchange.address,
-        //             amount: alloy::primitives::U256::from(expected_escrow),
-        //         },
-        //     )
-        //     .expect("Approve should succeed");
-        //
-        // // Place the bid order
-        // let order_id = exchange
-        //     .place(&alice, base_token, amount, true, tick)
-        //     .expect("Place bid order should succeed");
-        //
-        // // Verify order ID is 1 (since it's the first order)
-        // assert_eq!(order_id, 1);
-        //
-        // // Verify activeOrderId is still 0 (orders are pending until executeBlock)
-        // assert_eq!(exchange.active_order_id(), 0);
-        //
-        // // Verify pendingOrderId is 1
-        // assert_eq!(exchange.pending_order_id(), 1);
-        //
-        // // Verify alice's token balance was reduced by the escrow amount
-        // let remaining_balance = quote_tip20
-        //     .balance_of(crate::contracts::types::ITIP20::balanceOfCall { account: alice });
-        // assert_eq!(remaining_balance, alloy::primitives::U256::ZERO);
-        //
-        // // Verify exchange received the tokens
-        // let exchange_balance =
-        //     quote_tip20.balance_of(crate::contracts::types::ITIP20::balanceOfCall {
-        //         account: exchange.address,
-        //     });
-        // assert_eq!(
-        //     exchange_balance,
-        //     alloy::primitives::U256::from(expected_escrow)
-        // );
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        // Setup tokens with enough balance for the escrow
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            expected_escrow * 10,
+        );
+
+        // Place the bid order
+        let order_id = exchange
+            .place(&alice, base_token, amount, true, tick)
+            .expect("Place bid order should succeed");
+
+        // Verify order ID is 1 (since it's the first order)
+        assert_eq!(order_id, 1);
+
+        // Verify activeOrderId is still 0 (orders are pending until executeBlock)
+        assert_eq!(exchange.active_order_id(), 0);
+
+        // Verify pendingOrderId is 1
+        assert_eq!(exchange.pending_order_id(), 1);
+
+        // Verify the order was stored correctly
+        let stored_order = Order::from_storage(order_id, exchange.storage, exchange.address);
+        assert_eq!(stored_order.maker(), alice);
+        assert_eq!(stored_order.amount(), amount);
+        assert_eq!(stored_order.remaining(), amount);
+        assert_eq!(stored_order.tick(), tick);
+        assert!(stored_order.is_bid());
+        assert!(!stored_order.is_flip());
+        assert_eq!(stored_order.prev(), 0);
+        assert_eq!(stored_order.next(), 0);
+
+        // Verify the order is not yet in the active orderbook (pending state)
+        let book_key = exchange.compute_book_key(base_token, quote_token);
+        let level = TickLevel::from_storage(
+            exchange.storage,
+            exchange.address,
+            book_key,
+            tick,
+            true, // is_bid
+        );
+        assert_eq!(level.head, 0); // Should be empty since order is pending
+        assert_eq!(level.tail, 0);
+        assert_eq!(level.total_liquidity, 0);
+
+        // Verify alice's balance was reduced by the escrow amount
+        {
+            let mut quote_tip20 = TIP20Token::new(
+                address_to_token_id_unchecked(&quote_token),
+                exchange.storage,
+            );
+            let remaining_balance = quote_tip20
+                .balance_of(crate::contracts::types::ITIP20::balanceOfCall { account: alice });
+            let expected_remaining = (expected_escrow * 2) - expected_escrow;
+            assert_eq!(
+                remaining_balance,
+                alloy::primitives::U256::from(expected_remaining)
+            );
+
+            // Verify exchange received the tokens
+            let exchange_balance =
+                quote_tip20.balance_of(crate::contracts::types::ITIP20::balanceOfCall {
+                    account: exchange.address,
+                });
+            assert_eq!(
+                exchange_balance,
+                alloy::primitives::U256::from(expected_escrow)
+            );
+        }
     }
 
     #[test]

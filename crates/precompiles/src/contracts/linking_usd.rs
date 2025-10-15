@@ -2,6 +2,7 @@ use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
         StorageProvider,
+        roles::RolesAuthContract,
         tip20::TIP20Token,
         types::{ITIP20, TIP20Error},
     },
@@ -110,6 +111,10 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
 
     pub fn burn(&mut self, sender: &Address, call: ITIP20::burnCall) -> Result<(), TIP20Error> {
         self.token.burn(sender, call)
+    }
+
+    pub fn get_roles_contract(&mut self) -> RolesAuthContract<'_, S> {
+        self.token.get_roles_contract()
     }
 }
 
