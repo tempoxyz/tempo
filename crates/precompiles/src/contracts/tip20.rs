@@ -856,11 +856,16 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .expect("TODO: handle error");
     }
 
-    fn check_role(&mut self, account: &Address, role: B256) -> Result<(), TIP20Error> {
+    pub fn check_role(&mut self, account: &Address, role: B256) -> Result<(), TIP20Error> {
         let mut roles = self.get_roles_contract();
         roles
             .check_role(account, role)
             .map_err(|_| TIP20Error::policy_forbids())
+    }
+
+    pub fn has_role(&mut self, account: &Address, role: B256) -> bool {
+        let mut roles = self.get_roles_contract();
+        roles.has_role_internal(account, role)
     }
 
     fn check_not_paused(&mut self) -> Result<(), TIP20Error> {

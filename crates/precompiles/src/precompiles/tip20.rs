@@ -193,7 +193,7 @@ mod tests {
             HashMapStorageProvider,
             types::{IRolesAuth, TIP20Error},
         },
-        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_error},
+        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert},
     };
     use alloy::{
         primitives::{Bytes, U256, keccak256},
@@ -709,7 +709,7 @@ mod tests {
         let result = token.call(&Bytes::from(calldata), &admin);
 
         // Should fail due to supply cap
-        expect_precompile_error(&result, TIP20Error::supply_cap_exceeded());
+        expect_precompile_revert(&result, TIP20Error::supply_cap_exceeded());
     }
 
     #[test]
@@ -766,7 +766,7 @@ mod tests {
         };
         let calldata = mint_call.abi_encode();
         let result = token.call(&Bytes::from(calldata.clone()), &unauthorized);
-        expect_precompile_error(&result, TIP20Error::policy_forbids());
+        expect_precompile_revert(&result, TIP20Error::policy_forbids());
 
         // Test authorized mint (should succeed)
         let result = token.call(&Bytes::from(calldata), &user1).unwrap();
@@ -892,6 +892,6 @@ mod tests {
         let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), &non_admin);
-        expect_precompile_error(&result, TIP20Error::policy_forbids());
+        expect_precompile_revert(&result, TIP20Error::policy_forbids());
     }
 }

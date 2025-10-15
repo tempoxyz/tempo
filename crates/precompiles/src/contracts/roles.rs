@@ -161,7 +161,7 @@ impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
     }
 
     // Internal implementation functions
-    fn has_role_internal(&mut self, account: &Address, role: B256) -> bool {
+    pub fn has_role_internal(&mut self, account: &Address, role: B256) -> bool {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         self.storage
             .sload(self.parent_contract_address, slot)

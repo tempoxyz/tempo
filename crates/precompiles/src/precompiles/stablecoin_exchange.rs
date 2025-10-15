@@ -122,17 +122,21 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{
-        HashMapStorageProvider,
-        stablecoin_exchange::{offsets, slots},
-        storage::{StorageOps, slots::mapping_slot},
-        types::StablecoinExchangeEvents,
+    use crate::{
+        contracts::{
+            HashMapStorageProvider,
+            stablecoin_exchange::{offsets, slots},
+            storage::{StorageOps, slots::mapping_slot},
+            types::StablecoinExchangeEvents,
+        },
+        precompiles::expect_precompile_revert,
     };
     use alloy::{
         primitives::{Bytes, IntoLogData, U256},
         sol_types::SolValue,
     };
     use revm::interpreter::instructions::utility::IntoU256;
+    use tempo_contracts::precompiles::StablecoinExchangeError;
 
     /// Helper to set internal DEX balance for a user (avoids TIP20 transfer in tests)
     fn setup_balance(
@@ -461,10 +465,7 @@ mod tests {
 
         let result = dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender);
 
-        assert!(
-            result.is_err(),
-            "Expected error for invalid flip tick constraint"
-        );
+        expect_precompile_revert(&result, StablecoinExchangeError::invalid_flip_tick());
     }
 
     #[test]
@@ -486,10 +487,7 @@ mod tests {
 
         let result = dex.call(&Bytes::from(place_flip_call.abi_encode()), &sender);
 
-        assert!(
-            result.is_err(),
-            "Expected error for invalid flip tick constraint"
-        );
+        expect_precompile_revert(&result, StablecoinExchangeError::invalid_flip_tick());
     }
 
     #[test]
