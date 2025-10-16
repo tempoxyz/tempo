@@ -3,13 +3,16 @@ use alloy::{
     providers::ProviderBuilder,
     signers::local::MnemonicBuilder,
 };
+use rand::Rng;
 use std::{env, time::Duration};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::ITIP20::ITIP20Instance;
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
-        address_to_token_id_unchecked, token_id_to_address,
+        address_to_token_id_unchecked,
+        stablecoin_exchange::{MAX_TICK, MIN_TICK},
+        token_id_to_address,
         types::{IStablecoinExchange, ITIP20},
     },
 };
@@ -239,7 +242,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    let account_data: Vec<_> = (1..10)
+    let account_data: Vec<_> = (1..30)
         .map(|i| {
             let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i as u32)
@@ -283,10 +286,12 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     let mut order_ids = vec![];
-    let tick = 1;
+    let mut rng = rand::rng();
+
     // Place bid orders for each account
     let mut pending = vec![];
     for (account, signer) in &account_data {
+        let tick = rng.random_range(MIN_TICK..=MAX_TICK);
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
             .connect_http(http_url.clone());
@@ -294,11 +299,10 @@ async fn test_cancel_orders() -> eyre::Result<()> {
 
         let call = exchange.place(*base.address(), order_amount, true, tick);
         let order_id = call.call().await?;
-        // order_ids.push(call.call().await?);
+        order_ids.push(call.call().await?);
 
         let order_tx = call.send().await?;
         order_tx.get_receipt().await?;
-        // pending.push(order_tx);
 
         let order = exchange.orders(order_id).call().await?;
         assert_eq!(order.maker, *account);
@@ -310,23 +314,6 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         pending.push(exchange.cancel(order_id).send().await?);
     }
     await_receipts(&mut pending).await?;
-
-    // for (order_id, (account, signer)) in order_ids.iter().zip(account_data) {
-    //     let order = exchange.orders(*order_id).call().await?;
-    //     assert_eq!(order.maker, account);
-    //     assert!(order.isBid);
-    //     assert_eq!(order.tick, tick);
-    //     assert_eq!(order.amount, order_amount);
-    //     assert_eq!(order.remaining, order_amount);
-    //
-    //     let account_provider = ProviderBuilder::new()
-    //         .wallet(signer.clone())
-    //         .connect_http(http_url.clone());
-    //     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
-    //
-    //     pending.push(exchange.cancel(*order_id).send().await?);
-    // }
-    // await_receipts(&mut pending).await?;
 
     // Assert that orders have been canceled
     for order_id in order_ids {
