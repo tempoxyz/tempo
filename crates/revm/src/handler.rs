@@ -674,9 +674,8 @@ where
             // Calculate calldata gas using the standard revm function
             // get_tokens_in_calldata counts zero bytes (1 token each) and non-zero bytes (4 tokens each for Istanbul)
             // Multiply by STANDARD_TOKEN_COST (4) to get gas: zero byte = 4 gas, non-zero byte = 16 gas
-            // We subtract 129 from the tokens to account for the already paid 129 bytes in the P256_VERIFY_GAS
             let webauthn_data_tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, true);
-            let webauthn_data_gas = (webauthn_data_tokens - 129) * STANDARD_TOKEN_COST;
+            let webauthn_data_gas = webauthn_data_tokens * STANDARD_TOKEN_COST;
             P256_VERIFY_GAS + webauthn_data_gas
         }
     };
