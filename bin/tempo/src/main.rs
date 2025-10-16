@@ -22,7 +22,7 @@ use futures::{
     FutureExt as _,
     future::{FusedFuture, pending},
 };
-use reth_ethereum::cli::Cli;
+use reth_ethereum::cli::{Cli, Commands};
 use reth_node_builder::NodeHandle;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -75,6 +75,9 @@ fn main() -> eyre::Result<()> {
 
     tempo_node::init_version_metadata();
 
+    let cli = Cli::<TempoChainSpecParser, TempoArgs>::parse();
+    let is_node = matches!(cli.command, Commands::Node(_));
+
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
         oneshot::channel::<(TempoFullNode, TempoArgs)>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
@@ -83,6 +86,11 @@ fn main() -> eyre::Result<()> {
 
     let shutdown_token_clone = shutdown_token.clone();
     let consensus_handle = thread::spawn(move || {
+        // Exit early if we are not executing `tempo node` command.
+        if !is_node {
+            return Ok(());
+        }
+
         let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err("channel closed before consensus-relevant command line args and a handle to the execution node could be received")?;
 
         let ret = if node.config.dev.dev || args.no_consensus {
@@ -168,55 +176,54 @@ fn main() -> eyre::Result<()> {
         )
     };
 
-    Cli::<TempoChainSpecParser, TempoArgs>::parse()
-        .run_with_components::<TempoNode>(components, async move |builder, args| {
-            let faucet_args = args.faucet_args.clone();
+    cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        let faucet_args = args.faucet_args.clone();
 
-            let NodeHandle {
-                node,
-                node_exit_future,
-            } = builder
-                // TODO: simplify this
-                .node(TempoNode::new(tempo_node::args::TempoArgs {
-                    no_consensus: args.no_consensus,
-                    faucet_args: args.faucet_args.clone(),
-                }))
-                .extend_rpc_modules(move |ctx| {
-                    if faucet_args.enabled {
-                        let txpool = ctx.pool().clone();
-                        let ext = TempoFaucetExt::new(
-                            txpool,
-                            faucet_args.addresses(),
-                            faucet_args.amount(),
-                            faucet_args.provider(),
-                        );
+        let NodeHandle {
+            node,
+            node_exit_future,
+        } = builder
+            // TODO: simplify this
+            .node(TempoNode::new(tempo_node::args::TempoArgs {
+                no_consensus: args.no_consensus,
+                faucet_args: args.faucet_args.clone(),
+            }))
+            .extend_rpc_modules(move |ctx| {
+                if faucet_args.enabled {
+                    let txpool = ctx.pool().clone();
+                    let ext = TempoFaucetExt::new(
+                        txpool,
+                        faucet_args.addresses(),
+                        faucet_args.amount(),
+                        faucet_args.provider(),
+                    );
 
-                        ctx.modules.merge_configured(ext.into_rpc())?;
-                    }
-
-                    Ok(())
-                })
-                .launch_with_debug_capabilities()
-                .await
-                .wrap_err("failed launching execution node")?;
-
-            let _ = args_and_node_handle_tx.send((node, args));
-
-            // TODO: emit these inside a span
-            tokio::select! {
-                _ = node_exit_future => {
-                    tracing::info!("execution node exited");
+                    ctx.modules.merge_configured(ext.into_rpc())?;
                 }
-                _ = &mut consensus_dead_rx => {
-                    tracing::info!("consensus node exited");
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("received shutdown signal");
-                }
+
+                Ok(())
+            })
+            .launch_with_debug_capabilities()
+            .await
+            .wrap_err("failed launching execution node")?;
+
+        let _ = args_and_node_handle_tx.send((node, args));
+
+        // TODO: emit these inside a span
+        tokio::select! {
+            _ = node_exit_future => {
+                tracing::info!("execution node exited");
             }
-            Ok(())
-        })
-        .wrap_err("execution node failed")?;
+            _ = &mut consensus_dead_rx => {
+                tracing::info!("consensus node exited");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received shutdown signal");
+            }
+        }
+        Ok(())
+    })
+    .wrap_err("execution node failed")?;
 
     shutdown_token.cancel();
 
