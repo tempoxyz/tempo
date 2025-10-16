@@ -7,7 +7,7 @@ use alloy::primitives::{U256, uint};
 
 // Simple storage variables
 /// Next order ID to be processed (last order that has been added to the active orderbook)
-pub const NEXT_ORDER_ID: U256 = uint!(0_U256);
+pub const ACTIVE_ORDER_ID: U256 = uint!(0_U256);
 
 /// Latest pending order ID (last order that has been placed but not yet processed)
 pub const PENDING_ORDER_ID: U256 = uint!(1_U256);

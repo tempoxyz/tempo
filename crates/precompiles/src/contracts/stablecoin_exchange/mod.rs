@@ -6,13 +6,14 @@ pub mod order;
 pub mod orderbook;
 pub mod slots;
 
+use std::future::pending;
+
 pub use error::OrderError;
 pub use order::Order;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, PriceLevel, TickBitmap, price_to_tick,
     tick_to_price,
 };
-use reth_storage_api::errors::db;
 
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
@@ -75,6 +76,21 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .expect("Storage write failed");
     }
 
+    /// Read activ3 order ID
+    fn get_active_order_id(&mut self) -> u128 {
+        self.storage
+            .sload(self.address, slots::ACTIVE_ORDER_ID)
+            .expect("Storage read failed")
+            .to::<u128>()
+    }
+
+    /// Set active order ID
+    fn set_active_order_id(&mut self, order_id: u128) {
+        self.storage
+            .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))
+            .expect("Storage write failed");
+    }
+
     /// Increment and return the pending order id
     fn increment_pending_order_id(&mut self) -> u128 {
         let next_id = self.get_pending_order_id() + 1;
@@ -93,11 +109,12 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>()
     }
 
-    /// Fetch order from storage. If the order is currently pending, this function returns
+    /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`   
     pub fn get_order(&mut self, order_id: u128) -> Result<Order, StablecoinExchangeError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
-        if order.prev() != 0 || order.next() != 0 {
+        let id = order.order_id();
+        if id > 0 && id <= self.get_active_order_id() {
             Ok(order)
         } else {
             Err(StablecoinExchangeError::order_does_not_exist())
@@ -278,7 +295,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// Get active order ID
     pub fn active_order_id(&mut self) -> u128 {
         self.storage
-            .sload(self.address, slots::NEXT_ORDER_ID)
+            .sload(self.address, slots::ACTIVE_ORDER_ID)
             .expect("TODO: handle error")
             .to::<u128>()
     }
@@ -485,7 +502,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
         let next_order_id = self
             .storage
-            .sload(self.address, slots::NEXT_ORDER_ID)
+            .sload(self.address, slots::ACTIVE_ORDER_ID)
             .expect("TODO: handle error")
             .to::<u128>();
 
@@ -497,13 +514,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             current_order_id += 1;
         }
 
-        self.storage
-            .sstore(
-                self.address,
-                slots::NEXT_ORDER_ID,
-                U256::from(pending_order_id),
-            )
-            .expect("TODO: handle error");
+        self.set_active_order_id(pending_order_id);
 
         Ok(())
     }
@@ -986,7 +997,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         // Check if the order is still pending (not yet in active orderbook)
         let next_order_id = self
             .storage
-            .sload(self.address, slots::NEXT_ORDER_ID)
+            .sload(self.address, slots::ACTIVE_ORDER_ID)
             .expect("TODO: handle error")
             .to::<u128>();
 

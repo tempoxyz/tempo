@@ -6,7 +6,7 @@ use alloy::{
 use rand::Rng;
 use std::{env, time::Duration};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_contracts::precompiles::ITIP20::ITIP20Instance;
+use tempo_contracts::precompiles::{ITIP20::ITIP20Instance, StablecoinExchangeError};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
@@ -109,8 +109,7 @@ async fn test_bids() -> eyre::Result<()> {
     await_receipts(&mut pending_orders).await?;
 
     for order_id in 1..=num_orders {
-        // TODO: need to add a get_order function that only returns active orders
-        let order = exchange.orders(order_id).call().await?;
+        let order = exchange.getOrder(order_id).call().await?;
         assert!(!order.maker.is_zero());
         assert!(order.isBid);
         assert_eq!(order.tick, tick);
@@ -249,7 +248,7 @@ async fn test_asks() -> eyre::Result<()> {
     await_receipts(&mut pending_orders).await?;
 
     for (order_id, (account, _)) in order_ids.iter().zip(account_data) {
-        let order = exchange.orders(*order_id).call().await?;
+        let order = exchange.getOrder(*order_id).call().await?;
         assert_eq!(order.maker, account);
         assert!(!order.isBid);
         assert_eq!(order.tick, tick);
@@ -343,7 +342,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         let order_tx = call.send().await?;
         order_tx.get_receipt().await?;
 
-        let order = exchange.orders(order_id).call().await?;
+        let order = exchange.getOrder(order_id).call().await?;
         assert_eq!(order.maker, *account);
         assert!(order.isBid);
         assert_eq!(order.tick, tick);
@@ -356,8 +355,11 @@ async fn test_cancel_orders() -> eyre::Result<()> {
 
     // Assert that orders have been canceled
     for order_id in order_ids {
-        let order = exchange.orders(order_id).call().await?;
-        assert!(order.maker.is_zero());
+        let err = exchange
+            .getOrder(order_id)
+            .call()
+            .await
+            .expect_err("Expected error");
     }
 
     Ok(())
