@@ -88,7 +88,7 @@ impl AASigned {
     /// Calculate the transaction hash
     fn compute_hash(&self) -> B256 {
         let mut buf = Vec::new();
-        self.encode_inner(&mut buf);
+        self.eip2718_encode(&mut buf);
         alloy_primitives::keccak256(&buf)
     }
 
@@ -109,7 +109,7 @@ impl AASigned {
     }
 
     /// Encode the transaction fields and signature as RLP list (without type byte)
-    fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
+    fn rlp_encode(&self, out: &mut dyn BufMut) {
         // RLP header
         self.rlp_header().encode(out);
 
@@ -118,14 +118,6 @@ impl AASigned {
 
         // Encode signature
         self.signature.encode(out);
-    }
-
-    /// Encode the transaction with signature for hashing (EIP-2718 format with type byte)
-    fn encode_inner(&self, out: &mut dyn BufMut) {
-        // Type byte
-        out.put_u8(AA_TX_TYPE_ID);
-        // RLP fields
-        self.rlp_encode_fields(out);
     }
 
     /// Splits the transaction into parts.
@@ -146,7 +138,10 @@ impl AASigned {
 
     /// EIP-2718 encode the signed transaction.
     pub fn eip2718_encode(&self, out: &mut dyn BufMut) {
-        self.encode_inner(out);
+        // Type byte
+        out.put_u8(AA_TX_TYPE_ID);
+        // RLP fields
+        self.rlp_encode(out);
     }
 
     /// Decode the RLP fields (without type byte).
@@ -309,7 +304,7 @@ impl Eq for AASigned {}
 
 impl InMemorySize for AASigned {
     fn size(&self) -> usize {
-        mem::size_of::<Self>() + self.tx.size() + self.signature.length() + mem::size_of::<B256>()
+        mem::size_of::<Self>() + self.tx.size() + self.signature.len() + mem::size_of::<B256>()
     }
 }
 
