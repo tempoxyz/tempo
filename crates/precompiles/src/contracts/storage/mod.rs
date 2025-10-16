@@ -11,6 +11,7 @@ pub trait StorageProvider {
     type Error: Debug;
 
     fn chain_id(&self) -> u64;
+    fn timestamp(&self) -> U256;
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), Self::Error>;
     fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, Self::Error>;
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error>;
