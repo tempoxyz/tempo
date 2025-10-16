@@ -353,7 +353,7 @@ impl Decodable2718 for AASigned {
     }
 
     fn fallback_decode(_: &mut &[u8]) -> Eip2718Result<Self> {
-        return Err(Eip2718Error::UnexpectedType(0));
+        Err(Eip2718Error::UnexpectedType(0))
     }
 }
 
