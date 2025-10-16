@@ -3,7 +3,7 @@
 use alloy_primitives::U256;
 use reth_evm::{
     InvalidTxError,
-    revm::context::result::{EVMError, InvalidTransaction},
+    revm::context::result::{EVMError, InvalidHeader, InvalidTransaction},
 };
 
 /// Tempo-specific invalid transaction errors.
@@ -15,6 +15,10 @@ pub enum TempoInvalidTransaction {
     /// Standard Ethereum transaction validation error.
     #[error(transparent)]
     EthInvalidTransaction(#[from] InvalidTransaction),
+
+    /// Block header validation error (e.g., missing prevrandao or excess_blob_gas).
+    #[error(transparent)]
+    EthInvalidHeader(#[from] InvalidHeader),
 
     /// System transaction must be a call (not a create).
     #[error("system transaction must be a call, not a create")]

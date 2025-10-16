@@ -19,6 +19,7 @@ use reth_evm::{
             instructions::utility::IntoAddress,
             interpreter::EthInterpreter,
         },
+        primitives::hardfork::SpecId as RevmSpecId,
         state::Bytecode,
     },
 };
@@ -176,11 +177,22 @@ where
                 tx.inner.kind = call.to;
                 tx.inner.value = call.value;
                 tx.inner.data = call.input.clone();
-                tx.inner.gas_limit = remaining_gas + init_and_floor_gas.initial_gas;
+                tx.inner.gas_limit = remaining_gas;
             }
 
+            // Validate and calculate gas for this call
+            let subcall_init_gas =
+                match Self::validate_and_calculate_call_gas(evm, init_and_floor_gas) {
+                    Ok(gas) => gas,
+                    Err(e) => {
+                        // Revert checkpoint before returning error
+                        evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+                        return Err(e);
+                    }
+                };
+
             // Execute this call using the provided single-call function
-            let frame_result = execute_single(self, evm, init_and_floor_gas);
+            let frame_result = execute_single(self, evm, &subcall_init_gas);
 
             // Restore original TxEnv immediately after execution, even if execution failed
             {
@@ -222,7 +234,10 @@ where
             let gas_refunded = frame_result.gas().refunded();
 
             accumulated_gas_refund = accumulated_gas_refund.saturating_add(gas_refunded);
-            remaining_gas = remaining_gas.saturating_sub(gas_used);
+            // Subtract both execution gas AND per-call intrinsic costs (calldata, CREATE)
+            remaining_gas = remaining_gas
+                .saturating_sub(gas_used)
+                .saturating_sub(subcall_init_gas.initial_gas);
 
             final_result = Some(frame_result);
         }
@@ -244,6 +259,47 @@ where
         *result.gas_mut() = corrected_gas;
 
         Ok(result)
+    }
+
+    /// Validates the current call in TxEnv and calculates its intrinsic gas requirements.
+    ///
+    /// This function assumes TxEnv has already been updated to reflect the call being validated.
+    /// Returns an error if validation fails, but does NOT revert checkpoints (caller must handle that).
+    fn validate_and_calculate_call_gas(
+        evm: &TempoEvm<DB, I>,
+        init_and_floor_gas: &InitialAndFloorGas,
+    ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>> {
+        let spec = evm.ctx_ref().cfg().spec();
+        let cfg = evm.ctx_ref().cfg();
+        let tx = evm.ctx_ref().tx();
+
+        // EIP-3860: Limit and meter initcode. Still valid with EIP-7907 and increase of initcode size.
+        if spec.is_enabled_in(RevmSpecId::SHANGHAI)
+            && tx.kind().is_create()
+            && tx.input().len() > cfg.max_initcode_size()
+        {
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::CreateInitCodeSizeLimit,
+                ),
+            ));
+        }
+
+        // Calculate initial gas for this specific call (includes base 21k + calldata + CREATE costs)
+        let call_initial_gas =
+            validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
+                .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
+
+        // Subtract the batch-level initial gas (base 21k + signature verification) since it was already paid
+        // This leaves only the call-specific costs (calldata, CREATE, etc.)
+        let additional_gas = call_initial_gas
+            .initial_gas
+            .saturating_sub(init_and_floor_gas.initial_gas);
+
+        Ok(InitialAndFloorGas::new(
+            additional_gas,
+            call_initial_gas.floor_gas,
+        ))
     }
 
     /// Executes a multi-call AA transaction atomically.
@@ -356,12 +412,11 @@ where
         let context = evm.ctx();
         let basefee = context.block().basefee() as u128;
         let blob_price = context.block().blob_gasprice().unwrap_or_default();
-        let block_timestamp = context.block().timestamp().to::<u64>(); // Extract timestamp early
         let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
         let value = context.tx().value();
-        let caller_addr = context.tx().caller(); // Extract caller address early
+        let caller_addr = context.tx().caller();
 
         let (tx, journal) = (&mut context.tx, &mut context.journaled_state);
 
@@ -388,11 +443,8 @@ where
         )
         .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
 
-        // Time window validation for AA transactions
-        if let Some(aa_env) = tx.aa_tx_env.as_ref() {
-            validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
-        }
         // Note: Signature verification happens during recover_signer() before entering the pool
+        // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
         let max_balance_spending = tx
             .max_balance_spending()
@@ -520,6 +572,44 @@ where
     ) -> Result<(), Self::Error> {
         // All fee handling (refunds and queuing) is done in reimburse_caller via collectFeePostTx
         // The actual swap and transfer to validator happens in executeBlock at the end of block processing
+        Ok(())
+    }
+
+    /// Validates transaction environment with custom handling for AA transactions.
+    ///
+    /// Performs standard validation plus AA-specific checks:
+    /// - Priority fee validation (EIP-1559)
+    /// - Time window validation (validAfter/validBefore)
+    #[inline]
+    fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        // First perform standard validation (header + transaction environment)
+        // This validates: prevrandao, excess_blob_gas, chain_id, gas limits, tx type support, etc.
+        validation::validate_env::<_, TempoInvalidTransaction>(evm.ctx())?;
+
+        // AA-specific validations
+        let cfg = evm.ctx_ref().cfg();
+        let tx = evm.ctx_ref().tx();
+
+        if let Some(aa_env) = tx.aa_tx_env.as_ref() {
+            // Validate priority fee for AA transactions
+            // Matches revm's validate_priority_fee_tx implementation
+            if !cfg.is_priority_fee_check_disabled() {
+                if let Some(max_priority_fee) = tx.max_priority_fee_per_gas() {
+                    let max_fee = tx.max_fee_per_gas();
+                    if max_priority_fee > max_fee {
+                        return Err(TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::PriorityFeeGreaterThanMaxFee,
+                        )
+                        .into());
+                    }
+                }
+            }
+
+            // Validate time window for AA transactions
+            let block_timestamp = evm.ctx_ref().block().timestamp().to::<u64>();
+            validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
+        }
+
         Ok(())
     }
 
