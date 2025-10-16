@@ -137,8 +137,14 @@ async fn test_bids() -> eyre::Result<()> {
     tx.get_receipt().await?;
 
     for order_id in 1..num_orders {
-        let order = exchange.getOrder(order_id).call().await?;
-        assert!(order.maker.is_zero());
+        let err = exchange
+            .getOrder(order_id)
+            .call()
+            .await
+            .expect_err("Expected error");
+
+        // Assert order does not exist
+        assert!(err.to_string().contains("0x5dcaf2d7"));
     }
 
     // Assert the last order is partially filled
