@@ -1,0 +1,138 @@
+use alloy::{
+    primitives::{Address, U256},
+    providers::ProviderBuilder,
+    signers::local::MnemonicBuilder,
+};
+use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_contracts::precompiles::ITIP20::ITIP20Instance;
+use tempo_precompiles::{
+    LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    contracts::{
+        address_to_token_id_unchecked, token_id_to_address,
+        types::{IStablecoinExchange, ITIP20},
+    },
+};
+
+use crate::utils::{await_receipts, setup_test_token};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_bids() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Setup node
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let base = setup_test_token(provider.clone(), caller).await?;
+    let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+
+    let account_data: Vec<_> = (1..100)
+        .map(|i| {
+            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+                .index(i as u32)
+                .unwrap()
+                .build()
+                .unwrap();
+            let account = signer.address();
+            (account, signer)
+        })
+        .collect();
+
+    let mint_amount = U256::from(1000000000000u128);
+
+    // Mint tokens to each account
+    let mut pending = vec![];
+    for (account, _) in &account_data {
+        pending.push(quote.mint(*account, mint_amount).send().await?);
+    }
+    await_receipts(&mut pending).await?;
+
+    // Create pair
+    let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
+    let tx = exchange.createPair(*base.address()).send().await?;
+    tx.get_receipt().await?;
+
+    let order_amount = U256::from(1000000000);
+
+    // Approve tokens for exchange for each account
+    for (_, signer) in &account_data {
+        let account_provider = ProviderBuilder::new()
+            .wallet(signer.clone())
+            .connect_http(http_url.clone());
+        let quote = ITIP20::new(*quote.address(), account_provider);
+        pending.push(
+            quote
+                .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+                .send()
+                .await?,
+        );
+    }
+    await_receipts(&mut pending).await?;
+
+    // Place bid orders for each account
+    let mut pending_orders = vec![];
+    for (_, signer) in &account_data {
+        let account_provider = ProviderBuilder::new()
+            .wallet(signer.clone())
+            .connect_http(http_url.clone());
+        let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
+
+        let order_tx = exchange
+            .place(*base.address(), order_amount.to::<u128>(), true, 1)
+            .send()
+            .await?;
+        pending_orders.push(order_tx);
+    }
+    await_receipts(&mut pending_orders).await?;
+
+    // TODO:
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_asks() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = crate::utils::TestNodeBuilder::new()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let sender_address = wallet.address();
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cancel_orders() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = crate::utils::TestNodeBuilder::new()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let sender_address = wallet.address();
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    Ok(())
+}

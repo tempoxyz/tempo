@@ -11,6 +11,7 @@ pub use order::Order;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickBitmap, TickLevel, price_to_tick, tick_to_price,
 };
+use reth_storage_api::errors::db;
 
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,

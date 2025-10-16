@@ -348,6 +348,8 @@ fn initialize_linking_usd(
     linking_usd
         .initialize(&admin)
         .expect("LinkingUSD initialization should succeed");
+    let mut roles = linking_usd.get_roles_contract();
+    roles.grant_role_internal(&admin, *ISSUER_ROLE);
 
     Ok(())
 }
