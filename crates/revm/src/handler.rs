@@ -206,7 +206,11 @@ where
                 // Create new Gas with correct limit, because Gas does not have a set_limit method
                 // (the frame_result has the limit from just the last call)
                 let mut corrected_gas = Gas::new(gas_limit);
-                corrected_gas.set_spent(total_gas_used);
+                if instruction_result.is_revert() {
+                    corrected_gas.set_spent(total_gas_used);
+                } else {
+                    corrected_gas.spend_all();
+                }
                 corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted
                 *frame_result.gas_mut() = corrected_gas;
 
