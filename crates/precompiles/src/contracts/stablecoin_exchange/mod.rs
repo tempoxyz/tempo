@@ -2162,7 +2162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pair_created_event() {
+    fn test_pair_created() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -2196,5 +2196,31 @@ mod tests {
             })
             .into_log_data()
         );
+    }
+
+    #[test]
+    fn test_pair_already_created() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let admin = Address::random();
+        let alice = Address::random();
+
+        // Setup tokens
+        let (base_token, _) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            1_000_000u128,
+        );
+
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
+
+        let result = exchange.create_pair(&base_token);
+        assert_eq!(result, Err(StablecoinExchangeError::pair_already_exists()));
     }
 }
