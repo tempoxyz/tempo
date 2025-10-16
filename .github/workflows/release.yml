@@ -6,7 +6,6 @@ on:
   push:
     tags:
       - "v*.*.*"
-  pull_request: # TODO: Remove after testing
   workflow_dispatch:
     inputs:
       tag:
@@ -41,8 +40,6 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "version=${{ inputs.tag }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "version=v0.0.0-pr${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
           else
             echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
@@ -56,15 +53,10 @@ jobs:
       matrix:
         binary: [tempo, tempo-bench, tempo-sidecar]
         platform:
-          # Linux x86_64
           - os: depot-ubuntu-latest-16
             target: x86_64-unknown-linux-gnu
-
-          # Linux ARM64
           - os: depot-ubuntu-latest-arm-16
             target: aarch64-unknown-linux-gnu
-
-          # macOS ARM64
           - os: depot-macos-15
             target: aarch64-apple-darwin
 
@@ -136,7 +128,7 @@ jobs:
   create-release:
     name: Create Release
     needs: [get-version, build-release]
-    # if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -162,22 +154,22 @@ jobs:
           echo "$(git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 ${{ env.VERSION }}^)..${{ env.VERSION }})" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # - name: Create Release
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #     VERSION: ${{ needs.get-version.outputs.version }}
-      #   run: |
-      #     # Determine if this is a prerelease
-      #     PRERELEASE=""
-      #     if echo "$VERSION" | grep -qE '(alpha|beta|rc)'; then
-      #       PRERELEASE="--prerelease"
-      #     fi
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          # Determine if this is a prerelease
+          PRERELEASE=""
+          if echo "$VERSION" | grep -qE '(alpha|beta|rc)'; then
+            PRERELEASE="--prerelease"
+          fi
 
-      #     # Create draft release with all artifacts
-      #     gh release create "$VERSION" \
-      #       --repo ${{ github.repository }} \
-      #       --title "Release $VERSION" \
-      #       --draft \
-      #       --notes "${{ steps.changelog.outputs.CHANGELOG }}" \
-      #       $PRERELEASE \
-      #       artifacts/**/*
+          # Create draft release with all artifacts
+          gh release create "$VERSION" \
+            --repo ${{ github.repository }} \
+            --title "Release $VERSION" \
+            --draft \
+            --notes "${{ steps.changelog.outputs.CHANGELOG }}" \
+            $PRERELEASE \
+            artifacts/**/*
