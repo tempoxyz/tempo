@@ -57,13 +57,6 @@ pub fn run(
 
     executor.start(|mut context| async move {
         let execution_runtime = ExecutionRuntime::new();
-        let mut execution_nodes = Vec::with_capacity(how_many as usize);
-        for i in 0..how_many {
-            let node = execution_runtime
-                .spawn_node_blocking(&format!("node-{i}"))
-                .expect("must be able to spawn nodes on the runtime");
-            execution_nodes.push(node);
-        }
 
         let (network, mut oracle) = Network::new(
             context.with_label("network"),
@@ -92,19 +85,20 @@ pub fn run(
             ops::generate_shares::<_, MinSig>(&mut context, None, how_many, threshold);
 
         let mut public_keys = HashSet::new();
-        for (signer, share) in signers.into_iter().zip(shares) {
+        for (i, (signer, share)) in signers.into_iter().zip(shares).enumerate() {
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator-{public_key}");
 
+            let node = execution_runtime
+                .spawn_node_blocking(&format!("node-{i}"))
+                .expect("must be able to spawn nodes on the runtime");
+
             let engine = tempo_commonware_node::consensus::Builder {
                 context: context.with_label(&uid),
                 fee_recipient: alloy_primitives::Address::ZERO,
-                execution_node: execution_nodes
-                    .pop()
-                    .expect("there must be enough execution nodes for all consensus engines")
-                    .node,
+                execution_node: node.node,
                 blocker: oracle.control(public_key.clone()),
                 partition_prefix: uid.clone(),
                 signer,
