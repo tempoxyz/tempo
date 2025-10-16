@@ -9,6 +9,7 @@ use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
 use super::error::OrderError;
 use alloy::primitives::{Address, B256, U256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use tempo_contracts::precompiles::IStablecoinExchange;
 
 // Order struct field offsets (relative to order base slot)
 // Matches Solidity Order struct layout
@@ -587,6 +588,23 @@ impl Order {
             is_flip: true,        // Keep as flip order
             flip_tick: self.tick, // Old tick becomes new flip_tick
         })
+    }
+}
+
+impl From<Order> for IStablecoinExchange::Order {
+    fn from(value: Order) -> Self {
+        Self {
+            maker: value.maker,
+            bookKey: value.book_key,
+            isBid: value.is_bid,
+            tick: value.tick,
+            amount: value.amount,
+            remaining: value.remaining,
+            prev: value.prev,
+            next: value.next,
+            isFlip: value.is_flip,
+            flipTick: value.flip_tick,
+        }
     }
 }
 

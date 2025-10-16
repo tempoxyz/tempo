@@ -92,6 +92,11 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>()
     }
 
+    /// Get user's balance for a specific token
+    pub fn get_order(&mut self, order_id: u128) -> Order {
+        Order::from_storage(order_id, self.storage, self.address)
+    }
+
     /// Set user's balance for a specific token
     fn set_balance(&mut self, user: Address, token: Address, amount: u128) {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);

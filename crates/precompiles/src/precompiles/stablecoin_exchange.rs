@@ -4,13 +4,17 @@
 
 use crate::{
     contracts::{
-        stablecoin_exchange::StablecoinExchange, storage::StorageProvider,
+        stablecoin_exchange::{Order, StablecoinExchange},
+        storage::StorageProvider,
         types::IStablecoinExchange,
     },
     precompiles::{Precompile, mutate, mutate_void, view},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::{
+    bytecode::bitvec::view,
+    precompile::{PrecompileError, PrecompileResult},
+};
 
 impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
@@ -52,6 +56,12 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     self.balance_of(call.user, call.token)
                 })
             }
+            IStablecoinExchange::ordersCall::SELECTOR => {
+                view::<IStablecoinExchange::ordersCall>(calldata, |call| {
+                    self.get_order(call.orderId).into()
+                })
+            }
+
             IStablecoinExchange::pairKeyCall::SELECTOR => {
                 view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {
                     self.pair_key(call.tokenA, call.tokenB)
