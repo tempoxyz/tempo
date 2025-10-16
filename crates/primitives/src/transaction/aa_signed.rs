@@ -304,7 +304,10 @@ impl Eq for AASigned {}
 
 impl InMemorySize for AASigned {
     fn size(&self) -> usize {
-        mem::size_of::<Self>() + self.tx.size() + self.signature.len() + mem::size_of::<B256>()
+        mem::size_of::<Self>()
+            + self.tx.size()
+            + self.signature.encoded_length()
+            + mem::size_of::<B256>()
     }
 }
 

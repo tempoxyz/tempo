@@ -166,7 +166,7 @@ impl AASignature {
     /// For backward compatibility:
     /// - Secp256k1: 65 bytes (no type identifier)
     /// - P256/WebAuthn: includes 1-byte type identifier prefix
-    pub fn len(&self) -> usize {
+    pub fn encoded_length(&self) -> usize {
         match self {
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
             Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
