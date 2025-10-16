@@ -113,8 +113,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// `StablecoinExchangeError::OrderDoesNotExist`   
     pub fn get_order(&mut self, order_id: u128) -> Result<Order, StablecoinExchangeError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
-        let id = order.order_id();
-        if id > 0 && id <= self.get_active_order_id() {
+
+        // If the order is not filled and currently active
+        if !order.maker().is_zero() && order.order_id() <= self.get_active_order_id() {
             Ok(order)
         } else {
             Err(StablecoinExchangeError::order_does_not_exist())

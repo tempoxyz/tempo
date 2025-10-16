@@ -360,6 +360,9 @@ async fn test_cancel_orders() -> eyre::Result<()> {
             .call()
             .await
             .expect_err("Expected error");
+
+        // Assert order does not exist
+        assert!(err.to_string().contains("0x5dcaf2d7"));
     }
 
     Ok(())
