@@ -136,7 +136,7 @@ jobs:
   create-release:
     name: Create Release
     needs: [get-version, build-release]
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    # if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -162,22 +162,22 @@ jobs:
           echo "$(git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 ${{ env.VERSION }}^)..${{ env.VERSION }})" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Create Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.get-version.outputs.version }}
-        run: |
-          # Determine if this is a prerelease
-          PRERELEASE=""
-          if echo "$VERSION" | grep -qE '(alpha|beta|rc)'; then
-            PRERELEASE="--prerelease"
-          fi
+      # - name: Create Release
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #     VERSION: ${{ needs.get-version.outputs.version }}
+      #   run: |
+      #     # Determine if this is a prerelease
+      #     PRERELEASE=""
+      #     if echo "$VERSION" | grep -qE '(alpha|beta|rc)'; then
+      #       PRERELEASE="--prerelease"
+      #     fi
 
-          # Create draft release with all artifacts
-          gh release create "$VERSION" \
-            --repo ${{ github.repository }} \
-            --title "Release $VERSION" \
-            --draft \
-            --notes "${{ steps.changelog.outputs.CHANGELOG }}" \
-            $PRERELEASE \
-            artifacts/**/*
+      #     # Create draft release with all artifacts
+      #     gh release create "$VERSION" \
+      #       --repo ${{ github.repository }} \
+      #       --title "Release $VERSION" \
+      #       --draft \
+      #       --notes "${{ steps.changelog.outputs.CHANGELOG }}" \
+      #       $PRERELEASE \
+      #       artifacts/**/*
