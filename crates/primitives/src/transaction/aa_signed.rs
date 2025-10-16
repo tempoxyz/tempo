@@ -10,7 +10,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{B256, Bytes, TxKind, U256};
-use alloy_rlp::{BufMut, Encodable};
+use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::{
     fmt::Debug,
     hash::{Hash, Hasher},
@@ -150,13 +150,15 @@ impl AASigned {
     }
 
     /// Decode the RLP fields (without type byte).
-    fn decode_rlp_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        use alloy_rlp::Decodable;
-
-        // Decode RLP header
+    fn rlp_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let header = alloy_rlp::Header::decode(buf)?;
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
+        }
+        let remaining = buf.len();
+
+        if header.payload_length > remaining {
+            return Err(alloy_rlp::Error::InputTooShort);
         }
 
         // Decode transaction fields
@@ -164,6 +166,10 @@ impl AASigned {
 
         // Decode signature bytes
         let sig_bytes: Bytes = Decodable::decode(buf)?;
+
+        if buf.len() + header.payload_length != remaining {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
 
         // Parse signature
         let signature = AASignature::from_bytes(&sig_bytes).map_err(alloy_rlp::Error::Custom)?;
@@ -343,11 +349,11 @@ impl Decodable2718 for AASigned {
         if ty != AA_TX_TYPE_ID {
             return Err(Eip2718Error::UnexpectedType(ty));
         }
-        Self::decode_rlp_fields(buf).map_err(Into::into)
+        Self::rlp_decode(buf).map_err(Into::into)
     }
 
-    fn fallback_decode(buf: &mut &[u8]) -> Eip2718Result<Self> {
-        Self::decode_rlp_fields(buf).map_err(Into::into)
+    fn fallback_decode(_: &mut &[u8]) -> Eip2718Result<Self> {
+        return Err(Eip2718Error::UnexpectedType(0));
     }
 }
 
