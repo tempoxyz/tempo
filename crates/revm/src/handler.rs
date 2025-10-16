@@ -606,7 +606,7 @@ where
             }
 
             // Validate time window for AA transactions
-            let block_timestamp = evm.ctx_ref().block().timestamp().to::<u64>();
+            let block_timestamp = evm.ctx_ref().block().timestamp().saturating_to();
             validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
         }
 
