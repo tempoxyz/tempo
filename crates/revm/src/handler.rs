@@ -593,15 +593,15 @@ where
         if let Some(aa_env) = tx.aa_tx_env.as_ref() {
             // Validate priority fee for AA transactions
             // Matches revm's validate_priority_fee_tx implementation
-            if !cfg.is_priority_fee_check_disabled() {
-                if let Some(max_priority_fee) = tx.max_priority_fee_per_gas() {
-                    let max_fee = tx.max_fee_per_gas();
-                    if max_priority_fee > max_fee {
-                        return Err(TempoInvalidTransaction::EthInvalidTransaction(
-                            InvalidTransaction::PriorityFeeGreaterThanMaxFee,
-                        )
-                        .into());
-                    }
+            if !cfg.is_priority_fee_check_disabled()
+                && let Some(max_priority_fee) = tx.max_priority_fee_per_gas()
+            {
+                let max_fee = tx.max_fee_per_gas();
+                if max_priority_fee > max_fee {
+                    return Err(TempoInvalidTransaction::EthInvalidTransaction(
+                        InvalidTransaction::PriorityFeeGreaterThanMaxFee,
+                    )
+                    .into());
                 }
             }
 
