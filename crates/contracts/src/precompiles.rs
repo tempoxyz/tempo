@@ -298,6 +298,29 @@ sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
     interface IStablecoinExchange {
+        struct Order {
+            /// Address of order maker
+            address maker;
+            /// Orderbook key
+            bytes32 bookKey;
+            /// Bid or ask indicator
+            bool isBid;
+            /// Price tick
+            int16 tick;
+            /// Original order amount
+            uint128 amount;
+            /// Remaining amount to fill
+            uint128 remaining;
+            /// Previous order ID in FIFO queue
+            uint128 prev;
+            /// Next order ID in FIFO queue
+            uint128 next;
+            /// Boolean indicating if order is flipOrder
+            bool isFlip;
+            /// Flip order tick to place new order at once current order fills
+            int16 flipTick;
+        }
+
         // View functions
         function balanceOf(address user, address token) external view returns (uint128);
         function quoteBuy(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
@@ -306,6 +329,7 @@ sol! {
         function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
+        function orders(uint128 orderId) external view returns (Order memory);
 
         // Pair management
         function createPair(address base) external returns (bytes32 key);

@@ -63,7 +63,7 @@ async fn test_bids() -> eyre::Result<()> {
     let tx = exchange.createPair(*base.address()).send().await?;
     tx.get_receipt().await?;
 
-    let order_amount = U256::from(1000000000);
+    let order_amount = 1000000000;
 
     // Approve tokens for exchange for each account
     for (_, signer) in &account_data {
@@ -83,13 +83,14 @@ async fn test_bids() -> eyre::Result<()> {
     let mut order_ids = vec![];
     // Place bid orders for each account
     let mut pending_orders = vec![];
+    let tick = 1;
     for (_, signer) in &account_data {
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
             .connect_http(http_url.clone());
         let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
 
-        let call = exchange.place(*base.address(), order_amount.to::<u128>(), true, 1);
+        let call = exchange.place(*base.address(), order_amount, true, tick);
         order_ids.push(call.call().await?);
 
         let order_tx = call.send().await?;
@@ -97,9 +98,29 @@ async fn test_bids() -> eyre::Result<()> {
     }
     await_receipts(&mut pending_orders).await?;
 
-    for order_id in order_ids {
-        // TODO: get each order and assert
+    for (order_id, (account, _)) in order_ids.iter().zip(account_data) {
+        let order = exchange.orders(*order_id).call().await?;
+        assert_eq!(order.maker, account);
+        assert!(order.isBid);
+        assert_eq!(order.tick, tick);
+        assert_eq!(order.amount, order_amount);
+        assert_eq!(order.remaining, order_amount);
     }
+
+    // // TODO: send tx to fill all orders but the last
+    // // TODO: calc amount in
+    // let amount_in = 1000;
+    // let tx = exchange
+    //     .sell(*base.address(), *quote.address(), amountIn, 0)
+    //     .send()
+    //     .await?;
+    // tx.get_receipt().await?;
+    //
+    // for order_id in order_ids {
+    //     // TODO: get each order and assert filled
+    // }
+    //
+    // // TODO: assert last order paritially filled
 
     Ok(())
 }
@@ -151,7 +172,7 @@ async fn test_asks() -> eyre::Result<()> {
     let tx = exchange.createPair(*base.address()).send().await?;
     tx.get_receipt().await?;
 
-    let order_amount = U256::from(1000000000);
+    let order_amount = 1000000000;
 
     // Approve tokens for exchange for each account
     for (_, signer) in &account_data {
@@ -168,7 +189,8 @@ async fn test_asks() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     let mut order_ids = vec![];
-    // Place bid orders for each account
+    let tick = 1;
+    // Place ask orders for each account
     let mut pending_orders = vec![];
     for (_, signer) in &account_data {
         let account_provider = ProviderBuilder::new()
@@ -176,7 +198,7 @@ async fn test_asks() -> eyre::Result<()> {
             .connect_http(http_url.clone());
         let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
 
-        let call = exchange.place(*base.address(), order_amount.to::<u128>(), false, 1);
+        let call = exchange.place(*base.address(), order_amount, false, tick);
         order_ids.push(call.call().await?);
 
         let order_tx = call.send().await?;
@@ -184,8 +206,13 @@ async fn test_asks() -> eyre::Result<()> {
     }
     await_receipts(&mut pending_orders).await?;
 
-    for order_id in order_ids {
-        // TODO: get each order and assert
+    for (order_id, (account, _)) in order_ids.iter().zip(account_data) {
+        let order = exchange.orders(*order_id).call().await?;
+        assert_eq!(order.maker, account);
+        assert!(!order.isBid);
+        assert_eq!(order.tick, tick);
+        assert_eq!(order.amount, order_amount);
+        assert_eq!(order.remaining, order_amount);
     }
 
     Ok(())
@@ -238,7 +265,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     let tx = exchange.createPair(*base.address()).send().await?;
     tx.get_receipt().await?;
 
-    let order_amount = U256::from(1000000000);
+    let order_amount = 1000000000;
 
     // Approve tokens for exchange for each account
     for (_, signer) in &account_data {
@@ -256,27 +283,47 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     let mut order_ids = vec![];
-    // Place bid orders for each account
-    let mut pending_orders = vec![];
+    let tick = 1;
+
+    // Place bid orders
+    let mut pending = vec![];
     for (_, signer) in &account_data {
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
             .connect_http(http_url.clone());
         let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
 
-        let call = exchange.place(*base.address(), order_amount.to::<u128>(), true, 1);
+        let call = exchange.place(*base.address(), order_amount, true, tick);
         order_ids.push(call.call().await?);
 
         let order_tx = call.send().await?;
-        pending_orders.push(order_tx);
+        pending.push(order_tx);
     }
-    await_receipts(&mut pending_orders).await?;
+    await_receipts(&mut pending).await?;
 
+    // Assert orders exist and cancel
+    for (order_id, (account, signer)) in order_ids.iter().zip(account_data) {
+        let order = exchange.orders(*order_id).call().await?;
+        assert_eq!(order.maker, account);
+        assert!(order.isBid);
+        assert_eq!(order.tick, tick);
+        assert_eq!(order.amount, order_amount);
+        assert_eq!(order.remaining, order_amount);
+
+        let account_provider = ProviderBuilder::new()
+            .wallet(signer.clone())
+            .connect_http(http_url.clone());
+        let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
+
+        pending.push(exchange.cancel(*order_id).send().await?);
+    }
+    await_receipts(&mut pending).await?;
+
+    // Assert that orders have been canceled
     for order_id in order_ids {
-        // TODO: cancel each order id
+        let order = exchange.orders(order_id).call().await?;
+        assert!(order.maker.is_zero());
     }
-
-    // TODO: try to get order and assert it is canceled
 
     Ok(())
 }
