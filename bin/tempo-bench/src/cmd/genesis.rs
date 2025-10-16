@@ -25,8 +25,8 @@ use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
-        linking_usd::LinkingUSD, tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE,
-        types::ITIPFeeAMM,
+        linking_usd::LinkingUSD, stablecoin_exchange::StablecoinExchange,
+        tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE, types::ITIPFeeAMM,
     },
 };
 
@@ -122,6 +122,10 @@ impl GenesisArgs {
 
         println!("Initializing fee manager");
         initialize_fee_manager(alpha_token_address, addresses, &mut evm);
+
+        println!("Initializing stablecoin exchange");
+        initialize_stablecoin_exchange(&mut evm)?;
+
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
             alpha_token_address,
@@ -383,6 +387,17 @@ fn initialize_fee_manager(
             },
         )
         .expect("Could not 0x00 validator fee token");
+}
+
+fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+
+    let mut exchange = StablecoinExchange::new(&mut provider);
+    exchange.initialize();
+
+    Ok(())
 }
 
 fn mint_pairwise_liquidity(

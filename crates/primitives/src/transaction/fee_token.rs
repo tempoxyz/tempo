@@ -25,6 +25,7 @@ pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[doc(alias = "FeeTokenTransaction", alias = "TransactionFeeToken")]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub struct TxFeeToken {
     /// EIP-155: Simple replay attack protection
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
@@ -453,7 +454,7 @@ impl reth_primitives_traits::InMemorySize for TxFeeToken {
 #[cfg(feature = "serde-bincode-compat")]
 impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TxFeeToken {}
 
-#[cfg(feature = "arbitrary")]
+#[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for TxFeeToken {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         // Generate authorization_list first to determine constraints on `to`
@@ -479,7 +480,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TxFeeToken {
             value: u.arbitrary()?,
             access_list: u.arbitrary()?,
             authorization_list,
-            fee_payer_signature: None,
+            fee_payer_signature: u.arbitrary()?,
             input: u.arbitrary()?,
         })
     }

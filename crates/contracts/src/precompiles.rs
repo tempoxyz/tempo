@@ -50,7 +50,7 @@ sol! {
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
-        function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external bool;
+        function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
@@ -297,11 +297,18 @@ sol! {
 
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
-    interface IStablecoinDex {
+    interface IStablecoinExchange {
         // View functions
         function balanceOf(address user, address token) external view returns (uint128);
         function quoteBuy(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
         function quoteSell(address tokenIn, address tokenOut, uint128 amountIn) external view returns (uint128 amountOut);
+        function pairKey(address tokenA, address tokenB) external pure returns (bytes32 key);
+        function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
+        function activeOrderId() external view returns (uint128);
+        function pendingOrderId() external view returns (uint128);
+
+        // Pair management
+        function createPair(address base) external returns (bytes32 key);
 
         // Taker functions
         function sell(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
@@ -315,7 +322,11 @@ sol! {
         // Balance management
         function withdraw(address token, uint128 amount) external;
 
+        // System transaction called at the end of the block to finalize pending limit orders
+        function executeBlock() external;
+
         // Events
+        event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
         event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
         event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
         event OrderCancelled(uint128 indexed orderId);
@@ -324,8 +335,15 @@ sol! {
         // Errors
         error OrderDoesNotExist();
         error Unauthorized();
+        error FillFailed();
+        error InvalidTick();
         error InsufficientBalance();
         error InvalidFlipTick();
+        error TickOutOfBounds(int16 tick);
+        error InsufficientLiquidity();
+        error MaxInputExceeded();
+        error InsufficientOutput();
+        error PairDoesNotExist();
     }
 }
 
@@ -530,6 +548,63 @@ impl TIP20Error {
     }
 }
 
+impl StablecoinExchangeError {
+    /// Creates an error when an order does not exist.
+    pub const fn order_does_not_exist() -> Self {
+        Self::OrderDoesNotExist(IStablecoinExchange::OrderDoesNotExist {})
+    }
+
+    /// Creates an error when an order does not exist.
+    pub const fn pair_does_not_exist() -> Self {
+        Self::PairDoesNotExist(IStablecoinExchange::PairDoesNotExist {})
+    }
+
+    /// Creates an error for unauthorized access.
+    pub const fn unauthorized() -> Self {
+        Self::Unauthorized(IStablecoinExchange::Unauthorized {})
+    }
+
+    /// Creates an error for when fill fails
+    pub const fn fill_failed() -> Self {
+        Self::FillFailed(IStablecoinExchange::FillFailed {})
+    }
+
+    /// Creates an error when an invalid tick is provided
+    pub const fn invalid_tick() -> Self {
+        Self::InvalidTick(IStablecoinExchange::InvalidTick {})
+    }
+
+    /// Creates an error for insufficient balance.
+    pub const fn insufficient_balance() -> Self {
+        Self::InsufficientBalance(IStablecoinExchange::InsufficientBalance {})
+    }
+
+    /// Creates an error for invalid flip tick.
+    pub const fn invalid_flip_tick() -> Self {
+        Self::InvalidFlipTick(IStablecoinExchange::InvalidFlipTick {})
+    }
+
+    /// Creates an error when tick is out of valid bounds.
+    pub const fn tick_out_of_bounds(tick: i16) -> Self {
+        Self::TickOutOfBounds(IStablecoinExchange::TickOutOfBounds { tick })
+    }
+
+    /// Creates an error for insufficient liquidity.
+    pub const fn insufficient_liquidity() -> Self {
+        Self::InsufficientLiquidity(IStablecoinExchange::InsufficientLiquidity {})
+    }
+
+    /// Creates an error when maximum input is exceeded.
+    pub const fn max_input_exceeded() -> Self {
+        Self::MaxInputExceeded(IStablecoinExchange::MaxInputExceeded {})
+    }
+
+    /// Creates an error when output is insufficient.
+    pub const fn insufficient_output() -> Self {
+        Self::InsufficientOutput(IStablecoinExchange::InsufficientOutput {})
+    }
+}
+
 #[macro_export]
 macro_rules! tip403_err {
     ($err:ident) => {
@@ -551,8 +626,9 @@ macro_rules! fee_manager_err {
 // Use the auto-generated error and event enums
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
-pub use IStablecoinDex::{
-    IStablecoinDexErrors as StablecoinDexError, IStablecoinDexEvents as StablecoinDexEvent,
+pub use IStablecoinExchange::{
+    IStablecoinExchangeErrors as StablecoinExchangeError,
+    IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;

@@ -34,6 +34,8 @@ use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::TempoChainSpec;
 use tempo_revm::evm::TempoContext;
 
+pub use tempo_revm::TempoBlockEnv;
+
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
 pub struct TempoEvmConfig {
@@ -114,21 +116,25 @@ impl ConfigureEvm for TempoEvmConfig {
         &self.block_assembler
     }
 
-    fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnv, Self::Error> {
+    fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
         Ok(EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
             self.chain_spec().chain().id(),
             self.chain_spec()
                 .blob_params_at_timestamp(header.timestamp()),
-        ))
+        )
+        .map_block_env(|inner| TempoBlockEnv {
+            inner,
+            timestamp_millis_part: header.timestamp_millis_part,
+        }))
     }
 
     fn next_evm_env(
         &self,
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
-    ) -> Result<EvmEnv, Self::Error> {
+    ) -> Result<EvmEnvFor<Self>, Self::Error> {
         Ok(EvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {
@@ -144,7 +150,11 @@ impl ConfigureEvm for TempoEvmConfig {
             self.chain_spec().chain().id(),
             self.chain_spec()
                 .blob_params_at_timestamp(attributes.timestamp),
-        ))
+        )
+        .map_block_env(|inner| TempoBlockEnv {
+            inner,
+            timestamp_millis_part: attributes.timestamp_millis_part,
+        }))
     }
 
     fn context_for_block<'a>(

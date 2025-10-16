@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, B256};
-use alloy_rpc_types_engine::PayloadAttributes;
+use alloy_rpc_types_engine::{PayloadAttributes, PayloadId};
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
 use reth_node_api::PayloadBuilderAttributes;
@@ -11,7 +11,7 @@ use std::{
 /// A handle for a payload interrupt flag.
 ///
 /// Can be fired using [`InterruptHandle::interrupt`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct InterruptHandle(Arc<atomic::AtomicBool>);
 
 impl InterruptHandle {
@@ -28,14 +28,30 @@ impl InterruptHandle {
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
     interrupt: InterruptHandle,
+    timestamp_millis_part: u64,
 }
 
 impl TempoPayloadBuilderAttributes {
     /// Creates new `TempoPayloadBuilderAttributes` with `inner` attributes.
-    pub fn new(inner: EthPayloadBuilderAttributes) -> Self {
+    pub fn new(
+        id: PayloadId,
+        parent: B256,
+        suggested_fee_recipient: Address,
+        timestamp_millis: u64,
+    ) -> Self {
+        let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
         Self {
-            inner,
-            interrupt: InterruptHandle(Arc::new(atomic::AtomicBool::new(false))),
+            inner: EthPayloadBuilderAttributes {
+                id,
+                parent,
+                timestamp: seconds,
+                suggested_fee_recipient,
+                prev_randao: B256::ZERO,
+                withdrawals: Withdrawals::default(),
+                parent_beacon_block_root: Some(B256::ZERO),
+            },
+            interrupt: InterruptHandle::default(),
+            timestamp_millis_part: millis,
         }
     }
 
@@ -48,6 +64,11 @@ impl TempoPayloadBuilderAttributes {
     /// Returns a cloneable [`InterruptHandle`] for turning on the `interrupt` flag.
     pub fn interrupt_handle(&self) -> &InterruptHandle {
         &self.interrupt
+    }
+
+    /// Returns the milliseconds portion of the timestamp.
+    pub fn timestamp_millis_part(&self) -> u64 {
+        self.timestamp_millis_part
     }
 }
 
@@ -63,11 +84,11 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
     where
         Self: Sized,
     {
-        Ok(Self::new(EthPayloadBuilderAttributes::try_new(
-            parent,
-            rpc_payload_attributes,
-            version,
-        )?))
+        Ok(Self {
+            inner: EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
+            interrupt: InterruptHandle::default(),
+            timestamp_millis_part: 0,
+        })
     }
 
     fn payload_id(&self) -> alloy_rpc_types_engine::payload::PayloadId {

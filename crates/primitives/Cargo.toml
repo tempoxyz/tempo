@@ -42,6 +42,8 @@ reth-codecs-derive.workspace = true
 test-fuzz.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
+alloy-consensus = { workspace = true, features = ["arbitrary"] }
+rand = "0.9"
 
 [features]
 default = ["serde", "reth-codec", "serde-bincode-compat", "rpc", "cli"]
@@ -54,6 +56,7 @@ serde = [
 	"alloy-eips/serde",
 	"alloy-primitives/serde",
 	"reth-codecs?/serde",
+	"rand/serde"
 ]
 reth-codec = [
 	"dep:reth-codecs",

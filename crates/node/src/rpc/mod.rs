@@ -37,7 +37,6 @@ use reth_rpc_eth_types::{
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
 use tempo_primitives::TempoReceipt;
-use tempo_transaction_pool::validator::USD_DECIMAL_FACTOR;
 use tokio::sync::Mutex;
 
 /// Tempo `Eth` API implementation.
@@ -217,13 +216,12 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         let fee_token_balance =
             self.caller_fee_token_allowance(&mut db, tx_env, evm_env.block_env.beneficiary)?;
 
-        // Fee token balance is denominated in USD Decimals and the gas allowance is expected in
-        // 10**9 so we must adjust by USD_DECIMAL_FACTOR
-        let adjusted_balance = fee_token_balance
-            .saturating_mul(USD_DECIMAL_FACTOR)
-            .saturating_to::<u64>();
-
-        Ok(adjusted_balance)
+        Ok(fee_token_balance
+            // Calculate the amount of gas the caller can afford with the specified gas price.
+            .checked_div(U256::from(tx_env.inner.gas_price))
+            // This will be 0 if gas price is 0. It is fine, because we check it before.
+            .unwrap_or_default()
+            .saturating_to())
     }
 }
 

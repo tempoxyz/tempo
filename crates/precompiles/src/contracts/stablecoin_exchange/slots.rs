@@ -1,4 +1,4 @@
-//! Storage slot definitions for the StablecoinDex contract.
+//! Storage slot definitions for the StablecoinExchange contract.
 //!
 //! This module defines the storage layout for the stablecoin DEX,
 //! following the same pattern as the Solidity reference implementation.
@@ -24,3 +24,19 @@ pub const ORDERS: U256 = uint!(3_U256);
 /// Mapping of user address => token address => balance (u128)
 /// TODO: Implement balance management in follow-up work
 pub const BALANCES: U256 = uint!(4_U256);
+
+/// Mapping of (pair_key, tick) to TickLevel data for bid orders
+/// Storage layout for TickLevel struct starts at slot 5
+pub const BID_TICK_LEVELS: U256 = uint!(5_U256);
+
+/// Mapping of (pair_key, tick) to TickLevel data for ask orders
+/// Storage layout for TickLevel struct starts at slot 6
+pub const ASK_TICK_LEVELS: U256 = uint!(6_U256);
+
+/// Mapping of (pair_key, word_index) to bid bitmap data
+/// Used for efficient price discovery in bid direction
+pub const BID_BITMAPS: U256 = uint!(7_U256);
+
+/// Mapping of (pair_key, word_index) to ask bitmap data
+/// Used for efficient price discovery in ask direction
+pub const ASK_BITMAPS: U256 = uint!(8_U256);
