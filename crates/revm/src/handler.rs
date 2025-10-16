@@ -591,19 +591,20 @@ where
         let tx = evm.ctx_ref().tx();
 
         if let Some(aa_env) = tx.aa_tx_env.as_ref() {
-            // Validate priority fee for AA transactions
-            // Matches revm's validate_priority_fee_tx implementation
-            if !cfg.is_priority_fee_check_disabled()
-                && let Some(max_priority_fee) = tx.max_priority_fee_per_gas()
-            {
-                let max_fee = tx.max_fee_per_gas();
-                if max_priority_fee > max_fee {
-                    return Err(TempoInvalidTransaction::EthInvalidTransaction(
-                        InvalidTransaction::PriorityFeeGreaterThanMaxFee,
-                    )
-                    .into());
-                }
-            }
+            // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
+            let base_fee = if cfg.is_base_fee_check_disabled() {
+                None
+            } else {
+                Some(evm.ctx_ref().block().basefee() as u128)
+            };
+
+            validation::validate_priority_fee_tx(
+                tx.max_fee_per_gas(),
+                tx.max_priority_fee_per_gas().unwrap_or_default(),
+                base_fee,
+                cfg.is_priority_fee_check_disabled(),
+            )
+            .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
 
             // Validate time window for AA transactions
             let block_timestamp = evm.ctx_ref().block().timestamp().saturating_to();
