@@ -269,10 +269,7 @@ where
                 None,
                 reth_node_builder::EngineApiMessageVersion::V3,
             )
-            .pace(
-                &self.context,
-                Duration::from_millis(2)..Duration::from_millis(20),
-            )
+            .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")?;
 
@@ -341,10 +338,7 @@ where
             .add_ons_handle
             .beacon_engine_handle
             .new_payload(TempoExecutionData(block))
-            .pace(
-                &self.context,
-                Duration::from_millis(2)..Duration::from_millis(20),
-            )
+            .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err(
                 "failed sending new-payload request to execution engine to \

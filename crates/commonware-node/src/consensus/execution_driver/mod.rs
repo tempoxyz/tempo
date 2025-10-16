@@ -435,10 +435,7 @@ impl Inner<Init> {
             .execution_node
             .payload_builder_handle
             .send_new_payload(attrs)
-            .pace(
-                &context,
-                Duration::from_millis(2)..Duration::from_millis(20),
-            )
+            .pace(&context, Duration::from_millis(20))
             .await
             .map_err(|_| eyre!("channel was closed before a response was returned"))
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
@@ -467,10 +464,7 @@ impl Inner<Init> {
             .execution_node
             .payload_builder_handle
             .resolve_kind(payload_id, reth_node_builder::PayloadKind::WaitForPending)
-            .pace(
-                &context,
-                Duration::from_millis(2)..Duration::from_millis(20),
-            )
+            .pace(&context, Duration::from_millis(20))
             .await
             // XXX: this returns Option<Result<_, _>>; drilling into
             // resolve_kind this really seems to resolve to None if no
@@ -664,10 +658,7 @@ async fn verify_block<TContext: Pacer>(
     let block = block.clone().into_inner();
     let payload_status = engine
         .new_payload(TempoExecutionData(block))
-        .pace(
-            &context,
-            Duration::from_millis(5)..Duration::from_millis(50),
-        )
+        .pace(&context, Duration::from_millis(50))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {

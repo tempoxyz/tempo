@@ -59,7 +59,7 @@ impl Supervisor {
 impl p2p::Coordinator for Supervisor {
     type PublicKey = PublicKey;
 
-    fn peers(&self) -> &Vec<Self::PublicKey> {
+    fn peers(&self) -> &[Self::PublicKey] {
         &self.participants
     }
 
@@ -77,7 +77,7 @@ impl commonware_consensus::Supervisor for Supervisor {
         unimplemented!("only defined in supertrait")
     }
 
-    fn participants(&self, _: Self::Index) -> Option<&Vec<Self::PublicKey>> {
+    fn participants(&self, _: Self::Index) -> Option<&[Self::PublicKey]> {
         Some(&self.participants)
     }
 
