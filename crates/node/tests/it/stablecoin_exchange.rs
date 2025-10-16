@@ -242,7 +242,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    let account_data: Vec<_> = (1..30)
+    let account_data: Vec<_> = (1..=30)
         .map(|i| {
             let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i as u32)
