@@ -550,8 +550,9 @@ where
     let spec = evm.ctx_ref().cfg().spec();
 
     let tx = evm.ctx_ref().tx();
-    let standard_gas = validation::validate_initial_tx_gas(tx, spec)
-        .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
+    let standard_gas =
+        validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
+            .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
 
     let Some(aa_env) = tx.aa_tx_env.as_ref() else {
         // For non-AA transactions, use default validation
