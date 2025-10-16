@@ -90,7 +90,8 @@ async fn test_bids() -> eyre::Result<()> {
     }
 
     await_receipts(&mut pending).await?;
-    let mut order_ids = vec![];
+
+    let num_orders = account_data.len() as u128;
     // Place bid orders for each account
     let mut pending_orders = vec![];
     let tick = 1;
@@ -101,15 +102,15 @@ async fn test_bids() -> eyre::Result<()> {
         let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
 
         let call = exchange.place(*base.address(), order_amount, true, tick);
-        order_ids.push(call.call().await?);
 
         let order_tx = call.send().await?;
         pending_orders.push(order_tx);
     }
     await_receipts(&mut pending_orders).await?;
 
-    for order_id in order_ids.iter() {
-        let order = exchange.orders(*order_id).call().await?;
+    for order_id in 1..=num_orders {
+        // TODO: need to add a get_order function that only returns active orders
+        let order = exchange.orders(order_id).call().await?;
         assert!(!order.maker.is_zero());
         assert!(order.isBid);
         assert_eq!(order.tick, tick);
@@ -117,33 +118,49 @@ async fn test_bids() -> eyre::Result<()> {
         assert_eq!(order.remaining, order_amount);
     }
 
-    // Calculate fill amount to fill everything but the last order
-    let total_amount_to_fill = (order_ids.len() as u128 - 1) * order_amount;
+    // Calculate fill amount to fill all `n-1` orders, partial fill last order
+    let fill_amount = (num_orders * order_amount) - order_amount / 2;
+
     let amount_in = exchange
-        .quoteSell(*base.address(), *quote.address(), total_amount_to_fill)
+        .quoteSell(*base.address(), *quote.address(), fill_amount)
         .call()
         .await?;
 
-    // Mint base tokens to the seller
+    // Mint base tokens to the seller for amount in
     let pending = base.mint(caller, U256::from(amount_in)).send().await?;
     pending.get_receipt().await?;
 
-    // Execute the sell to fill all orders except the last
+    //  Execute sell and assert orders are filled
     let tx = exchange
         .sell(*base.address(), *quote.address(), amount_in, 0)
         .send()
         .await?;
     tx.get_receipt().await?;
 
-    // Assert that all orders except for the last are filled
-    for order_id in order_ids.iter().take(order_ids.len() - 1) {
-        let order = exchange.orders(*order_id).call().await?;
+    for order_id in 1..num_orders {
+        let order = exchange.orders(order_id).call().await?;
         assert!(order.maker.is_zero());
     }
 
-    // TODO: check that last order is partial filled
+    // Assert the last order is partially filled
+    let price_level = exchange.getTick(*base.address(), tick, true).call().await?;
+    assert_eq!(tick_level.head, num_orders);
+    assert_eq!(tick_level.tail, 0);
+    assert_eq!(tick_level.totalLiquidity, order_amount / 2);
 
-    // TODO: assert that exchange balance for order maker
+    // // Assert exchange balance for makers
+    // for (account, _) in account_data.iter().take(account_data.len() - 1) {
+    //     let balance = exchange.balanceOf(*account, *base.address()).call().await?;
+    //     assert_eq!(balance, order_amount);
+    // }
+    //
+    // let (last_account, _) = account_data.last().unwrap();
+    // let balance = exchange
+    //     .balanceOf(*last_account, *base.address())
+    //     .call()
+    //     .await?;
+    // assert_eq!(balance, order_amount / 2);
+
     Ok(())
 }
 

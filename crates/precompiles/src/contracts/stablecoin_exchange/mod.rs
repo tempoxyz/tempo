@@ -9,7 +9,8 @@ pub mod slots;
 pub use error::OrderError;
 pub use order::Order;
 pub use orderbook::{
-    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickBitmap, TickLevel, price_to_tick, tick_to_price,
+    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, PriceLevel, TickBitmap, price_to_tick,
+    tick_to_price,
 };
 use reth_storage_api::errors::db;
 
@@ -260,18 +261,12 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         compute_book_key(token_a, token_b)
     }
 
-    /// Get tick level information
-    pub fn get_tick_level(&mut self, base: Address, tick: i16, is_bid: bool) -> (u128, u128, u128) {
-        // For now, assume quote token is passed or use a default approach
-        // This would need proper integration with TIP20 interface
+    /// Get price level information
+    pub fn get_price_level(&mut self, base: Address, tick: i16, is_bid: bool) -> PriceLevel {
         let quote =
             TIP20Token::new(address_to_token_id_unchecked(&base), self.storage).linking_token();
         let key = compute_book_key(base, quote);
-
-        let level =
-            orderbook::TickLevel::from_storage(self.storage, self.address, key, tick, is_bid);
-
-        (level.head, level.tail, level.total_liquidity)
+        PriceLevel::from_storage(self.storage, self.address, key, tick, is_bid)
     }
 
     /// Get active order ID
@@ -515,7 +510,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         }
 
         let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
-        let mut level = TickLevel::from_storage(
+        let mut level = PriceLevel::from_storage(
             self.storage,
             self.address,
             order.book_key(),
@@ -574,7 +569,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     fn fill_order(&mut self, order_id: u128, fill_amount: u128) -> u128 {
         let mut order = Order::from_storage(order_id, self.storage, self.address);
         let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
-        let mut level = TickLevel::from_storage(
+        let mut level = PriceLevel::from_storage(
             self.storage,
             self.address,
             order.book_key(),
@@ -686,7 +681,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             }
 
             let mut level =
-                TickLevel::from_storage(self.storage, self.address, book_key, current_tick, true);
+                PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, true);
             let mut order_id = level.head;
 
             while remaining_out > 0 {
@@ -737,7 +732,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                         book_key,
                         current_tick,
                     );
-                    level = TickLevel::from_storage(
+                    level = PriceLevel::from_storage(
                         self.storage,
                         self.address,
                         book_key,
@@ -754,7 +749,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             }
 
             let mut level =
-                TickLevel::from_storage(self.storage, self.address, book_key, current_tick, false);
+                PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, false);
             let mut order_id = level.head;
 
             while remaining_out > 0 {
@@ -801,7 +796,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                         book_key,
                         current_tick,
                     );
-                    level = TickLevel::from_storage(
+                    level = PriceLevel::from_storage(
                         self.storage,
                         self.address,
                         book_key,
@@ -837,7 +832,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             }
 
             let mut level =
-                TickLevel::from_storage(self.storage, self.address, book_key, current_tick, true);
+                PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, true);
             let mut order_id = level.head;
 
             while remaining_in > 0 {
@@ -883,7 +878,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                         book_key,
                         current_tick,
                     );
-                    level = TickLevel::from_storage(
+                    level = PriceLevel::from_storage(
                         self.storage,
                         self.address,
                         book_key,
@@ -900,7 +895,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             }
 
             let mut level =
-                TickLevel::from_storage(self.storage, self.address, book_key, current_tick, false);
+                PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, false);
             let mut order_id = level.head;
 
             while remaining_in > 0 {
@@ -946,7 +941,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                         book_key,
                         current_tick,
                     );
-                    level = TickLevel::from_storage(
+                    level = PriceLevel::from_storage(
                         self.storage,
                         self.address,
                         book_key,
@@ -1035,7 +1030,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
     /// Cancel an active order (already in the orderbook)
     fn cancel_active_order(&mut self, order: Order) -> Result<(), StablecoinExchangeError> {
-        let mut level = TickLevel::from_storage(
+        let mut level = PriceLevel::from_storage(
             self.storage,
             self.address,
             order.book_key(),
@@ -1151,7 +1146,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             }
 
             while remaining_out > 0 {
-                let level = TickLevel::from_storage(
+                let level = PriceLevel::from_storage(
                     self.storage,
                     self.address,
                     book_key,
@@ -1201,7 +1196,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             }
 
             while remaining_out > 0 {
-                let level = TickLevel::from_storage(
+                let level = PriceLevel::from_storage(
                     self.storage,
                     self.address,
                     book_key,
@@ -1262,7 +1257,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             }
 
             while remaining_in > 0 {
-                let level = TickLevel::from_storage(
+                let level = PriceLevel::from_storage(
                     self.storage,
                     self.address,
                     book_key,
@@ -1307,7 +1302,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             }
 
             while remaining_in > 0 {
-                let level = TickLevel::from_storage(
+                let level = PriceLevel::from_storage(
                     self.storage,
                     self.address,
                     book_key,
@@ -1542,7 +1537,7 @@ mod tests {
         // Verify the order is not yet in the active orderbook
         let book_key = compute_book_key(base_token, quote_token);
         let level =
-            TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
+            PriceLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
         assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);
@@ -1603,7 +1598,7 @@ mod tests {
 
         let book_key = compute_book_key(base_token, quote_token);
         let level =
-            TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, false); // is_bid = false for ask
+            PriceLevel::from_storage(exchange.storage, exchange.address, book_key, tick, false); // is_bid = false for ask
         assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);
@@ -1672,7 +1667,7 @@ mod tests {
         // Verify the order is not yet in the active orderbook
         let book_key = compute_book_key(base_token, quote_token);
         let level =
-            TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
+            PriceLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
         assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);
@@ -1808,7 +1803,7 @@ mod tests {
         // Verify tick level is empty before execute_block
         let book_key = compute_book_key(base_token, quote_token);
         let level_before =
-            TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
+            PriceLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
         assert_eq!(level_before.head, 0);
         assert_eq!(level_before.tail, 0);
         assert_eq!(level_before.total_liquidity, 0);
@@ -1830,7 +1825,7 @@ mod tests {
 
         // Assert tick level is updated
         let level_after =
-            TickLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
+            PriceLevel::from_storage(exchange.storage, exchange.address, book_key, tick, true);
         assert_eq!(level_after.head, order_0.order_id());
         assert_eq!(level_after.tail, order_1.order_id());
         assert_eq!(level_after.total_liquidity, amount * 2);

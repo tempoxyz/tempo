@@ -61,6 +61,12 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     self.get_order(call.orderId).into()
                 })
             }
+            IStablecoinExchange::getPriceLevelCall::SELECTOR => {
+                view::<IStablecoinExchange::getPriceLevelCall>(calldata, |call| {
+                    self.get_price_level(call.base, call.tick, call.isBid)
+                        .into()
+                })
+            }
 
             IStablecoinExchange::pairKeyCall::SELECTOR => {
                 view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {

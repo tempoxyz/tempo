@@ -25,12 +25,12 @@ pub const ORDERS: U256 = uint!(3_U256);
 /// TODO: Implement balance management in follow-up work
 pub const BALANCES: U256 = uint!(4_U256);
 
-/// Mapping of (pair_key, tick) to TickLevel data for bid orders
-/// Storage layout for TickLevel struct starts at slot 5
+/// Mapping of (pair_key, tick) to PriceLevel data for bid orders
+/// Storage layout for PriceLevel struct starts at slot 5
 pub const BID_TICK_LEVELS: U256 = uint!(5_U256);
 
-/// Mapping of (pair_key, tick) to TickLevel data for ask orders
-/// Storage layout for TickLevel struct starts at slot 6
+/// Mapping of (pair_key, tick) to PriceLevel data for ask orders
+/// Storage layout for PriceLevel struct starts at slot 6
 pub const ASK_TICK_LEVELS: U256 = uint!(6_U256);
 
 /// Mapping of (pair_key, word_index) to bid bitmap data

@@ -7,6 +7,7 @@ use super::{
 use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
 use alloy::primitives::{Address, B256, U256, keccak256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use tempo_contracts::precompiles::IStablecoinExchange;
 
 /// Constants from Solidity implementation
 pub const MIN_TICK: i16 = -2000;
@@ -16,7 +17,7 @@ pub const PRICE_SCALE: u32 = 100_000;
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TickLevel {
+pub struct PriceLevel {
     /// Order ID of the first order at this tick (0 if empty)
     pub head: u128,
     /// Order ID of the last order at this tick (0 if empty)
@@ -25,7 +26,7 @@ pub struct TickLevel {
     pub total_liquidity: u128,
 }
 
-impl TickLevel {
+impl PriceLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
         Self {
@@ -45,7 +46,7 @@ impl TickLevel {
         !self.is_empty()
     }
 
-    /// Load a TickLevel from storage
+    /// Load a PriceLevel from storage
     pub fn from_storage<S: StorageProvider>(
         storage: &mut S,
         address: Address,
@@ -59,7 +60,7 @@ impl TickLevel {
             ASK_TICK_LEVELS
         };
 
-        // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
+        // Create nested mapping slot: mapping(book_key => mapping(tick => PriceLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
@@ -89,7 +90,7 @@ impl TickLevel {
         }
     }
 
-    /// Store this TickLevel to storage
+    /// Store this PriceLevel to storage
     pub fn store<S: StorageProvider>(
         &self,
         storage: &mut S,
@@ -104,7 +105,7 @@ impl TickLevel {
             ASK_TICK_LEVELS
         };
 
-        // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
+        // Create nested mapping slot: mapping(book_key => mapping(tick => PriceLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
@@ -213,9 +214,19 @@ impl TickLevel {
     }
 }
 
-impl Default for TickLevel {
+impl Default for PriceLevel {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl From<PriceLevel> for IStablecoinExchange::PriceLevel {
+    fn from(value: PriceLevel) -> Self {
+        Self {
+            head: value.head,
+            tail: value.tail,
+            totalLiquidity: value.total_liquidity,
+        }
     }
 }
 
@@ -570,7 +581,7 @@ mod tests {
 
     #[test]
     fn test_tick_level_creation() {
-        let level = TickLevel::new();
+        let level = PriceLevel::new();
         assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);
