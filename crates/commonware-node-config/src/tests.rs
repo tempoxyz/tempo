@@ -18,6 +18,7 @@ message_backlog = 16384
 mailbox_size = 16384
 deque_size = 10
 fee_recipient = "0x0000000000000000000000000000000000000000"
+heights_per_epoch = 1000
 
 [p2p]
 max_message_size_bytes = 1_048_576
