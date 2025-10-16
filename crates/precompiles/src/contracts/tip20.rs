@@ -603,7 +603,6 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.check_not_token_address(&to)?;
         self.ensure_transfer_authorized(&from, &to)?;
 
-        // Check and update allowance
         let allowed = self.get_allowance(&from, msg_sender);
         if amount > allowed {
             return Err(TIP20Error::insufficient_allowance());
@@ -918,6 +917,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 
     fn _transfer(&mut self, from: &Address, to: &Address, amount: U256) -> Result<(), TIP20Error> {
         let from_balance = self.get_balance(from);
+
         if amount > from_balance {
             return Err(TIP20Error::insufficient_balance());
         }

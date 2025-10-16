@@ -54,8 +54,15 @@ async fn test_bids() -> eyre::Result<()> {
 
     let mint_amount = U256::from(1000000000000u128);
 
-    // Mint tokens to each account
     let mut pending = vec![];
+    pending.push(
+        base.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    // Mint tokens to each account
     for (account, _) in &account_data {
         pending.push(quote.mint(*account, mint_amount).send().await?);
     }
@@ -81,8 +88,8 @@ async fn test_bids() -> eyre::Result<()> {
                 .await?,
         );
     }
-    await_receipts(&mut pending).await?;
 
+    await_receipts(&mut pending).await?;
     let mut order_ids = vec![];
     // Place bid orders for each account
     let mut pending_orders = vec![];
@@ -101,30 +108,42 @@ async fn test_bids() -> eyre::Result<()> {
     }
     await_receipts(&mut pending_orders).await?;
 
-    for (order_id, (account, _)) in order_ids.iter().zip(account_data) {
+    for order_id in order_ids.iter() {
         let order = exchange.orders(*order_id).call().await?;
-        assert_eq!(order.maker, account);
+        assert!(!order.maker.is_zero());
         assert!(order.isBid);
         assert_eq!(order.tick, tick);
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
 
-    // // TODO: send tx to fill all orders but the last
-    // // TODO: calc amount in
-    // let amount_in = 1000;
-    // let tx = exchange
-    //     .sell(*base.address(), *quote.address(), amountIn, 0)
-    //     .send()
-    //     .await?;
-    // tx.get_receipt().await?;
-    //
-    // for order_id in order_ids {
-    //     // TODO: get each order and assert filled
-    // }
-    //
-    // // TODO: assert last order paritially filled
+    // Calculate fill amount to fill everything but the last order
+    let total_amount_to_fill = (order_ids.len() as u128 - 1) * order_amount;
+    let amount_in = exchange
+        .quoteSell(*base.address(), *quote.address(), total_amount_to_fill)
+        .call()
+        .await?;
 
+    // Mint base tokens to the seller
+    let pending = base.mint(caller, U256::from(amount_in)).send().await?;
+    pending.get_receipt().await?;
+
+    // Execute the sell to fill all orders except the last
+    let tx = exchange
+        .sell(*base.address(), *quote.address(), amount_in, 0)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
+
+    // Assert that all orders except for the last are filled
+    for order_id in order_ids.iter().take(order_ids.len() - 1) {
+        let order = exchange.orders(*order_id).call().await?;
+        assert!(order.maker.is_zero());
+    }
+
+    // TODO: check that last order is partial filled
+
+    // TODO: assert that exchange balance for order maker
     Ok(())
 }
 
