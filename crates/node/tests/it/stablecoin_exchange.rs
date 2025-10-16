@@ -138,15 +138,18 @@ async fn test_bids() -> eyre::Result<()> {
     tx.get_receipt().await?;
 
     for order_id in 1..num_orders {
-        let order = exchange.orders(order_id).call().await?;
+        let order = exchange.getOrder(order_id).call().await?;
         assert!(order.maker.is_zero());
     }
 
     // Assert the last order is partially filled
-    let price_level = exchange.getTick(*base.address(), tick, true).call().await?;
-    assert_eq!(tick_level.head, num_orders);
-    assert_eq!(tick_level.tail, 0);
-    assert_eq!(tick_level.totalLiquidity, order_amount / 2);
+    let level = exchange
+        .getPriceLevel(*base.address(), tick, true)
+        .call()
+        .await?;
+    assert_eq!(level.head, num_orders);
+    assert_eq!(level.tail, 0);
+    assert_eq!(level.totalLiquidity, order_amount / 2);
 
     // // Assert exchange balance for makers
     // for (account, _) in account_data.iter().take(account_data.len() - 1) {

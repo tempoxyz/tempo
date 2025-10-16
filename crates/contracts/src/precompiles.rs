@@ -338,7 +338,7 @@ sol! {
         function getPriceLevel(address base, int16 tick, bool isBid) external view returns (PriceLevel memory level);
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
-        function orders(uint128 orderId) external view returns (Order memory);
+        function getOrder(uint128 orderId) external view returns (Order memory);
 
         // Pair management
         function createPair(address base) external returns (bytes32 key);

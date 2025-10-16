@@ -4,17 +4,13 @@
 
 use crate::{
     contracts::{
-        stablecoin_exchange::{Order, StablecoinExchange},
-        storage::StorageProvider,
+        stablecoin_exchange::StablecoinExchange, storage::StorageProvider,
         types::IStablecoinExchange,
     },
-    precompiles::{Precompile, mutate, mutate_void, view},
+    precompiles::{Precompile, mutate, mutate_void, view, view_result},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
-use revm::{
-    bytecode::bitvec::view,
-    precompile::{PrecompileError, PrecompileResult},
-};
+use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
@@ -56,11 +52,14 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     self.balance_of(call.user, call.token)
                 })
             }
-            IStablecoinExchange::ordersCall::SELECTOR => {
-                view::<IStablecoinExchange::ordersCall>(calldata, |call| {
-                    self.get_order(call.orderId).into()
-                })
-            }
+
+            IStablecoinExchange::getOrderCall::SELECTOR => view_result::<
+                IStablecoinExchange::getOrderCall,
+                IStablecoinExchange::IStablecoinExchangeErrors,
+            >(calldata, |call| {
+                self.get_order(call.orderId).map(|order| order.into())
+            }),
+
             IStablecoinExchange::getPriceLevelCall::SELECTOR => {
                 view::<IStablecoinExchange::getPriceLevelCall>(calldata, |call| {
                     self.get_price_level(call.base, call.tick, call.isBid)

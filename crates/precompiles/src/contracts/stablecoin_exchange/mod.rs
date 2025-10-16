@@ -93,9 +93,15 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>()
     }
 
-    /// Get user's balance for a specific token
-    pub fn get_order(&mut self, order_id: u128) -> Order {
-        Order::from_storage(order_id, self.storage, self.address)
+    /// Fetch order from storage. If the order is currently pending, this function returns
+    /// `StablecoinExchangeError::OrderDoesNotExist`   
+    pub fn get_order(&mut self, order_id: u128) -> Result<Order, StablecoinExchangeError> {
+        let order = Order::from_storage(order_id, self.storage, self.address);
+        if order.prev() != 0 || order.next() != 0 {
+            Ok(order)
+        } else {
+            Err(StablecoinExchangeError::order_does_not_exist())
+        }
     }
 
     /// Set user's balance for a specific token
