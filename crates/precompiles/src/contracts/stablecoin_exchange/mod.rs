@@ -597,7 +597,14 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
         order.update_remaining(new_remaining, self.storage, self.address);
-        self.increment_balance(order.maker(), orderbook.base, fill_amount);
+
+        if order.is_bid() {
+            self.increment_balance(order.maker(), orderbook.base, fill_amount);
+        } else {
+            let price = tick_to_price(order.tick());
+            let quote_amount = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            self.increment_balance(order.maker(), orderbook.quote, quote_amount);
+        }
 
         let amount_out = fill_amount
             .checked_mul(price as u128)
@@ -630,19 +637,21 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let price = tick_to_price(order.tick());
         let fill_amount = order.remaining();
 
-        // Transfer tokens to maker
-        if order.is_bid() {
+        let amount_out = if order.is_bid() {
             self.increment_balance(order.maker(), orderbook.base, fill_amount);
+            fill_amount
+                .checked_mul(price as u128)
+                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .expect("Amount out calculation overflow")
         } else {
-            let price = tick_to_price(order.tick());
-            let quote_amount = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let quote_amount = fill_amount
+                .checked_mul(price as u128)
+                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .expect("Amount out calculation overflow");
             self.increment_balance(order.maker(), orderbook.quote, quote_amount);
-        }
 
-        let amount_out = fill_amount
-            .checked_mul(price as u128)
-            .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-            .expect("Amount out calculation overflow");
+            fill_amount
+        };
 
         if order.is_flip() {
             // Create a new flip order with flipped side and swapped ticks
@@ -710,7 +719,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
             Some((new_level, new_order))
         } else {
-            // Update the price level to point to the next order
+            // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
             PriceLevel::update_total_liquidity(
                 self.storage,
@@ -1228,20 +1237,17 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let mut order = Order::from_storage(level.head, self.storage, self.address);
 
         let mut total_amount_out = 0;
-
         while amount_in > 0 {
             if amount_in < order.remaining() {
                 let amount_out = self.partial_fill_order(&mut order, &mut level, amount_in)?;
                 total_amount_out += amount_out;
                 break;
             } else {
-                // Fully fill current order
                 amount_in -= order.remaining();
 
                 let (amount_out, next_order_info) = self.fill_order(book_key, &mut order, level)?;
                 total_amount_out += amount_out;
 
-                // Handle order completion and get next order/price level
                 if let Some((new_level, new_order)) = next_order_info {
                     level = new_level;
                     order = new_order;
