@@ -40,8 +40,7 @@ async fn test_bids() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    // TODO: update to larger number
-    let account_data: Vec<_> = (1..=3)
+    let account_data: Vec<_> = (1..=10)
         .map(|i| {
             let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i as u32)
@@ -199,7 +198,7 @@ async fn test_asks() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    let account_data: Vec<_> = (1..100)
+    let account_data: Vec<_> = (1..=3)
         .map(|i| {
             let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i as u32)
@@ -213,8 +212,9 @@ async fn test_asks() -> eyre::Result<()> {
 
     let mint_amount = U256::from(1000000000000u128);
 
-    // Mint tokens to each account
     let mut pending = vec![];
+
+    // Mint tokens to each account
     for (account, _) in &account_data {
         pending.push(base.mint(*account, mint_amount).send().await?);
     }
@@ -232,7 +232,7 @@ async fn test_asks() -> eyre::Result<()> {
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
             .connect_http(http_url.clone());
-        let base = ITIP20::new(*quote.address(), account_provider);
+        let base = ITIP20::new(*base.address(), account_provider);
         pending.push(
             base.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
                 .send()
@@ -241,10 +241,10 @@ async fn test_asks() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    let mut order_ids = vec![];
-    let tick = 1;
+    let num_orders = account_data.len() as u128;
     // Place ask orders for each account
     let mut pending_orders = vec![];
+    let tick = 1;
     for (_, signer) in &account_data {
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
@@ -252,21 +252,87 @@ async fn test_asks() -> eyre::Result<()> {
         let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
 
         let call = exchange.place(*base.address(), order_amount, false, tick);
-        order_ids.push(call.call().await?);
 
         let order_tx = call.send().await?;
         pending_orders.push(order_tx);
     }
     await_receipts(&mut pending_orders).await?;
 
-    for (order_id, (account, _)) in order_ids.iter().zip(account_data) {
-        let order = exchange.getOrder(*order_id).call().await?;
-        assert_eq!(order.maker, account);
+    for order_id in 1..=num_orders {
+        let order = exchange.getOrder(order_id).call().await?;
+        assert!(!order.maker.is_zero());
         assert!(!order.isBid);
         assert_eq!(order.tick, tick);
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
+
+    // Calculate fill amount to fill all `n-1` orders, partial fill last order
+    let fill_amount = (num_orders * order_amount) - (order_amount / 2);
+
+    let amount_out = exchange
+        .quoteBuy(*base.address(), *quote.address(), fill_amount)
+        .call()
+        .await?;
+
+    // Mint quote tokens to the buyer for amount out
+    let pending = quote.mint(caller, U256::from(amount_out)).send().await?;
+    pending.get_receipt().await?;
+
+    // Approve quote tokens for the buy operation
+    let pending = quote
+        .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+        .send()
+        .await?;
+    pending.get_receipt().await?;
+
+    //  Execute buy and assert orders are filled
+    let tx = exchange
+        .buy(*base.address(), *quote.address(), amount_out, u128::MAX)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
+
+    for order_id in 1..num_orders {
+        let err = exchange
+            .getOrder(order_id)
+            .call()
+            .await
+            .expect_err("Expected error");
+
+        // Assert order does not exist
+        assert!(err.to_string().contains("0x5dcaf2d7"));
+    }
+
+    // Assert the last order is partially filled
+    let level = exchange
+        .getPriceLevel(*base.address(), tick, false)
+        .call()
+        .await?;
+
+    assert_eq!(level.head, num_orders);
+    assert_eq!(level.tail, num_orders);
+    assert!(level.totalLiquidity < order_amount);
+
+    let order = exchange.getOrder(num_orders).call().await?;
+    assert_eq!(order.next, 0);
+    assert_eq!(level.totalLiquidity, order.remaining);
+
+    // Assert exchange balance for makers
+    for (account, _) in account_data.iter().take(account_data.len() - 1) {
+        let balance = exchange
+            .balanceOf(*account, *quote.address())
+            .call()
+            .await?;
+        assert_eq!(balance, order_amount);
+    }
+
+    let (last_account, _) = account_data.last().unwrap();
+    let balance = exchange
+        .balanceOf(*last_account, *quote.address())
+        .call()
+        .await?;
+    assert_eq!(balance, order_amount - order.remaining);
 
     Ok(())
 }

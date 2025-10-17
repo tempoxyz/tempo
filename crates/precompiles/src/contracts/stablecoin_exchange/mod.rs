@@ -187,8 +187,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
-        let base_for_quote = token_in == orderbook.base;
-        self.quote_exact_out(book_key, base_for_quote, amount_out)
+        self.quote_exact_out(book_key, amount_out, false)
     }
 
     pub fn quote_sell(
@@ -204,8 +203,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
-        let base_for_quote = token_in == orderbook.base;
-        self.quote_exact_in(book_key, base_for_quote, amount_in)
+        self.quote_exact_in(book_key, amount_in, true)
     }
 
     pub fn sell(
@@ -1027,107 +1025,73 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     fn quote_exact_out(
         &mut self,
         book_key: B256,
-        base_for_quote: bool,
         amount_out: u128,
+        is_bid: bool,
     ) -> Result<u128, StablecoinExchangeError> {
         let mut remaining_out = amount_out;
         let mut amount_in = 0u128;
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
-        if base_for_quote {
-            // Buying quote tokens with base tokens - use bid side
-            let mut current_tick = orderbook.best_bid_tick;
-            if current_tick == i16::MIN {
-                return Err(StablecoinExchangeError::insufficient_liquidity());
-            }
-
-            while remaining_out > 0 {
-                let level = PriceLevel::from_storage(
-                    self.storage,
-                    self.address,
-                    book_key,
-                    current_tick,
-                    true,
-                );
-
-                let price = orderbook::tick_to_price(current_tick);
-
-                // Calculate how much quote we can get from this tick's liquidity
-                let base_needed = remaining_out
-                    .checked_mul(orderbook::PRICE_SCALE as u128)
-                    .and_then(|v| v.checked_div(price as u128))
-                    .expect("Base needed calculation overflow");
-                let fill_amount = if base_needed > level.total_liquidity {
-                    level.total_liquidity
-                } else {
-                    base_needed
-                };
-                let quote_out = fill_amount
-                    .checked_mul(price as u128)
-                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                    .expect("Quote out calculation overflow");
-
-                remaining_out -= quote_out;
-                amount_in += fill_amount;
-
-                if fill_amount == level.total_liquidity {
-                    // Move to next tick if we exhaust this level
-                    let (next_tick, initialized) = orderbook::next_initialized_bid_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    );
-                    if !initialized && remaining_out > 0 {
-                        return Err(StablecoinExchangeError::insufficient_liquidity());
-                    }
-                    current_tick = next_tick;
-                }
-            }
+        let mut current_tick = if is_bid {
+            orderbook.best_bid_tick
         } else {
-            // Buying base tokens with quote tokens - use ask side
-            let mut current_tick = orderbook.best_ask_tick;
-            if current_tick == i16::MAX {
-                return Err(StablecoinExchangeError::insufficient_liquidity());
-            }
+            orderbook.best_ask_tick
+        };
+        if current_tick == i16::MIN {
+            dbg!("insufficient");
+            return Err(StablecoinExchangeError::insufficient_liquidity());
+        }
 
-            while remaining_out > 0 {
-                let level = PriceLevel::from_storage(
-                    self.storage,
-                    self.address,
-                    book_key,
-                    current_tick,
-                    false,
-                );
+        while remaining_out > 0 {
+            let level = PriceLevel::from_storage(
+                self.storage,
+                self.address,
+                book_key,
+                current_tick,
+                is_bid,
+            );
 
-                let price = orderbook::tick_to_price(current_tick);
+            let price = orderbook::tick_to_price(current_tick);
 
-                let fill_amount = if remaining_out > level.total_liquidity {
-                    level.total_liquidity
-                } else {
-                    remaining_out
-                };
-                let quote_in = fill_amount
-                    .checked_mul(price as u128)
-                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                    .expect("Quote in calculation overflow");
+            let base_needed = remaining_out
+                .checked_mul(orderbook::PRICE_SCALE as u128)
+                .and_then(|v| v.checked_div(price as u128))
+                .expect("Base needed calculation overflow");
+            let fill_amount = if base_needed > level.total_liquidity {
+                level.total_liquidity
+            } else {
+                base_needed
+            };
+            let amount_out_tick = fill_amount
+                .checked_mul(price as u128)
+                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .expect("Amount out calculation overflow");
 
-                remaining_out -= fill_amount;
-                amount_in += quote_in;
+            remaining_out -= amount_out_tick;
+            amount_in += fill_amount;
 
-                if fill_amount == level.total_liquidity {
-                    // Move to next tick if we exhaust this level
-                    let (next_tick, initialized) = orderbook::next_initialized_ask_tick(
+            if fill_amount == level.total_liquidity {
+                // Move to next tick if we exhaust this level
+                let (next_tick, initialized) = if is_bid {
+                    orderbook::next_initialized_bid_tick(
                         self.storage,
                         self.address,
                         book_key,
                         current_tick,
-                    );
-                    if !initialized && remaining_out > 0 {
-                        return Err(StablecoinExchangeError::insufficient_liquidity());
-                    }
-                    current_tick = next_tick;
+                    )
+                } else {
+                    orderbook::next_initialized_ask_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    )
+                };
+                if !initialized && remaining_out > 0 {
+                    dbg!("insufficient_liquidity");
+                    return Err(StablecoinExchangeError::insufficient_liquidity());
                 }
+                current_tick = next_tick;
             }
         }
 
@@ -1138,107 +1102,68 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     fn quote_exact_in(
         &mut self,
         book_key: B256,
-        base_for_quote: bool,
         amount_in: u128,
+        is_bid: bool,
     ) -> Result<u128, StablecoinExchangeError> {
         let mut remaining_in = amount_in;
         let mut amount_out = 0u128;
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
-        if base_for_quote {
-            // Selling base tokens for quote tokens - use bid side
-            let mut current_tick = orderbook.best_bid_tick;
-            if current_tick == i16::MIN {
-                return Err(StablecoinExchangeError::insufficient_liquidity());
-            }
-
-            while remaining_in > 0 {
-                let level = PriceLevel::from_storage(
-                    self.storage,
-                    self.address,
-                    book_key,
-                    current_tick,
-                    true,
-                );
-
-                let price = orderbook::tick_to_price(current_tick);
-
-                let fill_amount = if remaining_in > level.total_liquidity {
-                    level.total_liquidity
-                } else {
-                    remaining_in
-                };
-                let quote_out = fill_amount
-                    .checked_mul(price as u128)
-                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                    .expect("Quote out calculation overflow");
-
-                remaining_in -= fill_amount;
-                amount_out += quote_out;
-
-                if fill_amount == level.total_liquidity {
-                    // Move to next tick if we exhaust this level
-                    let (next_tick, initialized) = orderbook::next_initialized_bid_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    );
-                    if !initialized && remaining_in > 0 {
-                        return Err(StablecoinExchangeError::insufficient_liquidity());
-                    }
-                    current_tick = next_tick;
-                }
-            }
+        let mut current_tick = if is_bid {
+            orderbook.best_bid_tick
         } else {
-            // Selling quote tokens for base tokens - use ask side
-            let mut current_tick = orderbook.best_ask_tick;
-            if current_tick == i16::MAX {
-                return Err(StablecoinExchangeError::insufficient_liquidity());
-            }
+            orderbook.best_ask_tick
+        };
 
-            while remaining_in > 0 {
-                let level = PriceLevel::from_storage(
-                    self.storage,
-                    self.address,
-                    book_key,
-                    current_tick,
-                    false,
-                );
+        if current_tick == i16::MIN {
+            return Err(StablecoinExchangeError::insufficient_liquidity());
+        }
 
-                let price = orderbook::tick_to_price(current_tick);
+        while remaining_in > 0 {
+            let level = PriceLevel::from_storage(
+                self.storage,
+                self.address,
+                book_key,
+                current_tick,
+                is_bid,
+            );
 
-                // Calculate how much base we can get for remaining_in quote
-                let base_out = remaining_in
-                    .checked_mul(orderbook::PRICE_SCALE as u128)
-                    .and_then(|v| v.checked_div(price as u128))
-                    .expect("Base out calculation overflow");
-                let fill_amount = if base_out > level.total_liquidity {
-                    level.total_liquidity
-                } else {
-                    base_out
-                };
-                let quote_needed = fill_amount
-                    .checked_mul(price as u128)
-                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                    .expect("Quote needed calculation overflow");
+            let price = orderbook::tick_to_price(current_tick);
 
-                remaining_in -= quote_needed;
-                amount_out += fill_amount;
+            let fill_amount = if remaining_in > level.total_liquidity {
+                level.total_liquidity
+            } else {
+                remaining_in
+            };
+            let amount_out_tick = fill_amount
+                .checked_mul(price as u128)
+                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .expect("Amount out calculation overflow");
 
-                if fill_amount == level.total_liquidity {
-                    // Move to next tick if we exhaust this level
-                    let (next_tick, initialized) = orderbook::next_initialized_ask_tick(
+            remaining_in -= fill_amount;
+            amount_out += amount_out_tick;
+
+            if fill_amount == level.total_liquidity {
+                // Move to next tick if we exhaust this level
+                let (next_tick, initialized) = if is_bid {
+                    orderbook::next_initialized_bid_tick(
                         self.storage,
                         self.address,
                         book_key,
                         current_tick,
-                    );
-                    if !initialized && remaining_in > 0 {
-                        return Err(StablecoinExchangeError::insufficient_liquidity());
-                    }
-                    current_tick = next_tick;
+                    )
+                } else {
+                    orderbook::next_initialized_ask_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    )
+                };
+                if !initialized && remaining_in > 0 {
+                    return Err(StablecoinExchangeError::insufficient_liquidity());
                 }
+                current_tick = next_tick;
             }
         }
 
