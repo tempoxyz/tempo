@@ -1,17 +1,11 @@
-use alloy::{
-    primitives::{Address, U256},
-    providers::ProviderBuilder,
-    signers::local::MnemonicBuilder,
-};
+use alloy::{primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder};
 use rand::Rng;
-use std::{env, time::Duration};
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20::ITIP20Instance, StablecoinExchangeError};
+use std::env;
+use tempo_contracts::precompiles::ITIP20::ITIP20Instance;
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
-        address_to_token_id_unchecked,
-        stablecoin_exchange::{MAX_TICK, MIN_TICK, price_to_tick},
+        stablecoin_exchange::{MAX_TICK, MIN_TICK},
         token_id_to_address,
         types::{IStablecoinExchange, ITIP20},
     },
