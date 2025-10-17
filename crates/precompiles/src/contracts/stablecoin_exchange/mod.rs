@@ -727,7 +727,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Fill orders for exact output amount
-    #[allow(dead_code)]
     fn fill_orders_exact_out(
         &mut self,
         book_key: B256,
