@@ -190,7 +190,7 @@ where
                 marshal: syncer_mailbox,
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
-                partition_prefix: self.partition_prefix.clone(),
+                partition_prefix: format!("{}_orchestrator", self.partition_prefix),
                 signer: self.signer,
                 supervisor: supervisor.clone(),
                 views_to_track: self.views_to_track,
