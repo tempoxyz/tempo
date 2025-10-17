@@ -598,7 +598,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         if order.is_bid() {
             self.increment_balance(order.maker(), orderbook.base, fill_amount);
         } else {
-            let price = tick_to_price(order.tick());
             let quote_amount = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount);
         }
