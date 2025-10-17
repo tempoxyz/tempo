@@ -748,19 +748,15 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 .and_then(|v| v.checked_div(price as u128))
                 .expect("Input needed calculation overflow");
 
-            if amount_in < order.remaining() {
-                // Partial fill of current order
+            if amount_in <= order.remaining() {
                 if total_amount_in + amount_in > max_amount_in {
                     return Err(StablecoinExchangeError::max_input_exceeded());
                 }
 
-                let amount_out_received =
-                    self.partial_fill_order(&mut order, &mut level, amount_in)?;
+                self.partial_fill_order(&mut order, &mut level, amount_in)?;
                 total_amount_in += amount_in;
-
-                amount_out -= amount_out_received;
+                break;
             } else {
-                // Fully fill current order
                 let fill_amount = order.remaining();
                 if total_amount_in + fill_amount > max_amount_in {
                     return Err(StablecoinExchangeError::max_input_exceeded());
