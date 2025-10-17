@@ -847,7 +847,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         };
 
         let level =
-            PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, true);
+            PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, bid);
 
         Ok(level)
     }
