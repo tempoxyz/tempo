@@ -124,22 +124,18 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     },
                 )
             }
-            IStablecoinExchange::quoteSellCall::SELECTOR => {
-                view_result::<
-                    IStablecoinExchange::quoteSellCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, |call| {
-                    self.quote_sell(call.tokenIn, call.tokenOut, call.amountIn)
-                })
-            }
-            IStablecoinExchange::quoteBuyCall::SELECTOR => {
-                view_result::<
-                    IStablecoinExchange::quoteBuyCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, |call| {
-                    self.quote_buy(call.tokenIn, call.tokenOut, call.amountOut)
-                })
-            }
+            IStablecoinExchange::quoteSellCall::SELECTOR => view_result::<
+                IStablecoinExchange::quoteSellCall,
+                IStablecoinExchange::IStablecoinExchangeErrors,
+            >(calldata, |call| {
+                self.quote_sell(call.tokenIn, call.tokenOut, call.amountIn)
+            }),
+            IStablecoinExchange::quoteBuyCall::SELECTOR => view_result::<
+                IStablecoinExchange::quoteBuyCall,
+                IStablecoinExchange::IStablecoinExchangeErrors,
+            >(calldata, |call| {
+                self.quote_buy(call.tokenIn, call.tokenOut, call.amountOut)
+            }),
             IStablecoinExchange::executeBlockCall::SELECTOR => {
                 mutate_void::<
                     IStablecoinExchange::executeBlockCall,
