@@ -158,7 +158,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.set_balance(user, token, 0);
             let remaining = amount - user_balance;
 
-            // TODO: This should account for linking token
+            // TODO: This should account for quote token
             TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
                 .transfer_from(
                     &self.address,
@@ -286,7 +286,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// Get price level information
     pub fn get_price_level(&mut self, base: Address, tick: i16, is_bid: bool) -> PriceLevel {
         let quote =
-            TIP20Token::new(address_to_token_id_unchecked(&base), self.storage).linking_token();
+            TIP20Token::new(address_to_token_id_unchecked(&base), self.storage).quote_token();
         let key = compute_book_key(base, quote);
         PriceLevel::from_storage(self.storage, self.address, key, tick, is_bid)
     }
@@ -309,7 +309,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
     pub fn create_pair(&mut self, base: &Address) -> B256 {
         let quote =
-            TIP20Token::new(address_to_token_id_unchecked(base), self.storage).linking_token();
+            TIP20Token::new(address_to_token_id_unchecked(base), self.storage).quote_token();
 
         let book_key = compute_book_key(*base, quote);
         let book = Orderbook::new(*base, quote);
@@ -337,9 +337,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// The order is queued in the pending queue and will be processed at end of block.
     ///
     /// # Arguments
-    /// * `token` - The token to trade (not the linking token)
+    /// * `token` - The token to trade (not the quote token)
     /// * `amount` - Order amount in the token
-    /// * `is_bid` - True for buy orders (using linking token to buy token), false for sell orders
+    /// * `is_bid` - True for buy orders (using quote token to buy token), false for sell orders
     /// * `tick` - Price tick: (price - 1) * 1000, where price is denominated in the quote token
     ///
     /// # Returns
@@ -352,9 +352,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         is_bid: bool,
         tick: i16,
     ) -> Result<u128, StablecoinExchangeError> {
-        // Lookup quote token (linking token) from TIP20 token
+        // Lookup quote token from TIP20 token
         let quote_token =
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).linking_token();
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -428,9 +428,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         tick: i16,
         flip_tick: i16,
     ) -> Result<u128, StablecoinExchangeError> {
-        // Lookup quote token (linking token) from TIP20 token
+        // Lookup quote token from TIP20 token
         let quote_token =
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).linking_token();
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);

@@ -1093,7 +1093,7 @@ mod tests {
                     name: name.to_string(),
                     symbol: symbol.to_string(),
                     currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
+                    quoteToken: LINKING_USD_ADDRESS,
                     admin: *admin,
                 },
             )
@@ -1725,8 +1725,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        let (token_id, quote_token_id) =
-            setup_token_with_custom_quote_token(&mut storage, &admin);
+        let (token_id, quote_token_id) = setup_token_with_custom_quote_token(&mut storage, &admin);
         let quote_token_address = token_id_to_address(quote_token_id);
 
         let mut token = TIP20Token::new(token_id, &mut storage);
@@ -1797,7 +1796,7 @@ mod tests {
             },
         );
 
-        assert!(matches!(result, Err(TIP20Error::InvalidLinkingToken(_))));
+        assert!(matches!(result, Err(TIP20Error::InvalidQuoteToken(_))));
     }
 
     #[test]
@@ -1818,7 +1817,7 @@ mod tests {
             },
         );
 
-        assert!(matches!(result, Err(TIP20Error::InvalidLinkingToken(_))));
+        assert!(matches!(result, Err(TIP20Error::InvalidQuoteToken(_))));
     }
 
     #[test]
@@ -1826,8 +1825,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        let (token_id, quote_token_id) =
-            setup_token_with_custom_quote_token(&mut storage, &admin);
+        let (token_id, quote_token_id) = setup_token_with_custom_quote_token(&mut storage, &admin);
         let quote_token_address = token_id_to_address(quote_token_id);
 
         let mut token = TIP20Token::new(token_id, &mut storage);
@@ -1892,8 +1890,8 @@ mod tests {
             .unwrap();
 
         // Try to complete the update - should fail due to loop detection
-        let result = token_b
-            .finalize_quote_token_update(&admin, ITIP20::finalizeQuoteTokenUpdateCall {});
+        let result =
+            token_b.finalize_quote_token_update(&admin, ITIP20::finalizeQuoteTokenUpdateCall {});
 
         assert!(matches!(result, Err(TIP20Error::InvalidQuoteToken(_))));
     }
@@ -1904,8 +1902,7 @@ mod tests {
         let admin = Address::random();
         let non_admin = Address::random();
 
-        let (token_id, quote_token_id) =
-            setup_token_with_custom_quote_token(&mut storage, &admin);
+        let (token_id, quote_token_id) = setup_token_with_custom_quote_token(&mut storage, &admin);
         let quote_token_address = token_id_to_address(quote_token_id);
 
         let mut token = TIP20Token::new(token_id, &mut storage);
@@ -1921,8 +1918,8 @@ mod tests {
             .unwrap();
 
         // Try to complete update as non-admin
-        let result = token
-            .finalize_quote_token_update(&non_admin, ITIP20::finalizeQuoteTokenUpdateCall {});
+        let result =
+            token.finalize_quote_token_update(&non_admin, ITIP20::finalizeQuoteTokenUpdateCall {});
 
         assert!(matches!(result, Err(TIP20Error::PolicyForbids(_))));
     }

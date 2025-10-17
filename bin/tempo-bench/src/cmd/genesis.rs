@@ -290,7 +290,7 @@ fn create_and_mint_token(
                     name: name.into(),
                     symbol: symbol.into(),
                     currency: currency.into(),
-                    linkingToken: LINKING_USD_ADDRESS,
+                    quoteToken: LINKING_USD_ADDRESS,
                     admin,
                 },
             )
