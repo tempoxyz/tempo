@@ -90,6 +90,51 @@ impl PriceLevel {
         }
     }
 
+    /// Delete PriceLevel from storage
+    pub fn delete<S: StorageProvider>(
+        &self,
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+    ) {
+        let base_slot = if is_bid {
+            BID_TICK_LEVELS
+        } else {
+            ASK_TICK_LEVELS
+        };
+
+        // Create nested mapping slot: mapping(book_key => mapping(tick => PriceLevel))
+        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
+
+        // Store each field
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+                U256::from(self.tail),
+            )
+            .expect("TODO: handle error");
+    }
+
     /// Store this PriceLevel to storage
     pub fn store<S: StorageProvider>(
         &self,
@@ -435,7 +480,7 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
         Ok(())
     }
 
-    /// Clear bit in bitmap to mark tick as inactive
+    /// Clear bit in bitmap to mark tick as inactive and update storage
     pub fn clear_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<(), OrderError> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             return Err(OrderError::InvalidTick {
