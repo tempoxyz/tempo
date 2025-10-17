@@ -986,7 +986,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     ) -> Result<u128, StablecoinExchangeError> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
-        let mut current_tick = if base_for_quote {
+        let tick = if base_for_quote {
             let bid_tick = orderbook.best_bid_tick;
             if bid_tick == i16::MIN {
                 return Err(StablecoinExchangeError::insufficient_liquidity());
@@ -1001,9 +1001,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         };
 
         // Get the best order
-        let mut level =
-            PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, true);
-        let mut price = tick_to_price(current_tick);
+        let mut level = PriceLevel::from_storage(self.storage, self.address, book_key, tick, true);
+        let mut price = tick_to_price(tick);
         let mut order = Order::from_storage(level.head, self.storage, self.address);
 
         let mut remaining_in = amount_in;
@@ -1012,6 +1011,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             if remaining_in < order.remaining() {
                 let new_remaining = order.remaining() - remaining_in;
                 order.update_remaining(new_remaining, self.storage, self.address);
+                self.increment_balance(order.maker(), orderbook.base, remaining_in);
 
                 let amount_out = order
                     .remaining()
@@ -1032,6 +1032,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 break;
             } else {
                 remaining_in -= order.remaining();
+                self.increment_balance(order.maker(), orderbook.base, order.remaining());
 
                 let amount_out = order
                     .remaining()
@@ -1118,6 +1119,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                     );
                     price = tick_to_price(tick);
                     order = Order::from_storage(level.head, self.storage, self.address);
+
+                    // TODO: update order book best tick
                 } else {
                     level.head = order.next();
                     PriceLevel::update_total_liquidity(
