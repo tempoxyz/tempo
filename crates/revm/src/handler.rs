@@ -458,6 +458,10 @@ where
             &mut storage_provider,
         );
 
+        if tx.max_balance_spending().ok() == Some(U256::ZERO) {
+            return Ok(());
+        }
+
         // Call the precompile function to collect the fee
         // We specify the `to_addr` to account for the case where the to address is a tip20
         // token and the fee token is not set for the specified caller.
