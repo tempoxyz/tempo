@@ -621,7 +621,19 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             level.total_liquidity - fill_amount,
         );
 
-        // TODO: emit partial fill event
+        // Emit OrderFilled event for partial fill
+        self.storage
+            .emit_event(
+                self.address,
+                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                    orderId: order.order_id(),
+                    maker: order.maker(),
+                    amountFilled: fill_amount,
+                    partialFill: true,
+                })
+                .into_log_data(),
+            )
+            .expect("Event emission failed");
 
         Ok(amount_out)
     }
@@ -652,6 +664,20 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
             fill_amount
         };
+
+        // Emit OrderFilled event for complete fill
+        self.storage
+            .emit_event(
+                self.address,
+                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                    orderId: order.order_id(),
+                    maker: order.maker(),
+                    amountFilled: fill_amount,
+                    partialFill: false,
+                })
+                .into_log_data(),
+            )
+            .expect("Event emission failed");
 
         if order.is_flip() {
             // Create a new flip order with flipped side and swapped ticks
