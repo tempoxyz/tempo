@@ -56,8 +56,7 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment which ensures that the quote
         // token id must always be <= the current token_id
-        if !is_tip20(&call.quoteToken)
-            || address_to_token_id_unchecked(&call.quoteToken) > token_id
+        if !is_tip20(&call.quoteToken) || address_to_token_id_unchecked(&call.quoteToken) > token_id
         {
             return Err(TIP20Error::invalid_quote_token());
         }
