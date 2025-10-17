@@ -60,7 +60,6 @@ impl PriceLevel {
             ASK_TICK_LEVELS
         };
 
-        // Create nested mapping slot: mapping(book_key => mapping(tick => PriceLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
@@ -105,7 +104,6 @@ impl PriceLevel {
             ASK_TICK_LEVELS
         };
 
-        // Create nested mapping slot: mapping(book_key => mapping(tick => PriceLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
@@ -150,7 +148,6 @@ impl PriceLevel {
             ASK_TICK_LEVELS
         };
 
-        // Create nested mapping slot: mapping(book_key => mapping(tick => PriceLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
@@ -565,7 +562,6 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
     fn get_bitmap_slot(&self, word_index: i16, is_bid: bool) -> U256 {
         let base_slot = if is_bid { BID_BITMAPS } else { ASK_BITMAPS };
 
-        // Create nested mapping slot: mapping(book_key => mapping(word_index => bitmap_word))
         let book_key_slot = mapping_slot(self.book_key.as_slice(), base_slot);
         mapping_slot(word_index.to_be_bytes(), book_key_slot)
     }
