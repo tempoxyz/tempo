@@ -712,13 +712,13 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
-            PriceLevel::update_total_liquidity(
+            level.total_liquidity -= fill_amount;
+            level.store(
                 self.storage,
                 self.address,
                 order.book_key(),
                 order.tick(),
                 order.is_bid(),
-                level.total_liquidity - amount_out,
             );
 
             let new_order = Order::from_storage(order.next(), self.storage, self.address);

@@ -11,7 +11,7 @@ use tempo_precompiles::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
         address_to_token_id_unchecked,
-        stablecoin_exchange::{MAX_TICK, MIN_TICK},
+        stablecoin_exchange::{MAX_TICK, MIN_TICK, price_to_tick},
         token_id_to_address,
         types::{IStablecoinExchange, ITIP20},
     },
@@ -41,7 +41,7 @@ async fn test_bids() -> eyre::Result<()> {
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
     // TODO: update to larger number
-    let account_data: Vec<_> = (1..2)
+    let account_data: Vec<_> = (1..=3)
         .map(|i| {
             let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i as u32)
@@ -126,13 +126,6 @@ async fn test_bids() -> eyre::Result<()> {
         .call()
         .await?;
 
-    let level = exchange
-        .getPriceLevel(*base.address(), tick, true)
-        .call()
-        .await?;
-
-    dbg!(&level);
-
     // Mint base tokens to the seller for amount in
     let pending = base.mint(caller, U256::from(amount_in)).send().await?;
     pending.get_receipt().await?;
@@ -166,7 +159,7 @@ async fn test_bids() -> eyre::Result<()> {
     // TODO: head not being updated correctly, tail also not updated correctly?
     assert_eq!(level.head, num_orders);
     assert_eq!(level.tail, num_orders);
-    assert_eq!(level.totalLiquidity, order_amount / 2);
+    assert_eq!(level.totalLiquidity, order_amount);
 
     let order = exchange.getOrder(num_orders).call().await?;
     assert_eq!(order.next, 0);
