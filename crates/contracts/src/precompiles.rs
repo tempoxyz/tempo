@@ -29,8 +29,8 @@ sol! {
         function symbol() external view returns (string);
         function decimals() external view returns (uint8);
         function totalSupply() external view returns (uint256);
-        function linkingToken() external view returns (address);
-        function nextLinkingToken() external view returns (address);
+        function quoteToken() external view returns (address);
+        function nextQuoteToken() external view returns (address);
         function balanceOf(address account) external view returns (uint256);
         function transfer(address to, uint256 amount) external returns (bool);
         function approve(address spender, uint256 amount) external returns (bool);
@@ -57,8 +57,8 @@ sol! {
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
-        function updateLinkingToken(address newLinkingToken) external;
-        function finalizeLinkingTokenUpdate() external;
+        function updateQuoteToken(address newQuoteToken) external;
+        function finalizeQuoteTokenUpdate() external;
 
         // EIP-712 Permit
         struct Permit {
@@ -81,8 +81,8 @@ sol! {
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
-        event UpdateLinkingToken(address indexed updater, address indexed newLinkingToken);
-        event LinkingTokenUpdateFinalized(address indexed updater, address indexed newLinkingToken);
+        event UpdateQuoteToken(address indexed updater, address indexed newQuoteToken);
+        event QuoteTokenUpdateFinalized(address indexed updater, address indexed newQuoteToken);
 
         // Errors
         error InsufficientBalance();
@@ -98,7 +98,7 @@ sol! {
         error SaltAlreadyUsed();
         error ContractPaused();
         error InvalidCurrency();
-        error InvalidLinkingToken();
+        error InvalidQuoteToken();
         error TransfersDisabled();
     }
 
@@ -111,7 +111,7 @@ sol! {
             string memory name,
             string memory symbol,
             string memory currency,
-            address linkingToken,
+            address quoteToken,
             address admin
         ) external returns (uint256);
 
@@ -546,9 +546,9 @@ impl TIP20Error {
         Self::InvalidPayload(ITIP20::InvalidPayload {})
     }
 
-    /// Creates an error for invalid linking token.
-    pub const fn invalid_linking_token() -> Self {
-        Self::InvalidLinkingToken(ITIP20::InvalidLinkingToken {})
+    /// Creates an error for invalid quote token.
+    pub const fn invalid_quote_token() -> Self {
+        Self::InvalidQuoteToken(ITIP20::InvalidQuoteToken {})
     }
 
     /// Creates an error for invalid or reused nonce.
