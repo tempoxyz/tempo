@@ -1071,22 +1071,43 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
             let price = orderbook::tick_to_price(current_tick);
 
-            let base_needed = remaining_out
-                .checked_mul(orderbook::PRICE_SCALE as u128)
-                .and_then(|v| v.checked_div(price as u128))
-                .expect("Base needed calculation overflow");
-            let fill_amount = if base_needed > level.total_liquidity {
-                level.total_liquidity
+            let (fill_amount, amount_in_tick) = if is_bid {
+                // For bids: remaining_out is in quote, amount_in is in base
+                let base_needed = remaining_out
+                    .checked_mul(orderbook::PRICE_SCALE as u128)
+                    .and_then(|v| v.checked_div(price as u128))
+                    .expect("Base needed calculation overflow");
+                let fill_amount = if base_needed > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    base_needed
+                };
+                (fill_amount, fill_amount)
             } else {
-                base_needed
+                // For asks: remaining_out is in base, amount_in is in quote
+                let fill_amount = if remaining_out > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    remaining_out
+                };
+                let quote_needed = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Quote needed calculation overflow");
+                (fill_amount, quote_needed)
             };
-            let amount_out_tick = fill_amount
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .expect("Amount out calculation overflow");
+
+            let amount_out_tick = if is_bid {
+                fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Amount out calculation overflow")
+            } else {
+                fill_amount
+            };
 
             remaining_out -= amount_out_tick;
-            amount_in += fill_amount;
+            amount_in += amount_in_tick;
 
             // If we exhausted this level or filled our requirement, move to next tick
             if fill_amount == level.total_liquidity {
