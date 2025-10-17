@@ -760,14 +760,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 total_amount_in += amount_in;
                 break;
             } else {
-                let fill_amount = order.remaining();
-                if total_amount_in + fill_amount > max_amount_in {
-                    return Err(StablecoinExchangeError::max_input_exceeded());
-                }
-
                 let (amount_out_received, next_order_info) =
                     self.fill_order(book_key, &mut order, level)?;
-                total_amount_in += fill_amount;
+                total_amount_in += amount_in;
                 amount_out -= amount_out_received;
 
                 if let Some((new_level, new_order)) = next_order_info {
