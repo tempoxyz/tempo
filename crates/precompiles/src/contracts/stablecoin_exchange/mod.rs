@@ -6,8 +6,6 @@ pub mod order;
 pub mod orderbook;
 pub mod slots;
 
-use std::future::pending;
-
 pub use error::OrderError;
 pub use order::Order;
 pub use orderbook::{
@@ -584,7 +582,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         );
     }
 
-    /// Partially fill an order with the specified amount
+    /// Partially fill an order with the specified amount.
+    /// Fill amount is denominated in base token
     fn partial_fill_order(
         &mut self,
         order: &mut Order,
@@ -606,10 +605,14 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.increment_balance(order.maker(), orderbook.quote, quote_amount);
         }
 
-        let amount_out = fill_amount
-            .checked_mul(price as u128)
-            .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-            .expect("Amount out calculation overflow");
+        let amount_out = if order.is_bid() {
+            fill_amount
+                .checked_mul(price as u128)
+                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .expect("Amount out calculation overflow")
+        } else {
+            fill_amount
+        };
 
         // Update price level total liquidity
         PriceLevel::update_total_liquidity(
@@ -738,22 +741,24 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let mut order = Order::from_storage(level.head, self.storage, self.address);
 
         let mut total_amount_in = 0;
-
         while amount_out > 0 {
             let price = tick_to_price(order.tick());
+            let fill_amount = amount_out.min(order.remaining());
+            let amount_in = if base_for_quote {
+                fill_amount
+            } else {
+                fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Input needed calculation overflow")
+            };
 
-            // Calculate how much input is needed for the remaining output
-            let amount_in = amount_out
-                .checked_mul(orderbook::PRICE_SCALE as u128)
-                .and_then(|v| v.checked_div(price as u128))
-                .expect("Input needed calculation overflow");
+            if total_amount_in + amount_in > max_amount_in {
+                return Err(StablecoinExchangeError::max_input_exceeded());
+            }
 
-            if amount_in <= order.remaining() {
-                if total_amount_in + amount_in > max_amount_in {
-                    return Err(StablecoinExchangeError::max_input_exceeded());
-                }
-
-                self.partial_fill_order(&mut order, &mut level, amount_in)?;
+            if fill_amount < order.remaining() {
+                self.partial_fill_order(&mut order, &mut level, fill_amount)?;
                 total_amount_in += amount_in;
                 break;
             } else {
