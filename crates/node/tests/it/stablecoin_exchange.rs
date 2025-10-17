@@ -264,13 +264,13 @@ async fn test_asks() -> eyre::Result<()> {
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
 
-    let amount_out = exchange
-        .quoteBuy(*base.address(), *quote.address(), fill_amount)
+    let amount_in = exchange
+        .quoteBuy(*quote.address(), *base.address(), fill_amount)
         .call()
         .await?;
 
-    // Mint quote tokens to the buyer for amount out
-    let pending = quote.mint(caller, U256::from(amount_out)).send().await?;
+    // Mint quote tokens to the buyer for amount in
+    let pending = quote.mint(caller, U256::from(amount_in)).send().await?;
     pending.get_receipt().await?;
 
     // Approve quote tokens for the buy operation
@@ -282,7 +282,7 @@ async fn test_asks() -> eyre::Result<()> {
 
     //  Execute buy and assert orders are filled
     let tx = exchange
-        .buy(*base.address(), *quote.address(), amount_out, u128::MAX)
+        .buy(*quote.address(), *base.address(), fill_amount, u128::MAX)
         .send()
         .await?;
     tx.get_receipt().await?;
@@ -313,12 +313,16 @@ async fn test_asks() -> eyre::Result<()> {
     assert_eq!(level.totalLiquidity, order.remaining);
 
     // Assert exchange balance for makers
+    // For ask orders, makers receive quote tokens based on price
+    let price = (100000 + tick as i32) as u128; // tick_to_price formula: PRICE_SCALE + tick
+    let expected_quote_per_order = (order_amount * price) / 100000;
+
     for (account, _) in account_data.iter().take(account_data.len() - 1) {
         let balance = exchange
             .balanceOf(*account, *quote.address())
             .call()
             .await?;
-        assert_eq!(balance, order_amount);
+        assert_eq!(balance, expected_quote_per_order);
     }
 
     let (last_account, _) = account_data.last().unwrap();
@@ -326,7 +330,9 @@ async fn test_asks() -> eyre::Result<()> {
         .balanceOf(*last_account, *quote.address())
         .call()
         .await?;
-    assert_eq!(balance, order_amount - order.remaining);
+    let filled_amount = order_amount - order.remaining;
+    let expected_last_quote = (filled_amount * price) / 100000;
+    assert_eq!(balance, expected_last_quote);
 
     Ok(())
 }
