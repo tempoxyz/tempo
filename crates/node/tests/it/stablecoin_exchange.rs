@@ -162,18 +162,18 @@ async fn test_bids() -> eyre::Result<()> {
     assert_eq!(order.next, 0);
     assert_eq!(level.totalLiquidity, order.remaining);
 
-    // // Assert exchange balance for makers
-    // for (account, _) in account_data.iter().take(account_data.len() - 1) {
-    //     let balance = exchange.balanceOf(*account, *base.address()).call().await?;
-    //     assert_eq!(balance, order_amount);
-    // }
-    //
-    // let (last_account, _) = account_data.last().unwrap();
-    // let balance = exchange
-    //     .balanceOf(*last_account, *base.address())
-    //     .call()
-    //     .await?;
-    // assert_eq!(balance, order_amount / 2);
+    // Assert exchange balance for makers
+    for (account, _) in account_data.iter().take(account_data.len() - 1) {
+        let balance = exchange.balanceOf(*account, *base.address()).call().await?;
+        assert_eq!(balance, order_amount);
+    }
+
+    let (last_account, _) = account_data.last().unwrap();
+    let balance = exchange
+        .balanceOf(*last_account, *base.address())
+        .call()
+        .await?;
+    assert_eq!(balance, order_amount - order.remaining);
 
     Ok(())
 }
