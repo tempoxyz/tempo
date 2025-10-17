@@ -76,7 +76,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .expect("Storage write failed");
     }
 
-    /// Read activ3 order ID
+    /// Read active order ID
     fn get_active_order_id(&mut self) -> u128 {
         self.storage
             .sload(self.address, slots::ACTIVE_ORDER_ID)
