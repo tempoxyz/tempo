@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::num::NonZeroUsize;
 
-use commonware_consensus::{Automaton as _, threshold_simplex, types::Epoch};
+use commonware_consensus::{threshold_simplex, types::Epoch};
 use commonware_p2p::{
     Blocker, Receiver, Sender,
     utils::mux::{MuxHandle, Muxer},
@@ -9,21 +9,20 @@ use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
 };
 use commonware_storage::metadata::{self, Metadata};
-use commonware_utils::sequence::FixedBytes;
-use eyre::{bail, ensure};
+use commonware_utils::sequence::U32;
+use eyre::{WrapErr as _, bail};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_cryptography::{Digest, PublicKey};
-use tracing::{Level, Span, info, instrument};
+use tempo_commonware_node_cryptography::PublicKey;
+use tracing::{Level, Span, info, instrument, warn};
 
 use crate::orchestrator::ingress::Activity;
 
 use super::ingress::Message;
 
-const METADATA_KEY: FixedBytes<12> = FixedBytes::new([
-    b'O', b'R', b'C', b'H', b'E', b'S', b'T', b'R', b'A', b'T', b'O', b'R',
-]);
+const ACTIVE_EPOCH_KEY: u32 = 0;
+const PREVIOUS_EPOCH_KEY: u32 = 1;
 
 const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
@@ -33,7 +32,8 @@ pub(crate) struct Actor<TBlocker, TContext> {
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     metrics: Metrics,
-    epoch_to_engine: BTreeMap<u64, Handle<()>>,
+    active_epoch: Option<(u64, Handle<()>)>,
+    previous_epoch: Option<(u64, Handle<()>)>,
 }
 
 impl<TBlocker, TContext> Actor<TBlocker, TContext>
@@ -76,7 +76,8 @@ where
                 active_epochs,
                 latest_epoch,
             },
-            epoch_to_engine: BTreeMap::new(),
+            active_epoch: None,
+            previous_epoch: None,
         }
     }
 
@@ -138,28 +139,45 @@ where
         let mut metadata = Metadata::init(
             self.context.with_label("metadata"),
             metadata::Config {
-                partition: format!("{}-metadata", self.config.partition_prefix),
-                codec_config: ((), ()),
+                partition: format!("{}_metadata", self.config.partition_prefix),
+                codec_config: (),
             },
         )
         .await
         .expect("failed to initialize orchestrator metadata");
 
-        // Enter the initial epoch
-        let (epoch, seed) = match metadata.get(&METADATA_KEY).cloned() {
-            Some(val) => val,
-            None => {
-                let epoch = 0;
-                let seed = self.config.application.genesis(epoch).await;
-                (epoch, seed)
-            }
-        };
+        let previous = metadata.get(&U32::from(PREVIOUS_EPOCH_KEY)).copied();
+        let active = metadata
+            .get(&U32::from(ACTIVE_EPOCH_KEY))
+            .copied()
+            .inspect(|epoch| info!(epoch, "recovered rising epoch from disk"))
+            .unwrap_or_else(|| {
+                info!("no rising epoch found on disk; starting from 0");
+                0
+            });
 
+        if let Some(previous) = previous {
+            info!(previous, "recovered previous epoch from disk");
+            assert!(
+                previous < active,
+                "invariant violated: active epoch `{active}` must be greater \
+                than previous epoch `{previous}`",
+            );
+            let _ = self
+                .begin_epoch::<false>(
+                    None,
+                    previous,
+                    &mut metadata,
+                    &mut pending_mux,
+                    &mut recovered_mux,
+                    &mut resolver_mux,
+                )
+                .await;
+        }
         let _ = self
-            .begin_epoch(
+            .begin_epoch::<true>(
                 None,
-                epoch,
-                seed,
+                active,
                 &mut metadata,
                 &mut pending_mux,
                 &mut recovered_mux,
@@ -173,10 +191,9 @@ where
             match msg.command {
                 Activity::EpochBoundaryReached(epoch_boundary_reached) => {
                     let _: Result<_, _> = self
-                        .begin_epoch(
+                        .begin_epoch::<true>(
                             Some(cause),
                             epoch_boundary_reached.epoch.saturating_add(1),
-                            epoch_boundary_reached.seed,
                             &mut metadata,
                             &mut pending_mux,
                             &mut recovered_mux,
@@ -185,71 +202,78 @@ where
                         .await;
                 }
                 Activity::EpochEntered(epoch_entered) => {
-                    let _: Result<_, _> = self.sunset_epoch(cause, epoch_entered.epoch).await;
+                    let _: Result<_, _> = self
+                        .end_previous_epoch(cause, epoch_entered.epoch, &mut metadata)
+                        .await;
                 }
             }
         }
     }
 
-    /// Enters an epoch by sunsetting engines that came before.
+    /// Stops the previous epoch.
     #[instrument(
         follows_from = [cause],
         skip_all,
         fields(epoch),
         err(level = Level::WARN),
     )]
-    async fn sunset_epoch(&mut self, cause: Span, epoch: Epoch) -> eyre::Result<()> {
-        let Some(last) = self.epoch_to_engine.last_key_value().map(|(last, _)| *last) else {
+    async fn end_previous_epoch(
+        &mut self,
+        cause: Span,
+        epoch: Epoch,
+        metadata: &mut Metadata<ContextCell<TContext>, U32, Epoch>,
+    ) -> eyre::Result<()> {
+        let Some((running, engine)) = self.previous_epoch.take() else {
             bail!(
-                "received a signal that epoch `{epoch}` was entered, but there was no engine at all running"
+                "attempted to stop the engine backing the epoch before the \
+                new epoch `{epoch}`, but no engine was running; that does not \
+                affect the currently running epoch but should not happen"
             );
         };
+        engine.abort();
 
-        ensure!(
-            epoch == last,
-            "epoch entered is `{epoch}`, but highest epoch running is `{last}`; ignoring signal",
-        );
-
-        let first = self
-            .epoch_to_engine
-            .first_key_value()
-            .map(|(first, _)| *first)
-            .expect("if there is a last entry, there must be a first entry in the map");
-
-        for epoch in first..last {
-            if let Some(engine) = self.epoch_to_engine.remove(&epoch) {
-                // TODO(janis): this is very not-graceful. Is it ok to just nuke
-                // the engine or do we need a cancellation token or some other
-                // mechanism to take down the engine gracefully?
-                info!(epoch, "closing consensus engine for epoch");
-                engine.abort();
-                self.metrics.active_epochs.dec();
-            }
+        if let Some(stored) = metadata.remove(&PREVIOUS_EPOCH_KEY.into())
+            && running != stored
+        {
+            warn!(
+                stored,
+                running,
+                "the outgoing epoch stored on disk did not match the one \
+                running; still deleting it from disk and stopping the engine, \
+                but but this should not happen",
+            );
         }
-        Ok(())
+        metadata
+            .sync()
+            .await
+            .wrap_err("failed deleting information on previous epoch from disk")
     }
 
-    /// Begins a new epoch by spawning a consensus engine.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "can make this into a struct at the cost of simplicity"
-    )]
+    /// Begins a new epoch by spawning a consensus engine backing it.
+    ///
+    /// Also starts the process of sunsetting the previously active epoch.
+    ///
+    /// # Note on the const generic
+    ///
+    /// The method is also used to spin up the previous epoch on startup. This
+    /// epoch must not however overwrite the active epoch written to disk.
+    /// Therefore we make use of const generic: if `IS_ACTIVE`, then the
+    /// active epoch is written to disk.
+    ///
+    /// Due to monomorphization we end up with 2 different methods: one for
+    /// startup, and one for normal operation.
     #[expect(for_loops_over_fallibles, reason = "inside expanded proc macro code")]
     #[instrument(
         follows_from = cause,
         skip_all,
-        fields(
-            %incoming_epoch,
-            %seed,
-        ),
+        fields(%epoch, is_starting_active_epoch = IS_ACTIVE),
         err(level = Level::WARN),
     )]
-    async fn begin_epoch(
+    async fn begin_epoch<const IS_ACTIVE: bool>(
         &mut self,
         cause: Option<Span>,
-        incoming_epoch: Epoch,
-        seed: Digest,
-        metadata: &mut Metadata<ContextCell<TContext>, FixedBytes<12>, (Epoch, Digest)>,
+        epoch: Epoch,
+        metadata: &mut Metadata<ContextCell<TContext>, U32, Epoch>,
         pending_mux: &mut MuxHandle<
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -263,17 +287,33 @@ where
             impl Receiver<PublicKey = PublicKey>,
         >,
     ) -> eyre::Result<()> {
-        if let Some((epoch, _)) = self.epoch_to_engine.last_key_value() {
-            ensure!(
-                &incoming_epoch > epoch,
-                "highest epoch running is `{epoch}`; either incoming epoch \
-                `{incoming_epoch}` was already begun or is too old"
-            );
+        if let Some((current, engine)) = self.active_epoch.take() {
+            if epoch > current {
+                self.active_epoch = Some((current, engine));
+                bail!(
+                    "current epoch is `{current}`, but epoch to be started is \
+                    `{epoch}`; this means it's either already started or too old; \
+                    ignoring the request",
+                );
+            }
+
+            if let Some(old) = self.previous_epoch.replace((current, engine)) {
+                warn!(
+                    current_epoch = current,
+                    straggling_epoch = old.0,
+                    "sunsetting current epoch but an even older epoch was not \
+                    yet completely wound down; stopping it down now but this \
+                    should not happen",
+                );
+                old.1.abort();
+            }
+            metadata.put(PREVIOUS_EPOCH_KEY.into(), current);
         }
 
-        let _ = metadata
-            .put_sync(METADATA_KEY, (incoming_epoch, seed))
-            .await;
+        if IS_ACTIVE {
+            metadata.put(ACTIVE_EPOCH_KEY.into(), epoch);
+        }
+        let _ = metadata.sync().await;
 
         let engine = threshold_simplex::Engine::new(
             self.context.with_label("consensus_engine"),
@@ -285,11 +325,11 @@ where
                 reporter: self.config.marshal.clone(),
                 supervisor: self.config.supervisor.clone(),
                 partition: format!(
-                    "{partition_prefix}_consensus_epoch_{incoming_epoch}",
+                    "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix
                 ),
                 mailbox_size: self.config.mailbox_size,
-                epoch: incoming_epoch,
+                epoch,
                 namespace: crate::config::NAMESPACE.to_vec(),
 
                 replay_buffer: REPLAY_BUFFER,
@@ -310,22 +350,19 @@ where
         );
 
         // Create epoch-specific subchannels
-        let pending_sc = pending_mux.register(incoming_epoch as u32).await.unwrap();
-        let recovered_sc = recovered_mux.register(incoming_epoch as u32).await.unwrap();
-        let resolver_sc = resolver_mux.register(incoming_epoch as u32).await.unwrap();
+        let pending_sc = pending_mux.register(epoch as u32).await.unwrap();
+        let recovered_sc = recovered_mux.register(epoch as u32).await.unwrap();
+        let resolver_sc = resolver_mux.register(epoch as u32).await.unwrap();
 
         assert!(
-            self.epoch_to_engine
-                .insert(
-                    incoming_epoch,
-                    engine.start(pending_sc, recovered_sc, resolver_sc),
-                )
+            self.active_epoch
+                .replace((epoch, engine.start(pending_sc, recovered_sc, resolver_sc),))
                 .is_none(),
-            "epoch `{incoming_epoch} must not already be backed by a consensus engine",
+            "there must be no engine running at this point because it was shifted to sunsetting at the beginning of this method",
         );
 
         self.metrics.active_epochs.inc();
-        self.metrics.latest_epoch.set(incoming_epoch as i64);
+        self.metrics.latest_epoch.set(epoch as i64);
 
         Ok(())
     }

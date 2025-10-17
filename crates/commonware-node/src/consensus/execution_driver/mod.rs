@@ -267,10 +267,7 @@ impl Inner<Init> {
     fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
         if let Some(epoch) = epoch_of_height(finalized.block.height(), self.heights_per_epoch) {
             if is_last_height_of_epoch(finalized.block.height(), epoch, self.heights_per_epoch)
-                && let Err(error) = self
-                    .state
-                    .orchestrator
-                    .epoch_boundary_reached(epoch, finalized.block.digest())
+                && let Err(error) = self.state.orchestrator.epoch_boundary_reached(epoch)
             {
                 warn!(%error, "could not signal that the end of an epoch was reached");
             }

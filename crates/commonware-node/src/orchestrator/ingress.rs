@@ -1,7 +1,6 @@
 use commonware_consensus::types::Epoch;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
-use tempo_commonware_node_cryptography::Digest;
 use tracing::{Span, debug, instrument};
 
 #[derive(Clone, Debug)]
@@ -15,14 +14,11 @@ impl Mailbox {
     }
 
     /// Signals that boundary of `epoch` was reached and provides `seed` for the next.
-    #[instrument(skip_all, fields(%epoch, %seed), err)]
-    pub(crate) fn epoch_boundary_reached(&self, epoch: Epoch, seed: Digest) -> eyre::Result<()> {
+    #[instrument(skip_all, fields(%epoch), err)]
+    pub(crate) fn epoch_boundary_reached(&self, epoch: Epoch) -> eyre::Result<()> {
         debug!("sending request to orchestrator");
         self.inner
-            .unbounded_send(Message::in_current_span(EpochBoundaryReached {
-                epoch,
-                seed,
-            }))
+            .unbounded_send(Message::in_current_span(EpochBoundaryReached { epoch }))
             .wrap_err("failed sending activity: orchestrator already went away")
     }
 
@@ -75,6 +71,4 @@ pub(super) struct EpochEntered {
 pub(super) struct EpochBoundaryReached {
     /// The epoch that is ending.
     pub(super) epoch: Epoch,
-    /// The seed for the next epoch.
-    pub(super) seed: Digest,
 }
