@@ -626,7 +626,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         Ok(amount_out)
     }
 
-    // TODO: docs
+    /// Fill an order and delete from storage. Returns the next best order and price level.
     fn fill_order(
         &mut self,
         book_key: B256,
@@ -657,26 +657,14 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             // Create a new flip order with flipped side and swapped ticks
             // Bid becomes Ask, Ask becomes Bid
             // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
-            if self
-                .decrement_balance_or_transfer_from(order.maker(), orderbook.base, order.amount())
-                .is_ok()
-            {
-                let new_order_id = self.increment_pending_order_id();
-                let new_order = Order::new_flip(
-                    new_order_id,
-                    order.maker(),
-                    order.book_key(),
-                    order.amount(),
-                    order.flip_tick(),
-                    !order.is_bid(),
-                    order.tick(),
-                )
-                .expect("Flip tick is valid");
-
-                new_order.store(self.storage, self.address);
-
-                // TODO: emit order placed
-            }
+            let _ = self.place_flip(
+                &order.maker(),
+                orderbook.base,
+                order.amount(),
+                !order.is_bid(),
+                order.flip_tick(),
+                order.tick(),
+            );
         }
 
         // Delete the filled order
