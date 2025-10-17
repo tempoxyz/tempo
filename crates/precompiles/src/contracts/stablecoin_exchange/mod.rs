@@ -1038,7 +1038,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             orderbook.best_ask_tick
         };
         if current_tick == i16::MIN {
-            dbg!("insufficient");
             return Err(StablecoinExchangeError::insufficient_liquidity());
         }
 
@@ -1050,6 +1049,30 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 current_tick,
                 is_bid,
             );
+
+            // If no liquidity at this level, move to next tick
+            if level.total_liquidity == 0 {
+                let (next_tick, initialized) = if is_bid {
+                    orderbook::next_initialized_bid_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    )
+                } else {
+                    orderbook::next_initialized_ask_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    )
+                };
+                if !initialized {
+                    return Err(StablecoinExchangeError::insufficient_liquidity());
+                }
+                current_tick = next_tick;
+                continue;
+            }
 
             let price = orderbook::tick_to_price(current_tick);
 
@@ -1070,8 +1093,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             remaining_out -= amount_out_tick;
             amount_in += fill_amount;
 
+            // If we exhausted this level or filled our requirement, move to next tick
             if fill_amount == level.total_liquidity {
-                // Move to next tick if we exhaust this level
                 let (next_tick, initialized) = if is_bid {
                     orderbook::next_initialized_bid_tick(
                         self.storage,
@@ -1088,10 +1111,11 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                     )
                 };
                 if !initialized && remaining_out > 0 {
-                    dbg!("insufficient_liquidity");
                     return Err(StablecoinExchangeError::insufficient_liquidity());
                 }
                 current_tick = next_tick;
+            } else {
+                break;
             }
         }
 
@@ -1128,6 +1152,30 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 is_bid,
             );
 
+            // If no liquidity at this level, move to next tick
+            if level.total_liquidity == 0 {
+                let (next_tick, initialized) = if is_bid {
+                    orderbook::next_initialized_bid_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    )
+                } else {
+                    orderbook::next_initialized_ask_tick(
+                        self.storage,
+                        self.address,
+                        book_key,
+                        current_tick,
+                    )
+                };
+                if !initialized {
+                    return Err(StablecoinExchangeError::insufficient_liquidity());
+                }
+                current_tick = next_tick;
+                continue;
+            }
+
             let price = orderbook::tick_to_price(current_tick);
 
             let fill_amount = if remaining_in > level.total_liquidity {
@@ -1143,8 +1191,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             remaining_in -= fill_amount;
             amount_out += amount_out_tick;
 
+            // If we exhausted this level, move to next tick
             if fill_amount == level.total_liquidity {
-                // Move to next tick if we exhaust this level
                 let (next_tick, initialized) = if is_bid {
                     orderbook::next_initialized_bid_tick(
                         self.storage,
@@ -1164,6 +1212,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                     return Err(StablecoinExchangeError::insufficient_liquidity());
                 }
                 current_tick = next_tick;
+            } else {
+                break;
             }
         }
 

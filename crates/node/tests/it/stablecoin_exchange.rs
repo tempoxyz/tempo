@@ -270,10 +270,12 @@ async fn test_asks() -> eyre::Result<()> {
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
 
+    dbg!("quoteBuy");
     let amount_out = exchange
         .quoteBuy(*base.address(), *quote.address(), fill_amount)
         .call()
         .await?;
+    dbg!("finished quoteBuy");
 
     // Mint quote tokens to the buyer for amount out
     let pending = quote.mint(caller, U256::from(amount_out)).send().await?;
