@@ -288,6 +288,7 @@ async fn test_asks() -> eyre::Result<()> {
         .await?;
     pending.get_receipt().await?;
 
+    dbg!("buying");
     //  Execute buy and assert orders are filled
     let tx = exchange
         .buy(*base.address(), *quote.address(), amount_out, u128::MAX)

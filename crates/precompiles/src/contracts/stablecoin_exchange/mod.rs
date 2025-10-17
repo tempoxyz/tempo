@@ -731,18 +731,20 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     fn fill_orders_exact_out(
         &mut self,
         book_key: B256,
-        base_for_quote: bool,
+        bid: bool,
         mut amount_out: u128,
         max_amount_in: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let mut level = self.get_best_price_level(book_key, base_for_quote)?;
+        dbg!("got here");
+        let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = Order::from_storage(level.head, self.storage, self.address);
 
+        dbg!("here fam");
         let mut total_amount_in = 0;
         while amount_out > 0 {
             let price = tick_to_price(order.tick());
             let fill_amount = amount_out.min(order.remaining());
-            let amount_in = if base_for_quote {
+            let amount_in = if bid {
                 fill_amount
             } else {
                 fill_amount
@@ -752,8 +754,11 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             };
 
             if total_amount_in + amount_in > max_amount_in {
+                dbg!("exceedd");
                 return Err(StablecoinExchangeError::max_input_exceeded());
             }
+
+            dbg!("getting here");
 
             if fill_amount < order.remaining() {
                 self.partial_fill_order(&mut order, &mut level, fill_amount)?;
@@ -762,6 +767,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             } else {
                 let fill_amount = order.remaining();
                 if total_amount_in + fill_amount > max_amount_in {
+                    dbg!("max here");
                     return Err(StablecoinExchangeError::max_input_exceeded());
                 }
 
@@ -789,11 +795,11 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     fn fill_orders_exact_in(
         &mut self,
         book_key: B256,
-        base_for_quote: bool,
+        bid: bool,
         mut amount_in: u128,
         min_amount_out: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let mut level = self.get_best_price_level(book_key, base_for_quote)?;
+        let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = Order::from_storage(level.head, self.storage, self.address);
 
         let mut total_amount_out = 0;
