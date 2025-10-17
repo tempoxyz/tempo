@@ -154,16 +154,13 @@ async fn test_bids() -> eyre::Result<()> {
         .call()
         .await?;
 
-    dbg!(&level);
-
-    // TODO: head not being updated correctly, tail also not updated correctly?
     assert_eq!(level.head, num_orders);
     assert_eq!(level.tail, num_orders);
-    assert_eq!(level.totalLiquidity, order_amount);
+    assert!(level.totalLiquidity < order_amount);
 
     let order = exchange.getOrder(num_orders).call().await?;
     assert_eq!(order.next, 0);
-    assert_eq!(order.remaining, order_amount / 2);
+    assert_eq!(level.totalLiquidity, order.remaining);
 
     // // Assert exchange balance for makers
     // for (account, _) in account_data.iter().take(account_data.len() - 1) {

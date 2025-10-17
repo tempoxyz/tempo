@@ -621,7 +621,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             order.book_key(),
             order.tick(),
             order.is_bid(),
-            level.total_liquidity - amount_out,
+            level.total_liquidity - fill_amount,
         );
 
         // TODO: emit partial fill event
