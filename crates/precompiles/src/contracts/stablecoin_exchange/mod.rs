@@ -694,19 +694,20 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             };
 
             if !has_liquidity {
-                return Err(StablecoinExchangeError::insufficient_liquidity());
+                // No more liquidity at better prices - return None to signal completion
+                None
+            } else {
+                let new_level = PriceLevel::from_storage(
+                    self.storage,
+                    self.address,
+                    book_key,
+                    tick,
+                    order.is_bid(),
+                );
+                let new_order = Order::from_storage(new_level.head, self.storage, self.address);
+
+                Some((new_level, new_order))
             }
-
-            let new_level = PriceLevel::from_storage(
-                self.storage,
-                self.address,
-                book_key,
-                tick,
-                order.is_bid(),
-            );
-            let new_order = Order::from_storage(new_level.head, self.storage, self.address);
-
-            Some((new_level, new_order))
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
