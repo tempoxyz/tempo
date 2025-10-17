@@ -598,7 +598,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         if order.is_bid() {
             self.increment_balance(order.maker(), orderbook.base, fill_amount);
         } else {
-            let price = tick_to_price(order.tick());
             let quote_amount = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount);
         }
@@ -694,19 +693,20 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             };
 
             if !has_liquidity {
-                return Err(StablecoinExchangeError::insufficient_liquidity());
+                // No more liquidity at better prices - return None to signal completion
+                None
+            } else {
+                let new_level = PriceLevel::from_storage(
+                    self.storage,
+                    self.address,
+                    book_key,
+                    tick,
+                    order.is_bid(),
+                );
+                let new_order = Order::from_storage(new_level.head, self.storage, self.address);
+
+                Some((new_level, new_order))
             }
-
-            let new_level = PriceLevel::from_storage(
-                self.storage,
-                self.address,
-                book_key,
-                tick,
-                order.is_bid(),
-            );
-            let new_order = Order::from_storage(new_level.head, self.storage, self.address);
-
-            Some((new_level, new_order))
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
@@ -727,7 +727,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Fill orders for exact output amount
-    #[allow(dead_code)]
     fn fill_orders_exact_out(
         &mut self,
         book_key: B256,
@@ -760,14 +759,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 total_amount_in += amount_in;
                 break;
             } else {
-                let fill_amount = order.remaining();
-                if total_amount_in + fill_amount > max_amount_in {
-                    return Err(StablecoinExchangeError::max_input_exceeded());
-                }
-
                 let (amount_out_received, next_order_info) =
                     self.fill_order(book_key, &mut order, level)?;
-                total_amount_in += fill_amount;
+                total_amount_in += amount_in;
                 amount_out -= amount_out_received;
 
                 if let Some((new_level, new_order)) = next_order_info {
@@ -1076,22 +1070,43 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
             let price = orderbook::tick_to_price(current_tick);
 
-            let base_needed = remaining_out
-                .checked_mul(orderbook::PRICE_SCALE as u128)
-                .and_then(|v| v.checked_div(price as u128))
-                .expect("Base needed calculation overflow");
-            let fill_amount = if base_needed > level.total_liquidity {
-                level.total_liquidity
+            let (fill_amount, amount_in_tick) = if is_bid {
+                // For bids: remaining_out is in quote, amount_in is in base
+                let base_needed = remaining_out
+                    .checked_mul(orderbook::PRICE_SCALE as u128)
+                    .and_then(|v| v.checked_div(price as u128))
+                    .expect("Base needed calculation overflow");
+                let fill_amount = if base_needed > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    base_needed
+                };
+                (fill_amount, fill_amount)
             } else {
-                base_needed
+                // For asks: remaining_out is in base, amount_in is in quote
+                let fill_amount = if remaining_out > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    remaining_out
+                };
+                let quote_needed = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Quote needed calculation overflow");
+                (fill_amount, quote_needed)
             };
-            let amount_out_tick = fill_amount
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .expect("Amount out calculation overflow");
+
+            let amount_out_tick = if is_bid {
+                fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Amount out calculation overflow")
+            } else {
+                fill_amount
+            };
 
             remaining_out -= amount_out_tick;
-            amount_in += fill_amount;
+            amount_in += amount_in_tick;
 
             // If we exhausted this level or filled our requirement, move to next tick
             if fill_amount == level.total_liquidity {
