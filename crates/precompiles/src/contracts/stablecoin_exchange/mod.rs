@@ -735,11 +735,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         mut amount_out: u128,
         max_amount_in: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        dbg!("got here");
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = Order::from_storage(level.head, self.storage, self.address);
 
-        dbg!("here fam");
         let mut total_amount_in = 0;
         while amount_out > 0 {
             let price = tick_to_price(order.tick());
@@ -754,11 +752,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             };
 
             if total_amount_in + amount_in > max_amount_in {
-                dbg!("exceedd");
                 return Err(StablecoinExchangeError::max_input_exceeded());
             }
-
-            dbg!("getting here");
 
             if fill_amount < order.remaining() {
                 self.partial_fill_order(&mut order, &mut level, fill_amount)?;
@@ -767,7 +762,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             } else {
                 let fill_amount = order.remaining();
                 if total_amount_in + fill_amount > max_amount_in {
-                    dbg!("max here");
                     return Err(StablecoinExchangeError::max_input_exceeded());
                 }
 
