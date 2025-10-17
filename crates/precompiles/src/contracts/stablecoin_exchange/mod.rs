@@ -174,7 +174,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         Ok(())
     }
 
-    pub fn quote_buy(
+    pub fn quote_swap_exact_amount_out(
         &mut self,
         token_in: Address,
         token_out: Address,
@@ -190,7 +190,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         self.quote_exact_out(book_key, amount_out, false)
     }
 
-    pub fn quote_sell(
+    pub fn quote_swap_exact_amount_in(
         &mut self,
         token_in: Address,
         token_out: Address,
@@ -206,7 +206,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         self.quote_exact_in(book_key, amount_in, true)
     }
 
-    pub fn sell(
+    pub fn swap_exact_amount_in(
         &mut self,
         sender: &Address,
         token_in: Address,
@@ -242,7 +242,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         Ok(amount_out)
     }
 
-    pub fn buy(
+    pub fn swap_exact_amount_out(
         &mut self,
         sender: &Address,
         token_in: Address,
@@ -1668,11 +1668,11 @@ mod tests {
 
         let order_id_0 = exchange
             .place(&alice, base_token, amount, true, tick)
-            .expect("Order should exceed");
+            .expect("Swap should succeed");
 
         let order_id_1 = exchange
             .place(&alice, base_token, amount, true, tick)
-            .expect("Order should exceed");
+            .expect("Swap should succeed");
         assert_eq!(order_id_0, 1);
         assert_eq!(order_id_1, 2);
         assert_eq!(exchange.active_order_id(), 0);
@@ -1790,7 +1790,7 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_buy() {
+    fn test_quote_swap_exact_amount_out() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1819,8 +1819,8 @@ mod tests {
             .expect("Execute block should succeed");
 
         let amount_in = exchange
-            .quote_buy(quote_token, base_token, amount_out)
-            .expect("Could not quote buy");
+            .quote_swap_exact_amount_out(quote_token, base_token, amount_out)
+            .expect("Swap should succeed");
 
         let price = orderbook::tick_to_price(tick);
         let expected_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
@@ -1828,7 +1828,7 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_sell() {
+    fn test_quote_swap_exact_amount_in() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1857,8 +1857,8 @@ mod tests {
             .expect("Execute block should succeed");
 
         let amount_out = exchange
-            .quote_sell(base_token, quote_token, amount_in)
-            .expect("Could not quote sell");
+            .quote_swap_exact_amount_in(base_token, quote_token, amount_in)
+            .expect("Swap should succeed");
 
         // Calculate expected amount_out based on tick price
         let price = orderbook::tick_to_price(tick);
@@ -1867,7 +1867,7 @@ mod tests {
     }
 
     #[test]
-    fn test_buy() {
+    fn test_swap_exact_amount_out() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1902,8 +1902,8 @@ mod tests {
         let max_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
 
         let amount_in = exchange
-            .buy(&bob, quote_token, base_token, amount_out, max_amount_in)
-            .expect("Buy should succeed");
+            .swap_exact_amount_out(&bob, quote_token, base_token, amount_out, max_amount_in)
+            .expect("Swap should succeed");
 
         let mut base_tip20 =
             TIP20Token::new(address_to_token_id_unchecked(&base_token), exchange.storage);
@@ -1915,7 +1915,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sell() {
+    fn test_swap_exact_amount_in() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1950,8 +1950,8 @@ mod tests {
         let min_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
 
         let amount_out = exchange
-            .sell(&bob, base_token, quote_token, amount_in, min_amount_out)
-            .expect("Sell should succeed");
+            .swap_exact_amount_in(&bob, base_token, quote_token, amount_in, min_amount_out)
+            .expect("Swap should succeed");
 
         let mut quote_tip20 = TIP20Token::new(
             address_to_token_id_unchecked(&quote_token),
@@ -2001,8 +2001,8 @@ mod tests {
         exchange.set_balance(bob, base_token, amount);
 
         exchange
-            .sell(&bob, base_token, quote_token, amount, 0)
-            .expect("Sell should succeed");
+            .swap_exact_amount_in(&bob, base_token, quote_token, amount, 0)
+            .expect("Swap should succeed");
 
         // Assert that the order has filled
         let filled_order = Order::from_storage(flip_order_id, exchange.storage, exchange.address);

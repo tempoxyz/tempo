@@ -95,12 +95,12 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     IStablecoinExchange::IStablecoinExchangeErrors,
                 >(calldata, msg_sender, |s, call| self.cancel(s, call.orderId))
             }
-            IStablecoinExchange::sellCall::SELECTOR => {
+            IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
                 mutate::<
-                    IStablecoinExchange::sellCall,
+                    IStablecoinExchange::swapExactAmountInCall,
                     IStablecoinExchange::IStablecoinExchangeErrors,
                 >(calldata, msg_sender, |s, call| {
-                    self.sell(
+                    self.swap_exact_amount_in(
                         s,
                         call.tokenIn,
                         call.tokenOut,
@@ -109,33 +109,35 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     )
                 })
             }
-            IStablecoinExchange::buyCall::SELECTOR => {
-                mutate::<IStablecoinExchange::buyCall, IStablecoinExchange::IStablecoinExchangeErrors>(
-                    calldata,
-                    msg_sender,
-                    |s, call| {
-                        self.buy(
-                            s,
-                            call.tokenIn,
-                            call.tokenOut,
-                            call.amountOut,
-                            call.maxAmountIn,
-                        )
-                    },
-                )
+            IStablecoinExchange::swapExactAmountOutCall::SELECTOR => {
+                mutate::<
+                    IStablecoinExchange::swapExactAmountOutCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, msg_sender, |s, call| {
+                    self.swap_exact_amount_out(
+                        s,
+                        call.tokenIn,
+                        call.tokenOut,
+                        call.amountOut,
+                        call.maxAmountIn,
+                    )
+                })
             }
-            IStablecoinExchange::quoteSellCall::SELECTOR => view_result::<
-                IStablecoinExchange::quoteSellCall,
+            IStablecoinExchange::quoteSwapExactAmountInCall::SELECTOR => view_result::<
+                IStablecoinExchange::quoteSwapExactAmountInCall,
                 IStablecoinExchange::IStablecoinExchangeErrors,
-            >(calldata, |call| {
-                self.quote_sell(call.tokenIn, call.tokenOut, call.amountIn)
-            }),
-            IStablecoinExchange::quoteBuyCall::SELECTOR => view_result::<
-                IStablecoinExchange::quoteBuyCall,
-                IStablecoinExchange::IStablecoinExchangeErrors,
-            >(calldata, |call| {
-                self.quote_buy(call.tokenIn, call.tokenOut, call.amountOut)
-            }),
+            >(
+                calldata,
+                |call| self.quote_swap_exact_amount_in(call.tokenIn, call.tokenOut, call.amountIn),
+            ),
+            IStablecoinExchange::quoteSwapExactAmountOutCall::SELECTOR => {
+                view_result::<
+                    IStablecoinExchange::quoteSwapExactAmountOutCall,
+                    IStablecoinExchange::IStablecoinExchangeErrors,
+                >(calldata, |call| {
+                    self.quote_swap_exact_amount_out(call.tokenIn, call.tokenOut, call.amountOut)
+                })
+            }
             IStablecoinExchange::executeBlockCall::SELECTOR => {
                 mutate_void::<
                     IStablecoinExchange::executeBlockCall,
@@ -186,22 +188,22 @@ mod tests {
     }
 
     #[test]
-    fn test_sell_call() {
+    fn test_swap_exact_amount_in_call() {
         // TODO:
     }
 
     #[test]
-    fn test_buy_call() {
+    fn test_swap_exact_amount_out_call() {
         // TODO:
     }
 
     #[test]
-    fn test_quote_sell_call() {
+    fn test_quote_swap_exact_amount_in_call() {
         // TODO:
     }
 
     #[test]
-    fn test_quote_buy_call() {
+    fn test_quote_swap_exact_amount_out_call() {
         // TODO:
     }
 

@@ -348,8 +348,8 @@ sol! {
 
         // View functions
         function balanceOf(address user, address token) external view returns (uint128);
-        function quoteBuy(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
-        function quoteSell(address tokenIn, address tokenOut, uint128 amountIn) external view returns (uint128 amountOut);
+        function quoteSwapExactAmountOut(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
+        function quoteSwapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn) external view returns (uint128 amountOut);
         function pairKey(address tokenA, address tokenB) external pure returns (bytes32 key);
         function getPriceLevel(address base, int16 tick, bool isBid) external view returns (PriceLevel memory level);
         function activeOrderId() external view returns (uint128);
@@ -360,8 +360,8 @@ sol! {
         function createPair(address base) external returns (bytes32 key);
 
         // Taker functions
-        function sell(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
-        function buy(address tokenIn, address tokenOut, uint128 amountOut, uint128 maxAmountIn) external returns (uint128 amountIn);
+        function swapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
+        function swapExactAmountOut(address tokenIn, address tokenOut, uint128 amountOut, uint128 maxAmountIn) external returns (uint128 amountIn);
 
         // Maker functions
         function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
