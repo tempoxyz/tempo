@@ -674,14 +674,20 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
         let fee_payer_signature = u.arbitrary()?;
 
         // Ensure valid_before > valid_after if both are set
-        let valid_after: Option<u64> = u.arbitrary()?;
+        // Note: We avoid generating Some(0) for valid_after because in RLP encoding,
+        // 0 encodes as 0x80 (EMPTY_STRING_CODE), which is indistinguishable from None.
+        // This is a known limitation of RLP for optional integer fields.
+        let valid_after: Option<u64> = u.arbitrary::<Option<u64>>()?.filter(|v| *v != 0);
         let valid_before: Option<u64> = match valid_after {
             Some(after) => {
                 // Generate a value greater than valid_after
                 let offset: u64 = u.int_in_range(1..=1000)?;
                 Some(after.saturating_add(offset))
             }
-            None => u.arbitrary()?,
+            None => {
+                // Similarly avoid Some(0) for valid_before
+                u.arbitrary::<Option<u64>>()?.filter(|v| *v != 0)
+            }
         };
 
         Ok(Self {
