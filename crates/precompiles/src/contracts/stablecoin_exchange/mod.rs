@@ -19,7 +19,9 @@ use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
         StorageProvider, TIP20Token, address_to_token_id_unchecked,
-        stablecoin_exchange::orderbook::compute_book_key,
+        stablecoin_exchange::orderbook::{
+            compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
+        },
         storage::{StorageOps, slots::mapping_slot},
         types::{IStablecoinExchange, ITIP20, StablecoinExchangeError, StablecoinExchangeEvents},
     },
@@ -523,6 +525,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// Process a single pending order into the active orderbook
     fn process_pending_order(&mut self, order_id: u128) {
         let order = Order::from_storage(order_id, self.storage, self.address);
+
+        // If the order is already canceled, return early
         if order.maker().is_zero() {
             return;
         }
@@ -595,10 +599,6 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             order.is_bid(),
         );
 
-        let new_remaining = order.remaining() - fill_amount;
-        order.update_remaining(new_remaining, self.storage, self.address);
-        level.total_liquidity -= fill_amount;
-
         if order.is_bid() {
             self.increment_balance(order.maker(), orderbook.base, fill_amount);
         } else {
@@ -607,6 +607,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.increment_balance(order.maker(), orderbook.quote, quote_amount);
         }
 
+        let new_remaining = order.remaining() - fill_amount;
         if new_remaining == 0 {
             if order.is_flip() {
                 // Create a new flip order with flipped side and swapped ticks
@@ -628,44 +629,47 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
                 new_order.store(self.storage, self.address);
             }
 
-            if order.prev() != 0 {
-                Order::update_next_order(order.prev(), order.next(), self.storage, self.address);
-            } else {
-                level.head = order.next();
-            }
-
-            if order.next() != 0 {
-                Order::update_prev_order(
-                    order.order_id(),
-                    order.prev(),
-                    self.storage,
-                    self.address,
-                );
-            } else {
-                level.tail = order.prev();
-            }
+            // Remove order from storage
             order.delete(self.storage, self.address);
 
-            level.store(
-                self.storage,
-                self.address,
-                order.book_key(),
-                order.tick(),
-                order.is_bid(),
-            );
+            if order.next() != 0 {
+                Order::update_prev_order(order.next(), order.prev(), self.storage, self.address);
+                level.head = order.next();
 
-            if level.head == 0 {
+                level.store(
+                    self.storage,
+                    self.address,
+                    order.book_key(),
+                    order.tick(),
+                    order.is_bid(),
+                );
+
+                order.next()
+            } else {
+                // If there is no more liquidity at tick, clear tick bit
                 let mut bitmap =
                     orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
+                // TODO: update to remove storage from `TickBitmap::new` and to pass in
+                // storage, address to `clear_tick_bit` to better indicate that this is updating
+                // storage
                 bitmap
                     .clear_tick_bit(order.tick(), order.is_bid())
                     .expect("Tick is valid");
 
+                level.delete(
+                    self.storage,
+                    self.address,
+                    order.book_key(),
+                    order.tick(),
+                    order.is_bid(),
+                );
+
                 0
-            } else {
-                order.next()
             }
         } else {
+            order.update_remaining(new_remaining, self.storage, self.address);
+            level.total_liquidity -= fill_amount;
+
             level.store(
                 self.storage,
                 self.address,
@@ -829,9 +833,150 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         Ok(amount_in)
     }
 
-    // TODO: clean up
-    /// Fill orders for exact input amount
-    #[allow(dead_code)]
+    // // TODO: clean up
+    // /// Fill orders for exact input amount
+    // #[allow(dead_code)]
+    // fn fill_orders_exact_in(
+    //     &mut self,
+    //     book_key: B256,
+    //     base_for_quote: bool,
+    //     amount_in: u128,
+    //     min_amount_out: u128,
+    // ) -> Result<u128, StablecoinExchangeError> {
+    //     let mut remaining_in = amount_in;
+    //     let mut amount_out = 0u128;
+    //     let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+    //
+    //     if base_for_quote {
+    //         let mut current_tick = orderbook.best_bid_tick;
+    //         if current_tick == i16::MIN {
+    //             return Err(StablecoinExchangeError::insufficient_liquidity());
+    //         }
+    //
+    //         let mut level =
+    //             PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, true);
+    //         let mut order_id = level.head;
+    //
+    //         while remaining_in > 0 {
+    //             let price = tick_to_price(current_tick);
+    //             let order = Order::from_storage(order_id, self.storage, self.address);
+    //             let order_remaining = order.remaining();
+    //
+    //             let fill_amount = if remaining_in > order_remaining {
+    //                 order_remaining
+    //             } else {
+    //                 remaining_in
+    //             };
+    //             let quote_out = fill_amount
+    //                 .checked_mul(price as u128)
+    //                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+    //                 .expect("Quote out calculation overflow");
+    //
+    //             order_id = self.fill_order(order_id, fill_amount);
+    //
+    //             remaining_in -= fill_amount;
+    //             amount_out += quote_out;
+    //
+    //             if remaining_in == 0 {
+    //                 if amount_out < min_amount_out {
+    //                     return Err(StablecoinExchangeError::insufficient_output());
+    //                 }
+    //                 return Ok(amount_out);
+    //             }
+    //
+    //             if order_id == 0 {
+    //                 let mut bitmap =
+    //                     orderbook::TickBitmap::new(self.storage, self.address, book_key);
+    //                 let (next_tick, initialized) = bitmap.next_initialized_bid_tick(current_tick);
+    //                 if !initialized {
+    //                     return Err(StablecoinExchangeError::insufficient_liquidity());
+    //                 }
+    //
+    //                 current_tick = next_tick;
+    //                 orderbook::Orderbook::update_best_bid_tick(
+    //                     self.storage,
+    //                     self.address,
+    //                     book_key,
+    //                     current_tick,
+    //                 );
+    //                 level = PriceLevel::from_storage(
+    //                     self.storage,
+    //                     self.address,
+    //                     book_key,
+    //                     current_tick,
+    //                     true,
+    //                 );
+    //                 order_id = level.head;
+    //             }
+    //         }
+    //     } else {
+    //         let mut current_tick = orderbook.best_ask_tick;
+    //         if current_tick == i16::MAX {
+    //             return Err(StablecoinExchangeError::insufficient_liquidity());
+    //         }
+    //
+    //         let mut level =
+    //             PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, false);
+    //         let mut order_id = level.head;
+    //
+    //         while remaining_in > 0 {
+    //             let price = orderbook::tick_to_price(current_tick);
+    //
+    //             let order = Order::from_storage(order_id, self.storage, self.address);
+    //             let order_remaining = order.remaining();
+    //
+    //             let base_out = remaining_in
+    //                 .checked_mul(orderbook::PRICE_SCALE as u128)
+    //                 .and_then(|v| v.checked_div(price as u128))
+    //                 .expect("Base out calculation overflow");
+    //             let fill_amount = if base_out > order_remaining {
+    //                 order_remaining
+    //             } else {
+    //                 base_out
+    //             };
+    //
+    //             remaining_in -= (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+    //             amount_out += fill_amount;
+    //
+    //             order_id = self.fill_order(order_id, fill_amount);
+    //
+    //             if remaining_in == 0 {
+    //                 if amount_out < min_amount_out {
+    //                     return Err(StablecoinExchangeError::insufficient_output());
+    //                 }
+    //                 return Ok(amount_out);
+    //             }
+    //
+    //             if order_id == 0 {
+    //                 let mut bitmap =
+    //                     orderbook::TickBitmap::new(self.storage, self.address, book_key);
+    //                 let (next_tick, initialized) = bitmap.next_initialized_ask_tick(current_tick);
+    //                 if !initialized {
+    //                     return Err(StablecoinExchangeError::insufficient_liquidity());
+    //                 }
+    //
+    //                 current_tick = next_tick;
+    //                 orderbook::Orderbook::update_best_ask_tick(
+    //                     self.storage,
+    //                     self.address,
+    //                     book_key,
+    //                     current_tick,
+    //                 );
+    //                 level = PriceLevel::from_storage(
+    //                     self.storage,
+    //                     self.address,
+    //                     book_key,
+    //                     current_tick,
+    //                     false,
+    //                 );
+    //                 order_id = level.head;
+    //             }
+    //         }
+    //     }
+    //
+    //     Ok(amount_out)
+    // }
+
     fn fill_orders_exact_in(
         &mut self,
         book_key: B256,
@@ -839,139 +984,161 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         amount_in: u128,
         min_amount_out: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let mut remaining_in = amount_in;
-        let mut amount_out = 0u128;
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
-        if base_for_quote {
-            let mut current_tick = orderbook.best_bid_tick;
-            if current_tick == i16::MIN {
+        let mut current_tick = if base_for_quote {
+            let bid_tick = orderbook.best_bid_tick;
+            if bid_tick == i16::MIN {
                 return Err(StablecoinExchangeError::insufficient_liquidity());
             }
+            bid_tick
+        } else {
+            let ask_tick = orderbook.best_ask_tick;
+            if ask_tick == i16::MAX {
+                return Err(StablecoinExchangeError::insufficient_liquidity());
+            }
+            ask_tick
+        };
 
-            let mut level =
-                PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, true);
-            let mut order_id = level.head;
+        // Get the best order
+        let mut level =
+            PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, true);
+        let mut price = tick_to_price(current_tick);
+        let mut order = Order::from_storage(level.head, self.storage, self.address);
 
-            while remaining_in > 0 {
-                let price = orderbook::tick_to_price(current_tick);
+        let mut remaining_in = amount_in;
+        let mut total_amount_out = 0;
+        while remaining_in > 0 {
+            if remaining_in < order.remaining() {
+                let new_remaining = order.remaining() - remaining_in;
+                order.update_remaining(new_remaining, self.storage, self.address);
 
-                let order = Order::from_storage(order_id, self.storage, self.address);
-                let order_remaining = order.remaining();
-
-                let fill_amount = if remaining_in > order_remaining {
-                    order_remaining
-                } else {
-                    remaining_in
-                };
-                let quote_out = fill_amount
+                let amount_out = order
+                    .remaining()
                     .checked_mul(price as u128)
                     .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
                     .expect("Quote out calculation overflow");
 
-                remaining_in -= fill_amount;
-                amount_out += quote_out;
+                PriceLevel::update_total_liquidity(
+                    self.storage,
+                    self.address,
+                    order.book_key(),
+                    order.tick(),
+                    order.is_bid(),
+                    level.total_liquidity - amount_out,
+                );
 
-                order_id = self.fill_order(order_id, fill_amount);
+                total_amount_out += amount_out;
+                break;
+            } else {
+                remaining_in -= order.remaining();
 
-                if remaining_in == 0 {
-                    if amount_out < min_amount_out {
-                        return Err(StablecoinExchangeError::insufficient_output());
+                let amount_out = order
+                    .remaining()
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .expect("Quote out calculation overflow");
+                total_amount_out += amount_out;
+
+                order.delete(self.storage, self.address);
+
+                if order.is_flip() {
+                    // Create a new flip order with flipped side and swapped ticks
+                    // Bid becomes Ask, Ask becomes Bid
+                    // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
+                    if self
+                        .decrement_balance_or_transfer_from(
+                            order.maker(),
+                            orderbook.base,
+                            order.amount(),
+                        )
+                        .is_ok()
+                    {
+                        let new_order_id = self.increment_pending_order_id();
+                        let new_order = Order::new_flip(
+                            new_order_id,
+                            order.maker(),
+                            order.book_key(),
+                            order.amount(),
+                            order.flip_tick(),
+                            !order.is_bid(),
+                            order.tick(),
+                        )
+                        .expect("Flip tick is valid");
+
+                        new_order.store(self.storage, self.address);
                     }
-                    return Ok(amount_out);
                 }
 
-                if order_id == 0 {
-                    let mut bitmap =
-                        orderbook::TickBitmap::new(self.storage, self.address, book_key);
-                    let (next_tick, initialized) = bitmap.next_initialized_bid_tick(current_tick);
-                    if !initialized {
-                        return Err(StablecoinExchangeError::insufficient_liquidity());
-                    }
-
-                    current_tick = next_tick;
-                    orderbook::Orderbook::update_best_bid_tick(
+                // If this is the last order in tick, delete the price level
+                if order.next() == 0 {
+                    level.delete(
                         self.storage,
                         self.address,
                         book_key,
-                        current_tick,
+                        order.tick(),
+                        order.is_bid(),
                     );
+
+                    let mut bitmap =
+                        orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
+                    // TODO: update to remove storage from `TickBitmap::new` and to pass in
+                    // storage, address to `clear_tick_bit` to better indicate that this is updating
+                    // storage
+                    bitmap
+                        .clear_tick_bit(order.tick(), order.is_bid())
+                        .expect("Tick is valid");
+
+                    let (tick, has_liquidity) = if base_for_quote {
+                        next_initialized_bid_tick(
+                            self.storage,
+                            self.address,
+                            book_key,
+                            order.tick(),
+                        )
+                    } else {
+                        next_initialized_ask_tick(
+                            self.storage,
+                            self.address,
+                            book_key,
+                            order.tick(),
+                        )
+                    };
+
+                    if !has_liquidity {
+                        return Err(StablecoinExchangeError::insufficient_liquidity());
+                    }
+
                     level = PriceLevel::from_storage(
                         self.storage,
                         self.address,
                         book_key,
-                        current_tick,
-                        true,
+                        tick,
+                        order.is_bid(),
                     );
-                    order_id = level.head;
-                }
-            }
-        } else {
-            let mut current_tick = orderbook.best_ask_tick;
-            if current_tick == i16::MAX {
-                return Err(StablecoinExchangeError::insufficient_liquidity());
-            }
-
-            let mut level =
-                PriceLevel::from_storage(self.storage, self.address, book_key, current_tick, false);
-            let mut order_id = level.head;
-
-            while remaining_in > 0 {
-                let price = orderbook::tick_to_price(current_tick);
-
-                let order = Order::from_storage(order_id, self.storage, self.address);
-                let order_remaining = order.remaining();
-
-                let base_out = remaining_in
-                    .checked_mul(orderbook::PRICE_SCALE as u128)
-                    .and_then(|v| v.checked_div(price as u128))
-                    .expect("Base out calculation overflow");
-                let fill_amount = if base_out > order_remaining {
-                    order_remaining
+                    price = tick_to_price(tick);
+                    order = Order::from_storage(level.head, self.storage, self.address);
                 } else {
-                    base_out
-                };
-
-                remaining_in -= (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
-                amount_out += fill_amount;
-
-                order_id = self.fill_order(order_id, fill_amount);
-
-                if remaining_in == 0 {
-                    if amount_out < min_amount_out {
-                        return Err(StablecoinExchangeError::insufficient_output());
-                    }
-                    return Ok(amount_out);
-                }
-
-                if order_id == 0 {
-                    let mut bitmap =
-                        orderbook::TickBitmap::new(self.storage, self.address, book_key);
-                    let (next_tick, initialized) = bitmap.next_initialized_ask_tick(current_tick);
-                    if !initialized {
-                        return Err(StablecoinExchangeError::insufficient_liquidity());
-                    }
-
-                    current_tick = next_tick;
-                    orderbook::Orderbook::update_best_ask_tick(
+                    level.head = order.next();
+                    PriceLevel::update_total_liquidity(
                         self.storage,
                         self.address,
-                        book_key,
-                        current_tick,
+                        order.book_key(),
+                        order.tick(),
+                        order.is_bid(),
+                        level.total_liquidity - amount_out,
                     );
-                    level = PriceLevel::from_storage(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                        false,
-                    );
-                    order_id = level.head;
+
+                    order = Order::from_storage(order.next(), self.storage, self.address);
                 }
             }
         }
 
-        Ok(amount_out)
+        if total_amount_out < min_amount_out {
+            todo!()
+        } else {
+            Ok(total_amount_out)
+        }
     }
 
     /// Cancel an order and refund tokens to maker
