@@ -20,14 +20,18 @@ fn transitions_three_epochs() {
         linkage,
         heights_per_epoch: 2,
     };
-    let _first = run(setup, |metric, value| {
+
+    let mut epoch_reached = false;
+    let mut height_reached = false;
+    let _first = run(setup, move |metric, value| {
         if metric.ends_with("_orchestrator_latest_epoch") {
             let value = value.parse::<u64>().unwrap();
-            value >= 3
-        } else {
-            false
+            epoch_reached |= value >= 3;
         }
+        if metric.ends_with("_sync_processed_height") {
+            let value = value.parse::<u64>().unwrap();
+            height_reached |= value >= 6;
+        }
+        epoch_reached && height_reached
     });
-
-    std::thread::sleep(Duration::from_secs(1));
 }

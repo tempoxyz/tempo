@@ -50,7 +50,7 @@ pub fn run(
         linkage,
         heights_per_epoch,
     }: Setup,
-    stop_condition: impl Fn(&str, &str) -> bool,
+    mut stop_condition: impl FnMut(&str, &str) -> bool,
 ) -> String {
     let threshold = quorum(how_many);
     let cfg = deterministic::Config::default().with_seed(seed);
