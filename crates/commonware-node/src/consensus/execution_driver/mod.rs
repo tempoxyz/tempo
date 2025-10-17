@@ -290,7 +290,7 @@ impl Inner<Init> {
             epoch = genesis.epoch,
         ),
         ret(Display),
-        err(level = Level::WARN)
+        err(level = Level::ERROR)
     )]
     async fn handle_genesis(mut self, genesis: Genesis) -> eyre::Result<Digest> {
         let source = if genesis.epoch == 0 {
@@ -298,8 +298,19 @@ impl Inner<Init> {
         } else {
             let height = calculate_source_height_of_epoch(genesis.epoch, self.heights_per_epoch);
             let Some((_, digest)) = self.syncer.get_info(height).await else {
-                // TODO(janis): should we just put the response channel into a map and respond later? Or fail?
-                bail!("no information on the source block at height `{height}` exists yet");
+                // XXX: the None case here should not be hit:
+                // 1. an epoch transition is triggered by the application
+                // finalizing the last block of the outgoing epoch.
+                // 2. the finalized block is received from the marshaller (here
+                // called syncer), so we know it must be available and indexed
+                // by the marshaller.
+                // 3. this means this call should always succeed.
+                //
+                // TODO(janis): should we panic instead?
+                bail!(
+                    "no information on the source block at height `{height}` \
+                    exists yet; this is a problem and will likely cause the consensus engine to not start"
+                );
             };
             digest
         };
