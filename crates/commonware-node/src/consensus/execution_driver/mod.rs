@@ -73,7 +73,7 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
 
     /// The number of heights H in an epoch. For a given epoch E, all heights
     /// `E*H+1` to and including `(E+1)*H` make up the epoch. The block at
-    /// `E*H` is said to be the genesis (or seed) of the epoch.
+    /// `E*H` is said to be the genesis (or parent) of the epoch.
     pub(super) heights_per_epoch: u64,
 }
 
@@ -299,7 +299,7 @@ impl Inner<Init> {
             digest
         };
         genesis.response.send(source).map_err(|_| {
-            eyre!("failed returning seed digest for epoch: return channel was already closed")
+            eyre!("failed returning parent digest for epoch: return channel was already closed")
         })?;
         Ok(source)
     }
