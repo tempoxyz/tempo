@@ -17,7 +17,8 @@ use rand::{CryptoRng, Rng};
 use tempo_commonware_node_cryptography::PublicKey;
 use tracing::{Level, Span, info, instrument, warn};
 
-use crate::{epoch, orchestrator::ingress::Finalized};
+use super::ingress::Finalized;
+use crate::epoch;
 
 use super::ingress::Message;
 
@@ -59,12 +60,12 @@ where
 
         context.register(
             "active_epochs",
-            "the number of epochs currently managed by the orchestrator",
+            "the number of epochs currently managed by the epoch manager",
             active_epochs.clone(),
         );
         context.register(
             "latest_epoch",
-            "the latest epoch managed by this orchestrator",
+            "the latest epoch managed by this epoch manager",
             latest_epoch.clone(),
         );
 
@@ -144,7 +145,7 @@ where
             },
         )
         .await
-        .expect("failed to initialize orchestrator metadata");
+        .expect("failed to initialize epoch manager metadata");
 
         let previous = metadata.get(&U32::from(PREVIOUS_EPOCH_KEY)).copied();
         let active = metadata

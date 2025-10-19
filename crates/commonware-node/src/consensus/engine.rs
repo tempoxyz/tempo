@@ -24,7 +24,7 @@ use tempo_node::TempoFullNode;
 
 use crate::{
     config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
-    orchestrator,
+    epoch_manager,
 };
 
 use super::{block::Block, supervisor::Supervisor};
@@ -179,8 +179,8 @@ where
 
         let execution_driver_mailbox = execution_driver.mailbox().clone();
 
-        let (orchestrator, orchestrator_mailbox) = orchestrator::init(
-            orchestrator::Config {
+        let (epoch_manager, epoch_manager_mailbox) = epoch_manager::init(
+            epoch_manager::Config {
                 application: execution_driver_mailbox.clone(),
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
@@ -190,14 +190,14 @@ where
                 marshal: syncer_mailbox,
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
-                partition_prefix: format!("{}_orchestrator", self.partition_prefix),
+                partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
                 signer: self.signer,
                 supervisor: supervisor.clone(),
                 views_to_track: self.views_to_track,
                 views_until_leader_skip: self.views_until_leader_skip,
                 heights_per_epoch: self.heights_per_epoch,
             },
-            self.context.with_label("orchestrator"),
+            self.context.with_label("epoch_manager"),
         );
 
         Ok(Engine {
@@ -212,8 +212,8 @@ where
             resolver_config,
             syncer,
 
-            orchestrator,
-            orchestrator_mailbox,
+            epoch_manager,
+            epoch_manager_mailbox,
         })
     }
 }
@@ -252,8 +252,8 @@ where
     /// local node.
     syncer: marshal::Actor<Block, TContext, BlsScheme>,
 
-    orchestrator: orchestrator::Actor<TBlocker, TContext>,
-    orchestrator_mailbox: orchestrator::Mailbox,
+    epoch_manager: epoch_manager::Actor<TBlocker, TContext>,
+    epoch_manager_mailbox: epoch_manager::Mailbox,
 }
 
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
@@ -336,16 +336,16 @@ where
             marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
 
         let syncer = self.syncer.start(
-            Reporters::from((self.execution_driver_mailbox, self.orchestrator_mailbox)),
+            Reporters::from((self.execution_driver_mailbox, self.epoch_manager_mailbox)),
             self.broadcast_mailbox,
             resolver,
         );
 
-        let orchestrator =
-            self.orchestrator
+        let epoch_manager =
+            self.epoch_manager
                 .start(pending_network, recovered_network, resolver_network);
 
-        try_join_all(vec![broadcast, execution_driver, orchestrator, syncer])
+        try_join_all(vec![broadcast, epoch_manager, execution_driver, syncer])
             .await
             .map(|_| ())
             // TODO: look into adding error context so that we know which

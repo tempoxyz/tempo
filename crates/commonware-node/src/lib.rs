@@ -6,8 +6,8 @@
 pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod epoch;
+pub(crate) mod epoch_manager;
 pub mod metrics;
-pub(crate) mod orchestrator;
 
 use std::net::SocketAddr;
 

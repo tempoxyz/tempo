@@ -50,9 +50,9 @@ impl Reporter for Mailbox {
                 height: block.height(),
                 response,
             }))
-            .wrap_err("orchestrator no longer running")
+            .wrap_err("epoch manager no longer running")
         {
-            warn!(%error, "failed to report finalized block to orchestrator")
+            warn!(%error, "failed to report finalized block to epoch manager")
         }
         let _ = rx.await;
     }
