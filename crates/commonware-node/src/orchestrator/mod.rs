@@ -29,6 +29,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) supervisor: Supervisor,
     pub(crate) views_to_track: u64,
     pub(crate) views_until_leader_skip: u64,
+    pub(crate) heights_per_epoch: u64,
 }
 
 pub(crate) fn init<TBlocker, TContext>(

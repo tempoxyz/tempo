@@ -46,7 +46,7 @@ use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 mod executor;
 
-use crate::{consensus::execution_driver::executor::ExecutorMailbox, epoch, orchestrator};
+use crate::{consensus::execution_driver::executor::ExecutorMailbox, epoch};
 
 use super::block::Block;
 
@@ -134,7 +134,7 @@ where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Runs the execution driver until it is externally stopped.
-    async fn run_until_stopped(self, orchestrator: orchestrator::Mailbox) {
+    async fn run_until_stopped(self) {
         let Self {
             context,
             mailbox,
@@ -142,7 +142,7 @@ where
         } = self;
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
-        let Ok(initialized) = inner.into_initialized(context.clone(), orchestrator).await else {
+        let Ok(initialized) = inner.into_initialized(context.clone()).await else {
             // XXX: relies on into_initialized generating an error event before exit.
             return;
         };
@@ -156,8 +156,8 @@ where
         .await
     }
 
-    pub(super) fn start(mut self, orchestrator: orchestrator::Mailbox) -> Handle<()> {
-        spawn_cell!(self.context, self.run_until_stopped(orchestrator).await)
+    pub(super) fn start(mut self) -> Handle<()> {
+        spawn_cell!(self.context, self.run_until_stopped().await)
     }
 }
 
@@ -265,19 +265,6 @@ impl Inner<Init> {
     )]
     /// Pushes a `finalized` request to the back of the finalization queue.
     fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
-        if let Some(epoch) = epoch::of_height(finalized.block.height(), self.heights_per_epoch) {
-            if epoch::is_last_height(finalized.block.height(), epoch, self.heights_per_epoch)
-                && let Err(error) = self.state.orchestrator.epoch_boundary_reached(epoch)
-            {
-                warn!(%error, "could not signal that the end of an epoch was reached");
-            }
-
-            if epoch::is_first_height(finalized.block.height(), epoch, self.heights_per_epoch)
-                && let Err(error) = self.state.orchestrator.epoch_entered(epoch)
-            {
-                warn!(%error, "could not signal that a new epoch was entered");
-            }
-        }
         self.state.executor_mailbox.forward_finalized(finalized)
     }
 
@@ -627,7 +614,6 @@ impl Inner<Uninit> {
     async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
         mut self,
         context: TContext,
-        orchestrator: orchestrator::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
@@ -679,7 +665,6 @@ impl Inner<Uninit> {
             state: Init {
                 latest_proposed_block: Arc::new(RwLock::new(None)),
                 executor_mailbox: executor.mailbox().clone(),
-                orchestrator,
             },
         };
 
@@ -698,7 +683,6 @@ pub(super) struct Uninit(());
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<Block>>>,
     executor_mailbox: ExecutorMailbox,
-    orchestrator: orchestrator::Mailbox,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.

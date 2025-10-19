@@ -8,7 +8,7 @@ use std::{
 };
 
 use commonware_broadcast::buffered;
-use commonware_consensus::marshal;
+use commonware_consensus::{Reporters, marshal};
 use commonware_cryptography::Signer as _;
 use commonware_p2p::{Blocker, Receiver, Sender};
 use commonware_runtime::{
@@ -195,6 +195,7 @@ where
                 supervisor: supervisor.clone(),
                 views_to_track: self.views_to_track,
                 views_until_leader_skip: self.views_until_leader_skip,
+                heights_per_epoch: self.heights_per_epoch,
             },
             self.context.with_label("orchestrator"),
         );
@@ -329,13 +330,13 @@ where
         ),
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_network);
-        let execution_driver = self.execution_driver.start(self.orchestrator_mailbox);
+        let execution_driver = self.execution_driver.start();
 
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
 
         let syncer = self.syncer.start(
-            self.execution_driver_mailbox,
+            Reporters::from((self.execution_driver_mailbox, self.orchestrator_mailbox)),
             self.broadcast_mailbox,
             resolver,
         );

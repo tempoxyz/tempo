@@ -17,7 +17,7 @@ use rand::{CryptoRng, Rng};
 use tempo_commonware_node_cryptography::PublicKey;
 use tracing::{Level, Span, info, instrument, warn};
 
-use crate::orchestrator::ingress::Activity;
+use crate::{epoch, orchestrator::ingress::Finalized};
 
 use super::ingress::Message;
 
@@ -165,7 +165,6 @@ where
             );
             let _ = self
                 .begin_epoch::<false>(
-                    None,
                     previous,
                     &mut metadata,
                     &mut pending_mux,
@@ -176,7 +175,6 @@ where
         }
         let _ = self
             .begin_epoch::<true>(
-                None,
                 active,
                 &mut metadata,
                 &mut pending_mux,
@@ -188,65 +186,72 @@ where
         // Wait for instructions to transition epochs.
         while let Some(msg) = self.mailbox.next().await {
             let cause = msg.cause;
-            match msg.command {
-                Activity::EpochBoundaryReached(epoch_boundary_reached) => {
-                    let _: Result<_, _> = self
-                        .begin_epoch::<true>(
-                            Some(cause),
-                            epoch_boundary_reached.epoch.saturating_add(1),
-                            &mut metadata,
-                            &mut pending_mux,
-                            &mut recovered_mux,
-                            &mut resolver_mux,
-                        )
-                        .await;
-                }
-                Activity::EpochEntered(epoch_entered) => {
-                    let _: Result<_, _> = self
-                        .end_previous_epoch(cause, epoch_entered.epoch, &mut metadata)
-                        .await;
-                }
-            }
+            let () = self
+                .handle_finalized(
+                    cause,
+                    msg.finalized,
+                    &mut metadata,
+                    &mut pending_mux,
+                    &mut recovered_mux,
+                    &mut resolver_mux,
+                )
+                .await;
         }
     }
 
-    /// Stops the previous epoch.
     #[instrument(
-        follows_from = [cause],
         skip_all,
-        fields(epoch),
-        err(level = Level::WARN),
+        follows_from = [cause]
+        fields(
+            %digest,
+            height,
+        )
     )]
-    async fn end_previous_epoch(
+    async fn handle_finalized(
         &mut self,
         cause: Span,
-        epoch: Epoch,
+        Finalized {
+            digest,
+            height,
+            response,
+        }: Finalized,
         metadata: &mut Metadata<ContextCell<TContext>, U32, Epoch>,
-    ) -> eyre::Result<()> {
-        let Some((running, engine)) = self.previous_epoch.take() else {
-            bail!(
-                "attempted to stop the engine backing the epoch before the \
-                new epoch `{epoch}`, but no engine was running; that does not \
-                affect the currently running epoch but should not happen"
-            );
-        };
-        engine.abort();
+        pending_mux: &mut MuxHandle<
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        >,
+        recovered_mux: &mut MuxHandle<
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        >,
+        resolver_mux: &mut MuxHandle<
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        >,
+    ) {
+        if let Some(epoch) = epoch::of_height(height, self.config.heights_per_epoch) {
+            if epoch::is_last_height(height, epoch, self.config.heights_per_epoch) {
+                info!(
+                    %epoch,
+                    "witnessed finalization of last block of epoch, starting next epoch",
+                );
+                let _ = self
+                    .begin_epoch::<true>(epoch, metadata, pending_mux, recovered_mux, resolver_mux)
+                    .await;
+            }
 
-        if let Some(stored) = metadata.remove(&PREVIOUS_EPOCH_KEY.into())
-            && running != stored
-        {
-            warn!(
-                stored,
-                running,
-                "the outgoing epoch stored on disk did not match the one \
-                running; still deleting it from disk and stopping the engine, \
-                but but this should not happen",
-            );
+            if epoch::is_first_height(height, epoch, self.config.heights_per_epoch)
+                && let Some(previous_epoch) = epoch.checked_sub(1)
+            {
+                info!(
+                    %epoch,
+                    "witnessed finalization of first block of epoch, stopping previous epoch",
+                );
+                let _ = self.end_epoch(previous_epoch, metadata).await;
+            }
         }
-        metadata
-            .sync()
-            .await
-            .wrap_err("failed deleting information on previous epoch from disk")
+
+        let _ = response.send(());
     }
 
     /// Begins a new epoch by spawning a consensus engine backing it.
@@ -262,16 +267,9 @@ where
     ///
     /// Due to monomorphization we end up with 2 different methods: one for
     /// startup, and one for normal operation.
-    #[expect(for_loops_over_fallibles, reason = "inside expanded proc macro code")]
-    #[instrument(
-        follows_from = cause,
-        skip_all,
-        fields(%epoch, is_starting_active_epoch = IS_ACTIVE),
-        err(level = Level::WARN),
-    )]
+    #[instrument(skip_all, fields(epoch), err(level = Level::WARN))]
     async fn begin_epoch<const IS_ACTIVE: bool>(
         &mut self,
-        cause: Option<Span>,
         epoch: Epoch,
         metadata: &mut Metadata<ContextCell<TContext>, U32, Epoch>,
         pending_mux: &mut MuxHandle<
@@ -365,6 +363,38 @@ where
         self.metrics.latest_epoch.set(epoch as i64);
 
         Ok(())
+    }
+
+    #[instrument(skip_all, fields(epoch), err(level = Level::WARN))]
+    async fn end_epoch(
+        &mut self,
+        epoch: Epoch,
+        metadata: &mut Metadata<ContextCell<TContext>, U32, Epoch>,
+    ) -> eyre::Result<()> {
+        let Some((running, engine)) = self.previous_epoch.take() else {
+            bail!(
+                "attempted to stop the engine backing the epoch before the \
+                new epoch `{epoch}`, but no engine was running; that does not \
+                affect the currently running epoch but should not happen"
+            );
+        };
+        engine.abort();
+
+        if let Some(stored) = metadata.remove(&PREVIOUS_EPOCH_KEY.into())
+            && running != stored
+        {
+            warn!(
+                stored,
+                running,
+                "the outgoing epoch stored on disk did not match the one \
+                running; still deleting it from disk and stopping the engine, \
+                but but this should not happen",
+            );
+        }
+        metadata
+            .sync()
+            .await
+            .wrap_err("failed deleting information on previous epoch from disk")
     }
 }
 

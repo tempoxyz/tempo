@@ -1,7 +1,10 @@
-use commonware_consensus::types::Epoch;
+use commonware_consensus::{Block as _, Reporter};
 use eyre::WrapErr as _;
-use futures::channel::mpsc;
-use tracing::{Span, debug, instrument};
+use futures::channel::{mpsc, oneshot};
+use tempo_commonware_node_cryptography::Digest;
+use tracing::{Span, warn};
+
+use crate::consensus::block::Block;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -12,63 +15,45 @@ impl Mailbox {
     pub(super) fn new(inner: mpsc::UnboundedSender<Message>) -> Self {
         Self { inner }
     }
-
-    /// Signals that boundary of `epoch` was reached and provides `seed` for the next.
-    #[instrument(skip_all, fields(%epoch), err)]
-    pub(crate) fn epoch_boundary_reached(&self, epoch: Epoch) -> eyre::Result<()> {
-        debug!("sending request to orchestrator");
-        self.inner
-            .unbounded_send(Message::in_current_span(EpochBoundaryReached { epoch }))
-            .wrap_err("failed sending activity: orchestrator already went away")
-    }
-
-    /// Signals that `epoch` was entered.
-    #[instrument(skip_all, fields(%epoch), err)]
-    pub(crate) fn epoch_entered(&self, epoch: Epoch) -> eyre::Result<()> {
-        debug!("sending request to orchestrator");
-        self.inner
-            .unbounded_send(Message::in_current_span(EpochEntered { epoch }))
-            .wrap_err("failed sending activity: orchestrator already went away")
-    }
 }
 
 pub(super) struct Message {
     pub(super) cause: Span,
-    pub(super) command: Activity,
+    pub(super) finalized: Finalized,
 }
 
 impl Message {
-    fn in_current_span(command: impl Into<Activity>) -> Self {
+    fn in_current_span(finalized: Finalized) -> Self {
         Self {
             cause: Span::current(),
-            command: command.into(),
+            finalized,
         }
     }
 }
 
-pub(super) enum Activity {
-    EpochBoundaryReached(EpochBoundaryReached),
-    EpochEntered(EpochEntered),
+pub(super) struct Finalized {
+    pub(super) digest: Digest,
+    pub(super) height: u64,
+    pub(super) response: oneshot::Sender<()>,
 }
 
-impl From<EpochEntered> for Activity {
-    fn from(value: EpochEntered) -> Self {
-        Self::EpochEntered(value)
+impl Reporter for Mailbox {
+    type Activity = Block;
+
+    async fn report(&mut self, block: Self::Activity) {
+        let (response, rx) = oneshot::channel();
+        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
+        if let Err(error) = self
+            .inner
+            .unbounded_send(Message::in_current_span(Finalized {
+                digest: block.digest(),
+                height: block.height(),
+                response,
+            }))
+            .wrap_err("orchestrator no longer running")
+        {
+            warn!(%error, "failed to report finalized block to orchestrator")
+        }
+        let _ = rx.await;
     }
-}
-
-impl From<EpochBoundaryReached> for Activity {
-    fn from(value: EpochBoundaryReached) -> Self {
-        Self::EpochBoundaryReached(value)
-    }
-}
-
-pub(super) struct EpochEntered {
-    /// The epoch that the application has entered.
-    pub(super) epoch: Epoch,
-}
-
-pub(super) struct EpochBoundaryReached {
-    /// The epoch that is ending.
-    pub(super) epoch: Epoch,
 }
