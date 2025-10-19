@@ -32,7 +32,7 @@ commonware-cryptography.workspace = true
 commonware-macros.workspace = true
 commonware-p2p.workspace = true
 commonware-resolver.workspace = true
-commonware-runtime.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 
 eyre.workspace = true
