@@ -231,23 +231,33 @@ where
     ) {
         if let Some(epoch) = epoch::of_height(height, self.config.heights_per_epoch) {
             if epoch::is_last_height(height, epoch, self.config.heights_per_epoch) {
+                let incoming_epoch = epoch.saturating_add(1);
                 info!(
-                    %epoch,
+                    incoming_epoch,
+                    outgoing_epoch = epoch,
                     "witnessed finalization of last block of epoch, starting next epoch",
                 );
                 let _ = self
-                    .begin_epoch::<true>(epoch, metadata, pending_mux, recovered_mux, resolver_mux)
+                    .begin_epoch::<true>(
+                        incoming_epoch,
+                        metadata,
+                        pending_mux,
+                        recovered_mux,
+                        resolver_mux,
+                    )
                     .await;
             }
 
             if epoch::is_first_height(height, epoch, self.config.heights_per_epoch)
-                && let Some(previous_epoch) = epoch.checked_sub(1)
+                // XXX: This handles the case epoch = 0, height = 1.
+                && let Some(outgoing_epoch) = epoch.checked_sub(1)
             {
                 info!(
-                    %epoch,
+                    incoming_epoch = epoch,
+                    outgoing_epoch,
                     "witnessed finalization of first block of epoch, stopping previous epoch",
                 );
-                let _ = self.end_epoch(previous_epoch, metadata).await;
+                let _ = self.end_epoch(outgoing_epoch, metadata).await;
             }
         }
 
@@ -290,8 +300,8 @@ where
                 self.active_epoch = Some((current, engine));
                 bail!(
                     "current epoch is `{current}`, but epoch to be started is \
-                    `{epoch}`; this means it's either already started or too old; \
-                    ignoring the request",
+                    `{epoch}`; this means it's either already started or too \
+                    old; ignoring the request",
                 );
             }
 
@@ -299,9 +309,9 @@ where
                 warn!(
                     current_epoch = current,
                     straggling_epoch = old.0,
-                    "sunsetting current epoch but an even older epoch was not \
-                    yet completely wound down; stopping it down now but this \
-                    should not happen",
+                    "trying to sunset current epoch but an even older epoch \
+                    was not yet completely wound down; stopping it now but \
+                    this should not happen",
                 );
                 old.1.abort();
             }
@@ -356,7 +366,8 @@ where
             self.active_epoch
                 .replace((epoch, engine.start(pending_sc, recovered_sc, resolver_sc),))
                 .is_none(),
-            "there must be no engine running at this point because it was shifted to sunsetting at the beginning of this method",
+            "there must be no engine active at this point because it was made \
+            the \"previous\" above",
         );
 
         self.metrics.active_epochs.inc();
@@ -388,7 +399,7 @@ where
                 running,
                 "the outgoing epoch stored on disk did not match the one \
                 running; still deleting it from disk and stopping the engine, \
-                but but this should not happen",
+                but this should not happen",
             );
         }
         metadata
