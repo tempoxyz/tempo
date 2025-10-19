@@ -46,7 +46,7 @@ use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 mod executor;
 
-use crate::{consensus::execution_driver::executor::ExecutorMailbox, orchestrator};
+use crate::{consensus::execution_driver::executor::ExecutorMailbox, epoch, orchestrator};
 
 use super::block::Block;
 
@@ -260,19 +260,19 @@ impl Inner<Init> {
         fields(
             block.digest = %finalized.block.digest(),
             block.height = %finalized.block.height(),
-            derived_epoch = epoch_of_height(finalized.block.height(), self.heights_per_epoch),
+            derived_epoch = epoch::of_height(finalized.block.height(), self.heights_per_epoch),
         ),
     )]
     /// Pushes a `finalized` request to the back of the finalization queue.
     fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
-        if let Some(epoch) = epoch_of_height(finalized.block.height(), self.heights_per_epoch) {
-            if is_last_height_of_epoch(finalized.block.height(), epoch, self.heights_per_epoch)
+        if let Some(epoch) = epoch::of_height(finalized.block.height(), self.heights_per_epoch) {
+            if epoch::is_last_height(finalized.block.height(), epoch, self.heights_per_epoch)
                 && let Err(error) = self.state.orchestrator.epoch_boundary_reached(epoch)
             {
                 warn!(%error, "could not signal that the end of an epoch was reached");
             }
 
-            if is_first_height_of_epoch(finalized.block.height(), epoch, self.heights_per_epoch)
+            if epoch::is_first_height(finalized.block.height(), epoch, self.heights_per_epoch)
                 && let Err(error) = self.state.orchestrator.epoch_entered(epoch)
             {
                 warn!(%error, "could not signal that a new epoch was entered");
@@ -293,7 +293,7 @@ impl Inner<Init> {
         let source = if genesis.epoch == 0 {
             self.genesis_block.digest()
         } else {
-            let height = calculate_source_height_of_epoch(genesis.epoch, self.heights_per_epoch);
+            let height = epoch::parent_height(genesis.epoch, self.heights_per_epoch);
             let Some((_, digest)) = self.syncer.get_info(height).await else {
                 // XXX: the None case here should not be hit:
                 // 1. an epoch transition is triggered by the application
@@ -469,7 +469,7 @@ impl Inner<Init> {
 
         // On the last height of the epoch, re-propose the parent instead of
         // constructing a new one.
-        if is_last_height_of_epoch(parent.height(), round.epoch(), self.heights_per_epoch) {
+        if epoch::is_last_height(parent.height(), round.epoch(), self.heights_per_epoch) {
             info!("last height of epoch reached; re-proposing parent");
             return Ok(parent);
         }
@@ -580,7 +580,7 @@ impl Inner<Init> {
         // immediately, and happen very rarely. It's better to optimize for the
         // general case.
         if payload == parent_digest {
-            if is_last_height_of_epoch(block.height(), round.epoch(), self.heights_per_epoch) {
+            if epoch::is_last_height(block.height(), round.epoch(), self.heights_per_epoch) {
                 return Ok((block, true));
             } else {
                 return Ok((block, false));
@@ -732,7 +732,7 @@ async fn verify_block<TContext: Pacer>(
     parent: &Block,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
-    if !is_height_in_epoch(block.height(), epoch, heights_per_epoch) {
+    if !epoch::contains_height(block.height(), epoch, heights_per_epoch) {
         info!("block does not belong to this epoch");
         return Ok(false);
     }
@@ -1002,208 +1002,4 @@ fn report_verification_result(
         }
     }
     Ok(())
-}
-
-/// Returns the first height of `epoch` given `heights_per_epoch`.
-fn calculate_first_height_of_epoch(epoch: Epoch, heights_per_epoch: u64) -> u64 {
-    epoch.saturating_mul(heights_per_epoch).saturating_add(1)
-}
-
-/// Returns the last height of `epoch` given `heights_per_epoch`.
-fn calculate_last_height_of_epoch(epoch: Epoch, heights_per_epoch: u64) -> u64 {
-    epoch.saturating_add(1).saturating_mul(heights_per_epoch)
-}
-
-/// Returns the source or parent height of `epoch` given `heights_per_epoch`.
-fn calculate_source_height_of_epoch(epoch: Epoch, heights_per_epoch: u64) -> u64 {
-    let first_height_of_epoch = calculate_first_height_of_epoch(epoch, heights_per_epoch);
-    first_height_of_epoch.saturating_sub(1)
-}
-
-/// Returns the epoch of `height` given `heights_per_epoch`.
-///
-/// Returns `None` if `height == 0` because it does not fall into any epoch.
-fn epoch_of_height(height: u64, heights_per_epoch: u64) -> Option<Epoch> {
-    (height != 0).then(|| height.saturating_sub(1).saturating_div(heights_per_epoch))
-}
-
-fn is_first_height_of_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
-    height == calculate_first_height_of_epoch(epoch, heights_per_epoch)
-}
-
-/// Returns if the `height` falls inside `epoch`, given `heights_per_epoch`.
-fn is_height_in_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
-    epoch_of_height(height, heights_per_epoch).is_some_and(|calc_epoch| calc_epoch == epoch)
-}
-
-fn is_last_height_of_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
-    height == calculate_last_height_of_epoch(epoch, heights_per_epoch)
-}
-
-#[cfg(test)]
-mod tests {
-    use commonware_consensus::types::Epoch;
-
-    use crate::consensus::execution_driver::{
-        calculate_first_height_of_epoch, calculate_last_height_of_epoch,
-        calculate_source_height_of_epoch, epoch_of_height, is_height_in_epoch,
-    };
-
-    #[track_caller]
-    fn assert_first_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
-        assert_eq!(
-            expected,
-            calculate_first_height_of_epoch(epoch, heights_per_epoch)
-        );
-    }
-
-    #[test]
-    fn first_heights_are_correctly_calculated() {
-        assert_first_height(1, 0, 10);
-        assert_first_height(1, 0, 100);
-        assert_first_height(1, 0, 1000);
-
-        assert_first_height(11, 1, 10);
-        assert_first_height(21, 2, 10);
-        assert_first_height(31, 3, 10);
-
-        assert_first_height(101, 1, 100);
-        assert_first_height(201, 2, 100);
-        assert_first_height(301, 3, 100);
-
-        assert_first_height(1001, 1, 1000);
-        assert_first_height(2001, 2, 1000);
-        assert_first_height(3001, 3, 1000);
-    }
-
-    #[track_caller]
-    fn assert_last_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
-        assert_eq!(
-            expected,
-            calculate_last_height_of_epoch(epoch, heights_per_epoch)
-        );
-    }
-
-    #[test]
-    fn last_heights_are_correctly_calculated() {
-        assert_last_height(10, 0, 10);
-        assert_last_height(100, 0, 100);
-        assert_last_height(1000, 0, 1000);
-
-        assert_last_height(20, 1, 10);
-        assert_last_height(30, 2, 10);
-        assert_last_height(40, 3, 10);
-
-        assert_last_height(200, 1, 100);
-        assert_last_height(300, 2, 100);
-        assert_last_height(400, 3, 100);
-
-        assert_last_height(2000, 1, 1000);
-        assert_last_height(3000, 2, 1000);
-        assert_last_height(4000, 3, 1000);
-    }
-
-    #[track_caller]
-    fn assert_source_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
-        assert_eq!(
-            expected,
-            calculate_source_height_of_epoch(epoch, heights_per_epoch)
-        );
-    }
-
-    #[test]
-    fn source_heights_are_correctly_calculated() {
-        assert_source_height(0, 0, 10);
-        assert_source_height(0, 0, 100);
-        assert_source_height(0, 0, 1000);
-
-        assert_source_height(10, 1, 10);
-        assert_source_height(20, 2, 10);
-        assert_source_height(30, 3, 10);
-
-        assert_source_height(100, 1, 100);
-        assert_source_height(200, 2, 100);
-        assert_source_height(300, 3, 100);
-
-        assert_source_height(1000, 1, 1000);
-        assert_source_height(2000, 2, 1000);
-        assert_source_height(3000, 3, 1000);
-    }
-
-    #[track_caller]
-    fn assert_source_of_epoch_is_last_of_previous(epoch: Epoch, heights_per_epoch: u64) {
-        assert_eq!(
-            calculate_last_height_of_epoch(epoch, heights_per_epoch),
-            calculate_source_height_of_epoch(epoch + 1, heights_per_epoch),
-        );
-    }
-
-    #[test]
-    fn source_heights_are_last_heights() {
-        assert_source_of_epoch_is_last_of_previous(1, 10);
-        assert_source_of_epoch_is_last_of_previous(2, 10);
-        assert_source_of_epoch_is_last_of_previous(3, 10);
-
-        assert_source_of_epoch_is_last_of_previous(1, 100);
-        assert_source_of_epoch_is_last_of_previous(2, 100);
-        assert_source_of_epoch_is_last_of_previous(3, 100);
-
-        assert_source_of_epoch_is_last_of_previous(1, 1000);
-        assert_source_of_epoch_is_last_of_previous(2, 1000);
-        assert_source_of_epoch_is_last_of_previous(3, 1000);
-    }
-
-    #[track_caller]
-    fn assert_height_of_epoch(expected: Epoch, height: u64, heights_per_epoch: u64) {
-        assert_eq!(Some(expected), epoch_of_height(height, heights_per_epoch),)
-    }
-
-    #[test]
-    fn height_epochs_are_correctly_calculated() {
-        assert_eq!(None, epoch_of_height(0, 10), "height 0 has no epoch");
-        assert_eq!(None, epoch_of_height(0, 100), "height 0 has no epoch");
-
-        assert_height_of_epoch(0, 1, 10);
-        assert_height_of_epoch(0, 1, 100);
-        assert_height_of_epoch(0, 1, 1000);
-
-        assert_height_of_epoch(0, 9, 10);
-        assert_height_of_epoch(1, 19, 10);
-        assert_height_of_epoch(2, 29, 10);
-
-        assert_height_of_epoch(0, 99, 100);
-        assert_height_of_epoch(1, 199, 100);
-        assert_height_of_epoch(2, 299, 100);
-
-        assert_height_of_epoch(0, 999, 1000);
-        assert_height_of_epoch(1, 1999, 1000);
-        assert_height_of_epoch(2, 2999, 1000);
-    }
-
-    #[track_caller]
-    fn assert_height_in_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) {
-        assert!(is_height_in_epoch(height, epoch, heights_per_epoch));
-    }
-
-    #[test]
-    fn height_falls_into_correct_epoch() {
-        assert!(!is_height_in_epoch(0, 0, 10), "height 0 is in no epoch");
-        assert!(!is_height_in_epoch(0, 0, 100), "height 0 is in no epoch");
-
-        assert_height_in_epoch(1, 0, 10);
-        assert_height_in_epoch(1, 0, 100);
-        assert_height_in_epoch(1, 0, 1000);
-
-        assert_height_in_epoch(9, 0, 10);
-        assert_height_in_epoch(19, 1, 10);
-        assert_height_in_epoch(29, 2, 10);
-
-        assert_height_in_epoch(99, 0, 100);
-        assert_height_in_epoch(199, 1, 100);
-        assert_height_in_epoch(299, 2, 100);
-
-        assert_height_in_epoch(999, 0, 1000);
-        assert_height_in_epoch(1999, 1, 1000);
-        assert_height_in_epoch(2999, 2, 1000);
-    }
 }

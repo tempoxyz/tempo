@@ -5,6 +5,7 @@
 
 pub(crate) mod config;
 pub mod consensus;
+pub(crate) mod epoch;
 pub mod metrics;
 pub(crate) mod orchestrator;
 
