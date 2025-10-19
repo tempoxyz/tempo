@@ -7,6 +7,7 @@ use super::{
 use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
 use alloy::primitives::{Address, B256, U256, keccak256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use tempo_contracts::precompiles::IStablecoinExchange;
 
 /// Constants from Solidity implementation
 pub const MIN_TICK: i16 = -2000;
@@ -16,7 +17,7 @@ pub const PRICE_SCALE: u32 = 100_000;
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TickLevel {
+pub struct PriceLevel {
     /// Order ID of the first order at this tick (0 if empty)
     pub head: u128,
     /// Order ID of the last order at this tick (0 if empty)
@@ -25,7 +26,7 @@ pub struct TickLevel {
     pub total_liquidity: u128,
 }
 
-impl TickLevel {
+impl PriceLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
         Self {
@@ -45,7 +46,7 @@ impl TickLevel {
         !self.is_empty()
     }
 
-    /// Load a TickLevel from storage
+    /// Load a PriceLevel from storage
     pub fn from_storage<S: StorageProvider>(
         storage: &mut S,
         address: Address,
@@ -59,7 +60,6 @@ impl TickLevel {
             ASK_TICK_LEVELS
         };
 
-        // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
@@ -89,7 +89,51 @@ impl TickLevel {
         }
     }
 
-    /// Store this TickLevel to storage
+    /// Delete PriceLevel from storage
+    pub fn delete<S: StorageProvider>(
+        &self,
+        storage: &mut S,
+        address: Address,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+    ) {
+        let base_slot = if is_bid {
+            BID_TICK_LEVELS
+        } else {
+            ASK_TICK_LEVELS
+        };
+
+        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
+
+        // Store each field
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+                U256::ZERO,
+            )
+            .expect("TODO: handle error");
+
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+                U256::from(self.tail),
+            )
+            .expect("TODO: handle error");
+    }
+
+    /// Store this PriceLevel to storage
     pub fn store<S: StorageProvider>(
         &self,
         storage: &mut S,
@@ -104,7 +148,6 @@ impl TickLevel {
             ASK_TICK_LEVELS
         };
 
-        // Create nested mapping slot: mapping(book_key => mapping(tick => TickLevel))
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
@@ -213,9 +256,19 @@ impl TickLevel {
     }
 }
 
-impl Default for TickLevel {
+impl Default for PriceLevel {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl From<PriceLevel> for IStablecoinExchange::PriceLevel {
+    fn from(value: PriceLevel) -> Self {
+        Self {
+            head: value.head,
+            tail: value.tail,
+            totalLiquidity: value.total_liquidity,
+        }
     }
 }
 
@@ -367,7 +420,7 @@ impl Orderbook {
     }
 
     /// Check if this orderbook exists in storage
-    pub fn exists<S: StorageProvider>(storage: &mut S, address: Address, book_key: B256) -> bool {
+    pub fn exists<S: StorageProvider>(book_key: B256, storage: &mut S, address: Address) -> bool {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
         let base = storage
             .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)
@@ -424,7 +477,7 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
         Ok(())
     }
 
-    /// Clear bit in bitmap to mark tick as inactive
+    /// Clear bit in bitmap to mark tick as inactive and update storage
     pub fn clear_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<(), OrderError> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             return Err(OrderError::InvalidTick {
@@ -509,7 +562,6 @@ impl<'a, S: StorageProvider> TickBitmap<'a, S> {
     fn get_bitmap_slot(&self, word_index: i16, is_bid: bool) -> U256 {
         let base_slot = if is_bid { BID_BITMAPS } else { ASK_BITMAPS };
 
-        // Create nested mapping slot: mapping(book_key => mapping(word_index => bitmap_word))
         let book_key_slot = mapping_slot(self.book_key.as_slice(), base_slot);
         mapping_slot(word_index.to_be_bytes(), book_key_slot)
     }
@@ -570,7 +622,7 @@ mod tests {
 
     #[test]
     fn test_tick_level_creation() {
-        let level = TickLevel::new();
+        let level = PriceLevel::new();
         assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);

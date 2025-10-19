@@ -7,6 +7,7 @@ mod eth_call;
 mod liquidity;
 mod payment_lane;
 mod pool;
+mod stablecoin_exchange;
 mod tip20;
 mod tip20_factory;
 mod tip20_gas_fees;

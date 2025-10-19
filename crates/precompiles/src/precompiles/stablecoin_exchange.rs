@@ -7,7 +7,7 @@ use crate::{
         stablecoin_exchange::StablecoinExchange, storage::StorageProvider,
         types::IStablecoinExchange,
     },
-    precompiles::{Precompile, mutate, mutate_void, view},
+    precompiles::{Precompile, mutate, mutate_void, view, view_result},
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -52,6 +52,21 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     self.balance_of(call.user, call.token)
                 })
             }
+
+            IStablecoinExchange::getOrderCall::SELECTOR => view_result::<
+                IStablecoinExchange::getOrderCall,
+                IStablecoinExchange::IStablecoinExchangeErrors,
+            >(calldata, |call| {
+                self.get_order(call.orderId).map(|order| order.into())
+            }),
+
+            IStablecoinExchange::getPriceLevelCall::SELECTOR => {
+                view::<IStablecoinExchange::getPriceLevelCall>(calldata, |call| {
+                    self.get_price_level(call.base, call.tick, call.isBid)
+                        .into()
+                })
+            }
+
             IStablecoinExchange::pairKeyCall::SELECTOR => {
                 view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {
                     self.pair_key(call.tokenA, call.tokenB)
@@ -62,8 +77,7 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     IStablecoinExchange::createPairCall,
                     IStablecoinExchange::IStablecoinExchangeErrors,
                 >(calldata, msg_sender, |_s, call| {
-                    let key = self.create_pair(&call.base);
-                    Ok(key)
+                    self.create_pair(&call.base)
                 })
             }
             IStablecoinExchange::withdrawCall::SELECTOR => {
@@ -80,12 +94,12 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     IStablecoinExchange::IStablecoinExchangeErrors,
                 >(calldata, msg_sender, |s, call| self.cancel(s, call.orderId))
             }
-            IStablecoinExchange::sellCall::SELECTOR => {
+            IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
                 mutate::<
-                    IStablecoinExchange::sellCall,
+                    IStablecoinExchange::swapExactAmountInCall,
                     IStablecoinExchange::IStablecoinExchangeErrors,
                 >(calldata, msg_sender, |s, call| {
-                    self.sell(
+                    self.swap_exact_amount_in(
                         s,
                         call.tokenIn,
                         call.tokenOut,
@@ -94,35 +108,33 @@ impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
                     )
                 })
             }
-            IStablecoinExchange::buyCall::SELECTOR => {
-                mutate::<IStablecoinExchange::buyCall, IStablecoinExchange::IStablecoinExchangeErrors>(
-                    calldata,
-                    msg_sender,
-                    |s, call| {
-                        self.buy(
-                            s,
-                            call.tokenIn,
-                            call.tokenOut,
-                            call.amountOut,
-                            call.maxAmountIn,
-                        )
-                    },
-                )
-            }
-            IStablecoinExchange::quoteSellCall::SELECTOR => {
+            IStablecoinExchange::swapExactAmountOutCall::SELECTOR => {
                 mutate::<
-                    IStablecoinExchange::quoteSellCall,
+                    IStablecoinExchange::swapExactAmountOutCall,
                     IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |_, call| {
-                    self.quote_sell(call.tokenIn, call.tokenOut, call.amountIn)
+                >(calldata, msg_sender, |s, call| {
+                    self.swap_exact_amount_out(
+                        s,
+                        call.tokenIn,
+                        call.tokenOut,
+                        call.amountOut,
+                        call.maxAmountIn,
+                    )
                 })
             }
-            IStablecoinExchange::quoteBuyCall::SELECTOR => {
-                mutate::<
-                    IStablecoinExchange::quoteBuyCall,
+            IStablecoinExchange::quoteSwapExactAmountInCall::SELECTOR => view_result::<
+                IStablecoinExchange::quoteSwapExactAmountInCall,
+                IStablecoinExchange::IStablecoinExchangeErrors,
+            >(
+                calldata,
+                |call| self.quote_swap_exact_amount_in(call.tokenIn, call.tokenOut, call.amountIn),
+            ),
+            IStablecoinExchange::quoteSwapExactAmountOutCall::SELECTOR => {
+                view_result::<
+                    IStablecoinExchange::quoteSwapExactAmountOutCall,
                     IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |_, call| {
-                    self.quote_buy(call.tokenIn, call.tokenOut, call.amountOut)
+                >(calldata, |call| {
+                    self.quote_swap_exact_amount_out(call.tokenIn, call.tokenOut, call.amountOut)
                 })
             }
             IStablecoinExchange::executeBlockCall::SELECTOR => {
@@ -175,22 +187,22 @@ mod tests {
     }
 
     #[test]
-    fn test_sell_call() {
+    fn test_swap_exact_amount_in_call() {
         // TODO:
     }
 
     #[test]
-    fn test_buy_call() {
+    fn test_swap_exact_amount_out_call() {
         // TODO:
     }
 
     #[test]
-    fn test_quote_sell_call() {
+    fn test_quote_swap_exact_amount_in_call() {
         // TODO:
     }
 
     #[test]
-    fn test_quote_buy_call() {
+    fn test_quote_swap_exact_amount_out_call() {
         // TODO:
     }
 

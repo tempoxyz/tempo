@@ -534,7 +534,7 @@ fn tip20_factory_mutate(c: &mut Criterion) {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: sender,
         };
 

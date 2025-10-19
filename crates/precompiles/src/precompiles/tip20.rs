@@ -47,11 +47,11 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::saltsCall::SELECTOR => {
                 view::<ITIP20::saltsCall>(calldata, |call| self.salts(call))
             }
-            ITIP20::linkingTokenCall::SELECTOR => {
-                view::<ITIP20::linkingTokenCall>(calldata, |_| self.linking_token())
+            ITIP20::quoteTokenCall::SELECTOR => {
+                view::<ITIP20::quoteTokenCall>(calldata, |_| self.quote_token())
             }
-            ITIP20::nextLinkingTokenCall::SELECTOR => {
-                view::<ITIP20::nextLinkingTokenCall>(calldata, |_| self.next_linking_token())
+            ITIP20::nextQuoteTokenCall::SELECTOR => {
+                view::<ITIP20::nextQuoteTokenCall>(calldata, |_| self.next_quote_token())
             }
 
             // State changing functions
@@ -99,18 +99,18 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
                     self.unpause(s, call)
                 })
             }
-            ITIP20::updateLinkingTokenCall::SELECTOR => {
-                mutate_void::<ITIP20::updateLinkingTokenCall, TIP20Error>(
+            ITIP20::updateQuoteTokenCall::SELECTOR => {
+                mutate_void::<ITIP20::updateQuoteTokenCall, TIP20Error>(
                     calldata,
                     msg_sender,
-                    |s, call| self.update_linking_token(s, call),
+                    |s, call| self.update_quote_token(s, call),
                 )
             }
-            ITIP20::finalizeLinkingTokenUpdateCall::SELECTOR => {
-                mutate_void::<ITIP20::finalizeLinkingTokenUpdateCall, TIP20Error>(
+            ITIP20::finalizeQuoteTokenUpdateCall::SELECTOR => {
+                mutate_void::<ITIP20::finalizeQuoteTokenUpdateCall, TIP20Error>(
                     calldata,
                     msg_sender,
-                    |s, call| self.finalize_linking_token_update(s, call),
+                    |s, call| self.finalize_quote_token_update(s, call),
                 )
             }
             ITIP20::mintCall::SELECTOR => {

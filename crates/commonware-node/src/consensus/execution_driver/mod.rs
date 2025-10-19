@@ -732,11 +732,6 @@ async fn verify_block<TContext: Pacer>(
         info!("block's height must be +1 that of the parent but isn't");
         return Ok(false);
     }
-    if block.timestamp() <= parent.timestamp() {
-        info!("block's timestamp must exceed parent's timestamp but doesn't");
-        return Ok(false);
-    }
-
     let block = block.clone().into_inner();
     let payload_status = engine
         .new_payload(TempoExecutionData(block))

@@ -193,6 +193,28 @@ fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> T::Return) -> Precompi
     ))
 }
 
+// NOTE: Temporary fix to dispatch view functions that return results. This should be unified with
+// `view` when precompiles are refactored
+#[inline]
+fn view_result<T: SolCall, E: SolInterface>(
+    calldata: &[u8],
+    f: impl FnOnce(T) -> Result<T::Return, E>,
+) -> PrecompileResult {
+    let Ok(call) = T::abi_decode(calldata) else {
+        return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
+    };
+    match f(call) {
+        Ok(result) => Ok(PrecompileOutput::new(
+            VIEW_FUNC_GAS,
+            T::abi_encode_returns(&result).into(),
+        )),
+        Err(e) => Ok(PrecompileOutput::new_reverted(
+            VIEW_FUNC_GAS,
+            E::abi_encode(&e).into(),
+        )),
+    }
+}
+
 #[inline]
 pub fn mutate<T: SolCall, E: SolInterface>(
     calldata: &[u8],

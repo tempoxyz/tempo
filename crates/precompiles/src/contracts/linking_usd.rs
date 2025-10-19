@@ -114,8 +114,8 @@ impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
         self.token.currency()
     }
 
-    pub fn linking_token(&mut self) -> Address {
-        self.token.linking_token()
+    pub fn quote_token(&mut self) -> Address {
+        self.token.quote_token()
     }
 
     pub fn decimals(&mut self) -> u8 {
@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(linking_usd.name(), "linkingUSD");
         assert_eq!(linking_usd.symbol(), "linkingUSD");
         assert_eq!(linking_usd.currency(), "USD");
-        assert_eq!(linking_usd.linking_token(), Address::ZERO);
+        assert_eq!(linking_usd.quote_token(), Address::ZERO);
     }
 
     #[test]

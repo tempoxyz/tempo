@@ -72,7 +72,7 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: sender,
         };
         let calldata = create_call.abi_encode();
@@ -105,7 +105,7 @@ mod tests {
             name: "Token 1".to_string(),
             symbol: "TOK1".to_string(),
             currency: "USD".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: sender,
         };
         let calldata = create_call.abi_encode();
@@ -123,7 +123,7 @@ mod tests {
             name: "Token 2".to_string(),
             symbol: "TOK2".to_string(),
             currency: "EUR".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: sender,
         };
         let calldata = create_call.abi_encode();
@@ -150,7 +150,7 @@ mod tests {
             name: "High Precision Token".to_string(),
             symbol: "HPT".to_string(),
             currency: "USD".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: admin1,
         };
         let calldata = create_call.abi_encode();
@@ -163,7 +163,7 @@ mod tests {
             name: "Low Precision Token".to_string(),
             symbol: "LPT".to_string(),
             currency: "EUR".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: admin2,
         };
         let calldata = create_call.abi_encode();
@@ -175,7 +175,7 @@ mod tests {
             name: "Japanese Yen Token".to_string(),
             symbol: "JYT".to_string(),
             currency: "JPY".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: admin1,
         };
         let calldata = create_call.abi_encode();
@@ -194,7 +194,7 @@ mod tests {
             name: "No Currency Token".to_string(),
             symbol: "NCT".to_string(),
             currency: String::new(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: sender,
         };
         let calldata = create_call.abi_encode();
@@ -216,7 +216,7 @@ mod tests {
             name,
             symbol,
             currency: "USD".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: sender,
         };
         let calldata = create_call.abi_encode();
@@ -240,7 +240,7 @@ mod tests {
             name: "Caller1 Token".to_string(),
             symbol: "C1T".to_string(),
             currency: "USD".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: caller1,
         };
         let calldata = create_call.abi_encode();
@@ -252,7 +252,7 @@ mod tests {
             name: "Caller2 Token".to_string(),
             symbol: "C2T".to_string(),
             currency: "EUR".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: caller2,
         };
         let calldata = create_call.abi_encode();
@@ -264,7 +264,7 @@ mod tests {
             name: "Caller3 Token".to_string(),
             symbol: "C3T".to_string(),
             currency: "GBP".to_string(),
-            linkingToken: LINKING_USD_ADDRESS,
+            quoteToken: LINKING_USD_ADDRESS,
             admin: caller1, // Different admin than caller
         };
         let calldata = create_call.abi_encode();
