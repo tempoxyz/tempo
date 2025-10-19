@@ -454,8 +454,9 @@ impl Inner<Init> {
 
         debug!(height = parent.height(), "retrieved parent block",);
 
-        // On the last height of the epoch, re-propose the parent instead of
-        // constructing a new one.
+        // XXX: Re-propose the parent if the parent is the last height of the
+        // round. parent.height+1 should be proposed as the first block of the
+        // next epoch.
         if epoch::is_last_height(parent.height(), round.epoch(), self.heights_per_epoch) {
             info!("last height of epoch reached; re-proposing parent");
             return Ok(parent);
