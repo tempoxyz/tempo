@@ -288,7 +288,7 @@ where
         >,
     ) -> eyre::Result<()> {
         if let Some((current, engine)) = self.active_epoch.take() {
-            if epoch > current {
+            if epoch <= current {
                 self.active_epoch = Some((current, engine));
                 bail!(
                     "current epoch is `{current}`, but epoch to be started is \
