@@ -14,9 +14,9 @@ pub use orderbook::{
 };
 
 use crate::{
-    STABLECOIN_EXCHANGE_ADDRESS,
+    LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
-        StorageProvider, TIP20Token, address_to_token_id_unchecked,
+        LinkingUSD, StorageProvider, TIP20Token, address_to_token_id_unchecked,
         stablecoin_exchange::orderbook::{
             compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
         },
@@ -144,6 +144,72 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         self.set_balance(user, token, current.saturating_sub(amount));
     }
 
+    /// Transfer tokens, accounting for linking USD
+    fn transfer(
+        &mut self,
+        token: Address,
+        to: Address,
+        amount: u128,
+    ) -> Result<(), StablecoinExchangeError> {
+        if token == LINKING_USD_ADDRESS {
+            LinkingUSD::new(self.storage)
+                .transfer(
+                    &self.address,
+                    ITIP20::transferCall {
+                        to,
+                        amount: U256::from(amount),
+                    },
+                )
+                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        } else {
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
+                .transfer(
+                    &self.address,
+                    ITIP20::transferCall {
+                        to,
+                        amount: U256::from(amount),
+                    },
+                )
+                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        }
+        Ok(())
+    }
+
+    /// Transfer tokens from user, accounting for linking USD
+    fn transfer_from(
+        &mut self,
+        token: Address,
+        from: Address,
+        amount: u128,
+    ) -> Result<(), StablecoinExchangeError> {
+        if token == LINKING_USD_ADDRESS {
+            LinkingUSD::new(self.storage)
+                .transfer_from(
+                    &self.address,
+                    ITIP20::transferFromCall {
+                        from,
+                        to: self.address,
+                        amount: U256::from(amount),
+                    },
+                )
+                // TODO: propagate TIP20 errors
+                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        } else {
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
+                .transfer_from(
+                    &self.address,
+                    ITIP20::transferFromCall {
+                        from,
+                        to: self.address,
+                        amount: U256::from(amount),
+                    },
+                )
+                // TODO: propagate TIP20 errors
+                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        }
+        Ok(())
+    }
+
     /// Decrement user's internal balance or transfer from external wallet
     fn decrement_balance_or_transfer_from(
         &mut self,
@@ -157,19 +223,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         } else {
             self.set_balance(user, token, 0);
             let remaining = amount - user_balance;
-
-            // TODO: This should account for quote token
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
-                .transfer_from(
-                    &self.address,
-                    ITIP20::transferFromCall {
-                        from: user,
-                        to: self.address,
-                        amount: U256::from(remaining),
-                    },
-                )
-                // TODO: Right now error handling is not bubbling up TIP20 errors
-                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+            self.transfer_from(token, user, remaining)?;
         }
         Ok(())
     }
@@ -226,18 +280,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.fill_orders_exact_in(book_key, base_for_quote, amount_in, min_amount_out)?;
 
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
-
-        let mut token_out =
-            TIP20Token::new(address_to_token_id_unchecked(&token_out), self.storage);
-        token_out
-            .transfer(
-                &self.address,
-                ITIP20::transferCall {
-                    to: *sender,
-                    amount: U256::from(amount_out),
-                },
-            )
-            .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        self.transfer(token_out, *sender, amount_out)?;
 
         Ok(amount_out)
     }
@@ -262,18 +305,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.fill_orders_exact_out(book_key, base_for_quote, amount_out, max_amount_in)?;
 
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
-
-        let mut token_out =
-            TIP20Token::new(address_to_token_id_unchecked(&token_out), self.storage);
-        token_out
-            .transfer(
-                &self.address,
-                ITIP20::transferCall {
-                    to: *sender,
-                    amount: U256::from(amount_out),
-                },
-            )
-            .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        self.transfer(token_out, *sender, amount_out)?;
 
         Ok(amount_in)
     }
@@ -1033,15 +1065,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let current_balance = self.balance_of(user, token);
         assert!(current_balance >= amount, "Insufficient balance");
         self.sub_balance(user, token, amount);
-        TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
-            .transfer(
-                &self.address,
-                ITIP20::transferCall {
-                    to: user,
-                    amount: U256::from(amount),
-                },
-            )
-            .expect("TODO: handle error");
+        self.transfer(token, user, amount)?;
 
         Ok(())
     }
