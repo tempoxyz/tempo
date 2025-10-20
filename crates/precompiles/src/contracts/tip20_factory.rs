@@ -53,20 +53,19 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
         let token_id = self.token_id_counter().to::<u64>();
         trace!(%sender, %token_id, ?call, "Create token");
 
-        // Ensure that the linking token is a valid TIP20 that is currently deployed.
-        // Note that the token Id increments on each deployment which ensures that the linking
+        // Ensure that the quote token is a valid TIP20 that is currently deployed.
+        // Note that the token Id increments on each deployment which ensures that the quote
         // token id must always be <= the current token_id
-        if !is_tip20(&call.linkingToken)
-            || address_to_token_id_unchecked(&call.linkingToken) > token_id
+        if !is_tip20(&call.quoteToken) || address_to_token_id_unchecked(&call.quoteToken) > token_id
         {
-            return Err(TIP20Error::invalid_linking_token());
+            return Err(TIP20Error::invalid_quote_token());
         }
 
         TIP20Token::new(token_id, self.storage).initialize(
             &call.name,
             &call.symbol,
             &call.currency,
-            call.linkingToken,
+            call.quoteToken,
             &call.admin,
         )?;
 
@@ -131,7 +130,7 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
-            linkingToken: crate::LINKING_USD_ADDRESS,
+            quoteToken: crate::LINKING_USD_ADDRESS,
             admin: sender,
         };
 
@@ -171,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_invalid_linking_token() {
+    fn test_create_token_invalid_quote_token() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut factory = TIP20Factory::new(&mut storage);
 
@@ -185,16 +184,16 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
-            linkingToken: Address::random(),
+            quoteToken: Address::random(),
             admin: sender,
         };
 
         let result = factory.create_token(&sender, invalid_call);
-        assert_eq!(result.unwrap_err(), TIP20Error::invalid_linking_token());
+        assert_eq!(result.unwrap_err(), TIP20Error::invalid_quote_token());
     }
 
     #[test]
-    fn test_create_token_linking_token_not_deployed() {
+    fn test_create_token_quote_token_not_deployed() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut factory = TIP20Factory::new(&mut storage);
 
@@ -208,11 +207,11 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
-            linkingToken: non_existent_tip20,
+            quoteToken: non_existent_tip20,
             admin: sender,
         };
 
         let result = factory.create_token(&sender, invalid_call);
-        assert_eq!(result.unwrap_err(), TIP20Error::invalid_linking_token());
+        assert_eq!(result.unwrap_err(), TIP20Error::invalid_quote_token());
     }
 }

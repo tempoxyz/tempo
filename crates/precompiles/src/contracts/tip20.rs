@@ -36,8 +36,8 @@ pub mod slots {
     pub const PAUSED: U256 = uint!(8_U256);
 
     // TODO: we should unify the storage slots with the reference implementation
-    pub const LINKING_TOKEN: U256 = uint!(9_U256);
-    pub const NEXT_LINKING_TOKEN: U256 = uint!(16_U256);
+    pub const QUOTE_TOKEN: U256 = uint!(9_U256);
+    pub const NEXT_QUOTE_TOKEN: U256 = uint!(16_U256);
 
     // Mappings
     pub const BALANCES: U256 = uint!(10_U256);
@@ -86,16 +86,16 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
             .expect("TODO: handle error")
     }
 
-    pub fn linking_token(&mut self) -> Address {
+    pub fn quote_token(&mut self) -> Address {
         self.storage
-            .sload(self.token_address, slots::LINKING_TOKEN)
+            .sload(self.token_address, slots::QUOTE_TOKEN)
             .expect("TODO: handle error")
             .into_address()
     }
 
-    pub fn next_linking_token(&mut self) -> Address {
+    pub fn next_quote_token(&mut self) -> Address {
         self.storage
-            .sload(self.token_address, slots::NEXT_LINKING_TOKEN)
+            .sload(self.token_address, slots::NEXT_QUOTE_TOKEN)
             .expect("TODO: handle error")
             .into_address()
     }
@@ -252,42 +252,42 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    pub fn update_linking_token(
+    pub fn update_quote_token(
         &mut self,
         msg_sender: &Address,
-        call: ITIP20::updateLinkingTokenCall,
+        call: ITIP20::updateQuoteTokenCall,
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
-        // Verify the new linking token is a valid TIP20 token that has been deployed
-        if !is_tip20(&call.newLinkingToken) {
-            return Err(TIP20Error::invalid_linking_token());
+        // Verify the new quote token is a valid TIP20 token that has been deployed
+        if !is_tip20(&call.newQuoteToken) {
+            return Err(TIP20Error::invalid_quote_token());
         }
 
-        let new_token_id = address_to_token_id_unchecked(&call.newLinkingToken);
+        let new_token_id = address_to_token_id_unchecked(&call.newQuoteToken);
         let factory_token_id_counter = TIP20Factory::new(self.storage)
             .token_id_counter()
             .to::<u64>();
 
-        // Ensure the linking token has been deployed (token_id < counter)
+        // Ensure the quote token has been deployed (token_id < counter)
         if new_token_id >= factory_token_id_counter {
-            return Err(TIP20Error::invalid_linking_token());
+            return Err(TIP20Error::invalid_quote_token());
         }
 
         self.storage
             .sstore(
                 self.token_address,
-                slots::NEXT_LINKING_TOKEN,
-                call.newLinkingToken.into_u256(),
+                slots::NEXT_QUOTE_TOKEN,
+                call.newQuoteToken.into_u256(),
             )
             .expect("TODO: handle error");
 
         self.storage
             .emit_event(
                 self.token_address,
-                TIP20Event::UpdateLinkingToken(ITIP20::UpdateLinkingToken {
+                TIP20Event::UpdateQuoteToken(ITIP20::UpdateQuoteToken {
                     updater: *msg_sender,
-                    newLinkingToken: call.newLinkingToken,
+                    newQuoteToken: call.newQuoteToken,
                 })
                 .into_log_data(),
             )
@@ -295,42 +295,42 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    pub fn finalize_linking_token_update(
+    pub fn finalize_quote_token_update(
         &mut self,
         msg_sender: &Address,
-        _call: ITIP20::finalizeLinkingTokenUpdateCall,
+        _call: ITIP20::finalizeQuoteTokenUpdateCall,
     ) -> Result<(), TIP20Error> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
-        let next_linking_token = self.next_linking_token();
+        let next_quote_token = self.next_quote_token();
 
         // Check that this does not create a loop
-        // Loop through linking tokens until we reach the root (LinkingUSD)
-        let mut current = next_linking_token;
+        // Loop through quote tokens until we reach the root (LinkingUSD)
+        let mut current = next_quote_token;
         while current != LINKING_USD_ADDRESS {
             if current == self.token_address {
-                return Err(TIP20Error::invalid_linking_token());
+                return Err(TIP20Error::invalid_quote_token());
             }
 
             let token_id = address_to_token_id_unchecked(&current);
-            current = TIP20Token::new(token_id, self.storage).linking_token();
+            current = TIP20Token::new(token_id, self.storage).quote_token();
         }
 
-        // Update the linking token
+        // Update the quote token
         self.storage
             .sstore(
                 self.token_address,
-                slots::LINKING_TOKEN,
-                next_linking_token.into_u256(),
+                slots::QUOTE_TOKEN,
+                next_quote_token.into_u256(),
             )
             .expect("TODO: handle error");
 
         self.storage
             .emit_event(
                 self.token_address,
-                TIP20Event::LinkingTokenUpdateFinalized(ITIP20::LinkingTokenUpdateFinalized {
+                TIP20Event::QuoteTokenUpdateFinalized(ITIP20::QuoteTokenUpdateFinalized {
                     updater: *msg_sender,
-                    newLinkingToken: next_linking_token,
+                    newQuoteToken: next_quote_token,
                 })
                 .into_log_data(),
             )
@@ -731,7 +731,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         name: &str,
         symbol: &str,
         currency: &str,
-        linking_token: Address,
+        quote_token: Address,
         admin: &Address,
     ) -> Result<(), TIP20Error> {
         trace!(%name, address=%self.token_address, "Initializing token");
@@ -750,16 +750,16 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
         self.storage
             .sstore(
                 self.token_address,
-                slots::LINKING_TOKEN,
-                linking_token.into_u256(),
+                slots::QUOTE_TOKEN,
+                quote_token.into_u256(),
             )
             .expect("TODO: handle error");
-        // Initialize nextLinkingToken to the same value as linkingToken
+        // Initialize nextQuoteToken to the same value as quoteToken
         self.storage
             .sstore(
                 self.token_address,
-                slots::NEXT_LINKING_TOKEN,
-                linking_token.into_u256(),
+                slots::NEXT_QUOTE_TOKEN,
+                quote_token.into_u256(),
             )
             .expect("TODO: handle error");
 
@@ -1093,7 +1093,7 @@ mod tests {
                     name: name.to_string(),
                     symbol: symbol.to_string(),
                     currency: "USD".to_string(),
-                    linkingToken: LINKING_USD_ADDRESS,
+                    quoteToken: LINKING_USD_ADDRESS,
                     admin: *admin,
                 },
             )
@@ -1107,7 +1107,7 @@ mod tests {
         admin: &Address,
         name: &str,
         symbol: &str,
-        linking_token: Address,
+        quote_token: Address,
     ) -> u64 {
         factory
             .create_token(
@@ -1116,7 +1116,7 @@ mod tests {
                     name: name.to_string(),
                     symbol: symbol.to_string(),
                     currency: "USD".to_string(),
-                    linkingToken: linking_token,
+                    quoteToken: quote_token,
                     admin: *admin,
                 },
             )
@@ -1124,8 +1124,8 @@ mod tests {
             .to::<u64>()
     }
 
-    /// Setup factory and create a token with a separate linking token (both linking to LINKING_USD)
-    fn setup_token_with_custom_linking_token(
+    /// Setup factory and create a token with a separate quote token (both linking to LINKING_USD)
+    fn setup_token_with_custom_quote_token(
         storage: &mut HashMapStorageProvider,
         admin: &Address,
     ) -> (u64, u64) {
@@ -1134,10 +1134,10 @@ mod tests {
 
         let token_id =
             create_token_via_factory(&mut factory, admin, "Test", "TST", LINKING_USD_ADDRESS);
-        let linking_token_id =
-            create_token_via_factory(&mut factory, admin, "Linking", "LINK", LINKING_USD_ADDRESS);
+        let quote_token_id =
+            create_token_via_factory(&mut factory, admin, "Quote", "QUOTE", LINKING_USD_ADDRESS);
 
-        (token_id, linking_token_id)
+        (token_id, quote_token_id)
     }
 
     #[test]
@@ -1708,56 +1708,55 @@ mod tests {
     }
 
     #[test]
-    fn test_initialize_sets_next_linking_token() {
+    fn test_initialize_sets_next_quote_token() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
         let token_id = setup_factory_with_token(&mut storage, &admin, "Test", "TST");
         let mut token = TIP20Token::new(token_id, &mut storage);
 
-        // Verify both linkingToken and nextLinkingToken are set to the same value
-        assert_eq!(token.linking_token(), LINKING_USD_ADDRESS);
-        assert_eq!(token.next_linking_token(), LINKING_USD_ADDRESS);
+        // Verify both quoteToken and nextQuoteToken are set to the same value
+        assert_eq!(token.quote_token(), LINKING_USD_ADDRESS);
+        assert_eq!(token.next_quote_token(), LINKING_USD_ADDRESS);
     }
 
     #[test]
-    fn test_update_linking_token() {
+    fn test_update_quote_token() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        let (token_id, linking_token_id) =
-            setup_token_with_custom_linking_token(&mut storage, &admin);
-        let linking_token_address = token_id_to_address(linking_token_id);
+        let (token_id, quote_token_id) = setup_token_with_custom_quote_token(&mut storage, &admin);
+        let quote_token_address = token_id_to_address(quote_token_id);
 
         let mut token = TIP20Token::new(token_id, &mut storage);
 
-        // Set next linking token
+        // Set next quote token
         token
-            .update_linking_token(
+            .update_quote_token(
                 &admin,
-                ITIP20::updateLinkingTokenCall {
-                    newLinkingToken: linking_token_address,
+                ITIP20::updateQuoteTokenCall {
+                    newQuoteToken: quote_token_address,
                 },
             )
             .unwrap();
 
-        // Verify next linking token was set
-        assert_eq!(token.next_linking_token(), linking_token_address);
+        // Verify next quote token was set
+        assert_eq!(token.next_quote_token(), quote_token_address);
 
         // Verify event was emitted
         let events = &storage.events[&token_id_to_address(token_id)];
         assert_eq!(
             events.last().unwrap(),
-            &TIP20Event::UpdateLinkingToken(ITIP20::UpdateLinkingToken {
+            &TIP20Event::UpdateQuoteToken(ITIP20::UpdateQuoteToken {
                 updater: admin,
-                newLinkingToken: linking_token_address,
+                newQuoteToken: quote_token_address,
             })
             .into_log_data()
         );
     }
 
     #[test]
-    fn test_update_linking_token_requires_admin() {
+    fn test_update_quote_token_requires_admin() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let non_admin = Address::random();
@@ -1767,13 +1766,13 @@ mod tests {
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
 
-        let linking_token_address = token_id_to_address(2);
+        let quote_token_address = token_id_to_address(2);
 
-        // Try to set next linking token as non-admin
-        let result = token.update_linking_token(
+        // Try to set next quote token as non-admin
+        let result = token.update_quote_token(
             &non_admin,
-            ITIP20::updateLinkingTokenCall {
-                newLinkingToken: linking_token_address,
+            ITIP20::updateQuoteTokenCall {
+                newQuoteToken: quote_token_address,
             },
         );
 
@@ -1781,7 +1780,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_linking_token_rejects_non_tip20() {
+    fn test_update_quote_token_rejects_non_tip20() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1790,18 +1789,18 @@ mod tests {
 
         // Try to set a non-TIP20 address (random address that doesn't match TIP20 pattern)
         let non_tip20_address = Address::random();
-        let result = token.update_linking_token(
+        let result = token.update_quote_token(
             &admin,
-            ITIP20::updateLinkingTokenCall {
-                newLinkingToken: non_tip20_address,
+            ITIP20::updateQuoteTokenCall {
+                newQuoteToken: non_tip20_address,
             },
         );
 
-        assert!(matches!(result, Err(TIP20Error::InvalidLinkingToken(_))));
+        assert!(matches!(result, Err(TIP20Error::InvalidQuoteToken(_))));
     }
 
     #[test]
-    fn test_update_linking_token_rejects_undeployed_token() {
+    fn test_update_quote_token_rejects_undeployed_token() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1811,59 +1810,58 @@ mod tests {
         // Try to set a TIP20 address that hasn't been deployed yet (token_id = 999)
         // This has the correct TIP20 address pattern but hasn't been created
         let undeployed_token_address = token_id_to_address(999);
-        let result = token.update_linking_token(
+        let result = token.update_quote_token(
             &admin,
-            ITIP20::updateLinkingTokenCall {
-                newLinkingToken: undeployed_token_address,
+            ITIP20::updateQuoteTokenCall {
+                newQuoteToken: undeployed_token_address,
             },
         );
 
-        assert!(matches!(result, Err(TIP20Error::InvalidLinkingToken(_))));
+        assert!(matches!(result, Err(TIP20Error::InvalidQuoteToken(_))));
     }
 
     #[test]
-    fn test_finalize_linking_token_update() {
+    fn test_finalize_quote_token_update() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        let (token_id, linking_token_id) =
-            setup_token_with_custom_linking_token(&mut storage, &admin);
-        let linking_token_address = token_id_to_address(linking_token_id);
+        let (token_id, quote_token_id) = setup_token_with_custom_quote_token(&mut storage, &admin);
+        let quote_token_address = token_id_to_address(quote_token_id);
 
         let mut token = TIP20Token::new(token_id, &mut storage);
 
-        // Set next linking token
+        // Set next quote token
         token
-            .update_linking_token(
+            .update_quote_token(
                 &admin,
-                ITIP20::updateLinkingTokenCall {
-                    newLinkingToken: linking_token_address,
+                ITIP20::updateQuoteTokenCall {
+                    newQuoteToken: quote_token_address,
                 },
             )
             .unwrap();
 
         // Complete the update
         token
-            .finalize_linking_token_update(&admin, ITIP20::finalizeLinkingTokenUpdateCall {})
+            .finalize_quote_token_update(&admin, ITIP20::finalizeQuoteTokenUpdateCall {})
             .unwrap();
 
-        // Verify linking token was updated
-        assert_eq!(token.linking_token(), linking_token_address);
+        // Verify quote token was updated
+        assert_eq!(token.quote_token(), quote_token_address);
 
         // Verify event was emitted
         let events = &storage.events[&token_id_to_address(token_id)];
         assert_eq!(
             events.last().unwrap(),
-            &TIP20Event::LinkingTokenUpdateFinalized(ITIP20::LinkingTokenUpdateFinalized {
+            &TIP20Event::QuoteTokenUpdateFinalized(ITIP20::QuoteTokenUpdateFinalized {
                 updater: admin,
-                newLinkingToken: linking_token_address,
+                newQuoteToken: quote_token_address,
             })
             .into_log_data()
         );
     }
 
     #[test]
-    fn test_finalize_linking_token_update_detects_loop() {
+    fn test_finalize_quote_token_update_detects_loop() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1880,49 +1878,48 @@ mod tests {
             create_token_via_factory(&mut factory, &admin, "Token A", "TKA", token_b_address);
         let token_a_address = token_id_to_address(token_a_id);
 
-        // Now try to set token_a as the next linking token for token_b (would create A -> B -> A loop)
+        // Now try to set token_a as the next quote token for token_b (would create A -> B -> A loop)
         let mut token_b = TIP20Token::new(token_b_id, &mut storage);
         token_b
-            .update_linking_token(
+            .update_quote_token(
                 &admin,
-                ITIP20::updateLinkingTokenCall {
-                    newLinkingToken: token_a_address,
+                ITIP20::updateQuoteTokenCall {
+                    newQuoteToken: token_a_address,
                 },
             )
             .unwrap();
 
         // Try to complete the update - should fail due to loop detection
-        let result = token_b
-            .finalize_linking_token_update(&admin, ITIP20::finalizeLinkingTokenUpdateCall {});
+        let result =
+            token_b.finalize_quote_token_update(&admin, ITIP20::finalizeQuoteTokenUpdateCall {});
 
-        assert!(matches!(result, Err(TIP20Error::InvalidLinkingToken(_))));
+        assert!(matches!(result, Err(TIP20Error::InvalidQuoteToken(_))));
     }
 
     #[test]
-    fn test_finalize_linking_token_update_requires_admin() {
+    fn test_finalize_quote_token_update_requires_admin() {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let non_admin = Address::random();
 
-        let (token_id, linking_token_id) =
-            setup_token_with_custom_linking_token(&mut storage, &admin);
-        let linking_token_address = token_id_to_address(linking_token_id);
+        let (token_id, quote_token_id) = setup_token_with_custom_quote_token(&mut storage, &admin);
+        let quote_token_address = token_id_to_address(quote_token_id);
 
         let mut token = TIP20Token::new(token_id, &mut storage);
 
-        // Set next linking token as admin
+        // Set next quote token as admin
         token
-            .update_linking_token(
+            .update_quote_token(
                 &admin,
-                ITIP20::updateLinkingTokenCall {
-                    newLinkingToken: linking_token_address,
+                ITIP20::updateQuoteTokenCall {
+                    newQuoteToken: quote_token_address,
                 },
             )
             .unwrap();
 
         // Try to complete update as non-admin
-        let result = token
-            .finalize_linking_token_update(&non_admin, ITIP20::finalizeLinkingTokenUpdateCall {});
+        let result =
+            token.finalize_quote_token_update(&non_admin, ITIP20::finalizeQuoteTokenUpdateCall {});
 
         assert!(matches!(result, Err(TIP20Error::PolicyForbids(_))));
     }

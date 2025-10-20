@@ -115,7 +115,7 @@ async fn test_bids() -> eyre::Result<()> {
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
 
     let amount_in = exchange
-        .quoteSell(*base.address(), *quote.address(), fill_amount)
+        .quoteSwapExactAmountIn(*base.address(), *quote.address(), fill_amount)
         .call()
         .await?;
 
@@ -123,9 +123,9 @@ async fn test_bids() -> eyre::Result<()> {
     let pending = base.mint(caller, U256::from(amount_in)).send().await?;
     pending.get_receipt().await?;
 
-    //  Execute sell and assert orders are filled
+    //  Execute swap and assert orders are filled
     let tx = exchange
-        .sell(*base.address(), *quote.address(), amount_in, 0)
+        .swapExactAmountIn(*base.address(), *quote.address(), amount_in, 0)
         .send()
         .await?;
     tx.get_receipt().await?;
@@ -265,7 +265,7 @@ async fn test_asks() -> eyre::Result<()> {
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
 
     let amount_in = exchange
-        .quoteBuy(*quote.address(), *base.address(), fill_amount)
+        .quoteSwapExactAmountOut(*quote.address(), *base.address(), fill_amount)
         .call()
         .await?;
 
@@ -280,9 +280,9 @@ async fn test_asks() -> eyre::Result<()> {
         .await?;
     pending.get_receipt().await?;
 
-    //  Execute buy and assert orders are filled
+    //  Execute swap and assert orders are filled
     let tx = exchange
-        .buy(*quote.address(), *base.address(), fill_amount, u128::MAX)
+        .swapExactAmountOut(*quote.address(), *base.address(), fill_amount, u128::MAX)
         .send()
         .await?;
     tx.get_receipt().await?;

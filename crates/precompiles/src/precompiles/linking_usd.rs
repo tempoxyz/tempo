@@ -27,8 +27,8 @@ impl<S: StorageProvider> Precompile for LinkingUSD<'_, S> {
                 metadata::<ITIP20::totalSupplyCall>(self.total_supply())
             }
             ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(self.currency()),
-            ITIP20::linkingTokenCall::SELECTOR => {
-                metadata::<ITIP20::linkingTokenCall>(self.linking_token())
+            ITIP20::quoteTokenCall::SELECTOR => {
+                metadata::<ITIP20::quoteTokenCall>(self.quote_token())
             }
 
             // View functions

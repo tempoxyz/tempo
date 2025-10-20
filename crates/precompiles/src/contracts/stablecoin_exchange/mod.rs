@@ -14,9 +14,9 @@ pub use orderbook::{
 };
 
 use crate::{
-    STABLECOIN_EXCHANGE_ADDRESS,
+    LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
-        StorageProvider, TIP20Token, address_to_token_id_unchecked,
+        LinkingUSD, StorageProvider, TIP20Token, address_to_token_id_unchecked,
         stablecoin_exchange::orderbook::{
             compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
         },
@@ -144,6 +144,72 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         self.set_balance(user, token, current.saturating_sub(amount));
     }
 
+    /// Transfer tokens, accounting for linking USD
+    fn transfer(
+        &mut self,
+        token: Address,
+        to: Address,
+        amount: u128,
+    ) -> Result<(), StablecoinExchangeError> {
+        if token == LINKING_USD_ADDRESS {
+            LinkingUSD::new(self.storage)
+                .transfer(
+                    &self.address,
+                    ITIP20::transferCall {
+                        to,
+                        amount: U256::from(amount),
+                    },
+                )
+                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        } else {
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
+                .transfer(
+                    &self.address,
+                    ITIP20::transferCall {
+                        to,
+                        amount: U256::from(amount),
+                    },
+                )
+                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        }
+        Ok(())
+    }
+
+    /// Transfer tokens from user, accounting for linking USD
+    fn transfer_from(
+        &mut self,
+        token: Address,
+        from: Address,
+        amount: u128,
+    ) -> Result<(), StablecoinExchangeError> {
+        if token == LINKING_USD_ADDRESS {
+            LinkingUSD::new(self.storage)
+                .transfer_from(
+                    &self.address,
+                    ITIP20::transferFromCall {
+                        from,
+                        to: self.address,
+                        amount: U256::from(amount),
+                    },
+                )
+                // TODO: propagate TIP20 errors
+                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        } else {
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
+                .transfer_from(
+                    &self.address,
+                    ITIP20::transferFromCall {
+                        from,
+                        to: self.address,
+                        amount: U256::from(amount),
+                    },
+                )
+                // TODO: propagate TIP20 errors
+                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        }
+        Ok(())
+    }
+
     /// Decrement user's internal balance or transfer from external wallet
     fn decrement_balance_or_transfer_from(
         &mut self,
@@ -157,24 +223,12 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         } else {
             self.set_balance(user, token, 0);
             let remaining = amount - user_balance;
-
-            // TODO: This should account for linking token
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
-                .transfer_from(
-                    &self.address,
-                    ITIP20::transferFromCall {
-                        from: user,
-                        to: self.address,
-                        amount: U256::from(remaining),
-                    },
-                )
-                // TODO: Right now error handling is not bubbling up TIP20 errors
-                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+            self.transfer_from(token, user, remaining)?;
         }
         Ok(())
     }
 
-    pub fn quote_buy(
+    pub fn quote_swap_exact_amount_out(
         &mut self,
         token_in: Address,
         token_out: Address,
@@ -190,7 +244,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         self.quote_exact_out(book_key, amount_out, false)
     }
 
-    pub fn quote_sell(
+    pub fn quote_swap_exact_amount_in(
         &mut self,
         token_in: Address,
         token_out: Address,
@@ -206,7 +260,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         self.quote_exact_in(book_key, amount_in, true)
     }
 
-    pub fn sell(
+    pub fn swap_exact_amount_in(
         &mut self,
         sender: &Address,
         token_in: Address,
@@ -226,23 +280,12 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.fill_orders_exact_in(book_key, base_for_quote, amount_in, min_amount_out)?;
 
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
-
-        let mut token_out =
-            TIP20Token::new(address_to_token_id_unchecked(&token_out), self.storage);
-        token_out
-            .transfer(
-                &self.address,
-                ITIP20::transferCall {
-                    to: *sender,
-                    amount: U256::from(amount_out),
-                },
-            )
-            .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        self.transfer(token_out, *sender, amount_out)?;
 
         Ok(amount_out)
     }
 
-    pub fn buy(
+    pub fn swap_exact_amount_out(
         &mut self,
         sender: &Address,
         token_in: Address,
@@ -262,18 +305,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             self.fill_orders_exact_out(book_key, base_for_quote, amount_out, max_amount_in)?;
 
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
-
-        let mut token_out =
-            TIP20Token::new(address_to_token_id_unchecked(&token_out), self.storage);
-        token_out
-            .transfer(
-                &self.address,
-                ITIP20::transferCall {
-                    to: *sender,
-                    amount: U256::from(amount_out),
-                },
-            )
-            .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+        self.transfer(token_out, *sender, amount_out)?;
 
         Ok(amount_in)
     }
@@ -286,7 +318,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// Get price level information
     pub fn get_price_level(&mut self, base: Address, tick: i16, is_bid: bool) -> PriceLevel {
         let quote =
-            TIP20Token::new(address_to_token_id_unchecked(&base), self.storage).linking_token();
+            TIP20Token::new(address_to_token_id_unchecked(&base), self.storage).quote_token();
         let key = compute_book_key(base, quote);
         PriceLevel::from_storage(self.storage, self.address, key, tick, is_bid)
     }
@@ -307,11 +339,16 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>()
     }
 
-    pub fn create_pair(&mut self, base: &Address) -> B256 {
+    pub fn create_pair(&mut self, base: &Address) -> Result<B256, StablecoinExchangeError> {
         let quote =
-            TIP20Token::new(address_to_token_id_unchecked(base), self.storage).linking_token();
+            TIP20Token::new(address_to_token_id_unchecked(base), self.storage).quote_token();
 
         let book_key = compute_book_key(*base, quote);
+
+        if Orderbook::exists(book_key, self.storage, self.address) {
+            return Err(StablecoinExchangeError::pair_already_exists());
+        }
+
         let book = Orderbook::new(*base, quote);
         book.store(self.storage, self.address);
 
@@ -328,7 +365,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             )
             .expect("Event emission failed");
 
-        book_key
+        Ok(book_key)
     }
 
     /// Place a limit order on the orderbook
@@ -337,9 +374,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     /// The order is queued in the pending queue and will be processed at end of block.
     ///
     /// # Arguments
-    /// * `token` - The token to trade (not the linking token)
+    /// * `token` - The token to trade (not the quote token)
     /// * `amount` - Order amount in the token
-    /// * `is_bid` - True for buy orders (using linking token to buy token), false for sell orders
+    /// * `is_bid` - True for buy orders (using quote token to buy token), false for sell orders
     /// * `tick` - Price tick: (price - 1) * 1000, where price is denominated in the quote token
     ///
     /// # Returns
@@ -352,9 +389,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         is_bid: bool,
         tick: i16,
     ) -> Result<u128, StablecoinExchangeError> {
-        // Lookup quote token (linking token) from TIP20 token
+        // Lookup quote token from TIP20 token
         let quote_token =
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).linking_token();
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -428,9 +465,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         tick: i16,
         flip_tick: i16,
     ) -> Result<u128, StablecoinExchangeError> {
-        // Lookup quote token (linking token) from TIP20 token
+        // Lookup quote token from TIP20 token
         let quote_token =
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).linking_token();
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -621,7 +658,19 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             level.total_liquidity - fill_amount,
         );
 
-        // TODO: emit partial fill event
+        // Emit OrderFilled event for partial fill
+        self.storage
+            .emit_event(
+                self.address,
+                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                    orderId: order.order_id(),
+                    maker: order.maker(),
+                    amountFilled: fill_amount,
+                    partialFill: true,
+                })
+                .into_log_data(),
+            )
+            .expect("Event emission failed");
 
         Ok(amount_out)
     }
@@ -652,6 +701,20 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
 
             fill_amount
         };
+
+        // Emit OrderFilled event for complete fill
+        self.storage
+            .emit_event(
+                self.address,
+                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                    orderId: order.order_id(),
+                    maker: order.maker(),
+                    amountFilled: fill_amount,
+                    partialFill: false,
+                })
+                .into_log_data(),
+            )
+            .expect("Event emission failed");
 
         if order.is_flip() {
             // Create a new flip order with flipped side and swapped ticks
@@ -1002,15 +1065,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         let current_balance = self.balance_of(user, token);
         assert!(current_balance >= amount, "Insufficient balance");
         self.sub_balance(user, token, amount);
-        TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
-            .transfer(
-                &self.address,
-                ITIP20::transferCall {
-                    to: user,
-                    amount: U256::from(amount),
-                },
-            )
-            .expect("TODO: handle error");
+        self.transfer(token, user, amount)?;
 
         Ok(())
     }
@@ -1398,7 +1453,9 @@ mod tests {
         );
 
         // Create the pair before placing orders
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         // Place the bid order
         let order_id = exchange
@@ -1461,7 +1518,9 @@ mod tests {
         let (base_token, quote_token) =
             setup_test_tokens(exchange.storage, &admin, &alice, exchange.address, amount);
         // Create the pair before placing orders
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         let order_id = exchange
             .place(&alice, base_token, amount, false, tick) // is_bid = false for ask
@@ -1528,7 +1587,9 @@ mod tests {
             exchange.address,
             expected_escrow,
         );
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         let order_id = exchange
             .place_flip(&alice, base_token, amount, true, tick, flip_tick)
@@ -1599,7 +1660,10 @@ mod tests {
             exchange.address,
             expected_escrow,
         );
-        exchange.create_pair(&base_token);
+
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         // Place the bid order
         let order_id = exchange
@@ -1664,15 +1728,17 @@ mod tests {
         );
 
         // Create the pair
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         let order_id_0 = exchange
             .place(&alice, base_token, amount, true, tick)
-            .expect("Order should exceed");
+            .expect("Swap should succeed");
 
         let order_id_1 = exchange
             .place(&alice, base_token, amount, true, tick)
-            .expect("Order should exceed");
+            .expect("Swap should succeed");
         assert_eq!(order_id_0, 1);
         assert_eq!(order_id_1, 2);
         assert_eq!(exchange.active_order_id(), 0);
@@ -1752,7 +1818,9 @@ mod tests {
             exchange.address,
             expected_escrow,
         );
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         // Place the bid order and cancel
         let order_id = exchange
@@ -1790,7 +1858,7 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_buy() {
+    fn test_quote_swap_exact_amount_out() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1807,7 +1875,9 @@ mod tests {
             exchange.address,
             2_000_000u128,
         );
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         let order_amount = 1_000_000u128;
         exchange
@@ -1819,8 +1889,8 @@ mod tests {
             .expect("Execute block should succeed");
 
         let amount_in = exchange
-            .quote_buy(quote_token, base_token, amount_out)
-            .expect("Could not quote buy");
+            .quote_swap_exact_amount_out(quote_token, base_token, amount_out)
+            .expect("Swap should succeed");
 
         let price = orderbook::tick_to_price(tick);
         let expected_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
@@ -1828,7 +1898,7 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_sell() {
+    fn test_quote_swap_exact_amount_in() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1845,7 +1915,9 @@ mod tests {
             exchange.address,
             2_000_000u128,
         );
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         let order_amount = 1_000_000u128;
         exchange
@@ -1857,8 +1929,8 @@ mod tests {
             .expect("Execute block should succeed");
 
         let amount_out = exchange
-            .quote_sell(base_token, quote_token, amount_in)
-            .expect("Could not quote sell");
+            .quote_swap_exact_amount_in(base_token, quote_token, amount_in)
+            .expect("Swap should succeed");
 
         // Calculate expected amount_out based on tick price
         let price = orderbook::tick_to_price(tick);
@@ -1867,7 +1939,7 @@ mod tests {
     }
 
     #[test]
-    fn test_buy() {
+    fn test_swap_exact_amount_out() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1885,7 +1957,9 @@ mod tests {
             exchange.address,
             2_000_000u128,
         );
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         let order_amount = 1_000_000u128;
         exchange
@@ -1902,8 +1976,8 @@ mod tests {
         let max_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
 
         let amount_in = exchange
-            .buy(&bob, quote_token, base_token, amount_out, max_amount_in)
-            .expect("Buy should succeed");
+            .swap_exact_amount_out(&bob, quote_token, base_token, amount_out, max_amount_in)
+            .expect("Swap should succeed");
 
         let mut base_tip20 =
             TIP20Token::new(address_to_token_id_unchecked(&base_token), exchange.storage);
@@ -1915,7 +1989,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sell() {
+    fn test_swap_exact_amount_in() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1933,7 +2007,9 @@ mod tests {
             exchange.address,
             2_000_000u128,
         );
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         let order_amount = 1_000_000u128;
         exchange
@@ -1950,8 +2026,8 @@ mod tests {
         let min_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
 
         let amount_out = exchange
-            .sell(&bob, base_token, quote_token, amount_in, min_amount_out)
-            .expect("Sell should succeed");
+            .swap_exact_amount_in(&bob, base_token, quote_token, amount_in, min_amount_out)
+            .expect("Swap should succeed");
 
         let mut quote_tip20 = TIP20Token::new(
             address_to_token_id_unchecked(&quote_token),
@@ -1987,7 +2063,9 @@ mod tests {
             exchange.address,
             expected_escrow * 2,
         );
-        exchange.create_pair(&base_token);
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         // Place a flip bid order
         let flip_order_id = exchange
@@ -2001,8 +2079,8 @@ mod tests {
         exchange.set_balance(bob, base_token, amount);
 
         exchange
-            .sell(&bob, base_token, quote_token, amount, 0)
-            .expect("Sell should succeed");
+            .swap_exact_amount_in(&bob, base_token, quote_token, amount, 0)
+            .expect("Swap should succeed");
 
         // Assert that the order has filled
         let filled_order = Order::from_storage(flip_order_id, exchange.storage, exchange.address);
@@ -2021,7 +2099,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pair_created_event() {
+    fn test_pair_created() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -2039,7 +2117,9 @@ mod tests {
         );
 
         // Create the pair
-        let key = exchange.create_pair(&base_token);
+        let key = exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
 
         // Verify PairCreated event was emitted
         let events = &exchange.storage.events[&exchange.address];
@@ -2053,5 +2133,31 @@ mod tests {
             })
             .into_log_data()
         );
+    }
+
+    #[test]
+    fn test_pair_already_created() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let admin = Address::random();
+        let alice = Address::random();
+
+        // Setup tokens
+        let (base_token, _) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            1_000_000u128,
+        );
+
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
+
+        let result = exchange.create_pair(&base_token);
+        assert_eq!(result, Err(StablecoinExchangeError::pair_already_exists()));
     }
 }
