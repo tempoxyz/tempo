@@ -55,7 +55,7 @@ fn transitions_with_fallible_links() {
     let mut epoch_reached = false;
     let mut height_reached = false;
     let _first = run(setup, move |metric, value| {
-        if metric.ends_with("_orchestrator_latest_epoch") {
+        if metric.ends_with("_epoch_manager_latest_epoch") {
             let value = value.parse::<u64>().unwrap();
             epoch_reached |= value >= 3;
         }
