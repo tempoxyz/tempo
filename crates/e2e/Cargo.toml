@@ -26,13 +26,13 @@ tempo-commonware-node.workspace = true
 tempo-eyre.workspace = true
 tempo-node.workspace = true
 
+futures.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 commonware-macros.workspace = true
-futures.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]
