@@ -1,9 +1,17 @@
+//! Epoch logic used by tempo.
+//!
+//! All logic is written with the assumption that there are at least 3 heights
+//! per epoch. Having less heights per epoch will not immediately break the
+//! logic, but it might lead to strange behavior and is not supported.
+//!
+//! Note that either way, 3 blocks per epoch is a highly unreasonable number.
+
 use commonware_consensus::types::Epoch;
 
 pub(crate) mod manager;
 mod scheme_provider;
 
-pub(crate) use scheme_provider::{Coordinator, SchemeProvider};
+pub(crate) use scheme_provider::Coordinator;
 
 /// Returns the first height of `epoch` given `heights_per_epoch`.
 pub(crate) fn first_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {
@@ -19,6 +27,27 @@ pub(crate) fn last_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {
 pub(crate) fn parent_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {
     let first_height_of_epoch = first_height(epoch, heights_per_epoch);
     first_height_of_epoch.saturating_sub(1)
+}
+
+pub(crate) enum RelativePosition {
+    FirstHalf,
+    Middle,
+    SecondHalf,
+}
+
+pub(crate) fn relative_position(height: u64, heights_per_epoch: u64) -> Option<RelativePosition> {
+    // Special case genesis: it's never party of any epoch.
+    if height == 0 {
+        return None;
+    }
+
+    let mid_point = heights_per_epoch / 2;
+
+    match (height % heights_per_epoch).cmp(&mid_point) {
+        std::cmp::Ordering::Less => RelativePosition::FirstHalf,
+        std::cmp::Ordering::Equal => RelativePosition::Middle,
+        std::cmp::Ordering::Greater => RelativePosition::SecondHalf,
+    }
 }
 
 /// Returns the epoch of `height` given `heights_per_epoch`.
@@ -44,6 +73,8 @@ pub(crate) fn is_last_height(height: u64, epoch: Epoch, heights_per_epoch: u64) 
 #[cfg(test)]
 mod tests {
     use commonware_consensus::types::Epoch;
+
+    use crate::epoch::RelativePosition;
 
     use super::{contains_height, first_height, last_height, of_height, parent_height};
 
@@ -194,5 +225,22 @@ mod tests {
         assert_height_in_epoch(999, 0, 1000);
         assert_height_in_epoch(1999, 1, 1000);
         assert_height_in_epoch(2999, 2, 1000);
+    }
+
+    #[track_caller]
+    fn assert_relative_height(
+        height: u64,
+        heights_per_epoch: u64,
+        relative_position: RelativePosition,
+    ) {
+    }
+
+    #[test]
+    fn height_falls_into_correct_part_of() {
+        use RelativePosition::*;
+        assert_relative_height(0, 100, FirstHalf);
+        assert_relative_height(49, 100, FirstHalf);
+        assert_relative_height(0, 100, FirstHalf);
+        assert_relative_height(0, 100, FirstHalf);
     }
 }

@@ -30,7 +30,8 @@ use tempo_node::TempoFullNode;
 
 use crate::{
     config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
-    epoch::{self, Coordinator, SchemeProvider},
+    dkg,
+    epoch::{self, Coordinator},
 };
 
 use super::block::Block;
@@ -116,11 +117,16 @@ where
         );
 
         let coordinator = Coordinator::new(self.participants.clone());
-        let scheme_provider = SchemeProvider::new(bls12381_threshold::Scheme::new(
-            self.participants.as_ref(),
-            &self.polynomial,
-            self.share,
-        ));
+
+        let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
+            self.context.with_label("dkg"),
+            dkg::manager::Config {
+                heights_per_epoch: self.heights_per_epoch,
+                participants: self.participants.clone(),
+                public: self.polynomial.clone(),
+                share: self.share.clone(),
+            },
+        );
 
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
@@ -130,6 +136,9 @@ where
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
+            // FIXME(janis): this information should probably be flow from the DKG mananger, since
+            // the players in epoch E are the peers in epoch E+1. But `Coordinator::peers -> &[PubKey]`,
+            // and so we can't pass it a mailbox.
             coordinator,
             mailbox_size: self.mailbox_size,
             requester_config: commonware_p2p::utils::requester::Config {
@@ -145,7 +154,7 @@ where
         let (marshal, marshal_mailbox) = marshal::Actor::init(
             self.context.with_label("sync"),
             marshal::Config {
-                scheme_provider: scheme_provider.clone(),
+                scheme_provider: dkg_manager_mailbox.clone(),
                 epoch_length: self.heights_per_epoch,
                 // identity: *self.polynomial.constant(),
                 partition_prefix: self.partition_prefix.clone(),
@@ -193,6 +202,7 @@ where
                 application: execution_driver_mailbox.clone(),
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
+                dkg_manager: dkg_manager_mailbox.clone(),
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
@@ -202,7 +212,6 @@ where
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
-                scheme_provider,
                 views_to_track: self.views_to_track,
                 views_until_leader_skip: self.views_until_leader_skip,
                 heights_per_epoch: self.heights_per_epoch,
@@ -250,6 +259,9 @@ where
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
     broadcast: buffered::Engine<TContext, PublicKey, Block>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
+
+    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
     execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
@@ -346,7 +358,10 @@ where
             marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
 
         let syncer = self.marshal.start(
-            Reporters::from((self.execution_driver_mailbox, self.epoch_manager_mailbox)),
+            Reporters::from((
+                self.execution_driver_mailbox,
+                Reporters::from((self.epoch_manager_mailbox, self.dkg_manager_mailbox)),
+            )),
             self.broadcast_mailbox,
             resolver,
         );

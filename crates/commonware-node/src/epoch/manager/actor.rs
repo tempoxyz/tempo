@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use commonware_consensus::{simplex, types::Epoch};
+use commonware_consensus::{marshal::SchemeProvider as _, simplex, types::Epoch};
 use commonware_cryptography::{Signer as _, ed25519::PublicKey};
 use commonware_p2p::{
     Blocker, Receiver, Sender,
@@ -11,7 +11,7 @@ use commonware_runtime::{
 };
 use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::sequence::U32;
-use eyre::{WrapErr as _, bail};
+use eyre::{OptionExt as _, WrapErr as _, bail};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
@@ -324,13 +324,20 @@ where
         }
         let _ = metadata.sync().await;
 
+        let scheme = (*self
+            .config
+            .dkg_manager
+            .scheme(epoch)
+            .ok_or_eyre("dkg manager did not return a scheme for the epoch")?)
+        .clone();
+
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
             simplex::Config {
                 me: self.config.me.public_key(),
                 participants: self.config.participants.clone(),
                 // TODO(janis): suggest to commonware that Arc<impl Scheme> should impl Scheme.
-                scheme: (*self.config.scheme_provider.scheme()).clone(),
+                scheme,
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
                 relay: self.config.application.clone(),
