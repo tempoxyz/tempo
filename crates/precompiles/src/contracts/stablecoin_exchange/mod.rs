@@ -241,7 +241,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
-        self.quote_exact_out(book_key, amount_out, false)
+        let base_for_quote = token_in == orderbook.base;
+        self.quote_exact_out(book_key, amount_out, base_for_quote)
     }
 
     pub fn quote_swap_exact_amount_in(
@@ -257,7 +258,8 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
-        self.quote_exact_in(book_key, amount_in, true)
+        let base_for_quote = token_in == orderbook.base;
+        self.quote_exact_in(book_key, amount_in, base_for_quote)
     }
 
     pub fn swap_exact_amount_in(
@@ -1936,6 +1938,49 @@ mod tests {
         let price = orderbook::tick_to_price(tick);
         let expected_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
         assert_eq!(amount_out, expected_amount_out);
+    }
+
+    #[test]
+    fn test_quote_swap_exact_amount_out_base_for_quote() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let amount_out = 500_000u128;
+        let tick = 0;
+
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            2_000_000u128,
+        );
+        exchange
+            .create_pair(&base_token)
+            .expect("Could not create pair");
+
+        // Alice places a bid: willing to BUY base using quote
+        let order_amount = 1_000_000u128;
+        exchange
+            .place(&alice, base_token, order_amount, true, tick)
+            .expect("Place bid order should succeed");
+
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Execute block should succeed");
+
+        // Quote: sell base to get quote
+        // Should match against Alice's bid (buyer of base)
+        let amount_in = exchange
+            .quote_swap_exact_amount_out(base_token, quote_token, amount_out)
+            .expect("Quote should succeed");
+
+        let price = orderbook::tick_to_price(tick);
+        let expected_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
+        assert_eq!(amount_in, expected_amount_in);
     }
 
     #[test]
