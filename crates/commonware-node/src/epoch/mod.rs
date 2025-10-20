@@ -2,8 +2,7 @@ use commonware_consensus::types::Epoch;
 
 pub(crate) mod manager;
 
-pub(crate) use manager::Coordinator;
-pub(crate) use manager::SchemeProvider;
+pub(crate) use manager::{Coordinator, SchemeProvider};
 
 /// Returns the first height of `epoch` given `heights_per_epoch`.
 pub(crate) fn first_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {

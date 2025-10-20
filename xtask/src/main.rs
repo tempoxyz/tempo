@@ -3,8 +3,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use clap::Parser;
-use commonware_cryptography::ed25519::PrivateKey;
-use commonware_cryptography::{PrivateKeyExt as _, Signer as _};
+use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
 use eyre::{Context, ensure};
 use indexmap::IndexMap;
 use rand::SeedableRng;

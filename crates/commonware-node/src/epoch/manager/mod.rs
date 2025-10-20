@@ -6,15 +6,15 @@ use std::time::Duration;
 
 pub(crate) use actor::Actor;
 use commonware_consensus::simplex::signing_scheme::bls12381_threshold;
-use commonware_cryptography::bls12381::primitives::variant::MinSig;
-use commonware_cryptography::ed25519::PrivateKey;
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{
+    bls12381::primitives::variant::MinSig,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_utils::set::Set;
 pub(crate) use ingress::Mailbox;
 
 // TODO(janis): feels likel these make no sense here. Move them out.
-pub(crate) use scheme_provider::Coordinator;
-pub(crate) use scheme_provider::SchemeProvider;
+pub(crate) use scheme_provider::{Coordinator, SchemeProvider};
 
 use commonware_consensus::marshal;
 use commonware_p2p::Blocker;
