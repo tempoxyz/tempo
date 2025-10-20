@@ -1,4 +1,5 @@
 pub mod amm;
+pub mod bindings;
 
 use crate::{
     DEFAULT_FEE_TOKEN,

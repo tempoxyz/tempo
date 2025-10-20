@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
-use revm::state::Bytecode;
+use revm::{precompile::PrecompileError, state::Bytecode};
 use tracing::trace;
 
 mod slots {
