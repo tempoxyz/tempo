@@ -1063,7 +1063,9 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
         amount: u128,
     ) -> Result<(), StablecoinExchangeError> {
         let current_balance = self.balance_of(user, token);
-        assert!(current_balance >= amount, "Insufficient balance");
+        if current_balance < amount {
+            return Err(StablecoinExchangeError::insufficient_balance());
+        }
         self.sub_balance(user, token, amount);
         self.transfer(token, user, amount)?;
 
@@ -1855,6 +1857,32 @@ mod tests {
             }),
             0
         );
+    }
+
+    #[test]
+    fn test_withdraw_insufficient_balance() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize();
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let (_base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &alice,
+            exchange.address,
+            1_000_000u128,
+        );
+
+        // Alice has 0 balance on the exchange
+        assert_eq!(exchange.balance_of(alice, quote_token), 0);
+
+        // Try to withdraw more than balance
+        let result = exchange.withdraw(alice, quote_token, 100u128);
+
+        assert_eq!(result, Err(StablecoinExchangeError::insufficient_balance()));
     }
 
     #[test]
