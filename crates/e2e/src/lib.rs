@@ -37,7 +37,13 @@ pub struct ValidatorNode {
     pub node: ExecutionNode,
 
     /// Future that should be spawned to start the consensus engine.
-    pub start_engine: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+    start_engine: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+}
+
+impl ValidatorNode {
+    pub fn start(&mut self) -> impl Future<Output = ()> + use<> {
+        self.start_engine.take().expect("engine already started")
+    }
 }
 
 /// The test setup run by [`run`].
@@ -130,7 +136,7 @@ pub async fn setup_validators(
         let link = linkage.clone();
         nodes.push(ValidatorNode {
             node,
-            start_engine: Box::pin(async move {
+            start_engine: Some(Box::pin(async move {
                 let pending = oracle.register(signer.public_key(), 0).await.unwrap();
                 let recovered = oracle.register(signer.public_key(), 1).await.unwrap();
                 let resolver = oracle.register(signer.public_key(), 2).await.unwrap();
@@ -143,7 +149,7 @@ pub async fn setup_validators(
                 engine.start(pending, recovered, resolver, broadcast, backfill, dkg);
 
                 debug!(%uid, "started validator");
-            }),
+            })),
         });
     }
 
@@ -160,8 +166,8 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 
         // Setup and run all validators.
         let (nodes, _oracle) =
-            setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
-        join_all(nodes.into_iter().map(|node| node.start_engine)).await;
+            setup_validators(context.clone(), &execution_runtime, how_many, linkage).await;
+        join_all(nodes.into_iter().map(|mut node| node.start())).await;
 
         loop {
             let metrics = context.encode();

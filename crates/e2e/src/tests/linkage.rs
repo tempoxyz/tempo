@@ -2,8 +2,13 @@ use std::time::Duration;
 
 use commonware_macros::test_traced;
 use commonware_p2p::simulated::Link;
+use commonware_runtime::{
+    Clock, Runner as _,
+    deterministic::{self, Runner},
+};
+use reth_ethereum::storage::BlockNumReader;
 
-use crate::{Setup, run};
+use crate::{ExecutionRuntime, Setup, run, setup_validators};
 
 #[test_traced]
 fn only_good_links() {
@@ -153,4 +158,31 @@ fn reach_height_20_with_a_few_bad_links() {
     });
 
     std::thread::sleep(Duration::from_secs(1));
+}
+
+#[test_traced]
+fn validator_can_join_later() {
+    let _ = tempo_eyre::install();
+
+    Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
+        let num_nodes = 10;
+        let link = Link {
+            latency: Duration::from_millis(10),
+            jitter: Duration::from_millis(1),
+            success_rate: 1.0,
+        };
+
+        let execution_runtime = ExecutionRuntime::new();
+        let (mut nodes, _network_handle) =
+            setup_validators(context.clone(), &execution_runtime, num_nodes, link).await;
+
+        // Start all nodes except the last one.
+        for node in &mut nodes[..(num_nodes - 1) as usize] {
+            node.start().await;
+        }
+
+        while nodes[0].node.node.provider.last_block_number().unwrap() < 20 {
+            context.sleep(Duration::from_secs(1)).await;
+        }
+    });
 }
