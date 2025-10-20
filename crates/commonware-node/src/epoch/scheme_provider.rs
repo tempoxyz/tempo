@@ -1,3 +1,5 @@
+//! Epoch aware schemes and peers.
+
 use std::sync::Arc;
 
 use commonware_consensus::{marshal, simplex::signing_scheme::bls12381_threshold};

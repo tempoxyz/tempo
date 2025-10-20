@@ -1,6 +1,5 @@
 mod actor;
 mod ingress;
-mod scheme_provider;
 
 use std::time::Duration;
 
@@ -12,9 +11,6 @@ use commonware_cryptography::{
 };
 use commonware_utils::set::Set;
 pub(crate) use ingress::Mailbox;
-
-// TODO(janis): feels likel these make no sense here. Move them out.
-pub(crate) use scheme_provider::{Coordinator, SchemeProvider};
 
 use commonware_consensus::marshal;
 use commonware_p2p::Blocker;
@@ -36,7 +32,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,
     pub(crate) partition_prefix: String,
-    pub(crate) scheme_provider: SchemeProvider,
+    pub(crate) scheme_provider: super::SchemeProvider,
     pub(crate) views_to_track: u64,
     pub(crate) views_until_leader_skip: u64,
 
