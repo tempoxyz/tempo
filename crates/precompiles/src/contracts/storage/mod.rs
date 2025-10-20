@@ -21,7 +21,6 @@ pub trait PrecompileStorageProvider {
 }
 
 pub trait StorageOps {
-    // TODO: error handling
-    fn sstore(&mut self, slot: U256, value: U256);
-    fn sload(&mut self, slot: U256) -> U256;
+    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), PrecompileError>;
+    fn sload(&mut self, slot: U256) -> Result<U256, PrecompileError>;
 }

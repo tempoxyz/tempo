@@ -8,6 +8,7 @@ use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
     sol_types::SolValue,
 };
+use revm::precompile::PrecompileError;
 
 /// Constants from the Solidity reference implementation
 pub const M: U256 = uint!(9970_U256); // m = 0.9970 (scaled by 10000)
@@ -566,17 +567,22 @@ pub fn sqrt(x: U256) -> U256 {
 
 impl<'a, S: PrecompileStorageProvider> StorageOps for TIPFeeAMM<'a, S> {
     /// Store value in contract storage
-    fn sstore(&mut self, slot: U256, value: U256) {
+    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), PrecompileError> {
         self.storage
             .sstore(self.contract_address, slot, value)
-            .expect("Storage operation failed");
+            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+
+        Ok(())
     }
 
     /// Load value from contract storage
-    fn sload(&mut self, slot: U256) -> U256 {
-        self.storage
+    fn sload(&mut self, slot: U256) -> Result<U256, PrecompileError> {
+        let value = self
+            .storage
             .sload(self.contract_address, slot)
-            .expect("Storage operation failed")
+            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+
+        Ok(value)
     }
 }
 

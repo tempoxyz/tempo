@@ -62,51 +62,46 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Read pending order ID
-    fn get_pending_order_id(&mut self) -> u128 {
-        self.storage
-            .sload(self.address, slots::PENDING_ORDER_ID)
-            .expect("Storage read failed")
-            .to::<u128>()
+    fn get_pending_order_id(&mut self) -> Result<u128, PrecompileError> {
+        Ok(self.storage
+            .sload(self.address, slots::PENDING_ORDER_ID)?
+            .to::<u128>())
     }
 
     /// Set pending order ID
-    fn set_pending_order_id(&mut self, order_id: u128) {
+    fn set_pending_order_id(&mut self, order_id: u128) -> Result<(), PrecompileError> {
         self.storage
             .sstore(self.address, slots::PENDING_ORDER_ID, U256::from(order_id))
-            .expect("Storage write failed");
     }
 
     /// Read active order ID
-    fn get_active_order_id(&mut self) -> u128 {
-        self.storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .expect("Storage read failed")
-            .to::<u128>()
+    fn get_active_order_id(&mut self) -> Result<u128, PrecompileError> {
+        Ok(self.storage
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
+            .to::<u128>())
     }
 
     /// Set active order ID
-    fn set_active_order_id(&mut self, order_id: u128) {
+    fn set_active_order_id(&mut self, order_id: u128) -> Result<(), PrecompileError> {
         self.storage
             .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))
-            .expect("Storage write failed");
     }
 
     /// Increment and return the pending order id
-    fn increment_pending_order_id(&mut self) -> u128 {
-        let next_id = self.get_pending_order_id() + 1;
-        self.set_pending_order_id(next_id);
-        next_id
+    fn increment_pending_order_id(&mut self) -> Result<u128, PrecompileError> {
+        let next_id = self.get_pending_order_id()? + 1;
+        self.set_pending_order_id(next_id)?;
+        Ok(next_id)
     }
 
     /// Get user's balance for a specific token
-    pub fn balance_of(&mut self, user: Address, token: Address) -> u128 {
+    pub fn balance_of(&mut self, user: Address, token: Address) -> Result<u128, PrecompileError> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
 
-        self.storage
-            .sload(self.address, balance_slot)
-            .expect("TODO: handle error")
-            .to::<u128>()
+        Ok(self.storage
+            .sload(self.address, balance_slot)?
+            .to::<u128>())
     }
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
@@ -123,25 +118,24 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Set user's balance for a specific token
-    fn set_balance(&mut self, user: Address, token: Address, amount: u128) {
+    fn set_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<(), PrecompileError> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
 
         self.storage
             .sstore(self.address, balance_slot, U256::from(amount))
-            .expect("TODO: handle error");
     }
 
     /// Add to user's balance
-    fn increment_balance(&mut self, user: Address, token: Address, amount: u128) {
-        let current = self.balance_of(user, token);
-        self.set_balance(user, token, current + amount);
+    fn increment_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<(), PrecompileError> {
+        let current = self.balance_of(user, token)?;
+        self.set_balance(user, token, current + amount)
     }
 
     /// Subtract from user's balance
-    fn sub_balance(&mut self, user: Address, token: Address, amount: u128) {
-        let current = self.balance_of(user, token);
-        self.set_balance(user, token, current.saturating_sub(amount));
+    fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<(), PrecompileError> {
+        let current = self.balance_of(user, token)?;
+        self.set_balance(user, token, current.saturating_sub(amount))
     }
 
     /// Transfer tokens, accounting for linking USD
@@ -216,12 +210,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         user: Address,
         token: Address,
         amount: u128,
-    ) -> Result<(), StablecoinExchangeError> {
-        let user_balance = self.balance_of(user, token);
+    ) -> Result<(), PrecompileError> {
+        let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
-            self.sub_balance(user, token, amount);
+            self.sub_balance(user, token, amount)?;
         } else {
-            self.set_balance(user, token, 0);
+            self.set_balance(user, token, 0)?;
             let remaining = amount - user_balance;
             self.transfer_from(token, user, remaining)?;
         }
@@ -1296,16 +1290,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 }
 
 impl<'a, S: PrecompileStorageProvider> StorageOps for StablecoinExchange<'a, S> {
-    fn sstore(&mut self, slot: U256, value: U256) {
-        self.storage
-            .sstore(self.address, slot, value)
-            .expect("Storage operation failed");
+    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), PrecompileError> {
+        self.storage.sstore(self.address, slot, value)
     }
 
-    fn sload(&mut self, slot: U256) -> U256 {
-        self.storage
-            .sload(self.address, slot)
-            .expect("Storage operation failed")
+    fn sload(&mut self, slot: U256) -> Result<U256, PrecompileError> {
+        self.storage.sload(self.address, slot)
     }
 }
 

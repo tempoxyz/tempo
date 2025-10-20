@@ -2,10 +2,7 @@ pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as
 pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
 use revm::precompile::PrecompileError;
 
-use alloy::{
-    sol,
-    sol_types::{SolError, SolInterface},
-};
+use alloy::{sol, sol_types::SolInterface};
 
 sol! {
     /// FeeManager interface for managing gas fee collection and distribution.
