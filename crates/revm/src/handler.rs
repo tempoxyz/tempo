@@ -433,7 +433,6 @@ where
         )?;
 
         // modify account nonce and touch the account.
-
         caller_account.mark_touch();
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
         if tx.kind().is_call() {
