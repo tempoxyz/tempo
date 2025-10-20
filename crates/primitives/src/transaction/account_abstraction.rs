@@ -130,7 +130,6 @@ pub struct TxAA {
     )]
     pub gas_limit: u64,
 
-    // TODO: What happens if this vec is empty?
     pub calls: Vec<Call>,
 
     /// Access list (EIP-2930)
