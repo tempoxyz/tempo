@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 
 use commonware_consensus::{simplex, types::Epoch};
-use commonware_cryptography::Signer as _;
+use commonware_cryptography::{Signer as _, ed25519::PublicKey};
 use commonware_p2p::{
     Blocker, Receiver, Sender,
     utils::mux::{MuxHandle, Muxer},
@@ -15,7 +15,6 @@ use eyre::{WrapErr as _, bail};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_cryptography::PublicKey;
 use tracing::{Level, Span, info, instrument, warn};
 
 use super::ingress::Finalized;

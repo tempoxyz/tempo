@@ -41,12 +41,14 @@ use reth_provider::{BlockNumReader as _, BlockReader as _};
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, instrument, warn};
 
-use tempo_commonware_node_cryptography::Digest;
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 mod executor;
 
-use crate::{consensus::execution_driver::executor::ExecutorMailbox, epoch};
+use crate::{
+    consensus::{Digest, execution_driver::executor::ExecutorMailbox},
+    epoch,
+};
 
 use super::block::Block;
 

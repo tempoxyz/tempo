@@ -19,11 +19,10 @@ use futures::{
     channel::{mpsc, oneshot},
 };
 use reth_provider::BlockNumReader as _;
-use tempo_commonware_node_cryptography::Digest;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, Span, info, instrument, warn};
 
-use crate::consensus::block::Block;
+use crate::consensus::{Digest, block::Block};
 
 pub(super) struct Builder {
     /// A handle to the execution node layer. Used to forward finalized blocks

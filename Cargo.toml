@@ -13,7 +13,6 @@ members = [
   "crates/chainspec",
   "crates/commonware-node",
   "crates/commonware-node-config",
-  "crates/commonware-node-cryptography",
   "crates/consensus",
   "crates/eyre",
   "crates/evm",
@@ -97,7 +96,6 @@ sequential-futures-queue = { path = "crates/sequential-futures-queue" }
 tempo-chainspec = { path = "crates/chainspec" }
 tempo-commonware-node = { path = "crates/commonware-node" }
 tempo-commonware-node-config = { path = "crates/commonware-node-config" }
-tempo-commonware-node-cryptography = { path = "crates/commonware-node-cryptography" }
 tempo-consensus = { path = "crates/consensus" }
 tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }

@@ -11,11 +11,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-commonware-node-cryptography.workspace = true
-
 alloy-primitives = { workspace = true, features = ["serde"] }
 camino = { workspace = true, features = ["serde1"] }
 commonware-codec.workspace = true
+commonware-cryptography.workspace = true
 commonware-utils.workspace = true
 const-hex = { workspace = true, features = ["serde"] }
 indexmap = { workspace = true, features = ["serde"] }

@@ -1,10 +1,9 @@
 use commonware_consensus::{Block as _, Reporter};
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
-use tempo_commonware_node_cryptography::Digest;
 use tracing::{Span, warn};
 
-use crate::consensus::block::Block;
+use crate::consensus::{Digest, block::Block};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {

@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use commonware_consensus::{marshal, simplex::signing_scheme::bls12381_threshold};
-use commonware_cryptography::bls12381::primitives::variant::MinSig;
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_resolver::p2p;
 use commonware_utils::set::Set;
-use tempo_commonware_node_cryptography::PublicKey;
 
 #[derive(Clone)]
 pub(crate) struct SchemeProvider {

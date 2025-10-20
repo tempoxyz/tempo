@@ -11,7 +11,10 @@ pub mod metrics;
 
 use std::net::SocketAddr;
 
-use commonware_cryptography::Signer;
+use commonware_cryptography::{
+    Signer,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::authenticated::discovery;
 use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, bail, eyre};
@@ -24,7 +27,6 @@ use crate::config::{
     BROADCASTER_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT,
     RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
 };
-use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,

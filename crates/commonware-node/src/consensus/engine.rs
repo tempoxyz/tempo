@@ -9,7 +9,15 @@ use std::{
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{Reporters, marshal, simplex::signing_scheme::bls12381_threshold};
-use commonware_cryptography::Signer as _;
+use commonware_cryptography::{
+    Signer as _,
+    bls12381::primitives::{
+        group::Share,
+        poly::Poly,
+        variant::{MinSig, Variant},
+    },
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::{Blocker, Receiver, Sender};
 use commonware_runtime::{
     Clock, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
@@ -18,7 +26,6 @@ use commonware_utils::set::Set;
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_cryptography::{GroupShare, PrivateKey, PublicKey, PublicPolynomial};
 use tempo_node::TempoFullNode;
 
 use crate::{
@@ -66,8 +73,8 @@ pub struct Builder<
     pub blocker: TBlocker,
     pub partition_prefix: String,
     pub signer: PrivateKey,
-    pub polynomial: PublicPolynomial,
-    pub share: GroupShare,
+    pub polynomial: Poly<<MinSig as Variant>::Public>,
+    pub share: Share,
     pub participants: Set<PublicKey>,
     pub mailbox_size: usize,
     pub deque_size: usize,

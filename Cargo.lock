@@ -11545,7 +11545,6 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "tempo-commonware-node-config",
- "tempo-commonware-node-cryptography",
  "tempo-node",
  "tempo-payload-types",
  "tempo-primitives",
@@ -11560,26 +11559,14 @@ dependencies = [
  "alloy-primitives",
  "camino",
  "commonware-codec",
+ "commonware-cryptography",
  "commonware-utils",
  "const-hex",
  "humantime-serde",
  "indexmap 2.11.4",
  "serde",
- "tempo-commonware-node-cryptography",
  "thiserror 2.0.17",
  "toml",
-]
-
-[[package]]
-name = "tempo-commonware-node-cryptography"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "bytes",
- "commonware-codec",
- "commonware-cryptography",
- "commonware-utils",
- "rand 0.8.5",
 ]
 
 [[package]]
@@ -11913,7 +11900,6 @@ dependencies = [
  "indexmap 2.11.4",
  "rand 0.8.5",
  "tempo-commonware-node-config",
- "tempo-commonware-node-cryptography",
  "toml",
 ]
 

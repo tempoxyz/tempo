@@ -7,6 +7,8 @@ use std::time::Duration;
 pub(crate) use actor::Actor;
 use commonware_consensus::simplex::signing_scheme::bls12381_threshold;
 use commonware_cryptography::bls12381::primitives::variant::MinSig;
+use commonware_cryptography::ed25519::PrivateKey;
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::set::Set;
 pub(crate) use ingress::Mailbox;
 
@@ -18,7 +20,6 @@ use commonware_consensus::marshal;
 use commonware_p2p::Blocker;
 use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::PoolRef};
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
 use crate::consensus::block::Block;
 
