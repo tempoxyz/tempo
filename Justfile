@@ -44,6 +44,7 @@ localnet accounts="1000" reset="true":
                       --http.port 8545 \
                       --http.api all \
                       --engine.disable-precompile-cache \
+                      --engine.legacy-state-root \
                       --builder.gaslimit 3000000000 \
                       --builder.max-tasks 8 \
                       --builder.deadline 3 \
