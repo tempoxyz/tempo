@@ -1,0 +1,178 @@
+name: Release
+# Adapted from Reth's release workflow
+# https://github.com/paradigmxyz/reth/blob/main/.github/workflows/release.yml
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g., v0.1.0)"
+        required: true
+        type: string
+      profile:
+        description: "Build profile"
+        default: "maxperf"
+        type: choice
+        options:
+          - "release"
+          - "maxperf"
+      dry_run:
+        description: "Dry run (build binaries without creating release)"
+        default: false
+        type: boolean
+
+env:
+  RUSTC_WRAPPER: "sccache"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  get-version:
+    name: Get Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Get version from tag
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+  build-release:
+    name: Build Release Binaries
+    needs: get-version
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        binary: [tempo, tempo-bench, tempo-sidecar]
+        platform:
+          # - os: depot-ubuntu-latest-16
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          # - os: depot-ubuntu-latest-arm-16
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          # - os: depot-macos-15
+          - os: macos-15
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Setup mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Get build profile
+        id: profile
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "profile=${{ inputs.profile }}" >> $GITHUB_OUTPUT
+          else
+            echo "profile=maxperf" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: Build binary
+        run: cargo build --bin ${{ matrix.binary }} --profile ${{ steps.profile.outputs.profile }} --target ${{ matrix.platform.target }}
+        env:
+          CARGO_TARGET_DIR: target
+
+      - name: Prepare binary
+        id: prepare
+        shell: bash
+        run: |
+          PROFILE="${{ steps.profile.outputs.profile }}"
+          if [ "$PROFILE" = "dev" ]; then
+            PROFILE_DIR="debug"
+          else
+            PROFILE_DIR="$PROFILE"
+          fi
+
+          BINARY_PATH="target/${{ matrix.platform.target }}/${PROFILE_DIR}/${{ matrix.binary }}"
+          BINARY_NAME="${{ matrix.binary }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}"
+          ARCHIVE_NAME="${{ matrix.binary }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}.tar.gz"
+
+          cp "$BINARY_PATH" "$BINARY_NAME"
+          tar czf "$ARCHIVE_NAME" "$BINARY_NAME"
+
+          echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
+          echo "archive_path=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          shasum -a 256 "${{ steps.prepare.outputs.archive_path }}" > "${{ steps.prepare.outputs.archive_name }}.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}-${{ matrix.platform.target }}
+          path: |
+            ${{ steps.prepare.outputs.archive_path }}
+            ${{ steps.prepare.outputs.archive_name }}.sha256
+          if-no-files-found: error
+
+  create-release:
+    name: Create Release
+    needs: [get-version, build-release]
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # This is necessary for generating the changelog.
+      # It has to come before "Download Artifacts" or else it deletes the artifacts.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate full changelog
+        id: changelog
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$(git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 ${{ env.VERSION }}^)..${{ env.VERSION }})" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          # Determine if this is a prerelease
+          PRERELEASE=""
+          if echo "$VERSION" | grep -qE '(alpha|beta|rc)'; then
+            PRERELEASE="--prerelease"
+          fi
+
+          # Create draft release with all artifacts
+          gh release create "$VERSION" \
+            --repo ${{ github.repository }} \
+            --title "Release $VERSION" \
+            --draft \
+            --notes "${{ steps.changelog.outputs.CHANGELOG }}" \
+            $PRERELEASE \
+            artifacts/**/*

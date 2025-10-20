@@ -7,16 +7,17 @@
 //! If the agent detects that the execution layer is missing blocks it attempts
 //! to backfill them from the consensus layer.
 
-use std::{pin::Pin, sync::Arc};
+use std::{sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use commonware_consensus::{Block as _, marshal, types::Round};
+use commonware_macros::select;
+use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use eyre::{WrapErr as _, ensure};
-use futures_channel::{
-    mpsc::{UnboundedReceiver, UnboundedSender},
-    oneshot,
+use futures::{
+    StreamExt as _,
+    channel::{mpsc, oneshot},
 };
-use futures_util::{StreamExt as _, select_biased, stream::FuturesUnordered};
 use reth_provider::BlockNumReader as _;
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_node::{TempoExecutionData, TempoFullNode};
@@ -44,7 +45,10 @@ pub(super) struct Builder {
 
 impl Builder {
     /// Constructs the [`Executor`].
-    pub(super) fn build(self) -> Executor {
+    pub(super) fn build<TContext>(self, context: TContext) -> Executor<TContext>
+    where
+        TContext: Spawner,
+    {
         let Self {
             execution_node,
             genesis_block,
@@ -52,7 +56,7 @@ impl Builder {
             marshal,
         } = self;
 
-        let (to_me, from_execution_driver) = futures_channel::mpsc::unbounded();
+        let (to_me, from_execution_driver) = mpsc::unbounded();
 
         let my_mailbox = ExecutorMailbox { inner: to_me };
 
@@ -69,18 +73,20 @@ impl Builder {
             .expect("our mailbox must work right after construction");
 
         Executor {
+            context: ContextCell::new(context),
             execution_node,
             genesis_block,
             mailbox: from_execution_driver,
             latest_finalized_digest,
             marshal,
             my_mailbox,
-            running_backfills: FuturesUnordered::new(),
         }
     }
 }
 
-pub(super) struct Executor {
+pub(super) struct Executor<TContext> {
+    context: ContextCell<TContext>,
+
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: TempoFullNode,
@@ -92,7 +98,7 @@ pub(super) struct Executor {
 
     /// The channel over which the agent will receive new commands from the
     /// execution driver.
-    mailbox: UnboundedReceiver<Message>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
     marshal: marshal::Mailbox<BlsScheme, Block>,
@@ -106,33 +112,33 @@ pub(super) struct Executor {
     /// The mailbox passed to other parts of the system to forward messages to
     /// the agent.
     my_mailbox: ExecutorMailbox,
-
-    running_backfills:
-        FuturesUnordered<Pin<Box<dyn Future<Output = eyre::Result<()>> + Send + Sync + 'static>>>,
 }
 
-impl Executor {
+impl<TContext> Executor<TContext>
+where
+    TContext: Metrics + Pacer + Spawner,
+{
     pub(super) fn mailbox(&self) -> &ExecutorMailbox {
         &self.my_mailbox
     }
 
-    pub(super) async fn run(mut self) {
+    pub(super) fn start(mut self) -> Handle<()> {
+        spawn_cell!(self.context, self.run().await)
+    }
+
+    async fn run(mut self) {
         loop {
-            // TODO: also listen to shutdown signals from the runtime here.
-            select_biased! {
+            select! {
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else { break; };
                     // XXX: updating forkchoice and finalizing blocks must
                     // happen sequentially, so blocking the event loop on await
                     // is desired.
                     //
-                    // Backfills will be put on a queue and can happen anytime
-                    // in between.
+                    // Backfills will be spawned as tasks and will also send
+                    // resolved the blocks to this queue.
                     self.handle_message(msg).await;
-                }
-
-                // Only exists to drain the queue
-                _backfill = self.running_backfills.next() => {}
+                },
             }
         }
     }
@@ -204,8 +210,8 @@ impl Executor {
         ),
     )]
     fn backfill(&mut self, cause: Span, round: Option<Round>, digest: Digest) {
-        self.running_backfills
-            .push(Box::pin(backfill_from_consensus(
+        self.context.with_label("backfill").spawn({
+            let fut = backfill_from_consensus(
                 Span::current(),
                 digest,
                 self.execution_node.clone(),
@@ -213,7 +219,9 @@ impl Executor {
                 self.genesis_block.clone(),
                 self.marshal.clone(),
                 round,
-            )));
+            );
+            move |_| fut
+        });
     }
 
     /// Canonicalizes `digest` by setting it as the head of the execution layer.
@@ -233,7 +241,7 @@ impl Executor {
             %digest,
         ),
         ret,
-        err,
+        err(Display),
     )]
     async fn canonicalize(
         &self,
@@ -261,6 +269,7 @@ impl Executor {
                 None,
                 reth_node_builder::EngineApiMessageVersion::V3,
             )
+            .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")?;
 
@@ -329,6 +338,7 @@ impl Executor {
             .add_ons_handle
             .beacon_engine_handle
             .new_payload(TempoExecutionData(block))
+            .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err(
                 "failed sending new-payload request to execution engine to \
@@ -361,7 +371,7 @@ impl Executor {
 
 #[derive(Clone, Debug)]
 pub(super) struct ExecutorMailbox {
-    inner: UnboundedSender<Message>,
+    inner: mpsc::UnboundedSender<Message>,
 }
 
 impl ExecutorMailbox {

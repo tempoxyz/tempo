@@ -5,15 +5,17 @@ use alloy::{
     },
     rpc::types::TransactionTrait,
 };
+use alloy_eips::Typed2718;
 use alloy_network::TxSigner;
 use alloy_primitives::{Address, Signature};
 use alloy_rpc_types_eth::TransactionRequest;
-use reth_evm::revm::context::{BlockEnv, CfgEnv};
+use reth_evm::revm::context::CfgEnv;
 use reth_rpc_convert::{
     EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv,
 };
 use serde::{Deserialize, Serialize};
-use tempo_primitives::{TempoTxEnvelope, TxFeeToken, transaction::TempoTypedTransaction};
+use tempo_evm::TempoBlockEnv;
+use tempo_primitives::{TempoTxEnvelope, TxAA, TxFeeToken, transaction::TempoTypedTransaction};
 use tempo_revm::TempoTxEnv;
 
 /// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
@@ -100,19 +102,21 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     }
 }
 
-impl TryIntoTxEnv<TempoTxEnv> for TempoTransactionRequest {
+impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
     type Err = EthTxEnvError;
 
     fn try_into_tx_env<Spec>(
         self,
         cfg_env: &CfgEnv<Spec>,
-        block_env: &BlockEnv,
+        block_env: &TempoBlockEnv,
     ) -> Result<TempoTxEnv, Self::Err> {
         Ok(TempoTxEnv {
-            inner: self.inner.try_into_tx_env(cfg_env, block_env)?,
+            inner: self.inner.try_into_tx_env(cfg_env, &block_env.inner)?,
             fee_token: self.fee_token,
             is_system_tx: false,
             fee_payer: None,
+            // RPC transactions are not AA transactions
+            aa_tx_env: None,
         })
     }
 }
@@ -161,6 +165,7 @@ impl From<TempoTxEnvelope> for TempoTransactionRequest {
             TempoTxEnvelope::Eip1559(tx) => tx.into(),
             TempoTxEnvelope::Eip7702(tx) => tx.into(),
             TempoTxEnvelope::FeeToken(tx) => tx.into(),
+            TempoTxEnvelope::AA(tx) => tx.into(),
         }
     }
 }
@@ -170,6 +175,12 @@ trait FeeToken {
 }
 
 impl FeeToken for TxFeeToken {
+    fn fee_token(&self) -> Option<Address> {
+        self.fee_token
+    }
+}
+
+impl FeeToken for TxAA {
     fn fee_token(&self) -> Option<Address> {
         self.fee_token
     }
@@ -208,6 +219,33 @@ impl<T: TransactionTrait + FeeToken> From<Signed<T>> for TempoTransactionRequest
     }
 }
 
+impl From<tempo_primitives::AASigned> for TempoTransactionRequest {
+    // TODO: How to deal with this TempoTransactionRequest struct, when it is a AA transaction?
+    fn from(value: tempo_primitives::AASigned) -> Self {
+        Self {
+            fee_token: value.tx().fee_token,
+            inner: TransactionRequest {
+                from: None,
+                to: Some(value.kind()),
+                gas: Some(value.gas_limit()),
+                gas_price: value.gas_price(),
+                max_fee_per_gas: Some(value.max_fee_per_gas()),
+                max_priority_fee_per_gas: value.max_priority_fee_per_gas(),
+                value: Some(value.value()),
+                input: alloy_rpc_types_eth::TransactionInput::new(value.input().clone()),
+                nonce: Some(value.nonce()),
+                chain_id: value.chain_id(),
+                access_list: value.access_list().cloned(),
+                max_fee_per_blob_gas: None,
+                blob_versioned_hashes: None,
+                sidecar: None,
+                authorization_list: None,
+                transaction_type: Some(value.ty()),
+            },
+        }
+    }
+}
+
 impl From<TempoTypedTransaction> for TempoTransactionRequest {
     fn from(value: TempoTypedTransaction) -> Self {
         match value {
@@ -229,6 +267,10 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
             },
             TempoTypedTransaction::FeeToken(tx) => Self {
                 fee_token: tx.fee_token,
+                inner: TransactionRequest::from_transaction(tx),
+            },
+            TempoTypedTransaction::AA(tx) => Self {
+                fee_token: tx.tx().fee_token,
                 inner: TransactionRequest::from_transaction(tx),
             },
         }

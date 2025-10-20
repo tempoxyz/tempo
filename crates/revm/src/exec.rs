@@ -1,5 +1,5 @@
 use crate::{
-    TempoInvalidTransaction, TempoTxEnv,
+    TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv,
     evm::{TempoContext, TempoEvm},
     handler::TempoEvmHandler,
 };
@@ -8,7 +8,7 @@ use reth_evm::{
     revm::{
         DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
         context::{
-            BlockEnv, ContextSetters, TxEnv,
+            ContextSetters, TxEnv,
             result::{ExecResultAndState, HaltReason},
         },
         context_interface::{
@@ -29,7 +29,7 @@ where
     DB: Database,
 {
     type Tx = TempoTxEnv;
-    type Block = BlockEnv;
+    type Block = TempoBlockEnv;
     type State = EvmState;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type ExecutionResult = ExecutionResult<HaltReason>;

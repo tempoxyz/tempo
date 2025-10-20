@@ -11,15 +11,19 @@ use commonware_broadcast::buffered;
 use commonware_consensus::{marshal, threshold_simplex};
 use commonware_cryptography::Signer as _;
 use commonware_p2p::{Blocker, Receiver, Sender};
-use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage, buffer::PoolRef};
+use commonware_runtime::{Handle, Metrics, Pacer, Spawner, Storage, buffer::PoolRef};
 use eyre::WrapErr as _;
-use futures_util::future::try_join_all;
-use governor::Quota;
+use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
 use tempo_commonware_node_cryptography::{
     BlsScheme, GroupShare, PrivateKey, PublicKey, PublicPolynomial,
 };
 use tempo_node::TempoFullNode;
+
+use crate::config::{
+    BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, NUMBER_CONCURRENT_FETCHES,
+    NUMBER_MAX_FETCHES, RESOLVER_LIMIT,
+};
 
 use super::{block::Block, supervisor::Supervisor};
 
@@ -45,54 +49,44 @@ const MAX_REPAIR: u64 = 20;
 ///
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
-pub(crate) struct Builder<
+pub struct Builder<
     TBlocker,
     TContext,
     // TODO: add the indexer. It's part of alto and we have skipped it, for now.
     // TIndexer,
 > {
     /// The contextg
-    pub(crate) context: TContext,
+    pub context: TContext,
 
-    pub(crate) fee_recipient: alloy_primitives::Address,
+    pub fee_recipient: alloy_primitives::Address,
 
-    pub(crate) execution_node: TempoFullNode,
+    pub execution_node: TempoFullNode,
 
-    // pub(crate) chainspec: Arc<TempoChainSpec>,
-    // pub(crate) execution_engine: ConsensusEngineHandle<TNodeTypes::Payload>,
-    // pub(crate) execution_payload_builder: PayloadBuilderHandle<TNodeTypes::Payload>,
-    /// A handle to the reth execution node so that consensus can drive execution.
-    //
-    pub(crate) blocker: TBlocker,
-    pub(crate) partition_prefix: String,
-    pub(crate) blocks_freezer_table_initial_size: u32,
-    pub(crate) signer: PrivateKey,
-    pub(crate) polynomial: PublicPolynomial,
-    pub(crate) share: GroupShare,
-    pub(crate) participants: Vec<PublicKey>,
-    pub(crate) mailbox_size: usize,
-    pub(crate) backfill_quota: Quota,
-    pub(crate) deque_size: usize,
+    pub blocker: TBlocker,
+    pub partition_prefix: String,
+    pub signer: PrivateKey,
+    pub polynomial: PublicPolynomial,
+    pub share: GroupShare,
+    pub participants: Vec<PublicKey>,
+    pub mailbox_size: usize,
+    pub deque_size: usize,
 
-    pub(crate) leader_timeout: Duration,
-    pub(crate) notarization_timeout: Duration,
-    pub(crate) nullify_retry: Duration,
-    pub(crate) fetch_timeout: Duration,
-    pub(crate) activity_timeout: u64,
-    pub(crate) skip_timeout: u64,
-    pub(crate) new_payload_wait_time: Duration,
-    pub(crate) max_fetch_count: usize,
-    pub(crate) fetch_concurrent: usize,
-    pub(crate) fetch_rate_per_peer: Quota,
+    pub leader_timeout: Duration,
+    pub notarization_timeout: Duration,
+    pub nullify_retry: Duration,
+    pub fetch_timeout: Duration,
+    pub activity_timeout: u64,
+    pub skip_timeout: u64,
+    pub new_payload_wait_time: Duration,
     // pub indexer: Option<TIndexer>,
 }
 
 impl<TBlocker, TContext> Builder<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    pub(crate) async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
+    pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
         let supervisor = Supervisor::new(
             self.polynomial.clone(),
             self.participants.clone(),
@@ -122,7 +116,7 @@ where
             mailbox_size: self.mailbox_size,
             requester_config: commonware_p2p::utils::requester::Config {
                 public_key: self.signer.public_key(),
-                rate_limit: self.backfill_quota,
+                rate_limit: BACKFILL_QUOTA,
                 initial: Duration::from_secs(1),
                 timeout: Duration::from_secs(2),
             },
@@ -143,7 +137,7 @@ where
                     namespace: crate::config::NAMESPACE.to_vec(),
                     prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
                     immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                    freezer_table_initial_size: self.blocks_freezer_table_initial_size,
+                    freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
                     freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
                     freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
                     freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
@@ -195,9 +189,9 @@ where
                 fetch_timeout: self.fetch_timeout,
                 activity_timeout: self.activity_timeout,
                 skip_timeout: self.skip_timeout,
-                max_fetch_count: self.max_fetch_count,
-                fetch_concurrent: self.fetch_concurrent,
-                fetch_rate_per_peer: self.fetch_rate_per_peer,
+                max_fetch_count: NUMBER_MAX_FETCHES,
+                fetch_concurrent: NUMBER_CONCURRENT_FETCHES,
+                fetch_rate_per_peer: RESOLVER_LIMIT,
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
                 blocker: self.blocker,
@@ -222,10 +216,10 @@ where
     }
 }
 
-pub(crate) struct Engine<TBlocker, TContext>
+pub struct Engine<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
     // XXX: alto also defines an Indexer trait (not part of commonwarexyz itself); we will
     // not define it for now.
     // TIndexer,
@@ -254,9 +248,9 @@ where
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    pub(crate) fn start(
+    pub fn start(
         self,
         pending_network: (
             impl Sender<PublicKey = PublicKey>,

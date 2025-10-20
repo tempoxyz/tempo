@@ -1,4 +1,14 @@
 //! Drives the execution engine by forwarding consensus messages.
+//!
+//! # On the usage of the commonware-pacer
+//!
+//! The execution driver will contain `Pacer::pace` calls for all interactions
+//! with the execution layer. This is a no-op in production because the
+//! commonware tokio runtime ignores these. However, these are critical in
+//! e2e tests using the commonware deterministic runtime: since the execution
+//! layer is still running on the tokio runtime, these calls signal the
+//! deterministic runtime to spend real life time to wait for the execution
+//! layer calls to complete.
 
 use std::{sync::Arc, time::Duration};
 
@@ -10,20 +20,20 @@ use commonware_consensus::{
     threshold_simplex::types::Context,
     types::{Epoch, Round, View},
 };
-use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
+use commonware_macros::select;
+use commonware_runtime::{
+    ContextCell, FutureExt as _, Handle, Metrics, Pacer, Spawner, Storage, spawn_cell,
+};
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
-use futures_channel::{mpsc, oneshot};
-use futures_util::{
-    SinkExt as _, StreamExt as _, TryFutureExt,
-    future::{Either, try_join},
+use futures::{
+    SinkExt as _, StreamExt as _, TryFutureExt as _,
+    channel::{mpsc, oneshot},
+    future::{Either, always_ready, try_join},
 };
 use rand::{CryptoRng, Rng};
-use reth::{
-    payload::{EthBuiltPayload, EthPayloadBuilderAttributes},
-    rpc::types::Withdrawals,
-};
+use reth::payload::EthBuiltPayload;
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
@@ -66,7 +76,7 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
 
 impl<TContext> ExecutionDriverBuilder<TContext>
 where
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Builds the uninitialized execution driver.
     pub(super) fn build(self) -> eyre::Result<ExecutionDriver<TContext, Uninit>> {
@@ -117,7 +127,7 @@ impl<TContext, TState> ExecutionDriver<TContext, TState> {
 
 impl<TContext> ExecutionDriver<TContext, Uninit>
 where
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Runs the execution driver until it is externally stopped.
     async fn run_until_stopped(self) {
@@ -149,30 +159,20 @@ where
 
 impl<TContext> ExecutionDriver<TContext, Init>
 where
-    TContext: Clock + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Runs the initialized execution driver.
     async fn run_until_stopped(mut self) {
-        loop {
-            tokio::select!(
-                // NOTE: biased because we prefer running finalizations above
-                // all else.
-                // TODO(janis): listen to a shutdown message here so that having
-                // biased and this note here make sense.
-                biased;
-
-                Some(msg) = self.mailbox.next() => {
-                    if let Err(error) =  self.handle_message(msg) {
-                        tracing::error_span!("handle message").in_scope(|| tracing::error!(
-                            %error,
-                            "critical error occurred while handling message; exiting"
-                        ));
-                        break;
-                    }
-                }
-
-                else => break,
-            )
+        while let Some(msg) = self.mailbox.next().await {
+            if let Err(error) = self.handle_message(msg) {
+                tracing::error_span!("handle message").in_scope(|| {
+                    tracing::error!(
+                        %error,
+                        "critical error occurred while handling message; exiting"
+                    )
+                });
+                break;
+            }
         }
     }
 
@@ -201,7 +201,7 @@ where
             Message::Verify(verify) => {
                 self.context.with_label("verify").spawn({
                     let inner = self.inner.clone();
-                    move |_| inner.handle_verify(verify)
+                    move |context| inner.handle_verify(verify, context)
                 });
             }
         }
@@ -277,24 +277,23 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_propose<TContext>(self, request: Propose, context: TContext) -> eyre::Result<()>
-    where
-        TContext: Clock,
-    {
+    async fn handle_propose<TContext: Pacer>(
+        self,
+        request: Propose,
+        context: TContext,
+    ) -> eyre::Result<()> {
         let Propose {
             parent,
             mut response,
             round,
         } = request;
-        let proposal = tokio::select!(
-            biased;
-
+        let proposal = select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
                     engine before block could be proposed; aborting"
                 ))
-           }
+           },
 
             res = self.clone().propose(context, parent, round) => {
                 res.wrap_err("failed creating a proposal")
@@ -348,24 +347,22 @@ impl Inner<Init> {
             parent.digest = %verify.parent.1,
         ),
     )]
-    async fn handle_verify(mut self, verify: Verify) {
+    async fn handle_verify<TContext: Pacer>(mut self, verify: Verify, context: TContext) {
         let Verify {
             parent,
             payload,
             mut response,
             round,
         } = verify;
-        let result = tokio::select!(
-            biased;
-
+        let result = select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "verification return channel was closed by consensus \
                     engine before block could be validated; aborting"
                 ))
-            }
+            },
 
-            res = self.clone().verify(parent, payload, round) => {
+            res = self.clone().verify(context, parent, payload, round) => {
                 res.wrap_err("block verification failed")
             }
         );
@@ -386,15 +383,12 @@ impl Inner<Init> {
         }
     }
 
-    async fn propose<TContext>(
+    async fn propose<TContext: Pacer>(
         mut self,
         context: TContext,
         parent: (View, Digest),
         round: Round,
-    ) -> eyre::Result<EthBuiltPayload<TempoPrimitives>>
-    where
-        TContext: Clock,
-    {
+    ) -> eyre::Result<EthBuiltPayload<TempoPrimitives>> {
         if let Err(error) = self
             .state
             .executor_mailbox
@@ -407,9 +401,7 @@ impl Inner<Init> {
         }
         let genesis_block = self.genesis_block.clone();
         let parent_request = if parent.1 == genesis_block.digest() {
-            Either::Left(futures_util::future::always_ready({
-                move || Ok((*genesis_block).clone())
-            }))
+            Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
                 self.syncer
@@ -423,19 +415,7 @@ impl Inner<Init> {
                     "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
                 ))?;
 
-        // XXX: ensures the timestamp is strictly monotonically increasing.
-        // This is a requirement to pass eth/reth checks.
-        //
-        // TODO: revisit this to use `SystemTimeExt::epoch_millis` again
-        // once it is/if it becomes possible to use milliseconds in
-        // reth. This is to ensure a consistent view of timestamps in
-        // reth vs the consensus engine.
-        let mut timestamp = context.current().epoch().as_secs();
-        if timestamp <= parent.timestamp() {
-            timestamp = parent.timestamp().saturating_add(1);
-        }
-
-        let attrs = TempoPayloadBuilderAttributes::new(EthPayloadBuilderAttributes {
+        let attrs = TempoPayloadBuilderAttributes::new(
             // XXX: derives the payload ID from the parent so that
             // overlong payload builds will eventually succeed on the
             // next iteration: if all other nodes take equally as long,
@@ -443,19 +423,11 @@ impl Inner<Init> {
             // also `response.cancellation` below). Then eventually
             // consensus will circle back to an earlier node, which then
             // has the chance of picking up the old payload.
-            id: payload_id_from_block_hash(&parent.block_hash()),
-            parent: parent.block_hash(),
-            timestamp,
-            suggested_fee_recipient: self.fee_recipient,
-            // XXX(tempo): for PoS compatibility
-            prev_randao: B256::ZERO,
-            // XXX(tempo): empty withdrawals post-shanghai
-            withdrawals: Withdrawals::default(),
-            // TODO: tempo-malachite did this (why?); but maybe we can
-            // use the consensus block' digest for this? alternatively somehow
-            // tie this to the threshold simplex view / round / height?;
-            parent_beacon_block_root: Some(B256::ZERO),
-        });
+            payload_id_from_block_hash(&parent.block_hash()),
+            parent.block_hash(),
+            self.fee_recipient,
+            context.current().epoch_millis(),
+        );
 
         let interrupt_handle = attrs.interrupt_handle().clone();
 
@@ -463,6 +435,7 @@ impl Inner<Init> {
             .execution_node
             .payload_builder_handle
             .send_new_payload(attrs)
+            .pace(&context, Duration::from_millis(20))
             .await
             .map_err(|_| eyre!("channel was closed before a response was returned"))
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
@@ -491,6 +464,7 @@ impl Inner<Init> {
             .execution_node
             .payload_builder_handle
             .resolve_kind(payload_id, reth_node_builder::PayloadKind::WaitForPending)
+            .pace(&context, Duration::from_millis(20))
             .await
             // XXX: this returns Option<Result<_, _>>; drilling into
             // resolve_kind this really seems to resolve to None if no
@@ -502,8 +476,9 @@ impl Inner<Init> {
         Ok(payload)
     }
 
-    async fn verify(
+    async fn verify<TContext: Pacer>(
         mut self,
+        context: TContext,
         parent: (View, Digest),
         payload: Digest,
         round: Round,
@@ -521,9 +496,7 @@ impl Inner<Init> {
 
         let genesis_block = self.genesis_block.clone();
         let parent_request = if parent.1 == genesis_block.digest() {
-            Either::Left(futures_util::future::always_ready({
-                move || Ok((*genesis_block).clone())
-            }))
+            Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
                 self.syncer
@@ -543,6 +516,7 @@ impl Inner<Init> {
             .wrap_err("failed getting required blocks from syncer")?;
 
         let is_good = verify_block(
+            context,
             self.execution_node
                 .add_ons_handle
                 .beacon_engine_handle
@@ -565,10 +539,10 @@ impl Inner<Uninit> {
     /// 1. reading the last finalized digest from the consensus marshaller.
     /// 2. starting the canonical chain engine and storing its handle.
     #[instrument(skip_all, err)]
-    async fn into_initialized<TContext>(mut self, context: TContext) -> eyre::Result<Inner<Init>>
-    where
-        TContext: Metrics + Spawner,
-    {
+    async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
+        mut self,
+        context: TContext,
+    ) -> eyre::Result<Inner<Init>> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
         let (finalized_consensus_height, finalized_consensus_digest) = self
@@ -606,7 +580,7 @@ impl Inner<Uninit> {
             latest_finalized_digest: finalized_consensus_digest,
             marshal: self.syncer.clone(),
         }
-        .build();
+        .build(context.with_label("executor"));
 
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
@@ -621,9 +595,7 @@ impl Inner<Uninit> {
             },
         };
 
-        context
-            .with_label("executor")
-            .spawn(move |_| executor.run());
+        executor.start();
 
         Ok(initialized)
     }
@@ -660,7 +632,8 @@ struct Init {
         parent.timestamp = parent.timestamp(),
     )
 )]
-async fn verify_block(
+async fn verify_block<TContext: Pacer>(
+    context: TContext,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
     parent: &Block,
@@ -677,14 +650,10 @@ async fn verify_block(
         info!("block's height must be +1 that of the parent but isn't");
         return Ok(false);
     }
-    if block.timestamp() <= parent.timestamp() {
-        info!("block's timestamp must exceed parent's timestamp but doesn't");
-        return Ok(false);
-    }
-
     let block = block.clone().into_inner();
     let payload_status = engine
         .new_payload(TempoExecutionData(block))
+        .pace(&context, Duration::from_millis(50))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {

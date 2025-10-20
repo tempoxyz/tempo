@@ -31,6 +31,10 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
         self.chain_id
     }
 
+    fn timestamp(&self) -> U256 {
+        self.internals.block_timestamp()
+    }
+
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), Self::Error> {
         self.ensure_loaded_account(address)?;
         self.internals.set_code(address, code);

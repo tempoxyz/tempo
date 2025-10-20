@@ -7,7 +7,7 @@ use alloy::primitives::{U256, uint};
 
 // Simple storage variables
 /// Next order ID to be processed (last order that has been added to the active orderbook)
-pub const NEXT_ORDER_ID: U256 = uint!(0_U256);
+pub const ACTIVE_ORDER_ID: U256 = uint!(0_U256);
 
 /// Latest pending order ID (last order that has been placed but not yet processed)
 pub const PENDING_ORDER_ID: U256 = uint!(1_U256);
@@ -25,12 +25,12 @@ pub const ORDERS: U256 = uint!(3_U256);
 /// TODO: Implement balance management in follow-up work
 pub const BALANCES: U256 = uint!(4_U256);
 
-/// Mapping of (pair_key, tick) to TickLevel data for bid orders
-/// Storage layout for TickLevel struct starts at slot 5
+/// Mapping of (pair_key, tick) to PriceLevel data for bid orders
+/// Storage layout for PriceLevel struct starts at slot 5
 pub const BID_TICK_LEVELS: U256 = uint!(5_U256);
 
-/// Mapping of (pair_key, tick) to TickLevel data for ask orders
-/// Storage layout for TickLevel struct starts at slot 6
+/// Mapping of (pair_key, tick) to PriceLevel data for ask orders
+/// Storage layout for PriceLevel struct starts at slot 6
 pub const ASK_TICK_LEVELS: U256 = uint!(6_U256);
 
 /// Mapping of (pair_key, word_index) to bid bitmap data

@@ -10,6 +10,7 @@ pub struct HashMapStorageProvider {
     accounts: HashMap<Address, AccountInfo>,
     pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
+    timestamp: U256,
 }
 
 impl HashMapStorageProvider {
@@ -19,6 +20,13 @@ impl HashMapStorageProvider {
             accounts: HashMap::new(),
             events: HashMap::new(),
             chain_id,
+            #[expect(clippy::disallowed_methods)]
+            timestamp: U256::from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            ),
         }
     }
     pub fn set_nonce(&mut self, address: Address, nonce: u64) {
@@ -32,6 +40,10 @@ impl StorageProvider for HashMapStorageProvider {
 
     fn chain_id(&self) -> u64 {
         self.chain_id
+    }
+
+    fn timestamp(&self) -> U256 {
+        self.timestamp
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), Self::Error> {

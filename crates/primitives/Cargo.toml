@@ -35,6 +35,11 @@ arbitrary = { workspace = true, features = ["derive"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 modular-bitfield = { version = "0.11.2", optional = true }
 
+# Cryptography for P256 and WebAuthn signature verification
+p256 = { workspace = true, features = ["ecdsa"] }
+sha2.workspace = true
+base64.workspace = true
+
 [dev-dependencies]
 arbitrary.workspace = true
 reth-codecs.workspace = true
@@ -42,6 +47,9 @@ reth-codecs-derive.workspace = true
 test-fuzz.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
+alloy-consensus = { workspace = true, features = ["arbitrary"] }
+rand = "0.9"
+serde_json.workspace = true
 
 [features]
 default = ["serde", "reth-codec", "serde-bincode-compat", "rpc", "cli"]
@@ -54,6 +62,8 @@ serde = [
 	"alloy-eips/serde",
 	"alloy-primitives/serde",
 	"reth-codecs?/serde",
+	"rand/serde",
+	"p256/serde",
 ]
 reth-codec = [
 	"dep:reth-codecs",

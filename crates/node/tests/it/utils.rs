@@ -14,11 +14,11 @@ use alloy::{
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
+use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
 use reth_e2e_test_utils::setup;
 use reth_ethereum::tasks::TaskManager;
-use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
-use reth_node_api::FullNodeComponents;
+use reth_node_api::{FullNodeComponents, PayloadBuilderAttributes};
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
@@ -331,8 +331,5 @@ fn default_attributes_generator(timestamp: u64) -> TempoPayloadBuilderAttributes
         parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
     };
 
-    TempoPayloadBuilderAttributes::new(EthPayloadBuilderAttributes::new(
-        alloy::primitives::B256::ZERO,
-        attributes,
-    ))
+    TempoPayloadBuilderAttributes::try_new(B256::ZERO, attributes, 0).unwrap()
 }

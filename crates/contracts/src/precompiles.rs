@@ -29,8 +29,8 @@ sol! {
         function symbol() external view returns (string);
         function decimals() external view returns (uint8);
         function totalSupply() external view returns (uint256);
-        function linkingToken() external view returns (address);
-        function nextLinkingToken() external view returns (address);
+        function quoteToken() external view returns (address);
+        function nextQuoteToken() external view returns (address);
         function balanceOf(address account) external view returns (uint256);
         function transfer(address to, uint256 amount) external returns (bool);
         function approve(address spender, uint256 amount) external returns (bool);
@@ -57,8 +57,8 @@ sol! {
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
-        function updateLinkingToken(address newLinkingToken) external;
-        function finalizeLinkingTokenUpdate() external;
+        function updateQuoteToken(address newQuoteToken) external;
+        function finalizeQuoteTokenUpdate() external;
 
         // EIP-712 Permit
         struct Permit {
@@ -81,8 +81,8 @@ sol! {
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
-        event UpdateLinkingToken(address indexed updater, address indexed newLinkingToken);
-        event LinkingTokenUpdateFinalized(address indexed updater, address indexed newLinkingToken);
+        event UpdateQuoteToken(address indexed updater, address indexed newQuoteToken);
+        event QuoteTokenUpdateFinalized(address indexed updater, address indexed newQuoteToken);
 
         // Errors
         error InsufficientBalance();
@@ -98,7 +98,7 @@ sol! {
         error SaltAlreadyUsed();
         error ContractPaused();
         error InvalidCurrency();
-        error InvalidLinkingToken();
+        error InvalidQuoteToken();
         error TransfersDisabled();
     }
 
@@ -111,7 +111,7 @@ sol! {
             string memory name,
             string memory symbol,
             string memory currency,
-            address linkingToken,
+            address quoteToken,
             address admin
         ) external returns (uint256);
 
@@ -154,6 +154,22 @@ sol! {
     #[derive(Debug, PartialEq, Eq)]
     interface ITIP4217Registry {
         function getCurrencyDecimals(string currency) external view returns (uint8);
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
+    interface INonce {
+        /// Get the nonce for a specific account and nonce key
+        /// @param account The address to query
+        /// @param nonceKey The 64-bit nonce key (0 for protocol nonce, 1-N for user nonces)
+        /// Note: nonceKey `0` will revert.
+        /// @return The current nonce sequence value for the given key
+        function getNonce(address account, uint64 nonceKey) external view returns (uint64);
+
+        /// Get the number of active user nonce keys for an account
+        /// @param account The address to query
+        /// @return The count of active nonce keys
+        function getActiveNonceKeyCount(address account) external view returns (uint256);
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -298,18 +314,54 @@ sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
     interface IStablecoinExchange {
+        struct Order {
+            /// Address of order maker
+            address maker;
+            /// Orderbook key
+            bytes32 bookKey;
+            /// Bid or ask indicator
+            bool isBid;
+            /// Price tick
+            int16 tick;
+            /// Original order amount
+            uint128 amount;
+            /// Remaining amount to fill
+            uint128 remaining;
+            /// Previous order ID in FIFO queue
+            uint128 prev;
+            /// Next order ID in FIFO queue
+            uint128 next;
+            /// Boolean indicating if order is flipOrder
+            bool isFlip;
+            /// Flip order tick to place new order at once current order fills
+            int16 flipTick;
+        }
+
+        struct PriceLevel {
+            /// Order ID of the first order at this tick (0 if empty)
+            uint128 head;
+            /// Order ID of the last order at this tick (0 if empty)
+            uint128 tail;
+            /// Total liquidity available at this tick level
+            uint128 totalLiquidity;
+        }
+
         // View functions
         function balanceOf(address user, address token) external view returns (uint128);
-        function quoteBuy(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
-        function quoteSell(address tokenIn, address tokenOut, uint128 amountIn) external view returns (uint128 amountOut);
+        function quoteSwapExactAmountOut(address tokenIn, address tokenOut, uint128 amountOut) external view returns (uint128 amountIn);
+        function quoteSwapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn) external view returns (uint128 amountOut);
         function pairKey(address tokenA, address tokenB) external pure returns (bytes32 key);
-        function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
+        function getPriceLevel(address base, int16 tick, bool isBid) external view returns (PriceLevel memory level);
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
+        function getOrder(uint128 orderId) external view returns (Order memory);
+
+        // Pair management
+        function createPair(address base) external returns (bytes32 key);
 
         // Taker functions
-        function sell(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
-        function buy(address tokenIn, address tokenOut, uint128 amountOut, uint128 maxAmountIn) external returns (uint128 amountIn);
+        function swapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
+        function swapExactAmountOut(address tokenIn, address tokenOut, uint128 amountOut, uint128 maxAmountIn) external returns (uint128 amountIn);
 
         // Maker functions
         function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
@@ -319,22 +371,29 @@ sol! {
         // Balance management
         function withdraw(address token, uint128 amount) external;
 
+        // System transaction called at the end of the block to finalize pending limit orders
+        function executeBlock() external;
+
         // Events
         event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
         event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
         event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
         event OrderCancelled(uint128 indexed orderId);
-        event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
+        event OrderFilled(uint128 indexed orderId, address indexed maker, uint128 amountFilled, bool partialFill);
 
         // Errors
         error OrderDoesNotExist();
         error Unauthorized();
+        error FillFailed();
+        error InvalidTick();
         error InsufficientBalance();
         error InvalidFlipTick();
         error TickOutOfBounds(int16 tick);
         error InsufficientLiquidity();
         error MaxInputExceeded();
         error InsufficientOutput();
+        error PairDoesNotExist();
+        error PairAlreadyExists();
     }
 }
 
@@ -488,9 +547,9 @@ impl TIP20Error {
         Self::InvalidPayload(ITIP20::InvalidPayload {})
     }
 
-    /// Creates an error for invalid linking token.
-    pub const fn invalid_linking_token() -> Self {
-        Self::InvalidLinkingToken(ITIP20::InvalidLinkingToken {})
+    /// Creates an error for invalid quote token.
+    pub const fn invalid_quote_token() -> Self {
+        Self::InvalidQuoteToken(ITIP20::InvalidQuoteToken {})
     }
 
     /// Creates an error for invalid or reused nonce.
@@ -545,9 +604,29 @@ impl StablecoinExchangeError {
         Self::OrderDoesNotExist(IStablecoinExchange::OrderDoesNotExist {})
     }
 
+    /// Creates an error when an order does not exist.
+    pub const fn pair_does_not_exist() -> Self {
+        Self::PairDoesNotExist(IStablecoinExchange::PairDoesNotExist {})
+    }
+
+    /// Creates an error when a pair already exists
+    pub const fn pair_already_exists() -> Self {
+        Self::PairAlreadyExists(IStablecoinExchange::PairAlreadyExists {})
+    }
+
     /// Creates an error for unauthorized access.
     pub const fn unauthorized() -> Self {
         Self::Unauthorized(IStablecoinExchange::Unauthorized {})
+    }
+
+    /// Creates an error for when fill fails
+    pub const fn fill_failed() -> Self {
+        Self::FillFailed(IStablecoinExchange::FillFailed {})
+    }
+
+    /// Creates an error when an invalid tick is provided
+    pub const fn invalid_tick() -> Self {
+        Self::InvalidTick(IStablecoinExchange::InvalidTick {})
     }
 
     /// Creates an error for insufficient balance.

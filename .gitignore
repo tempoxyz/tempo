@@ -8,3 +8,5 @@ scripts/data
 **/.env
 **/.envrc
 localnet/**
+
+.claude/

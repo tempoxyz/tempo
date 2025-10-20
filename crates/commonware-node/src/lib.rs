@@ -4,7 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 pub(crate) mod config;
-pub(crate) mod consensus;
+pub mod consensus;
 pub mod metrics;
 
 use std::net::SocketAddr;
@@ -18,10 +18,9 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::config::{
-    BACKFILL_BY_DIGEST_CHANNEL_IDENTL, BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, NUMBER_CONCURRENT_FETCHES, NUMBER_MAX_FETCHES,
-    PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT,
-    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    BACKFILL_BY_DIGEST_CHANNEL_IDENTL, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT,
+    BROADCASTER_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT,
+    RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
 };
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
@@ -61,13 +60,11 @@ pub async fn run_consensus_stack(
         blocker: oracle,
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
-        blocks_freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
         signer: config.signer.clone(),
         polynomial: config.polynomial.clone(),
         share: config.share.clone(),
         participants: config.peers.keys().cloned().collect::<Vec<_>>(),
         mailbox_size: config.mailbox_size,
-        backfill_quota: BACKFILL_QUOTA,
         deque_size: config.deque_size,
 
         leader_timeout: config.timeouts.time_to_propose,
@@ -77,9 +74,6 @@ pub async fn run_consensus_stack(
         activity_timeout: config.timeouts.views_to_track,
         skip_timeout: config.timeouts.views_until_leader_skip,
         new_payload_wait_time: config.timeouts.new_payload_wait_time,
-        max_fetch_count: NUMBER_MAX_FETCHES,
-        fetch_concurrent: NUMBER_CONCURRENT_FETCHES,
-        fetch_rate_per_peer: RESOLVER_LIMIT,
         // indexer: Option<TIndexer>,
     }
     .try_init()
@@ -165,7 +159,7 @@ async fn instantiate_network(
 async fn resolve_all_peers(
     peers: impl IntoIterator<Item = (&PublicKey, &String)>,
 ) -> eyre::Result<IndexMap<PublicKey, (String, SocketAddr)>> {
-    use futures_util::stream::{FuturesOrdered, TryStreamExt as _};
+    use futures::stream::{FuturesOrdered, TryStreamExt as _};
     let resolve_all = peers
         .into_iter()
         .map(|(peer, name)| async move {

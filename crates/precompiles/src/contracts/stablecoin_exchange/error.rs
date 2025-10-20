@@ -46,6 +46,17 @@ pub enum OrderError {
         /// Amount available to fill
         available: u128,
     },
+
+    /// Tick value is out of valid bounds
+    #[error("tick {tick} is out of bounds (min: {min}, max: {max})")]
+    InvalidTick {
+        /// The invalid tick value
+        tick: i16,
+        /// Minimum valid tick
+        min: i16,
+        /// Maximum valid tick
+        max: i16,
+    },
 }
 
 #[cfg(test)]
@@ -104,5 +115,16 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("1000"));
         assert!(msg.contains("600"));
+    }
+
+    #[test]
+    fn test_invalid_tick() {
+        let err = OrderError::InvalidTick {
+            tick: 3000,
+            min: -2000,
+            max: 2000,
+        };
+        let msg = err.to_string();
+        assert_eq!(msg, "tick 3000 is out of bounds (min: -2000, max: 2000)");
     }
 }

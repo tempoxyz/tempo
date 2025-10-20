@@ -3,7 +3,7 @@
 use alloy_primitives::U256;
 use reth_evm::{
     InvalidTxError,
-    revm::context::result::{EVMError, InvalidTransaction},
+    revm::context::result::{EVMError, InvalidHeader, InvalidTransaction},
 };
 
 /// Tempo-specific invalid transaction errors.
@@ -15,6 +15,10 @@ pub enum TempoInvalidTransaction {
     /// Standard Ethereum transaction validation error.
     #[error(transparent)]
     EthInvalidTransaction(#[from] InvalidTransaction),
+
+    /// Block header validation error (e.g., missing prevrandao or excess_blob_gas).
+    #[error(transparent)]
+    EthInvalidHeader(#[from] InvalidHeader),
 
     /// System transaction must be a call (not a create).
     #[error("system transaction must be a call, not a create")]
@@ -52,6 +56,60 @@ pub enum TempoInvalidTransaction {
     /// signature recovery for the fee payer fails.
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
+
+    // Account Abstraction (AA) transaction errors
+    /// Transaction cannot be included before validAfter timestamp.
+    ///
+    /// AA transactions can specify a validAfter field to restrict when they can be included.
+    #[error(
+        "transaction not valid yet: current block timestamp {current} < validAfter {valid_after}"
+    )]
+    ValidAfter {
+        /// The current block timestamp.
+        current: u64,
+        /// The validAfter constraint from the transaction.
+        valid_after: u64,
+    },
+
+    /// Transaction cannot be included after validBefore timestamp.
+    ///
+    /// AA transactions can specify a validBefore field to restrict when they can be included.
+    #[error("transaction expired: current block timestamp {current} >= validBefore {valid_before}")]
+    ValidBefore {
+        /// The current block timestamp.
+        current: u64,
+        /// The validBefore constraint from the transaction.
+        valid_before: u64,
+    },
+
+    /// P256 signature verification failed.
+    ///
+    /// The P256 signature could not be verified against the transaction hash.
+    #[error("P256 signature verification failed")]
+    InvalidP256Signature,
+
+    /// WebAuthn signature verification failed.
+    ///
+    /// The WebAuthn signature validation failed (could be authenticatorData, clientDataJSON, or P256 verification).
+    #[error("WebAuthn signature verification failed: {reason}")]
+    InvalidWebAuthnSignature {
+        /// Specific reason for failure.
+        reason: String,
+    },
+
+    /// Insufficient gas for intrinsic cost.
+    ///
+    /// AA transactions have variable intrinsic gas costs based on signature type and nonce usage.
+    /// This error occurs when the gas_limit is less than the calculated intrinsic gas.
+    #[error(
+        "insufficient gas for intrinsic cost: gas_limit {gas_limit} < intrinsic_gas {intrinsic_gas}"
+    )]
+    InsufficientGasForIntrinsicCost {
+        /// The transaction's gas limit.
+        gas_limit: u64,
+        /// The calculated intrinsic gas required.
+        intrinsic_gas: u64,
+    },
 }
 
 impl InvalidTxError for TempoInvalidTransaction {

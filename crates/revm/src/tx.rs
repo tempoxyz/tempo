@@ -12,8 +12,25 @@ use reth_evm::{
         },
     },
 };
-use tempo_primitives::{TempoTxEnvelope, TxFeeToken};
+use tempo_primitives::{
+    AASignature, AASigned, TempoTxEnvelope, TxAA, TxFeeToken, transaction::Call,
+};
 
+/// Account Abstraction transaction environment.
+#[derive(Debug, Clone, Default)]
+pub struct AATxEnv {
+    /// Signature bytes for AA transactions
+    pub signature: AASignature,
+
+    /// validBefore timestamp
+    pub valid_before: Option<u64>,
+
+    /// validAfter timestamp
+    pub valid_after: Option<u64>,
+
+    /// Multiple calls for AA transactions
+    pub aa_calls: Vec<Call>,
+}
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
@@ -34,6 +51,9 @@ pub struct TempoTxEnv {
     /// - Some(None) corresponds to a failed recovery and means that transaction is invalid
     /// - None corresponds to a transaction without a fee payer
     pub fee_payer: Option<Option<Address>>,
+
+    /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
+    pub aa_tx_env: Option<Box<AATxEnv>>,
 }
 
 impl TempoTxEnv {
@@ -55,6 +75,7 @@ impl From<TxEnv> for TempoTxEnv {
             fee_token: None,
             is_system_tx: false,
             fee_payer: None,
+            aa_tx_env: None,
         }
     }
 }
@@ -210,6 +231,73 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
                 sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
                     .ok()
             }),
+            aa_tx_env: None, // Non-AA transaction
+        }
+    }
+}
+
+impl FromRecoveredTx<AASigned> for TempoTxEnv {
+    fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
+        let tx = aa_signed.tx();
+        let signature = aa_signed.signature();
+
+        let TxAA {
+            chain_id,
+            fee_token,
+            max_priority_fee_per_gas,
+            max_fee_per_gas,
+            gas_limit,
+            calls,
+            access_list,
+            // Ignored for now, will be used in the future
+            nonce_key: _,
+            nonce,
+            fee_payer_signature,
+            valid_before,
+            valid_after,
+        } = tx;
+
+        // Extract to/value/input from calls (use first call or defaults)
+        let (to, value, input) = if let Some(first_call) = calls.first() {
+            (first_call.to, first_call.value, first_call.input.clone())
+        } else {
+            (
+                alloy_primitives::TxKind::Create,
+                alloy_primitives::U256::ZERO,
+                alloy_primitives::Bytes::new(),
+            )
+        };
+
+        Self {
+            inner: TxEnv {
+                tx_type: tx.ty(),
+                caller,
+                gas_limit: *gas_limit,
+                gas_price: *max_fee_per_gas,
+                kind: to,
+                value,
+                data: input,
+                nonce: *nonce, // AA: nonce maps to TxEnv.nonce
+                chain_id: Some(*chain_id),
+                gas_priority_fee: Some(*max_priority_fee_per_gas),
+                access_list: access_list.clone(),
+                // AA transactions don't support EIP-7702 authorization lists per spec
+                authorization_list: Default::default(),
+                ..Default::default()
+            },
+            fee_token: *fee_token,
+            is_system_tx: false,
+            fee_payer: fee_payer_signature.map(|sig| {
+                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
+                    .ok()
+            }),
+            // Bundle AA-specific fields into AATxEnv
+            aa_tx_env: Some(Box::new(AATxEnv {
+                signature: signature.clone(),
+                valid_before: *valid_before,
+                valid_after: *valid_after,
+                aa_calls: calls.clone(),
+            })),
         }
     }
 }
@@ -222,10 +310,12 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
                 fee_payer: None,
+                aa_tx_env: None, // Non-AA transaction
             },
             TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
+            TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
             TempoTxEnvelope::FeeToken(tx) => Self::from_recovered_tx(tx.tx(), sender),
         }
     }
@@ -243,6 +333,12 @@ impl FromTxWithEncoded<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
 
 impl FromTxWithEncoded<TxFeeToken> for TempoTxEnv {
     fn from_encoded_tx(tx: &TxFeeToken, sender: Address, _encoded: Bytes) -> Self {
+        Self::from_recovered_tx(tx, sender)
+    }
+}
+
+impl FromTxWithEncoded<AASigned> for TempoTxEnv {
+    fn from_encoded_tx(tx: &AASigned, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
     }
 }
@@ -269,6 +365,7 @@ impl reth_rpc_convert::transaction::TryIntoTxEnv<TempoTxEnv>
             fee_token: None,
             is_system_tx: false,
             fee_payer: None,
+            aa_tx_env: None, // RPC transactions are not AA transactions
         })
     }
 }

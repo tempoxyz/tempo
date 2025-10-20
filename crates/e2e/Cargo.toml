@@ -1,0 +1,39 @@
+[package]
+name = "tempo-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+
+commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
+commonware-utils.workspace = true
+
+eyre.workspace = true
+reth-db.workspace = true
+reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
+reth-node-builder.workspace = true
+reth-node-core.workspace = true
+reth-rpc-builder.workspace = true
+
+tempo-chainspec.workspace = true
+tempo-commonware-node.workspace = true
+tempo-eyre.workspace = true
+tempo-node.workspace = true
+
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+commonware-macros.workspace = true
+futures.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
