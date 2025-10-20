@@ -1,7 +1,7 @@
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
-        StorageProvider,
+        PrecompileStorageProvider,
         roles::RolesAuthContract,
         tip20::TIP20Token,
         types::{ITIP20, TIP20Error},
@@ -17,11 +17,11 @@ const NAME: &str = "linkingUSD";
 const SYMBOL: &str = "linkingUSD";
 const CURRENCY: &str = "USD";
 
-pub struct LinkingUSD<'a, S: StorageProvider> {
+pub struct LinkingUSD<'a, S: PrecompileStorageProvider> {
     pub token: TIP20Token<'a, S>,
 }
 
-impl<'a, S: StorageProvider> LinkingUSD<'a, S> {
+impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self {
             token: TIP20Token::new(0, storage),

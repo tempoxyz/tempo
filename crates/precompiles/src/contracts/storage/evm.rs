@@ -1,15 +1,15 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
-use revm::state::Bytecode;
+use revm::{precompile::PrecompileError, state::Bytecode};
 
-use crate::contracts::storage::{AccountInfo, StorageProvider};
+use crate::contracts::storage::{AccountInfo, PrecompileStorageProvider};
 
-pub struct EvmStorageProvider<'a> {
+pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     chain_id: u64,
 }
 
-impl<'a> EvmStorageProvider<'a> {
+impl<'a> EvmPrecompileStorageProvider<'a> {
     pub fn new(internals: EvmInternals<'a>, chain_id: u64) -> Self {
         Self {
             internals,
@@ -24,9 +24,7 @@ impl<'a> EvmStorageProvider<'a> {
     }
 }
 
-impl<'a> StorageProvider for EvmStorageProvider<'a> {
-    type Error = EvmInternalsError;
-
+impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn chain_id(&self) -> u64 {
         self.chain_id
     }
@@ -35,34 +33,50 @@ impl<'a> StorageProvider for EvmStorageProvider<'a> {
         self.internals.block_timestamp()
     }
 
-    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), Self::Error> {
-        self.ensure_loaded_account(address)?;
+    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), PrecompileError> {
+        self.ensure_loaded_account(address)
+            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+
         self.internals.set_code(address, code);
         Ok(())
     }
 
-    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
-        self.ensure_loaded_account(address)?;
-        let account = self.internals.load_account_code(address)?;
+    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, PrecompileError> {
+        self.ensure_loaded_account(address)
+            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+
+        let account = self
+            .internals
+            .load_account_code(address)
+            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+
         Ok(account.data.info.clone())
     }
 
-    fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
-        self.ensure_loaded_account(address)?;
-        self.internals.sstore(address, key, value)?;
+    fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), PrecompileError> {
+        self.ensure_loaded_account(address)
+            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+
+        self.internals
+            .sstore(address, key, value)
+            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+
         Ok(())
     }
 
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), PrecompileError> {
         self.internals.log(Log {
             address,
             data: event,
         });
+
         Ok(())
     }
 
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
-        self.ensure_loaded_account(address)?;
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, PrecompileError> {
+        self.ensure_loaded_account(address)
+            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+
         Ok(self
             .internals
             .sload(address, key)
@@ -89,7 +103,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
         let addr = Address::random();
         let key = U256::random();
@@ -108,7 +122,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
         let addr = Address::random();
         let code = Bytecode::new_raw(vec![0xff].into());
@@ -129,7 +143,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
         let address = address!("3000000000000000000000000000000000000003");
 
@@ -153,7 +167,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
         let address = address!("4000000000000000000000000000000000000004");
         let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
@@ -175,7 +189,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
         let address = address!("5000000000000000000000000000000000000005");
 
@@ -203,7 +217,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
         let address = address!("6000000000000000000000000000000000000006");
         let key = U256::from(99);
@@ -227,7 +241,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
         let address1 = address!("7000000000000000000000000000000000000001");
         let address2 = address!("7000000000000000000000000000000000000002");

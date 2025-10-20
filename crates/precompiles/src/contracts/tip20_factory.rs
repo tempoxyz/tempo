@@ -2,7 +2,7 @@ use crate::{
     TIP20_FACTORY_ADDRESS,
     contracts::{
         address_to_token_id_unchecked, is_tip20,
-        storage::StorageProvider,
+        storage::PrecompileStorageProvider,
         tip20::TIP20Token,
         token_id_to_address,
         types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
@@ -19,12 +19,12 @@ mod slots {
 }
 
 #[derive(Debug)]
-pub struct TIP20Factory<'a, S: StorageProvider> {
+pub struct TIP20Factory<'a, S: PrecompileStorageProvider> {
     pub storage: &'a mut S,
 }
 
 // Precompile functions
-impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
+impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self { storage }
     }
@@ -114,7 +114,9 @@ impl<'a, S: StorageProvider> TIP20Factory<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{storage::hashmap::HashMapStorageProvider, types::TIP20FactoryEvent};
+    use crate::contracts::{
+        storage::hashmap::HashMapStorageProvider, types::TIP20FactoryEvent,
+    };
 
     #[test]
     fn test_create_token() {

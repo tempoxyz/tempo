@@ -4,7 +4,7 @@
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
-use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
+use crate::contracts::{PrecompileStorageProvider, storage::slots::mapping_slot};
 
 use super::error::OrderError;
 use alloy::primitives::{Address, B256, U256, uint};
@@ -168,7 +168,7 @@ impl Order {
         ))
     }
 
-    pub fn from_storage<S: StorageProvider>(
+    pub fn from_storage<S: PrecompileStorageProvider>(
         order_id: u128,
         storage: &mut S,
         stablecoin_exchange: Address,
@@ -241,7 +241,7 @@ impl Order {
         }
     }
 
-    pub fn store<S: StorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
+    pub fn store<S: PrecompileStorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
         storage
             .sstore(
@@ -315,7 +315,7 @@ impl Order {
             .expect("Storage write failed");
     }
 
-    pub fn delete<S: StorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
+    pub fn delete<S: PrecompileStorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
 
         storage
@@ -400,7 +400,7 @@ impl Order {
     }
 
     /// Update the order's remaining value in memory and storage
-    pub fn update_remaining<S: StorageProvider>(
+    pub fn update_remaining<S: PrecompileStorageProvider>(
         &mut self,
         new_remaining: u128,
         storage: &mut S,
@@ -418,7 +418,7 @@ impl Order {
             .expect("TODO: handle error");
     }
 
-    pub fn update_next_order<S: StorageProvider>(
+    pub fn update_next_order<S: PrecompileStorageProvider>(
         order_id: u128,
         new_next: u128,
         storage: &mut S,
@@ -435,7 +435,7 @@ impl Order {
             .expect("TODO: handle error");
     }
 
-    pub fn update_prev_order<S: StorageProvider>(
+    pub fn update_prev_order<S: PrecompileStorageProvider>(
         order_id: u128,
         new_prev: u128,
         storage: &mut S,

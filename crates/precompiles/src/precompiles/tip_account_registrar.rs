@@ -1,10 +1,13 @@
-use crate::precompiles::{Precompile, mutate};
+use crate::{
+    contracts::PrecompileStorageProvider,
+    precompiles::{Precompile, mutate},
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-use crate::contracts::{StorageProvider, TipAccountRegistrar, types::ITipAccountRegistrar};
+use crate::contracts::{TipAccountRegistrar, types::ITipAccountRegistrar};
 
-impl<'a, S: StorageProvider> Precompile for TipAccountRegistrar<'a, S> {
+impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)

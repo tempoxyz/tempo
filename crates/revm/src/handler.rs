@@ -27,7 +27,7 @@ use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     contracts::{
-        EvmStorageProvider,
+        EvmPrecompileStorageProvider,
         storage::slots::mapping_slot,
         tip_fee_manager::{self, TipFeeManager},
         tip20,
@@ -479,7 +479,7 @@ where
 
             // Create storage provider wrapper around journal
             let internals = EvmInternals::new(journal, &context.block);
-            let mut storage_provider = EvmStorageProvider::new(internals, chain_id);
+            let mut storage_provider = EvmPrecompileStorageProvider::new(internals, chain_id);
             let mut fee_manager =
                 TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
 
@@ -548,7 +548,7 @@ where
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let internals = EvmInternals::new(journal, block);
-        let mut storage_provider = EvmStorageProvider::new(internals, chain_id);
+        let mut storage_provider = EvmPrecompileStorageProvider::new(internals, chain_id);
         let mut fee_manager = TipFeeManager::new(
             TIP_FEE_MANAGER_ADDRESS,
             block.beneficiary,

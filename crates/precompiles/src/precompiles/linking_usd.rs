@@ -1,6 +1,6 @@
 use crate::{
     contracts::{
-        LinkingUSD, StorageProvider,
+        LinkingUSD, PrecompileStorageProvider,
         types::{ITIP20, TIP20Error},
     },
     precompiles::{Precompile, metadata, mutate, mutate_void, view},
@@ -8,7 +8,7 @@ use crate::{
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-impl<S: StorageProvider> Precompile for LinkingUSD<'_, S> {
+impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)

@@ -16,7 +16,7 @@ pub use orderbook::{
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
-        LinkingUSD, StorageProvider, TIP20Token, address_to_token_id_unchecked,
+        LinkingUSD, PrecompileStorageProvider, TIP20Token, address_to_token_id_unchecked,
         stablecoin_exchange::orderbook::{
             compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
         },
@@ -35,12 +35,12 @@ fn calculate_quote_amount(amount: u128, tick: i16) -> Option<u128> {
     amount.checked_mul(price)?.checked_div(PRICE_SCALE as u128)
 }
 
-pub struct StablecoinExchange<'a, S: StorageProvider> {
+pub struct StablecoinExchange<'a, S: PrecompileStorageProvider> {
     address: Address,
     storage: &'a mut S,
 }
 
-impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
+impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self {
             address: STABLECOIN_EXCHANGE_ADDRESS,
@@ -1295,7 +1295,7 @@ impl<'a, S: StorageProvider> StablecoinExchange<'a, S> {
     }
 }
 
-impl<'a, S: StorageProvider> StorageOps for StablecoinExchange<'a, S> {
+impl<'a, S: PrecompileStorageProvider> StorageOps for StablecoinExchange<'a, S> {
     fn sstore(&mut self, slot: U256, value: U256) {
         self.storage
             .sstore(self.address, slot, value)
@@ -1316,7 +1316,7 @@ mod tests {
         HashMapStorageProvider, LinkingUSD, linking_usd, tip20, types::StablecoinExchangeError,
     };
 
-    fn setup_test_tokens<S: StorageProvider>(
+    fn setup_test_tokens<S: PrecompileStorageProvider>(
         storage: &mut S,
         admin: &Address,
         user: &Address,

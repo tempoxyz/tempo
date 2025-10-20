@@ -1,6 +1,6 @@
 use crate::{
     contracts::{
-        storage::StorageProvider,
+        PrecompileStorageProvider,
         tip_fee_manager::TipFeeManager,
         types::{IFeeManager, ITIPFeeAMM},
     },
@@ -9,7 +9,7 @@ use crate::{
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-impl<'a, S: StorageProvider> Precompile for TipFeeManager<'a, S> {
+impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)

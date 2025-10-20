@@ -21,7 +21,9 @@ use alloy::primitives::Address;
 pub use linking_usd::LinkingUSD;
 pub use nonce::NonceManager;
 pub use stablecoin_exchange::StablecoinExchange;
-pub use storage::{StorageProvider, evm::EvmStorageProvider, hashmap::HashMapStorageProvider};
+pub use storage::{
+    PrecompileStorageProvider, evm::EvmPrecompileStorageProvider, hashmap::HashMapStorageProvider,
+};
 pub use tip_account_registrar::TipAccountRegistrar;
 pub use tip20::TIP20Token;
 pub use tip20_factory::TIP20Factory;

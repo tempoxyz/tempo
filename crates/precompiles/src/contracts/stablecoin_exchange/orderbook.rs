@@ -4,7 +4,7 @@ use super::{
     OrderError, offsets,
     slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS},
 };
-use crate::contracts::{StorageProvider, storage::slots::mapping_slot};
+use crate::contracts::{PrecompileStorageProvider, storage::slots::mapping_slot};
 use alloy::primitives::{Address, B256, U256, keccak256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use tempo_contracts::precompiles::IStablecoinExchange;
@@ -47,7 +47,7 @@ impl PriceLevel {
     }
 
     /// Load a PriceLevel from storage
-    pub fn from_storage<S: StorageProvider>(
+    pub fn from_storage<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
         book_key: B256,
@@ -90,7 +90,7 @@ impl PriceLevel {
     }
 
     /// Delete PriceLevel from storage
-    pub fn delete<S: StorageProvider>(
+    pub fn delete<S: PrecompileStorageProvider>(
         &self,
         storage: &mut S,
         address: Address,
@@ -134,7 +134,7 @@ impl PriceLevel {
     }
 
     /// Store this PriceLevel to storage
-    pub fn store<S: StorageProvider>(
+    pub fn store<S: PrecompileStorageProvider>(
         &self,
         storage: &mut S,
         address: Address,
@@ -178,7 +178,7 @@ impl PriceLevel {
     }
 
     /// Update only the head order ID
-    pub fn update_head<S: StorageProvider>(
+    pub fn update_head<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
         book_key: B256,
@@ -204,7 +204,7 @@ impl PriceLevel {
     }
 
     /// Update only the tail order ID
-    pub fn update_tail<S: StorageProvider>(
+    pub fn update_tail<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
         book_key: B256,
@@ -230,7 +230,7 @@ impl PriceLevel {
     }
 
     /// Update only the total liquidity
-    pub fn update_total_liquidity<S: StorageProvider>(
+    pub fn update_total_liquidity<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
         book_key: B256,
@@ -303,7 +303,7 @@ impl Orderbook {
     }
 
     /// Load an Orderbook from storage
-    pub fn from_storage<S: StorageProvider>(
+    pub fn from_storage<S: PrecompileStorageProvider>(
         book_key: B256,
         storage: &mut S,
         address: Address,
@@ -348,7 +348,7 @@ impl Orderbook {
     }
 
     /// Store this Orderbook to storage
-    pub fn store<S: StorageProvider>(&self, storage: &mut S, address: Address) {
+    pub fn store<S: PrecompileStorageProvider>(&self, storage: &mut S, address: Address) {
         let book_key = compute_book_key(self.base, self.quote);
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
@@ -386,7 +386,7 @@ impl Orderbook {
     }
 
     /// Update only the best bid tick
-    pub fn update_best_bid_tick<S: StorageProvider>(
+    pub fn update_best_bid_tick<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
         book_key: B256,
@@ -403,7 +403,7 @@ impl Orderbook {
     }
 
     /// Update only the best ask tick
-    pub fn update_best_ask_tick<S: StorageProvider>(
+    pub fn update_best_ask_tick<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
         book_key: B256,
@@ -420,7 +420,7 @@ impl Orderbook {
     }
 
     /// Check if this orderbook exists in storage
-    pub fn exists<S: StorageProvider>(book_key: B256, storage: &mut S, address: Address) -> bool {
+    pub fn exists<S: PrecompileStorageProvider>(book_key: B256, storage: &mut S, address: Address) -> bool {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
         let base = storage
             .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)
@@ -430,13 +430,13 @@ impl Orderbook {
 }
 
 /// Tick bitmap manager for efficient price discovery
-pub struct TickBitmap<'a, S: StorageProvider> {
+pub struct TickBitmap<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
     address: Address,
     book_key: B256,
 }
 
-impl<'a, S: StorageProvider> TickBitmap<'a, S> {
+impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
     pub fn new(storage: &'a mut S, address: Address, book_key: B256) -> Self {
         Self {
             storage,
@@ -594,7 +594,7 @@ pub fn price_to_tick(price: u32) -> i16 {
 }
 
 /// Find next initialized bid tick lower than current tick
-pub fn next_initialized_bid_tick<S: StorageProvider>(
+pub fn next_initialized_bid_tick<S: PrecompileStorageProvider>(
     storage: &mut S,
     address: Address,
     book_key: B256,
@@ -605,7 +605,7 @@ pub fn next_initialized_bid_tick<S: StorageProvider>(
 }
 
 /// Find next initialized ask tick higher than current tick
-pub fn next_initialized_ask_tick<S: StorageProvider>(
+pub fn next_initialized_ask_tick<S: PrecompileStorageProvider>(
     storage: &mut S,
     address: Address,
     book_key: B256,

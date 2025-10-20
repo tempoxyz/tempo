@@ -3,8 +3,8 @@ use std::sync::LazyLock;
 use crate::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
-        ITIP20, ITIP403Registry, ITIP4217Registry, StorageProvider, TIP20Factory, TIP403Registry,
-        TIP4217Registry, address_to_token_id_unchecked, is_tip20,
+        ITIP20, ITIP403Registry, ITIP4217Registry, PrecompileStorageProvider, TIP20Factory,
+        TIP403Registry, TIP4217Registry, address_to_token_id_unchecked, is_tip20,
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
         storage::slots::{double_mapping_slot, mapping_slot},
         token_id_to_address,
@@ -49,7 +49,7 @@ pub mod slots {
 }
 
 #[derive(Debug)]
-pub struct TIP20Token<'a, S: StorageProvider> {
+pub struct TIP20Token<'a, S: PrecompileStorageProvider> {
     pub token_address: Address,
     pub storage: &'a mut S,
 }
@@ -59,7 +59,7 @@ pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_R
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
-impl<'a, S: StorageProvider> TIP20Token<'a, S> {
+impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn name(&mut self) -> String {
         self.read_string(slots::NAME)
     }
@@ -715,7 +715,7 @@ impl<'a, S: StorageProvider> TIP20Token<'a, S> {
 }
 
 // Utility functions
-impl<'a, S: StorageProvider> TIP20Token<'a, S> {
+impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn new(token_id: u64, storage: &'a mut S) -> Self {
         let token_address = token_id_to_address(token_id);
 

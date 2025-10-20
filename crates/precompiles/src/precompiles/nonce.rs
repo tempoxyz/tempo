@@ -2,9 +2,9 @@ use crate::precompiles::{Precompile, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-use crate::contracts::{StorageProvider, nonce::NonceManager, types::INonce};
+use crate::contracts::{PrecompileStorageProvider, nonce::NonceManager, types::INonce};
 
-impl<S: StorageProvider> Precompile for NonceManager<'_, S> {
+impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
     fn call(&mut self, calldata: &[u8], _msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)

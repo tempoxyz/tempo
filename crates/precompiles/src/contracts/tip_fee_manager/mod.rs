@@ -5,7 +5,7 @@ use crate::{
     DEFAULT_FEE_TOKEN,
     contracts::{
         TIP20Token, address_to_token_id_unchecked, is_tip20,
-        storage::{StorageOps, StorageProvider},
+        storage::{PrecompileStorageProvider, StorageOps},
         tip_fee_manager::{
             amm::{PoolKey, TIPFeeAMM},
             slots::{collected_fees_slot, user_token_slot, validator_token_slot},
@@ -82,13 +82,13 @@ pub mod slots {
 /// - TIPFeeAMM uses slots 0-3 for pool data
 /// - FeeManager uses slots 4+ for fee-specific data
 /// - When FeeManager creates a TIPFeeAMM instance, it passes the same address and storage
-pub struct TipFeeManager<'a, S: StorageProvider> {
+pub struct TipFeeManager<'a, S: PrecompileStorageProvider> {
     contract_address: Address,
     beneficiary: Address,
     storage: &'a mut S,
 }
 
-impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
+impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     // Constants
     pub const FEE_BPS: u64 = 25; // 0.25% fee
     pub const BASIS_POINTS: u64 = 10000;
@@ -531,7 +531,7 @@ impl<'a, S: StorageProvider> TipFeeManager<'a, S> {
     }
 }
 
-impl<'a, S: StorageProvider> StorageOps for TipFeeManager<'a, S> {
+impl<'a, S: PrecompileStorageProvider> StorageOps for TipFeeManager<'a, S> {
     fn sstore(&mut self, slot: U256, value: U256) {
         self.storage
             .sstore(self.contract_address, slot, value)

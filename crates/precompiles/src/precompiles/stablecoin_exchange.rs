@@ -4,7 +4,7 @@
 
 use crate::{
     contracts::{
-        stablecoin_exchange::StablecoinExchange, storage::StorageProvider,
+        stablecoin_exchange::StablecoinExchange, storage::PrecompileStorageProvider,
         types::IStablecoinExchange,
     },
     precompiles::{Precompile, mutate, mutate_void, view, view_result},
@@ -12,7 +12,7 @@ use crate::{
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-impl<'a, S: StorageProvider> Precompile for StablecoinExchange<'a, S> {
+impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)

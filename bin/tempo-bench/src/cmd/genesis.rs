@@ -24,7 +24,7 @@ use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
-        EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
+        EvmPrecompileStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
         linking_usd::LinkingUSD, stablecoin_exchange::StablecoinExchange,
         tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE, types::ITIPFeeAMM,
     },
@@ -276,7 +276,7 @@ fn create_and_mint_token(
     let chain_id = evm.chain_id();
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, chain_id);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, chain_id);
 
     let token_id = {
         let mut factory = TIP20Factory::new(&mut provider);
@@ -342,7 +342,7 @@ fn initialize_linking_usd(
 ) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut linking_usd = LinkingUSD::new(&mut provider);
     linking_usd
@@ -363,7 +363,7 @@ fn initialize_fee_manager(
     let block = evm.block.clone();
 
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut fee_manager =
         TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut provider);
@@ -394,7 +394,7 @@ fn initialize_fee_manager(
 fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut exchange = StablecoinExchange::new(&mut provider);
     exchange.initialize();
@@ -411,7 +411,7 @@ fn mint_pairwise_liquidity(
 ) {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
 

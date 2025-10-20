@@ -6,15 +6,15 @@ use revm::{precompile::secp256k1::ecrecover, state::Bytecode};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
 use crate::contracts::{
-    StorageProvider,
+    PrecompileStorageProvider,
     types::{ITipAccountRegistrar, TipAccountRegistrarError},
 };
 
-pub struct TipAccountRegistrar<'a, S: StorageProvider> {
+pub struct TipAccountRegistrar<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
 }
 
-impl<'a, S: StorageProvider> TipAccountRegistrar<'a, S> {
+impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self { storage }
     }

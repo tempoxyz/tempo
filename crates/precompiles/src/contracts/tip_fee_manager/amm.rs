@@ -1,6 +1,6 @@
 use crate::contracts::{
     address_to_token_id_unchecked,
-    storage::{StorageOps, StorageProvider},
+    storage::{PrecompileStorageProvider, StorageOps},
     tip20::TIP20Token,
     types::{ITIP20, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
 };
@@ -87,12 +87,12 @@ pub mod slots {
     }
 }
 
-pub struct TIPFeeAMM<'a, S: StorageProvider> {
+pub struct TIPFeeAMM<'a, S: PrecompileStorageProvider> {
     pub contract_address: Address,
     pub storage: &'a mut S,
 }
 
-impl<'a, S: StorageProvider> TIPFeeAMM<'a, S> {
+impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
     /// Creates a new TIPFeeAMM instance with the given contract address and storage provider.
     /// This is the main entry point for interacting with the AMM contract.
     pub fn new(contract_address: Address, storage: &'a mut S) -> Self {
@@ -564,7 +564,7 @@ pub fn sqrt(x: U256) -> U256 {
     y
 }
 
-impl<'a, S: StorageProvider> StorageOps for TIPFeeAMM<'a, S> {
+impl<'a, S: PrecompileStorageProvider> StorageOps for TIPFeeAMM<'a, S> {
     /// Store value in contract storage
     fn sstore(&mut self, slot: U256, value: U256) {
         self.storage
@@ -632,7 +632,7 @@ mod tests {
     }
 
     fn setup_pool_with_liquidity(
-        amm: &mut TIPFeeAMM<'_, impl StorageProvider>,
+        amm: &mut TIPFeeAMM<'_, impl PrecompileStorageProvider>,
         user_token: Address,
         validator_token: Address,
         user_amount: U256,

@@ -1,7 +1,7 @@
 use crate::{
     TIP403_REGISTRY_ADDRESS,
     contracts::{
-        ITIP403Registry, StorageProvider,
+        ITIP403Registry, PrecompileStorageProvider,
         storage::slots::{double_mapping_slot, mapping_slot},
         tip403_err,
         types::{TIP403RegistryError, TIP403RegistryEvent},
@@ -20,7 +20,7 @@ mod slots {
 }
 
 #[derive(Debug)]
-pub struct TIP403Registry<'a, S: StorageProvider> {
+pub struct TIP403Registry<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
 }
 
@@ -30,7 +30,7 @@ pub struct PolicyData {
     pub admin: Address,
 }
 
-impl<'a, S: StorageProvider> TIP403Registry<'a, S> {
+impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         storage
             .set_code(

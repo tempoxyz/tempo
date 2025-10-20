@@ -2,7 +2,7 @@ use alloy::primitives::{Address, B256, IntoLogData, U256};
 
 use crate::contracts::{
     storage::{
-        StorageProvider,
+        PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
     types::{IRolesAuth, RolesAuthError, RolesAuthEvent},
@@ -11,14 +11,14 @@ use crate::contracts::{
 pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
 pub const UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 
-pub struct RolesAuthContract<'a, S: StorageProvider> {
+pub struct RolesAuthContract<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
     parent_contract_address: Address,
     roles_slot: U256,
     role_admin_slot: U256,
 }
 
-impl<'a, S: StorageProvider> RolesAuthContract<'a, S> {
+impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
     pub fn new(
         storage: &'a mut S,
         parent_contract_address: Address,

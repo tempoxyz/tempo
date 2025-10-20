@@ -1,4 +1,4 @@
-use crate::contracts::{StorageProvider, types::INonce};
+use crate::contracts::{PrecompileStorageProvider, types::INonce};
 use alloy::primitives::{Address, U256};
 
 /// Storage slots for Nonce precompile data
@@ -38,11 +38,11 @@ pub mod slots {
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
 #[derive(Debug)]
-pub struct NonceManager<'a, S: StorageProvider> {
+pub struct NonceManager<'a, S: PrecompileStorageProvider> {
     pub storage: &'a mut S,
 }
 
-impl<'a, S: StorageProvider> NonceManager<'a, S> {
+impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self { storage }
     }

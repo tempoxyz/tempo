@@ -24,7 +24,7 @@ use crate::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     TIP4217_REGISTRY_ADDRESS,
     contracts::{
-        EvmStorageProvider, LinkingUSD, NonceManager, StablecoinExchange, TIP20Factory, TIP20Token,
+        EvmPrecompileStorageProvider, LinkingUSD, NonceManager, StablecoinExchange, TIP20Factory, TIP20Token,
         TIP403Registry, TIP4217Registry, TipAccountRegistrar, address_to_token_id_unchecked,
         is_tip20, tip_fee_manager::TipFeeManager,
     },
@@ -89,7 +89,7 @@ pub struct LinkingUSDPrecompile;
 impl LinkingUSDPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
-            &mut EvmStorageProvider::new(input.internals, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
         ))
     }
 }
@@ -100,7 +100,7 @@ impl TIP20Precompile {
         let token_id = address_to_token_id_unchecked(address);
         tempo_precompile!("TIP20Token", |input| TIP20Token::new(
             token_id,
-            &mut EvmStorageProvider::new(input.internals, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
         ))
     }
 }
@@ -110,7 +110,7 @@ pub struct TIP20FactoryPrecompile;
 impl TIP20FactoryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("TIP20Factory", |input| TIP20Factory::new(
-            &mut EvmStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
         ))
     }
 }
@@ -120,7 +120,7 @@ pub struct TIP403RegistryPrecompile;
 impl TIP403RegistryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("TIP403Registry", |input| TIP403Registry::new(
-            &mut EvmStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
         ))
     }
 }
@@ -140,7 +140,7 @@ impl TipFeeManagerPrecompile {
         tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
             TIP_FEE_MANAGER_ADDRESS,
             input.internals.block_env().beneficiary(),
-            &mut EvmStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
         ))
     }
 }
@@ -150,7 +150,7 @@ pub struct TipAccountRegistrarPrecompile;
 impl TipAccountRegistrarPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("TipAccountRegistrar", |input| TipAccountRegistrar::new(
-            &mut EvmStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
         ))
     }
 }
@@ -160,7 +160,7 @@ pub struct StablecoinExchangePrecompile;
 impl StablecoinExchangePrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
-            &mut EvmStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
         ))
     }
 }
@@ -169,7 +169,7 @@ pub struct NoncePrecompile;
 impl NoncePrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("NonceManager", |input| NonceManager::new(
-            &mut EvmStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
         ))
     }
 }
@@ -295,7 +295,7 @@ mod tests {
     fn test_precompile_delegatecall() {
         let precompile = tempo_precompile!("TIP20Token", |input| TIP20Token::new(
             1,
-            &mut EvmStorageProvider::new(input.internals, 1),
+            &mut EvmPrecompileStorageProvider::new(input.internals, 1),
         ));
 
         let db = CacheDB::new(EmptyDB::new());

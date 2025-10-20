@@ -3,10 +3,10 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::contracts::{
-    storage::StorageProvider, tip20_factory::TIP20Factory, types::ITIP20Factory,
+    storage::PrecompileStorageProvider, tip20_factory::TIP20Factory, types::ITIP20Factory,
 };
 
-impl<'a, S: StorageProvider> Precompile for TIP20Factory<'a, S> {
+impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
