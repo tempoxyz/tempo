@@ -32,11 +32,12 @@ use crate::execution_runtime::ExecutionNode;
 #[cfg(test)]
 mod tests;
 
+/// A Tempo node with lazily started consensus engine.
 pub struct ValidatorNode {
     /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
     pub node: ExecutionNode,
 
-    /// Future that should be spawned to start the consensus engine.
+    /// Future that should be awaited to start the consensus engine.
     start_engine: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
 }
 

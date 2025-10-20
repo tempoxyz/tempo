@@ -165,7 +165,7 @@ fn validator_can_join_later() {
     let _ = tempo_eyre::install();
 
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
-        let num_nodes = 10;
+        let num_nodes = 5;
         let link = Link {
             latency: Duration::from_millis(10),
             jitter: Duration::from_millis(1),
@@ -176,12 +176,24 @@ fn validator_can_join_later() {
         let (mut nodes, _network_handle) =
             setup_validators(context.clone(), &execution_runtime, num_nodes, link).await;
 
-        // Start all nodes except the last one.
-        for node in &mut nodes[..(num_nodes - 1) as usize] {
+        // Start all nodes except the last one
+        let mut last = nodes.pop().unwrap();
+        for node in &mut nodes {
             node.start().await;
         }
 
-        while nodes[0].node.node.provider.last_block_number().unwrap() < 20 {
+        // Wait for chain to advance a bit.
+        while nodes[0].node.node.provider.last_block_number().unwrap() < 5 {
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        assert_eq!(last.node.node.provider.last_block_number().unwrap(), 0);
+
+        // Start the last node.
+        last.start().await;
+
+        // Assert that last node is able to catch up and progress.
+        while last.node.node.provider.last_block_number().unwrap() < 10 {
             context.sleep(Duration::from_secs(1)).await;
         }
     });
