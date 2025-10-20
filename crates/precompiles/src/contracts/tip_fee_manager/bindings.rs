@@ -132,7 +132,50 @@ sol! {
 }
 
 impl FeeManagerError {
-    // TODO: implement these error helpers as well
+    /// Creates an error for only validator access.
+    pub const fn only_validator() -> Self {
+        Self::OnlyValidator(IFeeManager::OnlyValidator {})
+    }
+
+    /// Creates an error for only system contract access.
+    pub const fn only_system_contract() -> Self {
+        Self::OnlySystemContract(IFeeManager::OnlySystemContract {})
+    }
+
+    /// Creates an error for invalid token.
+    pub const fn invalid_token() -> Self {
+        Self::InvalidToken(IFeeManager::InvalidToken {})
+    }
+
+    /// Creates an error when pool does not exist.
+    pub const fn pool_does_not_exist() -> Self {
+        Self::PoolDoesNotExist(IFeeManager::PoolDoesNotExist {})
+    }
+
+    /// Creates an error for insufficient liquidity.
+    pub const fn insufficient_liquidity() -> Self {
+        Self::InsufficientLiquidity(IFeeManager::InsufficientLiquidity {})
+    }
+
+    /// Creates an error for insufficient fee token balance.
+    pub const fn insufficient_fee_token_balance() -> Self {
+        Self::InsufficientFeeTokenBalance(IFeeManager::InsufficientFeeTokenBalance {})
+    }
+
+    /// Creates an error for internal errors.
+    pub const fn internal_error() -> Self {
+        Self::InternalError(IFeeManager::InternalError {})
+    }
+
+    /// Creates an error for cannot change within block.
+    pub const fn cannot_change_within_block() -> Self {
+        Self::CannotChangeWithinBlock(IFeeManager::CannotChangeWithinBlock {})
+    }
+
+    /// Creates an error for token policy forbids.
+    pub const fn token_policy_forbids() -> Self {
+        Self::TokenPolicyForbids(IFeeManager::TokenPolicyForbids {})
+    }
 }
 
 impl TIPFeeAMMError {
@@ -219,42 +262,5 @@ impl TIPFeeAMMError {
     /// Creates an error for internal errors.
     pub const fn internal_error() -> Self {
         Self::InternalError(ITIPFeeAMM::InternalError {})
-    }
-}
-
-impl FeeManagerError {
-    /// Creates an error for invalid token.
-    pub const fn invalid_token() -> Self {
-        Self::InvalidToken(IFeeManager::InvalidToken {})
-    }
-
-    /// Creates an error for internal errors.
-    pub const fn internal_error() -> Self {
-        Self::InternalError(IFeeManager::InternalError {})
-    }
-
-    /// Creates an error for insufficient liquidity.
-    pub const fn insufficient_liquidity() -> Self {
-        Self::InsufficientLiquidity(IFeeManager::InsufficientLiquidity {})
-    }
-
-    /// Creates an error for insufficient fee token balance.
-    pub const fn insufficient_fee_token_balance() -> Self {
-        Self::InsufficientFeeTokenBalance(IFeeManager::InsufficientFeeTokenBalance {})
-    }
-
-    /// Creates an error for only system contract access.
-    pub const fn only_system_contract() -> Self {
-        Self::OnlySystemContract(IFeeManager::OnlySystemContract {})
-    }
-
-    /// Creates an error for beneficiary cannot set its token.
-    pub const fn cannot_change_within_block() -> Self {
-        Self::CannotChangeWithinBlock(IFeeManager::CannotChangeWithinBlock {})
-    }
-
-    /// Creates an error for token policy forbids.
-    pub const fn token_policy_forbids() -> Self {
-        Self::TokenPolicyForbids(IFeeManager::TokenPolicyForbids {})
     }
 }
