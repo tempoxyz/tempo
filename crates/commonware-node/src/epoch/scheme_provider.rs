@@ -32,7 +32,7 @@ impl marshal::SchemeProvider for SchemeProvider {
     }
 }
 
-/// Implements trait `[p2p::Cordinator]` and is passed to the marshal actor.
+/// Implements trait `[p2p::Cordinatoor]` and is passed to the marshal actor.
 #[derive(Clone)]
 pub(crate) struct Coordinator {
     static_peers: Set<PublicKey>,
