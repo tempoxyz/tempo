@@ -19,7 +19,7 @@ jobs:
   test:
     name: test
     # runs-on: depot-ubuntu-latest-4
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-4
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -33,7 +33,7 @@ jobs:
   msrv:
     name: MSRV
     # runs-on: depot-ubuntu-latest-4
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-4
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -95,7 +95,7 @@ jobs:
   test-success:
     name: test success
     # runs-on: depot-ubuntu-latest-4
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-4
     if: always()
     needs:
       - test

@@ -54,10 +54,10 @@ jobs:
         binary: [tempo, tempo-bench, tempo-sidecar]
         platform:
           # - os: depot-ubuntu-latest-16
-          - os: ubuntu-latest
+          - os: ubuntu-latest-16
             target: x86_64-unknown-linux-gnu
           # - os: depot-ubuntu-latest-arm-16
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-latest-arm-16
             target: aarch64-unknown-linux-gnu
           # - os: depot-macos-15
           - os: macos-15
