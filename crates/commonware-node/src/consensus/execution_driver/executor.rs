@@ -10,7 +10,7 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
-use commonware_consensus::{Block as _, marshal, types::Round};
+use commonware_consensus::{Block as _, types::Round};
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use eyre::{WrapErr as _, ensure};
@@ -19,7 +19,7 @@ use futures::{
     channel::{mpsc, oneshot},
 };
 use reth_provider::BlockNumReader as _;
-use tempo_commonware_node_cryptography::{BlsScheme, Digest};
+use tempo_commonware_node_cryptography::Digest;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, Span, info, instrument, warn};
 
@@ -40,7 +40,7 @@ pub(super) struct Builder {
     pub(super) latest_finalized_digest: Digest,
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
-    pub(super) marshal: marshal::Mailbox<BlsScheme, Block>,
+    pub(super) marshal: crate::alias::marshal::Mailbox,
 }
 
 impl Builder {
@@ -101,7 +101,7 @@ pub(super) struct Executor<TContext> {
     mailbox: mpsc::UnboundedReceiver<Message>,
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
-    marshal: marshal::Mailbox<BlsScheme, Block>,
+    marshal: crate::alias::marshal::Mailbox,
 
     /// The latest finalized digest of the block that the agent has sent to the
     /// execution layer. When advancing the canonical chain by sending a
@@ -488,7 +488,7 @@ async fn backfill_from_consensus(
     execution_node: TempoFullNode,
     executor_mailbox: ExecutorMailbox,
     genesis_block: Arc<Block>,
-    mut marshal: marshal::Mailbox<BlsScheme, Block>,
+    mut marshal: crate::alias::marshal::Mailbox,
     round: Option<Round>,
 ) -> eyre::Result<()> {
     if digest == genesis_block.digest() {

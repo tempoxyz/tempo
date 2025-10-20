@@ -8,26 +8,25 @@ use std::{
 };
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{Reporters, marshal};
+use commonware_consensus::{Reporters, marshal, simplex::signing_scheme::bls12381_threshold};
 use commonware_cryptography::Signer as _;
 use commonware_p2p::{Blocker, Receiver, Sender};
 use commonware_runtime::{
     Clock, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
 };
+use commonware_utils::set::Set;
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_cryptography::{
-    BlsScheme, GroupShare, PrivateKey, PublicKey, PublicPolynomial,
-};
+use tempo_commonware_node_cryptography::{GroupShare, PrivateKey, PublicKey, PublicPolynomial};
 use tempo_node::TempoFullNode;
 
 use crate::{
     config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
-    epoch,
+    epoch::{self, Coordinator, SchemeProvider},
 };
 
-use super::{block::Block, supervisor::Supervisor};
+use super::block::Block;
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
@@ -69,7 +68,7 @@ pub struct Builder<
     pub signer: PrivateKey,
     pub polynomial: PublicPolynomial,
     pub share: GroupShare,
-    pub participants: Vec<PublicKey>,
+    pub participants: Set<PublicKey>,
     pub mailbox_size: usize,
     pub deque_size: usize,
 
@@ -98,12 +97,6 @@ where
         + Network,
 {
     pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
-        let supervisor = Supervisor::new(
-            self.polynomial.clone(),
-            self.participants.clone(),
-            self.share,
-        );
-
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             self.context.with_label("broadcast"),
             buffered::Config {
@@ -115,6 +108,13 @@ where
             },
         );
 
+        let coordinator = Coordinator::new(self.participants.clone());
+        let scheme_provider = SchemeProvider::new(bls12381_threshold::Scheme::new(
+            self.participants.as_ref(),
+            &self.polynomial,
+            self.share,
+        ));
+
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
@@ -123,7 +123,7 @@ where
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            coordinator: supervisor.clone(),
+            coordinator,
             mailbox_size: self.mailbox_size,
             requester_config: commonware_p2p::utils::requester::Config {
                 public_key: self.signer.public_key(),
@@ -135,41 +135,43 @@ where
             priority_requests: false,
             priority_responses: false,
         };
-        let (syncer, syncer_mailbox): (_, marshal::Mailbox<BlsScheme, Block>) =
-            marshal::Actor::init(
-                self.context.with_label("sync"),
-                marshal::Config {
-                    identity: *self.polynomial.constant(),
-                    partition_prefix: self.partition_prefix.clone(),
-                    mailbox_size: self.mailbox_size,
-                    view_retention_timeout: self
-                        .views_to_track
-                        .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
-                    namespace: crate::config::NAMESPACE.to_vec(),
-                    prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
-                    immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                    freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-                    freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
-                    freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-                    freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-                    freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
+        let (marshal, marshal_mailbox) = marshal::Actor::init(
+            self.context.with_label("sync"),
+            marshal::Config {
+                scheme_provider: scheme_provider.clone(),
+                epoch_length: self.heights_per_epoch,
+                // identity: *self.polynomial.constant(),
+                partition_prefix: self.partition_prefix.clone(),
+                mailbox_size: self.mailbox_size,
+                view_retention_timeout: self
+                    .views_to_track
+                    .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
+                namespace: crate::config::NAMESPACE.to_vec(),
+                prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
+                immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+                freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
+                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
 
-                    freezer_journal_buffer_pool: buffer_pool.clone(),
+                freezer_journal_buffer_pool: buffer_pool.clone(),
 
-                    replay_buffer: REPLAY_BUFFER,
-                    write_buffer: WRITE_BUFFER,
-                    codec_config: (),
-                    max_repair: MAX_REPAIR,
-                },
-            )
-            .await;
+                replay_buffer: REPLAY_BUFFER,
+                write_buffer: WRITE_BUFFER,
+                block_codec_config: (),
+                max_repair: MAX_REPAIR,
+                _marker: std::marker::PhantomData,
+            },
+        )
+        .await;
 
         let execution_driver = super::execution_driver::ExecutionDriverBuilder {
             context: self.context.with_label("execution_driver"),
             // TODO: pass in from the outside,
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
-            syncer: syncer_mailbox.clone(),
+            marshal: marshal_mailbox.clone(),
             execution_node: self.execution_node,
             new_payload_wait_time: self.new_payload_wait_time,
             heights_per_epoch: self.heights_per_epoch,
@@ -187,12 +189,13 @@ where
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
-                marshal: syncer_mailbox,
+                marshal: marshal_mailbox,
+                me: self.signer,
+                participants: self.participants.clone().into(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
-                signer: self.signer,
-                supervisor: supervisor.clone(),
+                scheme_provider,
                 views_to_track: self.views_to_track,
                 views_until_leader_skip: self.views_until_leader_skip,
                 heights_per_epoch: self.heights_per_epoch,
@@ -210,7 +213,7 @@ where
             execution_driver_mailbox,
 
             resolver_config,
-            syncer,
+            marshal,
 
             epoch_manager,
             epoch_manager_mailbox,
@@ -246,11 +249,11 @@ where
     execution_driver_mailbox: crate::consensus::execution_driver::ExecutionDriverMailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
-    resolver_config: marshal::resolver::p2p::Config<PublicKey, Supervisor>,
+    resolver_config: marshal::resolver::p2p::Config<PublicKey, Coordinator>,
 
     /// Listens to consensus events and syncs blocks from the network to the
     /// local node.
-    syncer: marshal::Actor<Block, TContext, BlsScheme>,
+    marshal: crate::alias::marshal::Actor<TContext>,
 
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
     epoch_manager_mailbox: epoch::manager::Mailbox,
@@ -335,7 +338,7 @@ where
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
 
-        let syncer = self.syncer.start(
+        let syncer = self.marshal.start(
             Reporters::from((self.execution_driver_mailbox, self.epoch_manager_mailbox)),
             self.broadcast_mailbox,
             resolver,
