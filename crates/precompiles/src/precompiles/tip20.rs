@@ -118,9 +118,19 @@ impl<'a, S: StorageProvider> Precompile for TIP20Token<'a, S> {
                     self.mint(s, call)
                 })
             }
+            ITIP20::mintWithMemoCall::SELECTOR => {
+                mutate_void::<ITIP20::mintWithMemoCall, _>(calldata, msg_sender, |s, call| {
+                    self.mint_with_memo(s, call)
+                })
+            }
             ITIP20::burnCall::SELECTOR => {
                 mutate_void::<ITIP20::burnCall, TIP20Error>(calldata, msg_sender, |s, call| {
                     self.burn(s, call)
+                })
+            }
+            ITIP20::burnWithMemoCall::SELECTOR => {
+                mutate_void::<ITIP20::burnWithMemoCall, _>(calldata, msg_sender, |s, call| {
+                    self.burn_with_memo(s, call)
                 })
             }
             ITIP20::burnBlockedCall::SELECTOR => {
