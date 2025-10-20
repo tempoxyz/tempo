@@ -1,5 +1,7 @@
 use commonware_consensus::types::Epoch;
 
+pub(crate) mod manager;
+
 /// Returns the first height of `epoch` given `heights_per_epoch`.
 pub(crate) fn first_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {
     epoch.saturating_mul(heights_per_epoch).saturating_add(1)

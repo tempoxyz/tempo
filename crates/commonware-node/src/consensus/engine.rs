@@ -24,7 +24,7 @@ use tempo_node::TempoFullNode;
 
 use crate::{
     config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
-    epoch_manager,
+    epoch,
 };
 
 use super::{block::Block, supervisor::Supervisor};
@@ -179,8 +179,8 @@ where
 
         let execution_driver_mailbox = execution_driver.mailbox().clone();
 
-        let (epoch_manager, epoch_manager_mailbox) = epoch_manager::init(
-            epoch_manager::Config {
+        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
+            epoch::manager::Config {
                 application: execution_driver_mailbox.clone(),
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
@@ -252,8 +252,8 @@ where
     /// local node.
     syncer: marshal::Actor<Block, TContext, BlsScheme>,
 
-    epoch_manager: epoch_manager::Actor<TBlocker, TContext>,
-    epoch_manager_mailbox: epoch_manager::Mailbox,
+    epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
+    epoch_manager_mailbox: epoch::manager::Mailbox,
 }
 
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
