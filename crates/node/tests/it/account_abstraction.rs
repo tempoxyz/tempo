@@ -7,7 +7,6 @@ use alloy::{
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use p256::ecdsa::signature::hazmat::PrehashSigner;
-use std::error::Error;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, contracts::ITIP20::transferCall};
 use tempo_primitives::{
@@ -1495,7 +1494,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
     // Try to inject transaction - should fail due to empty call batch
     let result = setup.node.rpc.inject_tx(encoded.clone().into()).await;
 
-    // The transaction should be rejected
+    // The transaction should be rejected with a specific error
     assert!(
         result.is_err(),
         "Transaction with empty call batch should be rejected"
@@ -1504,12 +1503,16 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
     if let Err(e) = result {
         println!("✓ Transaction with empty call batch correctly rejected: {e}");
 
-        // Print the full error chain to see if validation error is buried
-        let mut source = e.source();
-        while let Some(err) = source {
-            println!("  Caused by: {err}");
-            source = err.source();
-        }
+        // Verify the error is about decode failure or validation
+        // Empty call batch should fail during decoding/validation
+        let error_msg = e.to_string();
+        assert!(
+            error_msg.contains("decode")
+                || error_msg.contains("empty")
+                || error_msg.contains("call")
+                || error_msg.contains("valid"),
+            "Error should indicate decode/validation failure for empty calls, got: {error_msg}"
+        );
     }
 
     // Verify the rejected transaction is NOT available via eth_getTransactionByHash
