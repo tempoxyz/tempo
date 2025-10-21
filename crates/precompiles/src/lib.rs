@@ -30,10 +30,7 @@ use tip20::TIP20Precompile;
 use tip20_factory::TIP20FactoryPrecompile;
 use tip4217_registry::TIP4217RegistryPrecompile;
 
-use crate::{
-    tip20::{address_to_token_id_unchecked, is_tip20},
-    tip403_registry::TIP403Registry,
-};
+use crate::tip403_registry::TIP403RegistryPrecompile;
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
 pub const LINKING_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");

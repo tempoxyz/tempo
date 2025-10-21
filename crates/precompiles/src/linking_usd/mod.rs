@@ -1,7 +1,7 @@
 pub mod dispatch;
 
 use crate::{
-    STABLECOIN_EXCHANGE_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS, DelegateCallNotAllowed,
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
     tempo_precompile,
     tip20::{
@@ -10,6 +10,7 @@ use crate::{
         roles::RolesAuthContract,
     },
 };
+use revm::precompile::PrecompileOutput;
 use alloy::primitives::{Address, B256, U256, keccak256};
 use alloy_evm::precompiles::DynPrecompile;
 use revm::precompile::PrecompileId;

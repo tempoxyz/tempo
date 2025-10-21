@@ -156,3 +156,4 @@ impl Into<PrecompileError> for StablecoinExchangeError {
         PrecompileError::Other(format!("{:?}", self.selector()))
     }
 }
+

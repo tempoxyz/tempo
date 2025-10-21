@@ -49,6 +49,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             IStablecoinExchange::balanceOfCall::SELECTOR => {
                 view::<IStablecoinExchange::balanceOfCall>(calldata, |call| {
                     self.balance_of(call.user, call.token)
+                        .expect("TODO: handle error")
                 })
             }
 

@@ -3,11 +3,13 @@ pub mod dispatch;
 
 use self::bindings::INonce;
 use crate::{
+    DelegateCallNotAllowed,
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
     tempo_precompile,
 };
 use alloy::primitives::{Address, U256};
 use alloy_evm::precompiles::DynPrecompile;
+use revm::precompile::PrecompileOutput;
 
 pub struct NoncePrecompile;
 

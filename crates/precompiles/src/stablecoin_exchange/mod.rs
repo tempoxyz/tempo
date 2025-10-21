@@ -14,7 +14,7 @@ pub use orderbook::{
 };
 
 use crate::{
-    LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    DelegateCallNotAllowed, LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     linking_usd::LinkingUSD,
     stablecoin_exchange::{
         bindings::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents},
@@ -32,7 +32,10 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use alloy_evm::precompiles::DynPrecompile;
-use revm::{precompile::PrecompileError, state::Bytecode};
+use revm::{
+    precompile::{PrecompileError, PrecompileOutput},
+    state::Bytecode,
+};
 
 pub struct StablecoinExchangePrecompile;
 impl StablecoinExchangePrecompile {
@@ -234,7 +237,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         } else {
             self.set_balance(user, token, 0)?;
             let remaining = amount - user_balance;
-            self.transfer_from(token, user, remaining)?;
+            self.transfer_from(token, user, remaining).map(Into::into)?;
         }
         Ok(())
     }
@@ -289,11 +292,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         let base_for_quote = token_in == orderbook.base;
-        let amount_out =
-            self.fill_orders_exact_in(book_key, base_for_quote, amount_in, min_amount_out)?;
+        let amount_out = self
+            .fill_orders_exact_in(book_key, base_for_quote, amount_in, min_amount_out)
+            .expect("TODO: handle error ");
 
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
-        self.transfer(token_out, *sender, amount_out)?;
+        self.transfer(token_out, *sender, amount_out)
+            .expect("TODO: handle error ");
 
         Ok(amount_out)
     }
@@ -317,8 +322,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let amount_in =
             self.fill_orders_exact_out(book_key, base_for_quote, amount_out, max_amount_in)?;
 
-        self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
-        self.transfer(token_out, *sender, amount_out)?;
+        self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)
+            .expect("TODO: handle error");
+        self.transfer(token_out, *sender, amount_out)
+            .expect("TODO: handle error");
 
         Ok(amount_in)
     }
@@ -422,7 +429,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance())?;
+                .ok_or(StablecoinExchangeError::insufficient_balance())
+                .map_err(Into::into)?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -477,7 +485,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         is_bid: bool,
         tick: i16,
         flip_tick: i16,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, PrecompileError> {
         // Lookup quote token from TIP20 token
         let quote_token =
             TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
@@ -487,22 +495,22 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Validate tick and flip_tick are within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::tick_out_of_bounds(tick));
+            return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
         }
         if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
-            return Err(StablecoinExchangeError::tick_out_of_bounds(flip_tick));
+            return Err(StablecoinExchangeError::tick_out_of_bounds(flip_tick).into());
         }
 
         // Validate flip_tick relationship to tick based on order side
         if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
-            return Err(StablecoinExchangeError::invalid_flip_tick());
+            return Err(StablecoinExchangeError::invalid_flip_tick().into());
         }
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance())?;
+                .ok_or(StablecoinExchangeError::insufficient_balance().into())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -543,10 +551,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Process all pending orders into the active orderbook
     ///
     /// Only callable by the protocol via system transaction (sender must be Address::ZERO)
-    pub fn execute_block(&mut self, sender: &Address) -> Result<(), StablecoinExchangeError> {
+    pub fn execute_block(&mut self, sender: &Address) -> Result<(), PrecompileError> {
         // Only protocol can call this
         if *sender != Address::ZERO {
-            return Err(StablecoinExchangeError::unauthorized());
+            return Err(StablecoinExchangeError::unauthorized().into());
         }
 
         let next_order_id = self
@@ -921,23 +929,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Cancel an order and refund tokens to maker
     /// Only the order maker can cancel their own order
-    pub fn cancel(
-        &mut self,
-        sender: &Address,
-        order_id: u128,
-    ) -> Result<(), StablecoinExchangeError> {
+    pub fn cancel(&mut self, sender: &Address, order_id: u128) -> Result<(), PrecompileError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
 
         if order.maker().is_zero() {
-            return Err(StablecoinExchangeError::order_does_not_exist());
+            return Err(StablecoinExchangeError::order_does_not_exist().into());
         }
 
         if order.maker() != *sender {
-            return Err(StablecoinExchangeError::unauthorized());
+            return Err(StablecoinExchangeError::unauthorized().into());
         }
 
         if order.remaining() == 0 {
-            return Err(StablecoinExchangeError::order_does_not_exist());
+            return Err(StablecoinExchangeError::order_does_not_exist().into());
         }
 
         // Check if the order is still pending (not yet in active orderbook)
@@ -947,9 +951,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>();
 
         if order.order_id() > next_order_id {
-            self.cancel_pending_order(order)
+            self.cancel_pending_order(order).map_err(Into::into)
         } else {
-            self.cancel_active_order(order)
+            self.cancel_active_order(order).map_err(Into::into)
         }
     }
 
@@ -1072,13 +1076,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         user: Address,
         token: Address,
         amount: u128,
-    ) -> Result<(), StablecoinExchangeError> {
+    ) -> Result<(), PrecompileError> {
         let current_balance = self.balance_of(user, token)?;
         if current_balance < amount {
-            return Err(StablecoinExchangeError::insufficient_balance());
+            return Err(StablecoinExchangeError::insufficient_balance().into());
         }
         self.sub_balance(user, token, amount)?;
-        self.transfer(token, user, amount)?;
+        self.transfer(token, user, amount).map_err(Into::into)?;
 
         Ok(())
     }
@@ -1436,11 +1440,14 @@ mod tests {
         );
 
         let result = exchange.place(&alice, base_token, amount, true, tick);
-        assert_eq!(result, Err(StablecoinExchangeError::pair_does_not_exist()));
+        assert_eq!(
+            result,
+            Err(StablecoinExchangeError::pair_does_not_exist().into())
+        );
     }
 
     #[test]
-    fn test_place_bid_order() {
+    fn test_place_bid_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1473,8 +1480,8 @@ mod tests {
             .expect("Place bid order should succeed");
 
         assert_eq!(order_id, 1);
-        assert_eq!(exchange.active_order_id(), 0);
-        assert_eq!(exchange.pending_order_id(), 1);
+        assert_eq!(exchange.active_order_id()?, 0);
+        assert_eq!(exchange.pending_order_id()?, 1);
 
         // Verify the order was stored correctly
         let stored_order = Order::from_storage(order_id, exchange.storage, exchange.address);
@@ -1511,10 +1518,12 @@ mod tests {
             });
             assert_eq!(exchange_balance, U256::from(expected_escrow));
         }
+
+        Ok(())
     }
 
     #[test]
-    fn test_place_ask_order() {
+    fn test_place_ask_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1537,8 +1546,8 @@ mod tests {
             .expect("Place ask order should succeed");
 
         assert_eq!(order_id, 1);
-        assert_eq!(exchange.active_order_id(), 0);
-        assert_eq!(exchange.pending_order_id(), 1);
+        assert_eq!(exchange.active_order_id()?, 0);
+        assert_eq!(exchange.pending_order_id()?, 1);
 
         // Verify the order was stored correctly
         let stored_order = Order::from_storage(order_id, exchange.storage, exchange.address);
@@ -1571,10 +1580,12 @@ mod tests {
             });
             assert_eq!(exchange_balance, U256::from(amount));
         }
+
+        Ok(())
     }
 
     #[test]
-    fn test_place_flip_order() {
+    fn test_place_flip_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1606,8 +1617,8 @@ mod tests {
             .expect("Place flip bid order should succeed");
 
         assert_eq!(order_id, 1);
-        assert_eq!(exchange.active_order_id(), 0);
-        assert_eq!(exchange.pending_order_id(), 1);
+        assert_eq!(exchange.active_order_id()?, 0);
+        assert_eq!(exchange.pending_order_id()?, 1);
 
         // Verify the order was stored correctly
         let stored_order = Order::from_storage(order_id, exchange.storage, exchange.address);
@@ -1645,10 +1656,12 @@ mod tests {
             });
             assert_eq!(exchange_balance, U256::from(expected_escrow));
         }
+
+        Ok(())
     }
 
     #[test]
-    fn test_cancel_pending_order() {
+    fn test_cancel_pending_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1681,7 +1694,7 @@ mod tests {
             .expect("Place bid order should succeed");
 
         // Verify order was placed and tokens were escrowed
-        assert_eq!(exchange.balance_of(alice, quote_token), 0);
+        assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
 
         let (alice_balance_before, exchange_balance_before) = {
             let mut quote_tip20 = TIP20Token::new(
@@ -1710,11 +1723,13 @@ mod tests {
         assert_eq!(cancelled_order.maker(), Address::ZERO);
 
         // Verify tokens were refunded to user's internal balance
-        assert_eq!(exchange.balance_of(alice, quote_token), expected_escrow);
+        assert_eq!(exchange.balance_of(alice, quote_token)?, expected_escrow);
+
+        Ok(())
     }
 
     #[test]
-    fn test_execute_block() {
+    fn test_execute_block() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1751,8 +1766,8 @@ mod tests {
             .expect("Swap should succeed");
         assert_eq!(order_id_0, 1);
         assert_eq!(order_id_1, 2);
-        assert_eq!(exchange.active_order_id(), 0);
-        assert_eq!(exchange.pending_order_id(), 2);
+        assert_eq!(exchange.active_order_id()?, 0);
+        assert_eq!(exchange.pending_order_id()?, 2);
 
         // Verify orders are in pending state
         let order_1 = Order::from_storage(order_id_1, exchange.storage, exchange.address);
@@ -1775,8 +1790,8 @@ mod tests {
             .execute_block(&Address::ZERO)
             .expect("Execute block should succeed");
 
-        assert_eq!(exchange.active_order_id(), 2);
-        assert_eq!(exchange.pending_order_id(), 2);
+        assert_eq!(exchange.active_order_id()?, 2);
+        assert_eq!(exchange.pending_order_id()?, 2);
 
         let order_0 = Order::from_storage(order_id_0, exchange.storage, exchange.address);
         let order_1 = Order::from_storage(order_id_1, exchange.storage, exchange.address);
@@ -1795,6 +1810,8 @@ mod tests {
         // Verify orderbook best bid tick is updated
         let orderbook = Orderbook::from_storage(book_key, exchange.storage, exchange.address);
         assert_eq!(orderbook.best_bid_tick, tick);
+
+        Ok(())
     }
 
     #[test]
@@ -1804,11 +1821,11 @@ mod tests {
         exchange.initialize();
 
         let result = exchange.execute_block(&Address::random());
-        assert_eq!(result, Err(StablecoinExchangeError::unauthorized()));
+        assert_eq!(result, Err(StablecoinExchangeError::unauthorized().into()));
     }
 
     #[test]
-    fn test_withdraw() {
+    fn test_withdraw() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1841,13 +1858,13 @@ mod tests {
             .cancel(&alice, order_id)
             .expect("Cancel pending order should succeed");
 
-        assert_eq!(exchange.balance_of(alice, quote_token), expected_escrow);
+        assert_eq!(exchange.balance_of(alice, quote_token)?, expected_escrow);
 
         // Get balances before withdrawal
         exchange
             .withdraw(alice, quote_token, expected_escrow)
             .expect("Withdraw should succeed");
-        assert_eq!(exchange.balance_of(alice, quote_token), 0);
+        assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
 
         // Verify wallet balances changed correctly
         let mut quote_tip20 = TIP20Token::new(
@@ -1865,10 +1882,12 @@ mod tests {
             }),
             0
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_withdraw_insufficient_balance() {
+    fn test_withdraw_insufficient_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -1885,12 +1904,17 @@ mod tests {
         );
 
         // Alice has 0 balance on the exchange
-        assert_eq!(exchange.balance_of(alice, quote_token), 0);
+        assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
 
         // Try to withdraw more than balance
         let result = exchange.withdraw(alice, quote_token, 100u128);
 
-        assert_eq!(result, Err(StablecoinExchangeError::insufficient_balance()));
+        assert_eq!(
+            result,
+            Err(StablecoinExchangeError::insufficient_balance().into())
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -2018,7 +2042,7 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_exact_amount_out() {
+    fn test_swap_exact_amount_out() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -2063,12 +2087,14 @@ mod tests {
         let bob_base_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: bob });
         assert_eq!(bob_base_balance, U256::from(amount_out));
 
-        let alice_quote_exchange_balance = exchange.balance_of(alice, quote_token);
+        let alice_quote_exchange_balance = exchange.balance_of(alice, quote_token)?;
         assert_eq!(alice_quote_exchange_balance, amount_in);
+
+        Ok(())
     }
 
     #[test]
-    fn test_swap_exact_amount_in() {
+    fn test_swap_exact_amount_in() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -2115,12 +2141,14 @@ mod tests {
         let bob_quote_balance = quote_tip20.balance_of(ITIP20::balanceOfCall { account: bob });
         assert_eq!(bob_quote_balance, U256::from(amount_out));
 
-        let alice_base_exchange_balance = exchange.balance_of(alice, base_token);
+        let alice_base_exchange_balance = exchange.balance_of(alice, base_token)?;
         assert_eq!(alice_base_exchange_balance, amount_in);
+
+        Ok(())
     }
 
     #[test]
-    fn test_flip_order_execution() {
+    fn test_flip_order_execution() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize();
@@ -2165,7 +2193,7 @@ mod tests {
         let filled_order = Order::from_storage(flip_order_id, exchange.storage, exchange.address);
         assert_eq!(filled_order.maker(), Address::ZERO);
 
-        let new_order_id = exchange.pending_order_id();
+        let new_order_id = exchange.pending_order_id()?;
         assert_eq!(new_order_id, flip_order_id + 1);
 
         let new_order = Order::from_storage(new_order_id, exchange.storage, exchange.address);
@@ -2175,6 +2203,8 @@ mod tests {
         assert!(new_order.is_ask());
         assert_eq!(new_order.amount(), amount);
         assert_eq!(new_order.remaining(), amount);
+
+        Ok(())
     }
 
     #[test]
