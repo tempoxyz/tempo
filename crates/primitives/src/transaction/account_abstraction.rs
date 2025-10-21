@@ -4,6 +4,8 @@ use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, k
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 
+use crate::{AASignature, AASigned};
+
 /// Account abstraction transaction type byte (0x76)
 pub const AA_TX_TYPE_ID: u8 = 0x76;
 
@@ -38,8 +40,14 @@ fn rlp_header(payload_length: usize) -> alloy_rlp::Header {
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct Call {
+    /// Call target.
     pub to: TxKind,
+
+    /// Call value.
     pub value: U256,
+
+    /// Call input.
+    #[cfg_attr(feature = "serde", serde(with = "serde_input"))]
     pub input: Bytes,
 }
 
@@ -211,6 +219,11 @@ impl TxAA {
         mem::size_of::<Option<u64>>() // valid_after
     }
 
+    /// Convert the transaction into a signed transaction
+    pub fn into_signed(self, signature: AASignature) -> AASigned {
+        AASigned::new_unhashed(self, signature)
+    }
+
     /// Calculate the signing hash for this transaction
     /// This is the hash that should be signed by the sender
     pub fn signature_hash(&self) -> B256 {
@@ -245,9 +258,7 @@ impl TxAA {
 
         keccak256(&buf)
     }
-}
 
-impl TxAA {
     /// Outputs the length of the transaction's fields, without a RLP header.
     ///
     /// This is the internal helper that takes closures for flexible encoding.
@@ -366,9 +377,7 @@ impl TxAA {
             false,
         )
     }
-}
 
-impl TxAA {
     /// Decodes the inner TxAA fields from RLP bytes
     pub(crate) fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let chain_id = Decodable::decode(buf)?;
@@ -704,6 +713,47 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             valid_before,
             valid_after,
         })
+    }
+}
+
+#[cfg(feature = "serde")]
+mod serde_input {
+    //! Helper module for serializing and deserializing the `input` field of a [`Call`] as either `input` or `data` fields.
+
+    use std::borrow::Cow;
+
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct SerdeHelper<'a> {
+        input: Option<Cow<'a, Bytes>>,
+        data: Option<Cow<'a, Bytes>>,
+    }
+
+    pub(super) fn serialize<S>(input: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        SerdeHelper {
+            input: Some(Cow::Borrowed(input)),
+            data: None,
+        }
+        .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Bytes, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let helper = SerdeHelper::deserialize(deserializer)?;
+        Ok(helper
+            .input
+            .or(helper.data)
+            .ok_or(serde::de::Error::missing_field(
+                "missing `input` or `data` field",
+            ))?
+            .into_owned())
     }
 }
 
