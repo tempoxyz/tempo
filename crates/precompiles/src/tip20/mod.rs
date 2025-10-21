@@ -3,7 +3,7 @@ pub mod dispatch;
 pub mod roles;
 
 use crate::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_TOKEN_PREFIX,
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     storage::{
         PrecompileStorageProvider,
         evm::EvmPrecompileStorageProvider,
@@ -12,7 +12,7 @@ use crate::{
     tempo_precompile,
     tip20::{
         bindings::{ITIP20, TIP20Error, TIP20Event},
-        roles::DEFAULT_ADMIN_ROLE,
+        roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     },
     tip20_factory::TIP20Factory,
     tip403_registry::{TIP403Registry, bindings::ITIP403Registry},
@@ -20,6 +20,7 @@ use crate::{
 };
 use alloy::{
     consensus::crypto::secp256k1 as eth_secp256k1,
+    hex,
     primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
     sol_types::SolStruct,
 };
@@ -30,6 +31,13 @@ use revm::{
 };
 use std::sync::LazyLock;
 use tracing::trace;
+
+/// TIP20 token address prefix (12 bytes for token ID encoding)
+const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
+
+/// TIP20 payment address prefix (14 bytes for payment classification)
+/// Same as TIP20_TOKEN_PREFIX but extended to 14 bytes for payment classification
+pub const TIP20_PAYMENT_PREFIX: [u8; 14] = hex!("20C0000000000000000000000000");
 
 pub fn is_tip20(token: &Address) -> bool {
     token.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
@@ -1106,11 +1114,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS,
-        contracts::{
-            ITIP20Factory, TIP20Factory, storage::hashmap::HashMapStorageProvider,
-            token_id_to_address,
-        },
+        DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider,
+        tip20_factory::bindings::ITIP20Factory,
     };
 
     /// Initialize a factory and create a single token
@@ -1205,8 +1210,7 @@ mod tests {
         let deadline = U256::from(deadline_u64);
 
         // Build EIP-712 struct hash
-        let nonce_slot =
-            crate::contracts::storage::slots::mapping_slot(owner, super::slots::NONCES);
+        let nonce_slot = mapping_slot(owner, super::slots::NONCES);
         let nonce = token
             .storage
             .sload(token.token_address, nonce_slot)
@@ -1289,8 +1293,7 @@ mod tests {
         let deadline = U256::from(deadline_u64);
 
         // Build digest
-        let nonce_slot =
-            crate::contracts::storage::slots::mapping_slot(owner, super::slots::NONCES);
+        let nonce_slot = mapping_slot(owner, super::slots::NONCES);
         let nonce = token
             .storage
             .sload(token.token_address, nonce_slot)

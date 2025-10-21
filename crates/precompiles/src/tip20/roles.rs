@@ -216,7 +216,7 @@ mod tests {
     use alloy::primitives::{address, keccak256};
 
     use super::*;
-    use crate::contracts::storage::hashmap::HashMapStorageProvider;
+    use crate::storage::hashmap::HashMapStorageProvider;
 
     #[test]
     fn test_role_contract_grant_and_check() {

@@ -48,13 +48,6 @@ pub const STABLECOIN_EXCHANGE_ADDRESS: Address =
 pub const NONCE_PRECOMPILE_ADDRESS: Address =
     address!("0x4E4F4E4345000000000000000000000000000000");
 
-/// TIP20 token address prefix (12 bytes for token ID encoding)
-const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
-
-/// TIP20 payment address prefix (14 bytes for payment classification)
-/// Same as TIP20_TOKEN_PREFIX but extended to 14 bytes for payment classification
-pub const TIP20_PAYMENT_PREFIX: [u8; 14] = hex!("20C0000000000000000000000000");
-
 const METADATA_GAS: u64 = 50;
 const VIEW_FUNC_GAS: u64 = 100;
 const MUTATE_FUNC_GAS: u64 = 1000;

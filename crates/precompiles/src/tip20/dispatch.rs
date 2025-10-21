@@ -3,7 +3,10 @@ use crate::{
     Precompile, metadata, mutate, mutate_void,
     stablecoin_exchange::{StablecoinExchange, bindings::IStablecoinExchange},
     storage::PrecompileStorageProvider,
-    tip20::TIP20Token,
+    tip20::{
+        TIP20Token,
+        bindings::{IRolesAuth, RolesAuthError},
+    },
     view, view_result,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -187,14 +190,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use super::bindings::TIP20Error;
     use crate::{
-        LINKING_USD_ADDRESS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS,
-        contracts::{HashMapStorageProvider, IRolesAuth},
-        expect_precompile_revert,
-        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert},
-        storage::hashmap::HashMapStorageProvider,
-        tip20::TIP20Token,
+        LINKING_USD_ADDRESS, METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS,
+        expect_precompile_revert, storage::hashmap::HashMapStorageProvider, tip20::TIP20Token,
     };
     use alloy::{
         primitives::{Bytes, U256, keccak256},
