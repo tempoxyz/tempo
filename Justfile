@@ -22,7 +22,7 @@ build binary extra_args="":
 [group('localnet')]
 [doc('Generates a genesis file')]
 genesis accounts="1000" output="genesis.json":
-    cargo run --bin tempo-bench --profile maxperf -- generate-genesis --output {{output}} -a {{accounts}}
+    cargo x generate-genesis --output {{output}} -a {{accounts}}
 
 [group('localnet')]
 [doc('Deletes local network data and launches a new localnet')]
