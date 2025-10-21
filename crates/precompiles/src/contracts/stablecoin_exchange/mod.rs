@@ -7,7 +7,6 @@ pub mod order;
 pub mod orderbook;
 pub mod slots;
 
-use crate::contracts::tip20::bindings::{ITIP20, TIP20Error};
 pub use error::OrderError;
 pub use order::Order;
 pub use orderbook::{
@@ -24,6 +23,7 @@ use crate::{
             orderbook::{compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick},
         },
         storage::{StorageOps, slots::mapping_slot},
+        tip20::bindings::{ITIP20, TIP20Error},
     },
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
