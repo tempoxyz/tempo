@@ -53,14 +53,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Initializes the contract
     ///
     /// This ensures the [`StablecoinExchange`] isn't empty and prevents state clear.
-    pub fn initialize(&mut self) {
+    pub fn initialize(&mut self) -> Result<(), PrecompileError> {
         // must ensure the account is not empty, by setting some code
-        self.storage
-            .set_code(
-                self.address,
-                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-            )
-            .expect("TODO: handle error");
+        self.storage.set_code(
+            self.address,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )?;
+        Ok(())
     }
 
     /// Read pending order ID
@@ -158,12 +157,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Transfer tokens, accounting for linking USD
-    fn transfer(
-        &mut self,
-        token: Address,
-        to: Address,
-        amount: u128,
-    ) -> Result<(), StablecoinExchangeError> {
+    fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<(), TIP20Error> {
         if token == LINKING_USD_ADDRESS {
             LinkingUSD::new(self.storage).transfer(
                 &self.address,
@@ -329,19 +323,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Get active order ID
-    pub fn active_order_id(&mut self) -> u128 {
-        self.storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .expect("TODO: handle error")
-            .to::<u128>()
+    pub fn active_order_id(&mut self) -> Result<u128, PrecompileError> {
+        Ok(self
+            .storage
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
+            .to::<u128>())
     }
 
     /// Get pending order ID
-    pub fn pending_order_id(&mut self) -> u128 {
-        self.storage
-            .sload(self.address, slots::PENDING_ORDER_ID)
-            .expect("TODO: handle error")
-            .to::<u128>()
+    pub fn pending_order_id(&mut self) -> Result<u128, PrecompileError> {
+        Ok(self
+            .storage
+            .sload(self.address, slots::PENDING_ORDER_ID)?
+            .to::<u128>())
     }
 
     pub fn create_pair(&mut self, base: &Address) -> Result<B256, StablecoinExchangeError> {
@@ -505,7 +499,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount)?;
 
         // Create the flip order
-        let order_id = self.increment_pending_order_id();
+        let order_id = self.increment_pending_order_id()?;
         let order = Order::new_flip(order_id, *sender, book_key, amount, tick, is_bid, flip_tick)
             .expect("Invalid flip tick");
 
@@ -543,11 +537,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let next_order_id = self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .expect("TODO: handle error")
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
             .to::<u128>();
 
-        let pending_order_id = self.get_pending_order_id();
+        let pending_order_id = self.get_pending_order_id()?;
 
         let mut current_order_id = next_order_id + 1;
         while current_order_id <= pending_order_id {
@@ -936,8 +929,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Check if the order is still pending (not yet in active orderbook)
         let next_order_id = self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .expect("TODO: handle error")
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
             .to::<u128>();
 
         if order.order_id() > next_order_id {
@@ -1067,11 +1059,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token: Address,
         amount: u128,
     ) -> Result<(), StablecoinExchangeError> {
-        let current_balance = self.balance_of(user, token);
+        let current_balance = self.balance_of(user, token)?;
         if current_balance < amount {
             return Err(StablecoinExchangeError::insufficient_balance());
         }
-        self.sub_balance(user, token, amount);
+        self.sub_balance(user, token, amount)?;
         self.transfer(token, user, amount)?;
 
         Ok(())

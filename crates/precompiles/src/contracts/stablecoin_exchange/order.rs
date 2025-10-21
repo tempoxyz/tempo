@@ -7,9 +7,9 @@
 use crate::contracts::{PrecompileStorageProvider, storage::slots::mapping_slot};
 
 use super::error::OrderError;
+use crate::contracts::stablecoin_exchange::bindings::IStablecoinExchange;
 use alloy::primitives::{Address, B256, U256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
-use crate::contracts::stablecoin_exchange::bindings::IStablecoinExchange;
 
 // Order struct field offsets (relative to order base slot)
 // Matches Solidity Order struct layout
@@ -241,7 +241,11 @@ impl Order {
         }
     }
 
-    pub fn store<S: PrecompileStorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
+    pub fn store<S: PrecompileStorageProvider>(
+        &self,
+        storage: &mut S,
+        stablecoin_exchange: Address,
+    ) {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
         storage
             .sstore(
@@ -315,7 +319,11 @@ impl Order {
             .expect("Storage write failed");
     }
 
-    pub fn delete<S: PrecompileStorageProvider>(&self, storage: &mut S, stablecoin_exchange: Address) {
+    pub fn delete<S: PrecompileStorageProvider>(
+        &self,
+        storage: &mut S,
+        stablecoin_exchange: Address,
+    ) {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
 
         storage
@@ -594,6 +602,7 @@ impl Order {
 impl From<Order> for IStablecoinExchange::Order {
     fn from(value: Order) -> Self {
         Self {
+            orderId: value.order_id,
             maker: value.maker,
             bookKey: value.book_key,
             isBid: value.is_bid,
