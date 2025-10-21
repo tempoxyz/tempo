@@ -33,6 +33,7 @@ pub struct TempoTransactionRequest {
     pub fee_token: Option<Address>,
 
     /// Optional calls array, for AA transactions.
+    #[serde(default)]
     pub calls: Vec<Call>,
 }
 
