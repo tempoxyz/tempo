@@ -1,11 +1,13 @@
-use crate::precompiles::{Precompile, mutate, mutate_void, view};
+use crate::{Precompile, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-use crate::contracts::{
+use crate::{
     storage::PrecompileStorageProvider,
-    tip403_registry::TIP403Registry,
-    ITIP403Registry, TIP403RegistryError,
+    tip403_registry::{
+        TIP403Registry,
+        bindings::{ITIP403Registry, TIP403RegistryError},
+    },
 };
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {
@@ -74,10 +76,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::contracts::HashMapStorageProvider;
-    use alloy::sol_types::SolValue;
-
     use super::*;
+    use crate::storage::hashmap::HashMapStorageProvider;
+    use alloy::sol_types::SolValue;
 
     #[test]
     fn test_is_authorized_precompile() {

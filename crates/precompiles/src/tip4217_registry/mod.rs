@@ -2,10 +2,10 @@
 pub mod bindings;
 pub mod dispatch;
 
-use crate::{contracts::TIP4217Registry, precompiles::tempo_precompile};
+use crate::tempo_precompile;
 use alloy_evm::precompiles::DynPrecompile;
 
-use crate::contracts::ITIP4217Registry;
+use crate::tip4217_registry::bindings::ITIP4217Registry;
 
 pub struct TIP4217RegistryPrecompile;
 

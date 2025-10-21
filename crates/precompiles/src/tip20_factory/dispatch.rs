@@ -1,9 +1,10 @@
-use crate::precompiles::{Precompile, mutate, view};
+use crate::{Precompile, mutate, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-use crate::contracts::{
-    storage::PrecompileStorageProvider, tip20_factory::TIP20Factory, ITIP20Factory,
+use crate::{
+    storage::PrecompileStorageProvider, 
+    tip20_factory::{TIP20Factory, bindings::ITIP20Factory},
 };
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {

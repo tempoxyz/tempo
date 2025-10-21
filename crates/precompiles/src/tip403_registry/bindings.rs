@@ -1,92 +1,64 @@
-use alloy::sol;
+use alloy::{sol, sol_types::SolInterface};
+
+pub use ITIP403Registry::{
+    ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
+};
+use revm::precompile::PrecompileError;
 
 sol! {
-    /// TIP403Registry interface for managing authorization policies and permissions.
-    ///
-    /// TIP403 provides a comprehensive authorization framework supporting:
-    /// - Policy-based access control with whitelists and blacklists
-    /// - Admin role management and delegation
-    /// - Flexible policy composition and inheritance
-    /// - Integration with token transfer restrictions
-    #[derive(Debug, PartialEq, Eq)]
+   #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
     interface ITIP403Registry {
-        /// Policy types for authorization control
+        // Enums
         enum PolicyType {
-            None,        // No restrictions
-            Whitelist,   // Only allow listed addresses
-            Blacklist    // Deny listed addresses
+            WHITELIST,
+            BLACKLIST
         }
 
-        /// Create a new authorization policy
-        /// @param policyType The type of policy (whitelist/blacklist)
-        /// @param admin The admin address for the policy
-        /// @return policyId The created policy ID
-        function createPolicy(PolicyType policyType, address admin) external returns (uint64 policyId);
+        // View Functions
+        function policyIdCounter() external view returns (uint64);
+        function policyData(uint64 policyId) external view returns (PolicyType policyType, address admin);
+        function isAuthorized(uint64 policyId, address user) external view returns (bool);
 
-        /// Add addresses to a policy's list
-        /// @param policyId The policy ID
-        /// @param addresses The addresses to add
-        function addToPolicy(uint64 policyId, address[] calldata addresses) external;
-
-        /// Remove addresses from a policy's list
-        /// @param policyId The policy ID
-        /// @param addresses The addresses to remove
-        function removeFromPolicy(uint64 policyId, address[] calldata addresses) external;
-
-        /// Check if an address is authorized under a policy
-        /// @param policyId The policy ID
-        /// @param account The address to check
-        /// @return authorized Whether the address is authorized
-        function isAuthorized(uint64 policyId, address account) external view returns (bool authorized);
-
-        /// Check if an address is in a policy's list
-        /// @param policyId The policy ID
-        /// @param account The address to check
-        /// @return inList Whether the address is in the policy list
-        function isInPolicy(uint64 policyId, address account) external view returns (bool inList);
-
-        /// Get policy information
-        /// @param policyId The policy ID
-        /// @return policyType The policy type
-        /// @return admin The policy admin
-        /// @return listSize The number of addresses in the policy list
-        function getPolicyInfo(uint64 policyId) external view returns (
-            PolicyType policyType,
-            address admin,
-            uint256 listSize
-        );
-
-        /// Grant admin rights to another address
-        /// @param policyId The policy ID
-        /// @param newAdmin The new admin address
-        function grantAdmin(uint64 policyId, address newAdmin) external;
-
-        /// Revoke admin rights from an address
-        /// @param policyId The policy ID
-        /// @param admin The admin address to revoke
-        function revokeAdmin(uint64 policyId, address admin) external;
-
-        /// Check if an address is an admin for a policy
-        /// @param policyId The policy ID
-        /// @param account The address to check
-        /// @return isAdmin Whether the address is an admin
-        function isPolicyAdmin(uint64 policyId, address account) external view returns (bool isAdmin);
+        // State-Changing Functions
+        function createPolicy(address admin, PolicyType policyType) external returns (uint64);
+        function createPolicyWithAccounts(address admin, PolicyType policyType, address[] accounts) external returns (uint64);
+        function setPolicyAdmin(uint64 policyId, address admin) external;
+        function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
+        function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
 
         // Events
-        event PolicyCreated(uint64 indexed policyId, PolicyType policyType, address indexed admin);
-        event AddressAddedToPolicy(uint64 indexed policyId, address indexed account);
-        event AddressRemovedFromPolicy(uint64 indexed policyId, address indexed account);
-        event AdminGranted(uint64 indexed policyId, address indexed admin, address indexed grantedBy);
-        event AdminRevoked(uint64 indexed policyId, address indexed admin, address indexed revokedBy);
+        event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);
+        event PolicyCreated(uint64 indexed policyId, address indexed updater, PolicyType policyType);
+        event WhitelistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
+        event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
 
         // Errors
-        error PolicyDoesNotExist();
         error Unauthorized();
-        error AddressAlreadyInPolicy();
-        error AddressNotInPolicy();
-        error InvalidPolicyType();
-        error CannotRemoveLastAdmin();
+        error IncompatiblePolicyType();
+        error SelfOwnedPolicyMustBeWhitelist();
     }
 }
 
+impl TIP403RegistryError {
+    /// Creates an error for unauthorized calls
+    pub const fn unauthorized() -> Self {
+        Self::Unauthorized(ITIP403Registry::Unauthorized {})
+    }
+
+    /// Creates an error for incompatible policy types
+    pub const fn incompatible_policy_type() -> Self {
+        Self::IncompatiblePolicyType(ITIP403Registry::IncompatiblePolicyType {})
+    }
+
+    /// Creates an error for incompatible policy types
+    pub const fn self_owned_policy_must_be_whitelist() -> Self {
+        Self::SelfOwnedPolicyMustBeWhitelist(ITIP403Registry::SelfOwnedPolicyMustBeWhitelist {})
+    }
+}
+
+impl Into<PrecompileError> for TIP403RegistryError {
+    fn into(self) -> PrecompileError {
+        PrecompileError::Other(format!("{:?}", self.selector()))
+    }
+}

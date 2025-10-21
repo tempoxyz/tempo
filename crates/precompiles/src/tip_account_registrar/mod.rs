@@ -1,3 +1,4 @@
+pub mod bindings;
 pub mod dispatch;
 
 use alloy::{
@@ -7,7 +8,22 @@ use alloy::{
 use revm::{precompile::secp256k1::ecrecover, state::Bytecode};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
-use crate::contracts::{ITipAccountRegistrar, PrecompileStorageProvider, TipAccountRegistrarError};
+use crate::{
+    storage::PrecompileStorageProvider,
+    tempo_precompile,
+    tip_account_registrar::bindings::{ITipAccountRegistrar, TipAccountRegistrarError},
+};
+use alloy_evm::precompiles::DynPrecompile;
+
+pub struct TipAccountRegistrarPrecompile;
+
+impl TipAccountRegistrarPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("TipAccountRegistrar", |input| TipAccountRegistrar::new(
+            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(input.internals, chain_id),
+        ))
+    }
+}
 
 pub struct TipAccountRegistrar<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
@@ -103,7 +119,7 @@ fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TipAccountRegistra
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{HashMapStorageProvider, ITipAccountRegistrar};
+    use crate::storage::hashmap::HashMapStorageProvider;
     use alloy::primitives::keccak256;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;

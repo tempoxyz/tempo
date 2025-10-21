@@ -19,10 +19,20 @@ use alloy::{
     sol,
     sol_types::{SolCall, SolError, SolInterface},
 };
-use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
-use revm::{
-    context::Block,
-    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
+use alloy_evm::precompiles::PrecompilesMap;
+use linking_usd::LinkingUSDPrecompile;
+use nonce::NoncePrecompile;
+use revm::precompile::{PrecompileOutput, PrecompileResult};
+use stablecoin_exchange::StablecoinExchangePrecompile;
+use tip_account_registrar::TipAccountRegistrarPrecompile;
+use tip_fee_manager::TipFeeManagerPrecompile;
+use tip20::TIP20Precompile;
+use tip20_factory::TIP20FactoryPrecompile;
+use tip4217_registry::TIP4217RegistryPrecompile;
+
+use crate::{
+    tip20::{address_to_token_id_unchecked, is_tip20},
+    tip403_registry::TIP403Registry,
 };
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
@@ -65,7 +75,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id))
         } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403RegistryPrecompile::create(chain_id))
+            Some(TIP403Registry::create(chain_id))
         } else if *address == TIP4217_REGISTRY_ADDRESS {
             Some(TIP4217RegistryPrecompile::create())
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
@@ -80,6 +90,10 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             None
         }
     });
+}
+
+sol! {
+    error DelegateCallNotAllowed();
 }
 
 #[macro_export]
@@ -203,7 +217,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{contracts::EvmPrecompileStorageProvider, precompiles::Precompile};
+    use crate::{storage::evm::EvmPrecompileStorageProvider, tip20::TIP20Token};
     use alloy::primitives::{Address, Bytes, U256};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,

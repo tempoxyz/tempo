@@ -1,8 +1,8 @@
-use crate::precompiles::{Precompile, view};
+use crate::{Precompile, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-use crate::contracts::{tip4217_registry::TIP4217Registry, ITIP4217Registry};
+use crate::tip4217_registry::{TIP4217Registry, bindings::ITIP4217Registry};
 
 impl Precompile for TIP4217Registry {
     fn call(&mut self, calldata: &[u8], _msg_sender: &Address) -> PrecompileResult {

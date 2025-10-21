@@ -1,9 +1,20 @@
 pub mod bindings;
 pub mod dispatch;
 
-use crate::{TIP403_REGISTRY_ADDRESS, storage::PrecompileStorageProvider};
+use crate::{
+    TIP403_REGISTRY_ADDRESS,
+    storage::{
+        PrecompileStorageProvider,
+        slots::{double_mapping_slot, mapping_slot},
+    },
+    tempo_precompile,
+    tip403_registry::bindings::{ITIP403Registry, TIP403RegistryError, TIP403RegistryEvent},
+};
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
-use alloy_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use alloy_evm::{
+    precompiles::DynPrecompile,
+    revm::interpreter::instructions::utility::{IntoAddress, IntoU256},
+};
 use revm::state::Bytecode;
 
 mod slots {
@@ -12,6 +23,16 @@ mod slots {
     pub(super) const POLICY_ID_COUNTER: U256 = uint!(0_U256);
     pub(super) const POLICY_DATA: U256 = uint!(1_U256);
     pub(super) const POLICY_SET: U256 = uint!(2_U256);
+}
+
+pub struct TIP403RegistryPrecompile;
+
+impl TIP403RegistryPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("TIP403Registry", |input| TIP403Registry::new(
+            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(input.internals, chain_id),
+        ))
+    }
 }
 
 #[derive(Debug)]
@@ -186,7 +207,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                         .expect("TODO: handle error");
                 }
                 ITIP403Registry::PolicyType::__Invalid => {
-                    return Err(tip403_err!(IncompatiblePolicyType));
+                    return Err(TIP403RegistryError::incompatible_policy_type());
                 }
             }
         }
@@ -228,7 +249,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
         // Check authorization
         if data.admin != *msg_sender {
-            return Err(tip403_err!(Unauthorized));
+            return Err(TIP403RegistryError::unauthorized());
         }
 
         // Update admin policy ID
@@ -264,12 +285,12 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
         // Check authorization
         if data.admin != *msg_sender {
-            return Err(tip403_err!(Unauthorized));
+            return Err(TIP403RegistryError::unauthorized());
         }
 
         // Check policy type
         if data.policy_type != ITIP403Registry::PolicyType::WHITELIST {
-            return Err(tip403_err!(IncompatiblePolicyType));
+            return Err(TIP403RegistryError::incompatible_policy_type());
         }
 
         self.set_policy_set(call.policyId, &call.account, call.allowed);
@@ -299,12 +320,12 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
         // Check authorization
         if data.admin != *msg_sender {
-            return Err(tip403_err!(Unauthorized));
+            return Err(TIP403RegistryError::unauthorized());
         }
 
         // Check policy type
         if data.policy_type != ITIP403Registry::PolicyType::BLACKLIST {
-            return Err(tip403_err!(IncompatiblePolicyType));
+            return Err(TIP403RegistryError::incompatible_policy_type());
         }
 
         self.set_policy_set(call.policyId, &call.account, call.restricted);
@@ -393,8 +414,9 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use crate::storage::hashmap::HashMapStorageProvider;
+
     use super::*;
-    use crate::contracts::storage::hashmap::HashMapStorageProvider;
 
     #[test]
     fn test_create_policy() {

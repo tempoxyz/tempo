@@ -1,11 +1,11 @@
 use alloy::primitives::{Address, B256, IntoLogData, U256};
 
-use crate::contracts::{
-    IRolesAuth, RolesAuthError, RolesAuthEvent,
+use crate::{
     storage::{
         PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
+    tip20::bindings::{IRolesAuth, RolesAuthError, RolesAuthEvent},
 };
 
 pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;

@@ -1,9 +1,25 @@
+pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 use revm::precompile::PrecompileError;
 
 use alloy::{sol, sol_types::SolInterface};
 
 sol! {
+    #[derive(Debug, PartialEq, Eq)]
+    interface IRolesAuth {
+        function hasRole(address account, bytes32 role) external view returns (bool);
+        function getRoleAdmin(bytes32 role) external view returns (bytes32);
+        function grantRole(bytes32 role, address account) external;
+        function revokeRole(bytes32 role, address account) external;
+        function renounceRole(bytes32 role) external;
+        function setRoleAdmin(bytes32 role, bytes32 adminRole) external;
+
+        event RoleMembershipUpdated(bytes32 indexed role, address indexed account, address indexed sender, bool hasRole);
+        event RoleAdminUpdated(bytes32 indexed role, bytes32 indexed newAdminRole, address indexed sender);
+
+        error Unauthorized();
+    }
+
     /// TIP20 token interface providing standard ERC20 functionality with Tempo-specific extensions.
     ///
     /// TIP20 tokens extend the ERC20 standard with:

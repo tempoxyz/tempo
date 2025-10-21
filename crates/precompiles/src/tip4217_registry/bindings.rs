@@ -1,5 +1,6 @@
 use alloy::sol;
 
+
 sol! {
     #[derive(Debug, PartialEq, Eq)]
     interface ITIP4217Registry {
