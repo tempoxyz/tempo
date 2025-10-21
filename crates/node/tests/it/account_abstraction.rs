@@ -197,101 +197,112 @@ async fn verify_tx_not_in_block_via_rpc(
     Ok(())
 }
 
-/// Macro to set up common test infrastructure
-/// Creates variables: setup, provider, signer, signer_addr
-macro_rules! setup_test_with_funded_account {
-    () => {{
-        // Setup test node with direct access
-        let setup = crate::utils::TestNodeBuilder::new()
-            .build_with_node_access()
-            .await?;
-
-        let http_url = setup.node.rpc_url();
-
-        // Use TEST_MNEMONIC account (has balance in DEFAULT_FEE_TOKEN from genesis)
-        let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-        let signer_addr = signer.address();
-
-        // Create provider with wallet
-        let wallet = EthereumWallet::from(signer.clone());
-        let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-
-        (setup, provider, signer, signer_addr)
-    }};
-}
-
-/// Macro to set up P256 test infrastructure with funded account
-/// Creates variables: setup, provider, signing_key, pub_key_x, pub_key_y, signer_addr, funder_signer, funder_addr, chain_id
-macro_rules! setup_test_with_p256_funded_account {
-    ($funding_amount:expr) => {{
-        use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-
-        // Setup test node with direct access
-        let mut setup = crate::utils::TestNodeBuilder::new()
-            .build_with_node_access()
-            .await?;
-
-        let http_url = setup.node.rpc_url();
-
-        // Generate a P256 key pair
-        let signing_key = SigningKey::random(&mut OsRng);
-        let verifying_key = signing_key.verifying_key();
-
-        // Extract public key coordinates
-        let encoded_point = verifying_key.to_encoded_point(false);
-        let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
-        let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
-
-        // Derive the P256 signer's address
-        let signer_addr = tempo_primitives::transaction::aa_signature::derive_p256_address(
-            &pub_key_x, &pub_key_y,
-        );
-
-        // Use TEST_MNEMONIC account to fund the P256 signer
-        let funder_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-        let funder_addr = funder_signer.address();
-
-        // Create provider with funder's wallet
-        let funder_wallet = EthereumWallet::from(funder_signer.clone());
-        let provider = ProviderBuilder::new()
-            .wallet(funder_wallet)
-            .connect_http(http_url.clone());
-
-        // Get chain ID
-        let chain_id = provider.get_chain_id().await?;
-
-        // Fund the P256 signer with fee tokens
-        fund_address_with_fee_tokens(
-            &mut setup,
-            &provider,
-            &funder_signer,
-            funder_addr,
-            signer_addr,
-            $funding_amount,
-            chain_id,
-        )
+/// Helper function to set up common test infrastructure
+/// Returns: (setup, provider, signer, signer_addr)
+async fn setup_test_with_funded_account() -> eyre::Result<(
+    crate::utils::SingleNodeSetup,
+    impl Provider + Clone,
+    impl SignerSync,
+    Address,
+)> {
+    // Setup test node with direct access
+    let setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
         .await?;
 
-        (
-            setup,
-            provider,
-            signing_key,
-            pub_key_x,
-            pub_key_y,
-            signer_addr,
-            funder_signer,
-            funder_addr,
-            chain_id,
-        )
-    }};
+    let http_url = setup.node.rpc_url();
+
+    // Use TEST_MNEMONIC account (has balance in DEFAULT_FEE_TOKEN from genesis)
+    let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let signer_addr = signer.address();
+
+    // Create provider with wallet
+    let wallet = EthereumWallet::from(signer.clone());
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    Ok((setup, provider, signer, signer_addr))
+}
+
+/// Helper function to set up P256 test infrastructure with funded account
+/// Returns: (setup, provider, signing_key, pub_key_x, pub_key_y, signer_addr, funder_signer, funder_addr, chain_id)
+async fn setup_test_with_p256_funded_account(
+    funding_amount: U256,
+) -> eyre::Result<(
+    crate::utils::SingleNodeSetup,
+    impl Provider + Clone,
+    p256::ecdsa::SigningKey,
+    alloy::primitives::B256,
+    alloy::primitives::B256,
+    Address,
+    impl SignerSync,
+    Address,
+    u64,
+)> {
+    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
+
+    // Setup test node with direct access
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
+
+    let http_url = setup.node.rpc_url();
+
+    // Generate a P256 key pair
+    let signing_key = SigningKey::random(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    // Extract public key coordinates
+    let encoded_point = verifying_key.to_encoded_point(false);
+    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
+    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+
+    // Derive the P256 signer's address
+    let signer_addr =
+        tempo_primitives::transaction::aa_signature::derive_p256_address(&pub_key_x, &pub_key_y);
+
+    // Use TEST_MNEMONIC account to fund the P256 signer
+    let funder_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let funder_addr = funder_signer.address();
+
+    // Create provider with funder's wallet
+    let funder_wallet = EthereumWallet::from(funder_signer.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(funder_wallet)
+        .connect_http(http_url.clone());
+
+    // Get chain ID
+    let chain_id = provider.get_chain_id().await?;
+
+    // Fund the P256 signer with fee tokens
+    fund_address_with_fee_tokens(
+        &mut setup,
+        &provider,
+        &funder_signer,
+        funder_addr,
+        signer_addr,
+        funding_amount,
+        chain_id,
+    )
+    .await?;
+
+    Ok((
+        setup,
+        provider,
+        signing_key,
+        pub_key_x,
+        pub_key_y,
+        signer_addr,
+        funder_signer,
+        funder_addr,
+        chain_id,
+    ))
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account!();
-    let mut setup = setup;
+    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
 
     // Verify alice has ZERO native ETH (this is expected - gas paid via fee tokens)
     let alice_eth_balance = provider.get_balance(alice_addr).await?;
@@ -386,8 +397,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
 async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account!();
-    let mut setup = setup;
+    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
 
     println!("\nTesting AA 2D Nonce System (nonce_key restriction)");
     println!("Alice address: {alice_addr}");
@@ -531,7 +541,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         _funder_signer,
         _funder_addr,
         chain_id,
-    ) = setup_test_with_p256_funded_account!(transfer_amount);
+    ) = setup_test_with_p256_funded_account(transfer_amount).await?;
 
     println!("WebAuthn signer address: {signer_addr}");
     println!("Public key X: {pub_key_x}");
@@ -1047,7 +1057,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         _funder_signer,
         _funder_addr,
         chain_id,
-    ) = setup_test_with_p256_funded_account!(initial_funding_amount);
+    ) = setup_test_with_p256_funded_account(initial_funding_amount).await?;
 
     println!("\n=== Testing P256 Call Batching ===\n");
     println!("P256 signer address: {signer_addr}");
@@ -1437,7 +1447,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
 async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account!();
+    let (setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
 
     println!("\n=== Testing AA Empty Call Batch (should fail) ===\n");
     println!("Alice address: {alice_addr}");
