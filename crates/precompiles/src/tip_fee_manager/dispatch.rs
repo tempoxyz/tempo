@@ -1,10 +1,11 @@
 use crate::{
-    contracts::{
-        PrecompileStorageProvider,
-        tip_fee_manager::TipFeeManager,
-        IFeeManager, ITIPFeeAMM,
+    Precompile, mutate, mutate_void,
+    storage::PrecompileStorageProvider,
+    tip_fee_manager::{
+        TipFeeManager,
+        bindings::{IFeeManager, ITIPFeeAMM},
     },
-    precompiles::{Precompile, mutate, mutate_void, view},
+    view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -105,14 +106,14 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-        contracts::{
-            HashMapStorageProvider, TIP20Token, address_to_token_id_unchecked, fee_manager_err,
-            tip_fee_manager::amm::PoolKey,
+        LINKING_USD_ADDRESS, MUTATE_FUNC_GAS, TIP_FEE_MANAGER_ADDRESS, VIEW_FUNC_GAS,
+        expect_precompile_revert,
+        storage::hashmap::HashMapStorageProvider,
+        tip_fee_manager::{TipFeeManager, amm::PoolKey, bindings::TIPFeeAMMError},
+        tip20::{
+            ISSUER_ROLE, TIP20Token, address_to_token_id_unchecked, bindings::ITIP20,
             token_id_to_address,
-            types::{IFeeManager, ITIP20, ITIPFeeAMM, TIPFeeAMMError},
         },
-        precompiles::{MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert},
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -126,8 +127,6 @@ mod tests {
         user: Address,
         amount: U256,
     ) {
-        use crate::contracts::tip20::ISSUER_ROLE;
-
         let token_id = address_to_token_id_unchecked(&token);
         let mut tip20_token = TIP20Token::new(token_id, storage);
 
@@ -326,13 +325,13 @@ mod tests {
             token: Address::ZERO,
         };
         let result = fee_manager.call(&Bytes::from(set_validator_call.abi_encode()), &validator);
-        expect_precompile_revert(&result, fee_manager_err!(InvalidToken));
+        expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
 
         let set_user_call = IFeeManager::setUserTokenCall {
             token: Address::ZERO,
         };
         let result = fee_manager.call(&Bytes::from(set_user_call.abi_encode()), &user);
-        expect_precompile_revert(&result, fee_manager_err!(InvalidToken));
+        expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
     }
 
     #[test]
@@ -355,3 +354,4 @@ mod tests {
         Ok(())
     }
 }
+

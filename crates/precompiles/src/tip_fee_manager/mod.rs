@@ -4,18 +4,14 @@ pub mod dispatch;
 
 use crate::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        EvmPrecompileStorageProvider, FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM,
-        TIP20Token, address_to_token_id_unchecked, is_tip20,
-        storage::{PrecompileStorageProvider, StorageOps},
-        tip_fee_manager::{
-            TipFeeManager,
-            amm::{PoolKey, TIPFeeAMM},
-            slots::{collected_fees_slot, user_token_slot, validator_token_slot},
-        },
-        tip20::bindings::ITIP20,
+    storage::{PrecompileStorageProvider, StorageOps, evm::EvmPrecompileStorageProvider},
+    tempo_precompile,
+    tip_fee_manager::{
+        amm::{PoolKey, TIPFeeAMM},
+        bindings::{FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM},
+        slots::{user_token_slot, validator_token_slot},
     },
-    precompiles::tempo_precompile,
+    tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20},
 };
 
 use alloy_evm::precompiles::DynPrecompile;
@@ -35,6 +31,7 @@ impl TipFeeManagerPrecompile {
 // Re-export PoolKey for backward compatibility with tests
 use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
 use revm::{
+    context::Block,
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     precompile::PrecompileError,
     state::Bytecode,
@@ -51,7 +48,7 @@ use revm::{
 pub mod slots {
     use alloy::primitives::{Address, U256, uint};
 
-    use crate::contracts::storage::slots::mapping_slot;
+    use crate::storage::slots::mapping_slot;
 
     // FeeManager-specific slots start at slot 4 to avoid collision with TIPFeeAMM slots (0-3)
     pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
@@ -124,7 +121,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// Initializes the contract
     ///
     /// This ensures the [`TipFeeManager`] isn't empty and prevents state clear.
-    pub fn initialize(&mut self) -> Result<(), IFeeManager::IFeeManagerErrors> {
+    pub fn initialize(&mut self) -> Result<(), FeeManagerError> {
         // must ensure the account is not empty, by setting some code
         self.storage
             .set_code(
@@ -240,8 +237,12 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let mut tip20_token = TIP20Token::new(token_id, self.storage);
 
         // Ensure that user and FeeManager are authorized to interact with the token
-        tip20_token.ensure_transfer_authorized(&fee_payer, &self.contract_address)?;
-        tip20_token.transfer_fee_pre_tx(&fee_payer, max_amount)?;
+        tip20_token
+            .ensure_transfer_authorized(&fee_payer, &self.contract_address)
+            .expect("TODO: handle error");
+        tip20_token
+            .transfer_fee_pre_tx(&fee_payer, max_amount)
+            .expect("TODO: handle error ");
 
         // Return the user's token preference
         Ok(user_token)
@@ -274,7 +275,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
         // Execute fee swap and track collected fees
         if !actual_used.is_zero() {
-            let validator_token = self.get_validator_token();
+            let validator_token = self.get_validator_token().expect("TODO: handle error");
 
             if user_token == validator_token {
                 self.increment_collected_fees(actual_used);
@@ -290,7 +291,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
                 // Track the token to be swapped
                 let slot = slots::token_in_fees_array_slot(&user_token);
-                if self.sload(slot).is_zero() {
+                if self.sload(slot).expect("TODO: handle error").is_zero() {
                     self.add_token_to_fees_array(user_token);
                     self.sstore(slot, U256::from(true));
                 }
@@ -566,7 +567,8 @@ mod tests {
     use super::*;
     use crate::{
         LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-        contracts::{HashMapStorageProvider, tip20::ISSUER_ROLE, token_id_to_address},
+        storage::hashmap::HashMapStorageProvider,
+        tip20::{TIP20Token, address_to_token_id_unchecked},
     };
 
     fn setup_token_with_balance(

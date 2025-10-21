@@ -1,7 +1,7 @@
-use crate::contracts::{
-    ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, address_to_token_id_unchecked,
+use crate::{
     storage::{PrecompileStorageProvider, StorageOps},
-    tip20::{TIP20Token, bindings::ITIP20},
+    tip_fee_manager::bindings::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
+    tip20::{TIP20Token, address_to_token_id_unchecked, bindings::ITIP20},
 };
 use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
@@ -57,8 +57,9 @@ impl PoolKey {
 
 /// Storage slots for FeeAMM
 pub mod slots {
-    use crate::contracts::storage::slots::{double_mapping_slot, mapping_slot};
     use alloy::primitives::{Address, B256, U256, uint};
+
+    use crate::storage::slots::{double_mapping_slot, mapping_slot};
 
     // FeeAMM storage slots
     pub const POOLS: U256 = uint!(0_U256);
@@ -557,7 +558,11 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Set pending fee swap amount for a pool
-    fn set_pending_fee_swap_in(&mut self, pool_id: &B256, amount: U256) -> Result<(), PrecompileError> {
+    fn set_pending_fee_swap_in(
+        &mut self,
+        pool_id: &B256,
+        amount: U256,
+    ) -> Result<(), PrecompileError> {
         let slot = slots::pending_fee_swap_in_slot(pool_id);
         self.sstore(slot, amount)
     }
@@ -600,8 +605,9 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for TIPFeeAMM<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{storage::hashmap::HashMapStorageProvider, tip20::token_id_to_address};
+
     use super::*;
-    use crate::contracts::{HashMapStorageProvider, TIPFeeAMMError, token_id_to_address};
     use alloy::primitives::{Address, uint};
 
     #[test]
