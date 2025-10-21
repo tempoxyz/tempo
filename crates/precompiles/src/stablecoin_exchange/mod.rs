@@ -1,35 +1,11 @@
-// Module for stablecoin_exchange precompile
-pub mod dispatch;
-
-use crate::{
-    contracts::{EvmPrecompileStorageProvider, StablecoinExchange},
-    precompiles::tempo_precompile,
-};
-use alloy_evm::precompiles::DynPrecompile;
-
-pub struct StablecoinExchangePrecompile;
-
-impl StablecoinExchangePrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
-        ))
-    }
-}
-
-
-
-
 //! Stablecoin DEX types and utilities.
-
 pub mod bindings;
-pub mod error;
+pub mod dispatch;
 pub mod offsets;
 pub mod order;
 pub mod orderbook;
 pub mod slots;
 
-pub use error::OrderError;
 pub use order::Order;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, PriceLevel, TickBitmap, price_to_tick,
@@ -38,18 +14,33 @@ pub use orderbook::{
 
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
-    contracts::{
-        LinkingUSD, PrecompileStorageProvider, TIP20Token, address_to_token_id_unchecked,
-        stablecoin_exchange::{
-            bindings::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents},
-            orderbook::{compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick},
-        },
-        storage::{StorageOps, slots::mapping_slot},
-        tip20::bindings::{ITIP20, TIP20Error},
+    linking_usd::LinkingUSD,
+    stablecoin_exchange::{
+        bindings::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents},
+        orderbook::{compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick},
+    },
+    storage::{
+        PrecompileStorageProvider, StorageOps, evm::EvmPrecompileStorageProvider,
+        slots::mapping_slot,
+    },
+    tempo_precompile,
+    tip20::{
+        TIP20Token, address_to_token_id_unchecked,
+        bindings::{ITIP20, TIP20Error},
     },
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
+use alloy_evm::precompiles::DynPrecompile;
 use revm::{precompile::PrecompileError, state::Bytecode};
+
+pub struct StablecoinExchangePrecompile;
+impl StablecoinExchangePrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
+        ))
+    }
+}
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
@@ -1324,10 +1315,9 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for StablecoinExchange<'a, S> 
 
 #[cfg(test)]
 mod tests {
+    use crate::{storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE};
+
     use super::*;
-    use crate::contracts::{
-        HashMapStorageProvider, LinkingUSD, linking_usd, tip20, types::StablecoinExchangeError,
-    };
 
     fn setup_test_tokens<S: PrecompileStorageProvider>(
         storage: &mut S,
@@ -1375,7 +1365,7 @@ mod tests {
             .expect("Base token initialization failed");
 
         let mut base_roles = base.get_roles_contract();
-        base_roles.grant_role_internal(admin, *crate::contracts::tip20::ISSUER_ROLE);
+        base_roles.grant_role_internal(admin, *ISSUER_ROLE);
 
         base.approve(
             user,

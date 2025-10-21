@@ -1,16 +1,15 @@
 //! Stablecoin DEX precompile
 //!
 //! This module provides the precompile interface for the Stablecoin DEX.
-
-use crate::{
-    contracts::{
-        stablecoin_exchange::{StablecoinExchange, bindings::IStablecoinExchange},
-        storage::PrecompileStorageProvider,
-    },
-    precompiles::{Precompile, mutate, mutate_void, view, view_result},
-};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
+
+use crate::{
+    Precompile, mutate, mutate_void,
+    stablecoin_exchange::{StablecoinExchange, bindings::IStablecoinExchange},
+    storage::PrecompileStorageProvider,
+    view, view_result,
+};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
@@ -216,4 +215,3 @@ mod tests {
         // TODO:
     }
 }
-
