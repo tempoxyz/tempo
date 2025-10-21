@@ -4,10 +4,10 @@
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
-use crate::contracts::{PrecompileStorageProvider, storage::slots::mapping_slot};
-
-use super::error::OrderError;
-use crate::contracts::stablecoin_exchange::bindings::IStablecoinExchange;
+use crate::{
+    stablecoin_exchange::{bindings::IStablecoinExchange, error::OrderError},
+    storage::{PrecompileStorageProvider, slots::mapping_slot},
+};
 use alloy::primitives::{Address, B256, U256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
@@ -619,8 +619,9 @@ impl From<Order> for IStablecoinExchange::Order {
 
 #[cfg(test)]
 mod tests {
+    use crate::storage::hashmap::HashMapStorageProvider;
+
     use super::*;
-    use crate::contracts::HashMapStorageProvider;
     use alloy::primitives::{address, b256};
 
     const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
