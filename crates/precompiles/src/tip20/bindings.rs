@@ -181,4 +181,3 @@ impl Into<PrecompileError> for TIP20Error {
         PrecompileError::Other(format!("{:?}", self.selector()))
     }
 }
-

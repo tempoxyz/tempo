@@ -1,4 +1,5 @@
 // Module for tip_account_registrar precompile
+pub mod bindings;
 pub mod dispatch;
 
 use alloy_evm::precompiles::DynPrecompile;

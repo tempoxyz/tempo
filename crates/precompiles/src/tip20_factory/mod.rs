@@ -1,4 +1,5 @@
 // Module for tip20_factory precompile
+pub mod bindings;
 pub mod dispatch;
 
 use alloy_evm::precompiles::DynPrecompile;

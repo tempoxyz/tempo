@@ -1,4 +1,6 @@
 // Module for tip403_registry precompile
+pub mod bindings;
+pub mod bindings;
 pub mod dispatch;
 
 use alloy_evm::precompiles::DynPrecompile;

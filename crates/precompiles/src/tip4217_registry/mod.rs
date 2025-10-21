@@ -1,4 +1,5 @@
 // Module for tip4217_registry precompile
+pub mod bindings;
 pub mod dispatch;
 
 use alloy_evm::precompiles::DynPrecompile;

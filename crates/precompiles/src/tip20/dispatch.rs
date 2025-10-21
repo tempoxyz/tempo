@@ -1,13 +1,11 @@
 use crate::{
     contracts::{
         IRolesAuth, PrecompileStorageProvider, RolesAuthError,
-        tip20::{
-            TIP20Token,
-            bindings::{ITIP20, TIP20Error},
-        },
+        tip20::TIP20Token,
     },
     precompiles::{Precompile, metadata, mutate, mutate_void, view},
 };
+use super::bindings::{ITIP20, TIP20Error};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -193,10 +191,11 @@ mod tests {
         LINKING_USD_ADDRESS,
         contracts::{
             HashMapStorageProvider,
-            types::{IRolesAuth, TIP20Error},
+            IRolesAuth,
         },
         precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert},
     };
+    use super::bindings::TIP20Error;
     use alloy::{
         primitives::{Bytes, U256, keccak256},
         sol_types::SolValue,
