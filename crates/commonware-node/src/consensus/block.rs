@@ -9,7 +9,8 @@ use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Read, Write};
 use commonware_cryptography::{Committable, Digestible};
 use reth_node_core::primitives::SealedBlock;
-use tempo_commonware_node_cryptography::Digest;
+
+use crate::consensus::Digest;
 
 // use crate::consensus::{Finalization, Notarization};
 

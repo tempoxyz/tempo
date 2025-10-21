@@ -3,6 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+pub(crate) mod alias;
 pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod epoch;
@@ -10,7 +11,10 @@ pub mod metrics;
 
 use std::net::SocketAddr;
 
-use commonware_cryptography::Signer;
+use commonware_cryptography::{
+    Signer,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::authenticated::discovery;
 use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, bail, eyre};
@@ -23,7 +27,6 @@ use crate::config::{
     BROADCASTER_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT,
     RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
 };
-use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
@@ -64,7 +67,7 @@ pub async fn run_consensus_stack(
         signer: config.signer.clone(),
         polynomial: config.polynomial.clone(),
         share: config.share.clone(),
-        participants: config.peers.keys().cloned().collect::<Vec<_>>(),
+        participants: config.peers.keys().cloned().collect::<Vec<_>>().into(),
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
 

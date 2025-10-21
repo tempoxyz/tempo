@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 
-use commonware_consensus::{threshold_simplex, types::Epoch};
+use commonware_consensus::{simplex, types::Epoch};
+use commonware_cryptography::{Signer as _, ed25519::PublicKey};
 use commonware_p2p::{
     Blocker, Receiver, Sender,
     utils::mux::{MuxHandle, Muxer},
@@ -14,7 +15,6 @@ use eyre::{WrapErr as _, bail};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_cryptography::PublicKey;
 use tracing::{Level, Span, info, instrument, warn};
 
 use super::ingress::Finalized;
@@ -324,15 +324,17 @@ where
         }
         let _ = metadata.sync().await;
 
-        let engine = threshold_simplex::Engine::new(
+        let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
-            threshold_simplex::Config {
-                crypto: self.config.signer.clone(),
+            simplex::Config {
+                me: self.config.me.public_key(),
+                participants: self.config.participants.clone(),
+                // TODO(janis): suggest to commonware that Arc<impl Scheme> should impl Scheme.
+                scheme: (*self.config.scheme_provider.scheme()).clone(),
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
                 relay: self.config.application.clone(),
                 reporter: self.config.marshal.clone(),
-                supervisor: self.config.supervisor.clone(),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix

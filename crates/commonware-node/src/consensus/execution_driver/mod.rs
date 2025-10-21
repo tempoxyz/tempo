@@ -16,8 +16,8 @@ use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadId;
 use commonware_consensus::{
     Automaton, Block as _, Epochable, Relay, Reporter,
-    marshal::{self, ingress::mailbox::Identifier},
-    threshold_simplex::types::Context,
+    marshal::ingress::mailbox::Identifier,
+    simplex::types::Context,
     types::{Epoch, Round, View},
 };
 use commonware_macros::select;
@@ -41,12 +41,14 @@ use reth_provider::{BlockNumReader as _, BlockReader as _};
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, instrument, warn};
 
-use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 mod executor;
 
-use crate::{consensus::execution_driver::executor::ExecutorMailbox, epoch};
+use crate::{
+    consensus::{Digest, execution_driver::executor::ExecutorMailbox},
+    epoch,
+};
 
 use super::block::Block;
 
@@ -61,9 +63,8 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
     /// before blocking.
     pub(super) mailbox_size: usize,
 
-    /// The syncer for subscribing to blocks distributed via the consensus
-    /// p2p network.
-    pub(super) syncer: marshal::Mailbox<BlsScheme, Block>,
+    /// For subscribing to blocks distributed via the consensus p2p network.
+    pub(super) marshal: crate::alias::marshal::Mailbox,
 
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: TempoFullNode,
@@ -104,7 +105,7 @@ where
                 new_payload_wait_time: self.new_payload_wait_time,
 
                 my_mailbox,
-                syncer: self.syncer,
+                marshal: self.marshal,
 
                 genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
 
@@ -226,7 +227,7 @@ struct Inner<TState> {
 
     my_mailbox: ExecutionDriverMailbox,
 
-    syncer: marshal::Mailbox<BlsScheme, Block>,
+    marshal: crate::alias::marshal::Mailbox,
 
     genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
@@ -251,7 +252,7 @@ impl Inner<Init> {
             latest_proposed.digest(),
         );
 
-        self.syncer.broadcast(latest_proposed).await;
+        self.marshal.broadcast(latest_proposed).await;
         Ok(())
     }
 
@@ -281,7 +282,7 @@ impl Inner<Init> {
             self.genesis_block.digest()
         } else {
             let height = epoch::parent_height(genesis.epoch, self.heights_per_epoch);
-            let Some((_, digest)) = self.syncer.get_info(height).await else {
+            let Some((_, digest)) = self.marshal.get_info(height).await else {
                 // XXX: the None case here should not be hit:
                 // 1. an epoch transition is triggered by the application
                 // finalizing the last block of the outgoing epoch.
@@ -425,7 +426,7 @@ impl Inner<Init> {
                     "failed making the verified proposal the head of the canonical chain",
                 );
             }
-            self.syncer.verified(round, block).await;
+            self.marshal.verified(round, block).await;
         }
     }
 
@@ -441,7 +442,7 @@ impl Inner<Init> {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
-                self.syncer
+                self.marshal
                     .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
                     .await,
             )
@@ -545,14 +546,14 @@ impl Inner<Init> {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
-                self.syncer
+                self.marshal
                     .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
                     .await
                     .map_err(|_| eyre!("syncer dropped channel before the parent block was sent")),
             )
         };
         let block_request = self
-            .syncer
+            .marshal
             .subscribe(None, payload)
             .await
             .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
@@ -619,7 +620,7 @@ impl Inner<Uninit> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
         let (finalized_consensus_height, finalized_consensus_digest) = self
-            .syncer
+            .marshal
             .get_info(Identifier::Latest)
             .await
             .unwrap_or_else(|| {
@@ -651,7 +652,7 @@ impl Inner<Uninit> {
             execution_node: self.execution_node.clone(),
             genesis_block: self.genesis_block.clone(),
             latest_finalized_digest: finalized_consensus_digest,
-            marshal: self.syncer.clone(),
+            marshal: self.marshal.clone(),
         }
         .build(context.with_label("executor"));
 
@@ -660,7 +661,7 @@ impl Inner<Uninit> {
             heights_per_epoch: self.heights_per_epoch,
             new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
-            syncer: self.syncer,
+            marshal: self.marshal,
             genesis_block: self.genesis_block,
             execution_node: self.execution_node,
             state: Init {

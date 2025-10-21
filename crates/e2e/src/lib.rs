@@ -105,7 +105,7 @@ pub fn run(
                 signer,
                 polynomial: polynomial.clone(),
                 share,
-                participants: validators.clone(),
+                participants: validators.clone().into(),
                 mailbox_size: 1024,
                 deque_size: 10,
                 time_to_propose: Duration::from_secs(2),

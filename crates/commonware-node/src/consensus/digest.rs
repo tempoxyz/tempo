@@ -1,37 +1,15 @@
-//!  A collection of various aliases of cryptography primitives that are used
-//! throughout the node.
-//!
-//! These are primarily type aliases to make working with commonware types
-//! easier. But there is also [`Digest`], which is a thin wrapper around
-//! [`alloy_primitives::B256`] and used as the atom over which consensus is
-//! established.
-
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+//! [`Digest`] is a wrapper around [`B256`] to use eth block hash in commonware simplex.
 
 use std::ops::Deref;
 
 use alloy_primitives::B256;
 use commonware_codec::{FixedSize, Read, ReadExt as _, Write};
-use commonware_cryptography::{bls12381, bls12381::primitives::variant::Variant, ed25519};
 use commonware_utils::{Array, Span};
-
-// pub type Digest = sha256::Digest;
-pub type Identity = <BlsScheme as Variant>::Public;
-pub type GroupShare = bls12381::primitives::group::Share;
-pub type PublicPolynomial = bls12381::primitives::poly::Poly<Identity>;
-
-pub type PrivateKey = ed25519::PrivateKey;
-pub type PublicKey = ed25519::PublicKey;
-
-pub type BlsScheme = bls12381::primitives::variant::MinSig;
-pub type BlsSignature = <BlsScheme as Variant>::Signature;
-pub type BlsPublicKey = <BlsScheme as Variant>::Public;
 
 /// Wrapper around [`B256`] to use it in places requiring [`commonware_cryptography::Digest`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(transparent)]
-pub struct Digest(pub B256);
+pub(crate) struct Digest(pub(crate) B256);
 
 impl Array for Digest {}
 
@@ -85,10 +63,10 @@ impl Read for Digest {
     }
 }
 
+impl Span for Digest {}
+
 impl Write for Digest {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         self.0.write(buf)
     }
 }
-
-impl Span for Digest {}
