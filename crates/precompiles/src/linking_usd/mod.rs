@@ -172,9 +172,8 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 #[cfg(test)]
 mod tests {
 
-    use crate::storage::hashmap::HashMapStorageProvider;
-
     use super::*;
+    use crate::{storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE};
 
     fn transfer_test_setup(
         storage: &mut HashMapStorageProvider,

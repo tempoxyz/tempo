@@ -1,5 +1,5 @@
-use crate::{ storage::PrecompileStorageProvider, view, Precompile};
-use alloy::{primitives::Address, providers::fillers::NonceManager, sol_types::SolCall};
+use crate::{Precompile, nonce::NonceManager, storage::PrecompileStorageProvider, view};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use super::bindings::INonce;
@@ -17,7 +17,7 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
         match selector {
             INonce::getNonceCall::SELECTOR => {
                 let call = INonce::getNonceCall::abi_decode(calldata)
-                    .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?
+                    .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
 
                 match self.get_nonce(call) {
                     Ok(nonce) => view::<INonce::getNonceCall>(calldata, |_| nonce),
