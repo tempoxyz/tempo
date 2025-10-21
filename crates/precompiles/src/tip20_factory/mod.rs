@@ -6,8 +6,13 @@ use crate::{
     TIP20_FACTORY_ADDRESS,
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
     tempo_precompile,
-    tip20::bindings::TIP20Error,
+    tip20::{
+        TIP20Token, address_to_token_id_unchecked, bindings::TIP20Error, is_tip20,
+        token_id_to_address,
+    },
+    tip20_factory::bindings::ITIP20Factory,
 };
+pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use alloy_evm::precompiles::DynPrecompile;
 use revm::{precompile::PrecompileError, state::Bytecode};
@@ -125,7 +130,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{TIP20FactoryEvent, storage::hashmap::HashMapStorageProvider};
+    use crate::storage::hashmap::HashMapStorageProvider;
 
     #[test]
     fn test_create_token() {
