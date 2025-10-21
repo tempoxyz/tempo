@@ -18,8 +18,7 @@ env:
 jobs:
   clippy:
     name: clippy
-    # runs-on: depot-ubuntu-latest-4
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -35,7 +34,7 @@ jobs:
 
   fmt:
     name: fmt
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -46,8 +45,7 @@ jobs:
 
   docs:
     name: docs
-    # runs-on: depot-ubuntu-latest-4
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -60,7 +58,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   typos:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -71,7 +69,7 @@ jobs:
 
   zepter:
     name: zepter
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -87,7 +85,7 @@ jobs:
 
   lint-success:
     name: lint success
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     if: always()
     needs:
       - clippy
