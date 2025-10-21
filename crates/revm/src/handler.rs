@@ -1023,4 +1023,324 @@ mod tests {
             .set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
         assert_eq!(account.info.code_hash, DEFAULT_7702_DELEGATE_CODE_HASH);
     }
+
+    #[test]
+    fn test_aa_gas_single_call_vs_normal_tx() {
+        use crate::AATxEnv;
+        use alloy_primitives::{Bytes, TxKind};
+        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use tempo_primitives::transaction::{AASignature, Call};
+
+        // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
+        let spec = RevmSpecId::CANCUN;
+        let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
+        let to = Address::random();
+
+        // Single call for AA
+        let call = Call {
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            input: calldata.clone(),
+        };
+
+        let aa_env = AATxEnv {
+            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()), // dummy secp256k1 sig
+            valid_before: None,
+            valid_after: None,
+            aa_calls: vec![call],
+        };
+
+        // Calculate AA gas
+        let aa_gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env.aa_calls,
+            &aa_env.signature,
+            None::<std::iter::Empty<&AccessListItem>>, // no access list
+            spec,
+        );
+
+        // Calculate expected gas using revm's function for equivalent normal tx
+        let normal_tx_gas = calculate_initial_tx_gas(
+            spec, &calldata, false, // not create
+            0,     // no access list accounts
+            0,     // no access list storage
+            0,     // no authorization list
+        );
+
+        // AA should be: normal tx + per-call overhead (COLD_ACCOUNT_ACCESS_COST)
+        let expected_initial = normal_tx_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
+        assert_eq!(
+            aa_gas.initial_gas, expected_initial,
+            "AA secp256k1 single call should match normal tx + per-call overhead"
+        );
+    }
+
+    #[test]
+    fn test_aa_gas_multiple_calls_overhead() {
+        use crate::AATxEnv;
+        use alloy_primitives::{Bytes, TxKind};
+        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use tempo_primitives::transaction::{AASignature, Call};
+
+        let spec = RevmSpecId::CANCUN;
+        let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
+
+        let calls = vec![
+            Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: calldata.clone(),
+            },
+            Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: calldata.clone(),
+            },
+            Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: calldata.clone(),
+            },
+        ];
+
+        let aa_env = AATxEnv {
+            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            valid_before: None,
+            valid_after: None,
+            aa_calls: calls.clone(),
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &calls,
+            &aa_env.signature,
+            None::<std::iter::Empty<&AccessListItem>>,
+            spec,
+        );
+
+        // Calculate base gas for a single normal tx
+        let base_tx_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+        // For 3 calls: base (21k) + 3*calldata + 3*per-call overhead
+        // = 21k + 2*(calldata cost) + 3*COLD_ACCOUNT_ACCESS_COST
+        let expected = base_tx_gas.initial_gas
+            + 2 * (calldata.len() as u64 * 16)
+            + 3 * COLD_ACCOUNT_ACCESS_COST;
+        assert_eq!(
+            gas.initial_gas, expected,
+            "Should charge per-call overhead for each call"
+        );
+    }
+
+    #[test]
+    fn test_aa_gas_p256_signature() {
+        use crate::AATxEnv;
+        use alloy_primitives::{B256, Bytes, TxKind};
+        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use tempo_primitives::transaction::{
+            AASignature, Call, aa_signature::P256SignatureWithPreHash,
+        };
+
+        let spec = RevmSpecId::CANCUN;
+        let calldata = Bytes::from(vec![1, 2]);
+
+        let call = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: calldata.clone(),
+        };
+
+        let aa_env = AATxEnv {
+            signature: AASignature::P256(P256SignatureWithPreHash {
+                r: B256::ZERO,
+                s: B256::ZERO,
+                pub_key_x: B256::ZERO,
+                pub_key_y: B256::ZERO,
+                pre_hash: false,
+            }),
+            valid_before: None,
+            valid_after: None,
+            aa_calls: vec![call],
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env.aa_calls,
+            &aa_env.signature,
+            None::<std::iter::Empty<&AccessListItem>>,
+            spec,
+        );
+
+        // Calculate base gas for normal tx
+        let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+        // Expected: normal tx + P256_VERIFY_GAS + per-call overhead
+        let expected = base_gas.initial_gas + P256_VERIFY_GAS + COLD_ACCOUNT_ACCESS_COST;
+        assert_eq!(
+            gas.initial_gas, expected,
+            "Should include P256 verification gas"
+        );
+    }
+
+    #[test]
+    fn test_aa_gas_create_call() {
+        use crate::AATxEnv;
+        use alloy_primitives::{Bytes, TxKind};
+        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use tempo_primitives::transaction::{AASignature, Call};
+
+        let spec = RevmSpecId::CANCUN; // Post-Shanghai
+        let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
+
+        let call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: initcode.clone(),
+        };
+
+        let aa_env = AATxEnv {
+            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            valid_before: None,
+            valid_after: None,
+            aa_calls: vec![call],
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env.aa_calls,
+            &aa_env.signature,
+            None::<std::iter::Empty<&AccessListItem>>,
+            spec,
+        );
+
+        // Calculate expected using revm's function for CREATE tx
+        let base_gas = calculate_initial_tx_gas(
+            spec, &initcode, true, // is_create = true
+            0, 0, 0,
+        );
+
+        // AA CREATE should be: normal CREATE + per-call overhead
+        let expected = base_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
+        assert_eq!(gas.initial_gas, expected, "Should include CREATE costs");
+    }
+
+    #[test]
+    fn test_aa_gas_value_transfer() {
+        use crate::AATxEnv;
+        use alloy_primitives::{Bytes, TxKind};
+        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use tempo_primitives::transaction::{AASignature, Call};
+
+        let spec = RevmSpecId::CANCUN;
+        let calldata = Bytes::from(vec![1]);
+
+        let call = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::from(1000), // Non-zero value
+            input: calldata.clone(),
+        };
+
+        let aa_env = AATxEnv {
+            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            valid_before: None,
+            valid_after: None,
+            aa_calls: vec![call],
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env.aa_calls,
+            &aa_env.signature,
+            None::<std::iter::Empty<&AccessListItem>>,
+            spec,
+        );
+
+        // Calculate base gas for normal tx (without value cost in intrinsic)
+        let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+        // Expected: normal tx + CALLVALUE + per-call overhead
+        // Note: intrinsic gas includes CALLVALUE cost
+        let expected = base_gas.initial_gas + CALLVALUE + COLD_ACCOUNT_ACCESS_COST;
+        assert_eq!(
+            gas.initial_gas, expected,
+            "Should include value transfer cost"
+        );
+    }
+
+    #[test]
+    fn test_aa_gas_access_list() {
+        use crate::AATxEnv;
+        use alloy_primitives::{Bytes, TxKind};
+        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use tempo_primitives::transaction::{AASignature, Call};
+
+        let spec = RevmSpecId::CANCUN;
+        let calldata = Bytes::from(vec![]);
+
+        let call = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: calldata.clone(),
+        };
+
+        let aa_env = AATxEnv {
+            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            valid_before: None,
+            valid_after: None,
+            aa_calls: vec![call],
+        };
+
+        // Test without access list
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env.aa_calls,
+            &aa_env.signature,
+            None::<std::iter::Empty<&AccessListItem>>,
+            spec,
+        );
+
+        // Calculate expected using revm's function
+        let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+        // Expected: normal tx + per-call overhead (no access list in this test)
+        let expected = base_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
+        assert_eq!(
+            gas.initial_gas, expected,
+            "Should match normal tx + per-call overhead"
+        );
+    }
+
+    #[test]
+    fn test_aa_gas_floor_gas_prague() {
+        use crate::AATxEnv;
+        use alloy_primitives::{Bytes, TxKind};
+        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use tempo_primitives::transaction::{AASignature, Call};
+
+        let spec = RevmSpecId::PRAGUE;
+        let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
+
+        let call = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: calldata.clone(),
+        };
+
+        let aa_env = AATxEnv {
+            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            valid_before: None,
+            valid_after: None,
+            aa_calls: vec![call],
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env.aa_calls,
+            &aa_env.signature,
+            None::<std::iter::Empty<&AccessListItem>>,
+            spec,
+        );
+
+        // Calculate expected floor gas using revm's function
+        let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+        // Floor gas should match revm's calculation for same calldata
+        assert_eq!(
+            gas.floor_gas, base_gas.floor_gas,
+            "Should calculate floor gas for Prague matching revm"
+        );
+    }
 }
