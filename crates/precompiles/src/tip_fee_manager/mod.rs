@@ -516,12 +516,14 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn total_supply(&mut self, call: ITIPFeeAMM::totalSupplyCall) -> U256 {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.get_total_supply(&call.poolId)
+            .expect("TODO: handle error")
     }
 
     /// Get liquidity balance of a user for a pool (inherited from TIPFeeAMM)
     pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> U256 {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.get_balance_of(&call.poolId, &call.user)
+            .expect("TODO: handle error")
     }
 
     pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> alloy::primitives::B256 {
