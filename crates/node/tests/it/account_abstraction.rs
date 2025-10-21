@@ -1495,25 +1495,19 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
     let result = setup.node.rpc.inject_tx(encoded.clone().into()).await;
 
     // The transaction should be rejected with a specific error
+    let e = result.expect_err("Transaction with empty call batch should be rejected");
+    println!("✓ Transaction with empty call batch correctly rejected: {e}");
+
+    // Verify the error is about decode failure or validation
+    // Empty call batch should fail during decoding/validation
+    let error_msg = e.to_string();
     assert!(
-        result.is_err(),
-        "Transaction with empty call batch should be rejected"
+        error_msg.contains("decode")
+            || error_msg.contains("empty")
+            || error_msg.contains("call")
+            || error_msg.contains("valid"),
+        "Error should indicate decode/validation failure for empty calls, got: {error_msg}"
     );
-
-    if let Err(e) = result {
-        println!("✓ Transaction with empty call batch correctly rejected: {e}");
-
-        // Verify the error is about decode failure or validation
-        // Empty call batch should fail during decoding/validation
-        let error_msg = e.to_string();
-        assert!(
-            error_msg.contains("decode")
-                || error_msg.contains("empty")
-                || error_msg.contains("call")
-                || error_msg.contains("valid"),
-            "Error should indicate decode/validation failure for empty calls, got: {error_msg}"
-        );
-    }
 
     // Verify the rejected transaction is NOT available via eth_getTransactionByHash
     verify_tx_not_in_block_via_rpc(&provider, &encoded).await?;
