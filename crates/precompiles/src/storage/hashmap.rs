@@ -6,7 +6,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 
-use crate::contracts::storage::PrecompileStorageProvider;
+use crate::storage::PrecompileStorageProvider;
 
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,

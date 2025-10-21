@@ -1,8 +1,11 @@
 use crate::{
-    contracts::{LinkingUSD, PrecompileStorageProvider},
-    precompiles::{Precompile, metadata, mutate, mutate_void, view},
+    Precompile,
+    linking_usd::LinkingUSD,
+    metadata, mutate, mutate_void,
+    storage::PrecompileStorageProvider,
+    tip20::bindings::{ITIP20, TIP20Error},
+    view,
 };
-use super::bindings::{ITIP20, TIP20Error};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 

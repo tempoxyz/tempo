@@ -1,18 +1,18 @@
 pub mod dispatch;
 
 use crate::{
-    contracts::EvmPrecompileStorageProvider,
-    tempo_precompile,
-    tip20::bindings::{ITIP20, TIP20Error},
-};
-use alloy_evm::precompiles::DynPrecompile;
-use revm::precompile::PrecompileId;
-
-use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
-    contracts::{PrecompileStorageProvider, roles::RolesAuthContract, tip20::TIP20Token},
+    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    tempo_precompile,
+    tip20::{
+        TIP20Token,
+        bindings::{ITIP20, TIP20Error},
+        roles::RolesAuthContract,
+    },
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy_evm::precompiles::DynPrecompile;
+use revm::precompile::PrecompileId;
 use std::sync::LazyLock;
 
 pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));
@@ -172,10 +172,12 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 #[cfg(test)]
 mod tests {
 
+    use crate::storage::hashmap::HashMapStorageProvider;
+
     use super::*;
 
     fn transfer_test_setup(
-        storage: &mut Hash,
+        storage: &mut HashMapStorageProvider,
     ) -> (LinkingUSD<'_, HashMapStorageProvider>, Address) {
         let mut linking_usd = LinkingUSD::new(storage);
         let admin = Address::random();

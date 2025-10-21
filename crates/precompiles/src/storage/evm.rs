@@ -1,8 +1,11 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
-use revm::{precompile::PrecompileError, state::Bytecode};
+use revm::{
+    precompile::PrecompileError,
+    state::{AccountInfo, Bytecode},
+};
 
-use crate::contracts::storage::{AccountInfo, PrecompileStorageProvider};
+use crate::storage::PrecompileStorageProvider;
 
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
