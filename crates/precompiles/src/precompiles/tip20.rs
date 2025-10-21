@@ -2,7 +2,8 @@ use crate::{
     contracts::{
         PrecompileStorageProvider,
         tip20::TIP20Token,
-        types::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
+        IRolesAuth, RolesAuthError,
+        tip20::bindings::{ITIP20, TIP20Error},
     },
     precompiles::{Precompile, metadata, mutate, mutate_void, view},
 };

@@ -7,7 +7,7 @@ use super::{
 use crate::contracts::{PrecompileStorageProvider, storage::slots::mapping_slot};
 use alloy::primitives::{Address, B256, U256, keccak256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
-use tempo_contracts::precompiles::IStablecoinExchange;
+use crate::contracts::stablecoin_exchange::bindings::IStablecoinExchange;
 
 /// Constants from Solidity implementation
 pub const MIN_TICK: i16 = -2000;

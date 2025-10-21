@@ -11,9 +11,6 @@ pub mod tip4217_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
-pub mod types {
-    pub use tempo_contracts::precompiles::*;
-}
 pub use tempo_contracts::{fee_manager_err, tip403_err};
 
 use crate::TIP20_TOKEN_PREFIX;
@@ -24,15 +21,17 @@ pub use stablecoin_exchange::StablecoinExchange;
 pub use storage::{
     PrecompileStorageProvider, evm::EvmPrecompileStorageProvider, hashmap::HashMapStorageProvider,
 };
+pub use tempo_contracts::precompiles::{
+    FeeManagerError, FeeManagerEvent, IFeeManager, INonce, IRolesAuth, ITIP20Factory,
+    ITIP403Registry, ITIP4217Registry, ITIPFeeAMM, ITipAccountRegistrar, RolesAuthError,
+    RolesAuthEvent, TIP20FactoryEvent, TIP403RegistryError, TIP403RegistryEvent, TIPFeeAMMError,
+    TIPFeeAMMEvent, TipAccountRegistrarError,
+};
 pub use tip_account_registrar::TipAccountRegistrar;
-pub use tip20::TIP20Token;
+pub use tip20::{TIP20Token, bindings::ITIP20};
 pub use tip20_factory::TIP20Factory;
 pub use tip403_registry::TIP403Registry;
 pub use tip4217_registry::TIP4217Registry;
-pub use types::{
-    IFeeManager, INonce, ITIP20, ITIP20Factory, ITIP403Registry, ITIP4217Registry, ITIPFeeAMM,
-    ITipAccountRegistrar,
-};
 
 pub fn is_tip20(token: &Address) -> bool {
     token.as_slice().starts_with(&TIP20_TOKEN_PREFIX)

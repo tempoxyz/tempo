@@ -5,7 +5,7 @@
 use crate::{
     contracts::{
         stablecoin_exchange::StablecoinExchange, storage::PrecompileStorageProvider,
-        types::IStablecoinExchange,
+        stablecoin_exchange::bindings::IStablecoinExchange,
     },
     precompiles::{Precompile, mutate, mutate_void, view, view_result},
 };

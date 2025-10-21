@@ -1,11 +1,13 @@
 //! Stablecoin DEX types and utilities.
 
+pub mod bindings;
 pub mod error;
 pub mod offsets;
 pub mod order;
 pub mod orderbook;
 pub mod slots;
 
+use crate::contracts::tip20::bindings::{ITIP20, TIP20Error};
 pub use error::OrderError;
 pub use order::Order;
 pub use orderbook::{
@@ -17,15 +19,15 @@ use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{
         LinkingUSD, PrecompileStorageProvider, TIP20Token, address_to_token_id_unchecked,
-        stablecoin_exchange::orderbook::{
-            compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
+        stablecoin_exchange::{
+            bindings::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents},
+            orderbook::{compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick},
         },
         storage::{StorageOps, slots::mapping_slot},
-        types::{IStablecoinExchange, ITIP20, StablecoinExchangeError, StablecoinExchangeEvents},
     },
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
-use revm::state::Bytecode;
+use revm::{precompile::PrecompileError, state::Bytecode};
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
@@ -63,7 +65,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Read pending order ID
     fn get_pending_order_id(&mut self) -> Result<u128, PrecompileError> {
-        Ok(self.storage
+        Ok(self
+            .storage
             .sload(self.address, slots::PENDING_ORDER_ID)?
             .to::<u128>())
     }
@@ -76,15 +79,17 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Read active order ID
     fn get_active_order_id(&mut self) -> Result<u128, PrecompileError> {
-        Ok(self.storage
+        Ok(self
+            .storage
             .sload(self.address, slots::ACTIVE_ORDER_ID)?
             .to::<u128>())
     }
 
     /// Set active order ID
     fn set_active_order_id(&mut self, order_id: u128) -> Result<(), PrecompileError> {
-        self.storage
-            .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))
+        Ok(self
+            .storage
+            .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))?)
     }
 
     /// Increment and return the pending order id
@@ -99,41 +104,55 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
 
-        Ok(self.storage
-            .sload(self.address, balance_slot)?
-            .to::<u128>())
+        Ok(self.storage.sload(self.address, balance_slot)?.to::<u128>())
     }
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`   
-    pub fn get_order(&mut self, order_id: u128) -> Result<Order, StablecoinExchangeError> {
+    pub fn get_order(&mut self, order_id: u128) -> Result<Order, PrecompileError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
 
         // If the order is not filled and currently active
-        if !order.maker().is_zero() && order.order_id() <= self.get_active_order_id() {
+        if !order.maker().is_zero() && order.order_id() <= self.get_active_order_id()? {
             Ok(order)
         } else {
-            Err(StablecoinExchangeError::order_does_not_exist())
+            Err(StablecoinExchangeError::order_does_not_exist().into())
         }
     }
 
     /// Set user's balance for a specific token
-    fn set_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<(), PrecompileError> {
+    fn set_balance(
+        &mut self,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<(), PrecompileError> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
 
-        self.storage
-            .sstore(self.address, balance_slot, U256::from(amount))
+        Ok(self
+            .storage
+            .sstore(self.address, balance_slot, U256::from(amount))?)
     }
 
     /// Add to user's balance
-    fn increment_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<(), PrecompileError> {
+    fn increment_balance(
+        &mut self,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<(), PrecompileError> {
         let current = self.balance_of(user, token)?;
         self.set_balance(user, token, current + amount)
     }
 
     /// Subtract from user's balance
-    fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<(), PrecompileError> {
+    fn sub_balance(
+        &mut self,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<(), PrecompileError> {
         let current = self.balance_of(user, token)?;
         self.set_balance(user, token, current.saturating_sub(amount))
     }
@@ -146,25 +165,21 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         amount: u128,
     ) -> Result<(), StablecoinExchangeError> {
         if token == LINKING_USD_ADDRESS {
-            LinkingUSD::new(self.storage)
-                .transfer(
-                    &self.address,
-                    ITIP20::transferCall {
-                        to,
-                        amount: U256::from(amount),
-                    },
-                )
-                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+            LinkingUSD::new(self.storage).transfer(
+                &self.address,
+                ITIP20::transferCall {
+                    to,
+                    amount: U256::from(amount),
+                },
+            )?;
         } else {
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
-                .transfer(
-                    &self.address,
-                    ITIP20::transferCall {
-                        to,
-                        amount: U256::from(amount),
-                    },
-                )
-                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).transfer(
+                &self.address,
+                ITIP20::transferCall {
+                    to,
+                    amount: U256::from(amount),
+                },
+            )?;
         }
         Ok(())
     }
@@ -175,31 +190,25 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token: Address,
         from: Address,
         amount: u128,
-    ) -> Result<(), StablecoinExchangeError> {
+    ) -> Result<(), TIP20Error> {
         if token == LINKING_USD_ADDRESS {
-            LinkingUSD::new(self.storage)
-                .transfer_from(
-                    &self.address,
-                    ITIP20::transferFromCall {
-                        from,
-                        to: self.address,
-                        amount: U256::from(amount),
-                    },
-                )
-                // TODO: propagate TIP20 errors
-                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+            LinkingUSD::new(self.storage).transfer_from(
+                &self.address,
+                ITIP20::transferFromCall {
+                    from,
+                    to: self.address,
+                    amount: U256::from(amount),
+                },
+            )?;
         } else {
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage)
-                .transfer_from(
-                    &self.address,
-                    ITIP20::transferFromCall {
-                        from,
-                        to: self.address,
-                        amount: U256::from(amount),
-                    },
-                )
-                // TODO: propagate TIP20 errors
-                .map_err(|_| StablecoinExchangeError::insufficient_balance())?;
+            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).transfer_from(
+                &self.address,
+                ITIP20::transferFromCall {
+                    from,
+                    to: self.address,
+                    amount: U256::from(amount),
+                },
+            )?;
         }
         Ok(())
     }
@@ -263,12 +272,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_in: u128,
         min_amount_out: u128,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, PrecompileError> {
         let book_key = compute_book_key(token_in, token_out);
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exist());
+            return Err(StablecoinExchangeError::pair_does_not_exist().into());
         }
 
         let base_for_quote = token_in == orderbook.base;
@@ -384,7 +393,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         amount: u128,
         is_bid: bool,
         tick: i16,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, PrecompileError> {
         // Lookup quote token from TIP20 token
         let quote_token =
             TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
@@ -393,12 +402,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let book_key = compute_book_key(token, quote_token);
         let book = Orderbook::from_storage(book_key, self.storage, self.address);
         if book.base.is_zero() {
-            return Err(StablecoinExchangeError::pair_does_not_exist());
+            return Err(StablecoinExchangeError::pair_does_not_exist().into());
         }
 
         // Validate tick is within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::tick_out_of_bounds(tick));
+            return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
         }
 
         // Calculate escrow amount and token based on order side
@@ -416,7 +425,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount)?;
 
         // Create the order
-        let order_id = self.increment_pending_order_id();
+        let order_id = self.increment_pending_order_id()?;
         let order = if is_bid {
             Order::new_bid(order_id, *sender, book_key, amount, tick)
         } else {

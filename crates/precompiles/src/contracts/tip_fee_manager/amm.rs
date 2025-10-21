@@ -1,8 +1,7 @@
 use crate::contracts::{
-    address_to_token_id_unchecked,
+    ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, address_to_token_id_unchecked,
     storage::{PrecompileStorageProvider, StorageOps},
-    tip20::TIP20Token,
-    types::{ITIP20, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
+    tip20::{TIP20Token, bindings::ITIP20},
 };
 use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},

@@ -5,7 +5,8 @@ use crate::{
         storage::PrecompileStorageProvider,
         tip20::TIP20Token,
         token_id_to_address,
-        types::{ITIP20Factory, TIP20Error, TIP20FactoryEvent},
+        tip20::bindings::TIP20Error,
+        ITIP20Factory, TIP20FactoryEvent,
     },
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};

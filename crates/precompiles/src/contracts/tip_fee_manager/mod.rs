@@ -10,7 +10,8 @@ use crate::{
             amm::{PoolKey, TIPFeeAMM},
             slots::{collected_fees_slot, user_token_slot, validator_token_slot},
         },
-        types::{FeeManagerError, FeeManagerEvent, IFeeManager, ITIP20, ITIPFeeAMM},
+        tip20::bindings::ITIP20,
+        FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM,
     },
 };
 

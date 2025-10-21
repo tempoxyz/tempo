@@ -1,7 +1,7 @@
 use crate::{
     contracts::{
         LinkingUSD, PrecompileStorageProvider,
-        types::{ITIP20, TIP20Error},
+        tip20::bindings::{ITIP20, TIP20Error},
     },
     precompiles::{Precompile, metadata, mutate, mutate_void, view},
 };

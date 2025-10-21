@@ -9,7 +9,7 @@ use crate::contracts::{PrecompileStorageProvider, storage::slots::mapping_slot};
 use super::error::OrderError;
 use alloy::primitives::{Address, B256, U256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
-use tempo_contracts::precompiles::IStablecoinExchange;
+use crate::contracts::stablecoin_exchange::bindings::IStablecoinExchange;
 
 // Order struct field offsets (relative to order base slot)
 // Matches Solidity Order struct layout

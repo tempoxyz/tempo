@@ -1,16 +1,5 @@
-use std::sync::LazyLock;
+pub mod bindings;
 
-use crate::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        ITIP20, ITIP403Registry, ITIP4217Registry, PrecompileStorageProvider, TIP20Factory,
-        TIP403Registry, TIP4217Registry, address_to_token_id_unchecked, is_tip20,
-        roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
-        storage::slots::{double_mapping_slot, mapping_slot},
-        token_id_to_address,
-        types::{TIP20Error, TIP20Event},
-    },
-};
 use alloy::{
     consensus::crypto::secp256k1 as eth_secp256k1,
     primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
@@ -21,6 +10,19 @@ use revm::{
     state::Bytecode,
 };
 use tracing::trace;
+
+use crate::{
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    contracts::{
+        ITIP403Registry, ITIP4217Registry, PrecompileStorageProvider, TIP20Factory, TIP403Registry,
+        TIP4217Registry, address_to_token_id_unchecked, is_tip20,
+        roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
+        storage::slots::{double_mapping_slot, mapping_slot},
+        tip20::bindings::{ITIP20, TIP20Error, TIP20Event},
+        token_id_to_address,
+    },
+};
+use std::sync::LazyLock;
 
 pub mod slots {
     use alloy::primitives::{U256, uint};
