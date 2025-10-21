@@ -11,7 +11,11 @@ use reth_evm::{
             Block, Cfg, ContextTr, Host, JournalTr, Transaction,
             result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
         },
-        handler::{EvmTr, FrameResult, FrameTr, Handler, pre_execution, validation},
+        handler::{
+            EvmTr, FrameResult, FrameTr, Handler,
+            pre_execution::{self, calculate_caller_fee},
+            validation,
+        },
         inspector::{Inspector, InspectorHandler},
         interpreter::{
             Gas, InitialAndFloorGas,
@@ -404,27 +408,13 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
-        // modified inlined ethereum state validation logic
-        // Extract values before mutable borrow
-        let beneficiary = evm.ctx().beneficiary();
-        let chain_id = evm.ctx().chain_id().to::<u64>();
-
-        let context = evm.ctx();
-        let basefee = context.block().basefee() as u128;
-        let blob_price = context.block().blob_gasprice().unwrap_or_default();
-        let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
-        let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
-        let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
-        let value = context.tx().value();
-        let caller_addr = context.tx().caller();
-
-        let (tx, journal) = (&mut context.tx, &mut context.journaled_state);
+        let (block, tx, cfg, journal, _, _) = evm.ctx().all_mut();
 
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
 
         // Load caller's account
-        let caller_account = journal.load_account_code(caller_addr)?.data;
+        let caller_account = journal.load_account_code(tx.caller())?.data;
 
         let account_info = &mut caller_account.info;
         if account_info.has_no_code_and_nonce() {
@@ -438,90 +428,74 @@ where
         pre_execution::validate_account_nonce_and_code(
             &mut caller_account.info,
             tx.nonce(),
-            is_eip3607_disabled,
-            is_nonce_check_disabled,
-        )
-        .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
+            cfg.is_eip3607_disabled(),
+            cfg.is_nonce_check_disabled(),
+        )?;
 
-        // Note: Signature verification happens during recover_signer() before entering the pool
-        // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
-
-        let max_balance_spending = tx
-            .max_balance_spending()
-            .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
-        let effective_balance_spending = tx
-            .effective_balance_spending(basefee, blob_price)
-            .expect("effective balance is always smaller than max balance so it can't overflow");
+        // modify account nonce and touch the account.
 
         caller_account.mark_touch();
-
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
         if tx.kind().is_call() {
             caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
         }
 
-        // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
-        // Transfer will be done inside `*_inner` functions.
-        if is_balance_check_disabled {
-            // ignore balance check.
-        } else if account_balance < max_balance_spending {
-            return Err(EVMError::Transaction(
-                TempoInvalidTransaction::EthInvalidTransaction(
-                    InvalidTransaction::LackOfFundForMaxFee {
-                        fee: Box::new(max_balance_spending),
-                        balance: Box::new(account_balance),
-                    },
-                ),
-            ));
-        } else if !max_balance_spending.is_zero() {
-            // Call collectFeePreTx on TipFeeManager precompile
-            let gas_balance_spending = effective_balance_spending - value;
+        // calculate the new balance after the fee is collected.
+        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
+        // doing max to avoid underflow as new_balance can be more than
+        // account balance if `cfg.is_balance_check_disabled()` is true.
+        let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
 
-            // Create storage provider wrapper around journal
-            let internals = EvmInternals::new(journal, &context.block);
-            let mut storage_provider = EvmStorageProvider::new(internals, chain_id);
-            let mut fee_manager =
-                TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, beneficiary, &mut storage_provider);
+        // Note: Signature verification happens during recover_signer() before entering the pool
+        // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
-            // Call the precompile function to collect the fee
-            // We specify the `to_addr` to account for the case where the to address is a tip20
-            // token and the fee token is not set for the specified caller.
-            // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
-            let to_addr = tx.kind().into_to().unwrap_or_default();
-            fee_manager
-                .collect_fee_pre_tx(
-                    self.fee_payer,
-                    self.fee_token,
-                    to_addr,
-                    gas_balance_spending,
-                )
-                .map_err(|e| {
-                    // Map fee collection errors to transaction validation errors since they
-                    // indicate the transaction cannot be included (e.g., insufficient liquidity
-                    // in FeeAMM pool for fee swaps)
-                    use tempo_precompiles::contracts::IFeeManager;
-                    match e {
-                        IFeeManager::IFeeManagerErrors::InsufficientLiquidity(_) => {
-                            EVMError::Transaction(
-                                TempoInvalidTransaction::InsufficientAmmLiquidity {
-                                    fee: Box::new(gas_balance_spending),
-                                },
-                            )
-                        }
-                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(_) => {
-                            EVMError::Transaction(
-                                TempoInvalidTransaction::InsufficientFeeTokenBalance {
-                                    fee: Box::new(gas_balance_spending),
-                                    balance: Box::new(account_balance),
-                                },
-                            )
-                        }
-                        _ => EVMError::Custom(format!("{e:?}")),
-                    }
-                })?;
+        // Create storage provider wrapper around journal
+        let internals = EvmInternals::new(journal, &block);
+        let mut storage_provider = EvmStorageProvider::new(internals, cfg.chain_id());
+        let mut fee_manager = TipFeeManager::new(
+            TIP_FEE_MANAGER_ADDRESS,
+            block.beneficiary(),
+            &mut storage_provider,
+        );
+
+        if tx.max_balance_spending().ok() == Some(U256::ZERO) {
+            return Ok(());
         }
 
-        // journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
+        // Call the precompile function to collect the fee
+        // We specify the `to_addr` to account for the case where the to address is a tip20
+        // token and the fee token is not set for the specified caller.
+        // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
+        let to_addr = tx.kind().into_to().unwrap_or_default();
+        fee_manager
+            .collect_fee_pre_tx(
+                self.fee_payer,
+                self.fee_token,
+                to_addr,
+                gas_balance_spending,
+            )
+            .map_err(|e| {
+                // Map fee collection errors to transaction validation errors since they
+                // indicate the transaction cannot be included (e.g., insufficient liquidity
+                // in FeeAMM pool for fee swaps)
+                use tempo_precompiles::contracts::IFeeManager;
+                match e {
+                    IFeeManager::IFeeManagerErrors::InsufficientLiquidity(_) => {
+                        EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
+                            fee: Box::new(gas_balance_spending),
+                        })
+                    }
+                    IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(_) => {
+                        EVMError::Transaction(
+                            TempoInvalidTransaction::InsufficientFeeTokenBalance {
+                                fee: Box::new(gas_balance_spending),
+                                balance: Box::new(account_balance),
+                            },
+                        )
+                    }
+                    _ => EVMError::Custom(format!("{e:?}")),
+                }
+            })?;
         Ok(())
     }
 
