@@ -1,5 +1,3 @@
-/! Error types for stablecoin DEX order operations.
-
 /// Errors that can occur when working with orders.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OrderError {

@@ -1316,7 +1316,9 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for StablecoinExchange<'a, S> 
 
 #[cfg(test)]
 mod tests {
-    use crate::{storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE};
+    use crate::{
+        linking_usd::TRANSFER_ROLE, storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE,
+    };
 
     use super::*;
 
@@ -1335,8 +1337,8 @@ mod tests {
 
         // Grant issuer role to admin for quote token
         let mut quote_roles = quote.get_roles_contract();
-        quote_roles.grant_role_internal(admin, *tip20::ISSUER_ROLE);
-        quote_roles.grant_role_internal(user, *linking_usd::TRANSFER_ROLE);
+        quote_roles.grant_role_internal(admin, *ISSUER_ROLE);
+        quote_roles.grant_role_internal(user, *TRANSFER_ROLE);
 
         // Mint tokens to user
         quote
