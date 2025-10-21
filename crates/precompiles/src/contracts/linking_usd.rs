@@ -3,8 +3,10 @@ use crate::{
     contracts::{
         PrecompileStorageProvider,
         roles::RolesAuthContract,
-        tip20::TIP20Token,
-        tip20::bindings::{ITIP20, TIP20Error},
+        tip20::{
+            TIP20Token,
+            bindings::{ITIP20, TIP20Error},
+        },
     },
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
