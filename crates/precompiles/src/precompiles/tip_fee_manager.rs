@@ -2,7 +2,7 @@ use crate::{
     contracts::{
         PrecompileStorageProvider,
         tip_fee_manager::TipFeeManager,
-        types::{IFeeManager, ITIPFeeAMM},
+        IFeeManager, ITIPFeeAMM,
     },
     precompiles::{Precompile, mutate, mutate_void, view},
 };

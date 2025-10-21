@@ -1,12 +1,10 @@
 use crate::{
     TIP20_FACTORY_ADDRESS,
     contracts::{
-        address_to_token_id_unchecked, is_tip20,
+        ITIP20Factory, TIP20FactoryEvent, address_to_token_id_unchecked, is_tip20,
         storage::PrecompileStorageProvider,
-        tip20::TIP20Token,
+        tip20::{TIP20Token, bindings::TIP20Error},
         token_id_to_address,
-        tip20::bindings::TIP20Error,
-        ITIP20Factory, TIP20FactoryEvent,
     },
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
@@ -115,9 +113,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{
-        storage::hashmap::HashMapStorageProvider, types::TIP20FactoryEvent,
-    };
+    use crate::contracts::{TIP20FactoryEvent, storage::hashmap::HashMapStorageProvider};
 
     #[test]
     fn test_create_token() {

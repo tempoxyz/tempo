@@ -1,4 +1,4 @@
-use crate::contracts::types::ITIP4217Registry;
+use crate::contracts::ITIP4217Registry;
 
 const KNOWN_DECIMALS: &[(&str, u8)] = &[("USD", 6)];
 

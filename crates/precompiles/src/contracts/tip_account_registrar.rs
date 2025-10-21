@@ -5,10 +5,7 @@ use alloy::{
 use revm::{precompile::secp256k1::ecrecover, state::Bytecode};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
-use crate::contracts::{
-    PrecompileStorageProvider,
-    types::{ITipAccountRegistrar, TipAccountRegistrarError},
-};
+use crate::contracts::{ITipAccountRegistrar, PrecompileStorageProvider, TipAccountRegistrarError};
 
 pub struct TipAccountRegistrar<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
@@ -104,7 +101,7 @@ fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TipAccountRegistra
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{HashMapStorageProvider, types::ITipAccountRegistrar};
+    use crate::contracts::{HashMapStorageProvider, ITipAccountRegistrar};
     use alloy::primitives::keccak256;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;

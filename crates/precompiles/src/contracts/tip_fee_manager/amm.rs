@@ -514,31 +514,44 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Get total supply of LP tokens for a pool
-    pub fn get_total_supply(&mut self, pool_id: &B256) -> U256 {
+    pub fn get_total_supply(&mut self, pool_id: &B256) -> Result<U256, PrecompileError> {
         let slot = slots::total_supply_slot(pool_id);
         self.sload(slot)
     }
 
     /// Set total supply of LP tokens for a pool
-    fn set_total_supply(&mut self, pool_id: &B256, total_supply: U256) {
+    fn set_total_supply(
+        &mut self,
+        pool_id: &B256,
+        total_supply: U256,
+    ) -> Result<(), PrecompileError> {
         let slot = slots::total_supply_slot(pool_id);
-        self.sstore(slot, total_supply);
+        self.sstore(slot, total_supply)
     }
 
     /// Get user's LP token balance
-    pub fn get_balance_of(&mut self, pool_id: &B256, user: &Address) -> U256 {
+    pub fn get_balance_of(
+        &mut self,
+        pool_id: &B256,
+        user: &Address,
+    ) -> Result<U256, PrecompileError> {
         let slot = slots::balance_of_slot(pool_id, user);
         self.sload(slot)
     }
 
     /// Set user's LP token balance
-    fn set_balance_of(&mut self, pool_id: &B256, user: &Address, balance: U256) {
+    fn set_balance_of(
+        &mut self,
+        pool_id: &B256,
+        user: &Address,
+        balance: U256,
+    ) -> Result<(), PrecompileError> {
         let slot = slots::balance_of_slot(pool_id, user);
-        self.sstore(slot, balance);
+        self.sstore(slot, balance)
     }
 
     /// Get pending fee swap amount for a pool
-    pub fn get_pending_fee_swap_in(&mut self, pool_id: &B256) -> U256 {
+    pub fn get_pending_fee_swap_in(&mut self, pool_id: &B256) -> Result<U256, PrecompileError> {
         let slot = slots::pending_fee_swap_in_slot(pool_id);
         self.sload(slot)
     }
@@ -588,7 +601,7 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for TIPFeeAMM<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{HashMapStorageProvider, token_id_to_address, types::TIPFeeAMMError};
+    use crate::contracts::{HashMapStorageProvider, TIPFeeAMMError, token_id_to_address};
     use alloy::primitives::{Address, uint};
 
     #[test]
@@ -689,7 +702,7 @@ mod tests {
         amm.fee_swap(user_token, validator_token, amount_in)?;
 
         // Check pending swaps updated
-        let pending_in = amm.get_pending_fee_swap_in(&pool_id);
+        let pending_in = amm.get_pending_fee_swap_in(&pool_id)?;
         assert_eq!(
             pending_in, amount_in,
             "Pending input should match amount in"

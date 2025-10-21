@@ -1,4 +1,4 @@
-use crate::contracts::{PrecompileStorageProvider, INonce};
+use crate::contracts::{INonce, PrecompileStorageProvider};
 use alloy::primitives::{Address, U256};
 
 /// Storage slots for Nonce precompile data
