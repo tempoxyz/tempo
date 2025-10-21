@@ -1,11 +1,23 @@
+pub mod amm;
 pub mod bindings;
 pub mod dispatch;
 
 use crate::{
-    TIP_FEE_MANAGER_ADDRESS,
-    contracts::{EvmPrecompileStorageProvider, tip_fee_manager::TipFeeManager},
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    contracts::{
+        EvmPrecompileStorageProvider, FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM,
+        TIP20Token, address_to_token_id_unchecked, is_tip20,
+        storage::{PrecompileStorageProvider, StorageOps},
+        tip_fee_manager::{
+            TipFeeManager,
+            amm::{PoolKey, TIPFeeAMM},
+            slots::{collected_fees_slot, user_token_slot, validator_token_slot},
+        },
+        tip20::bindings::ITIP20,
+    },
     precompiles::tempo_precompile,
 };
+
 use alloy_evm::precompiles::DynPrecompile;
 
 pub struct TipFeeManagerPrecompile;
@@ -19,23 +31,6 @@ impl TipFeeManagerPrecompile {
         ))
     }
 }
-
-pub mod amm;
-pub mod bindings;
-
-use crate::{
-    DEFAULT_FEE_TOKEN,
-    contracts::{
-        FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM, TIP20Token,
-        address_to_token_id_unchecked, is_tip20,
-        storage::{PrecompileStorageProvider, StorageOps},
-        tip_fee_manager::{
-            amm::{PoolKey, TIPFeeAMM},
-            slots::{collected_fees_slot, user_token_slot, validator_token_slot},
-        },
-        tip20::bindings::ITIP20,
-    },
-};
 
 // Re-export PoolKey for backward compatibility with tests
 use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};

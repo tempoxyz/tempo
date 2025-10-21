@@ -3,7 +3,7 @@ pub mod dispatch;
 
 use self::bindings::INonce;
 use crate::{
-    contracts::{EvmPrecompileStorageProvider, PrecompileStorageProvider},
+    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
     tempo_precompile,
 };
 use alloy::primitives::{Address, U256};
@@ -21,8 +21,9 @@ impl NoncePrecompile {
 
 /// Storage slots for Nonce precompile data
 pub mod slots {
-    use crate::contracts::storage::slots::{double_mapping_slot, mapping_slot};
     use alloy::primitives::{Address, U256};
+
+    use crate::storage::slots::{double_mapping_slot, mapping_slot};
 
     /// Base slot for nonces mapping: nonces\[account\]\[nonce_key\]
     pub const NONCES: U256 = U256::ZERO;
@@ -163,8 +164,9 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use crate::storage::hashmap::HashMapStorageProvider;
+
     use super::*;
-    use crate::contracts::storage::hashmap::HashMapStorageProvider;
     use alloy::primitives::address;
 
     #[test]

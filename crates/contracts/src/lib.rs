@@ -5,8 +5,6 @@
 
 use alloy::primitives::{Address, address};
 
-pub mod precompiles;
-
 pub const MULTICALL_ADDRESS: Address = alloy::providers::MULTICALL3_ADDRESS;
 pub const CREATEX_ADDRESS: Address = address!("0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed");
 pub const SAFE_DEPLOYER_ADDRESS: Address = address!("0x914d7Fec6aaC8cd542e72Bca78B30650d45643d7");
@@ -65,3 +63,4 @@ pub mod contracts {
 pub use contracts::{CreateX, IthacaAccount, Multicall, Permit2, SafeDeployer};
 
 // TODO: re-export precompiles
+pub mod precompiles {}

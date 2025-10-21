@@ -1,11 +1,13 @@
-pub mod bindings;
 pub mod dispatch;
 
-use crate::{contracts::EvmPrecompileStorageProvider, tempo_precompile};
+use crate::{
+    contracts::EvmPrecompileStorageProvider,
+    tempo_precompile,
+    tip20::bindings::{ITIP20, TIP20Error},
+};
 use alloy_evm::precompiles::DynPrecompile;
 use revm::precompile::PrecompileId;
 
-use self::bindings::{ITIP20, TIP20Error};
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     contracts::{PrecompileStorageProvider, roles::RolesAuthContract, tip20::TIP20Token},
@@ -169,11 +171,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use crate::contracts::{storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE};
 
     fn transfer_test_setup(
-        storage: &mut HashMapStorageProvider,
+        storage: &mut Hash,
     ) -> (LinkingUSD<'_, HashMapStorageProvider>, Address) {
         let mut linking_usd = LinkingUSD::new(storage);
         let admin = Address::random();

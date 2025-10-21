@@ -29,7 +29,7 @@ sol! {
         /// @param addresses The addresses to add
         function addToPolicy(uint64 policyId, address[] calldata addresses) external;
 
-        /// Remove addresses from a policy's list  
+        /// Remove addresses from a policy's list
         /// @param policyId The policy ID
         /// @param addresses The addresses to remove
         function removeFromPolicy(uint64 policyId, address[] calldata addresses) external;
@@ -41,7 +41,7 @@ sol! {
         function isAuthorized(uint64 policyId, address account) external view returns (bool authorized);
 
         /// Check if an address is in a policy's list
-        /// @param policyId The policy ID  
+        /// @param policyId The policy ID
         /// @param account The address to check
         /// @return inList Whether the address is in the policy list
         function isInPolicy(uint64 policyId, address account) external view returns (bool inList);
@@ -89,3 +89,4 @@ sol! {
         error CannotRemoveLastAdmin();
     }
 }
+

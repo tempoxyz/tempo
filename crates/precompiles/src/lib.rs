@@ -3,14 +3,10 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy::primitives::{Address, address, hex};
-
-pub mod contracts;
-pub mod precompiles;
-
 pub mod linking_usd;
 pub mod nonce;
 pub mod stablecoin_exchange;
+mod storage;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
@@ -19,7 +15,7 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use alloy::{
-    primitives::Bytes,
+    primitives::{Address, Bytes, address, hex},
     sol,
     sol_types::{SolCall, SolError, SolInterface},
 };

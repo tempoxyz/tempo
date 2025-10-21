@@ -1,8 +1,7 @@
-use crate::precompiles::{Precompile, view};
-use alloy::{primitives::Address, sol_types::SolCall};
+use crate::{ storage::PrecompileStorageProvider, view, Precompile};
+use alloy::{primitives::Address, providers::fillers::NonceManager, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-use crate::contracts::{PrecompileStorageProvider, nonce::NonceManager};
 use super::bindings::INonce;
 
 impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {

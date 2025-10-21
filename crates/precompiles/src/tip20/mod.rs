@@ -1,33 +1,35 @@
 pub mod bindings;
 pub mod dispatch;
+pub mod roles;
 
+use crate::{
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_TOKEN_PREFIX,
+    storage::{
+        PrecompileStorageProvider,
+        evm::EvmPrecompileStorageProvider,
+        slots::{double_mapping_slot, mapping_slot},
+    },
+    tempo_precompile,
+    tip20::{
+        bindings::{ITIP20, TIP20Error, TIP20Event},
+        roles::DEFAULT_ADMIN_ROLE,
+    },
+    tip20_factory::TIP20Factory,
+    tip403_registry::{TIP403Registry, bindings::ITIP403Registry},
+    tip4217_registry::{TIP4217Registry, bindings::ITIP4217Registry},
+};
 use alloy::{
     consensus::crypto::secp256k1 as eth_secp256k1,
     primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
     sol_types::SolStruct,
 };
+use alloy_evm::precompiles::DynPrecompile;
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
 };
-use tracing::trace;
-
-use crate::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_TOKEN_PREFIX,
-    contracts::{
-        EvmPrecompileStorageProvider, ITIP403Registry, ITIP4217Registry, PrecompileStorageProvider,
-        TIP20Factory, TIP20Token, TIP403Registry, TIP4217Registry, address_to_token_id_unchecked,
-        is_tip20,
-        roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
-        storage::slots::{double_mapping_slot, mapping_slot},
-        tip20::bindings::{ITIP20, TIP20Error, TIP20Event},
-        token_id_to_address,
-    },
-    tempo_precompile,
-};
-use alloy::primitives::Address;
-use alloy_evm::precompiles::DynPrecompile;
 use std::sync::LazyLock;
+use tracing::trace;
 
 pub fn is_tip20(token: &Address) -> bool {
     token.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
@@ -1958,11 +1960,6 @@ mod tests {
 
         assert!(matches!(result, Err(TIP20Error::PolicyForbids(_))));
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn test_tip20_token_prefix() {
