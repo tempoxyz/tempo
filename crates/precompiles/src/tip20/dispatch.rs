@@ -1,11 +1,11 @@
-use crate::{
-    contracts::{
-        IRolesAuth, PrecompileStorageProvider, RolesAuthError,
-        tip20::TIP20Token,
-    },
-    precompiles::{Precompile, metadata, mutate, mutate_void, view},
-};
 use super::bindings::{ITIP20, TIP20Error};
+use crate::{
+    Precompile, metadata, mutate, mutate_void,
+    stablecoin_exchange::{StablecoinExchange, bindings::IStablecoinExchange},
+    storage::PrecompileStorageProvider,
+    tip20::TIP20Token,
+    view, view_result,
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -187,15 +187,15 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        LINKING_USD_ADDRESS,
-        contracts::{
-            HashMapStorageProvider,
-            IRolesAuth,
-        },
-        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert},
-    };
     use super::bindings::TIP20Error;
+    use crate::{
+        LINKING_USD_ADDRESS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS,
+        contracts::{HashMapStorageProvider, IRolesAuth},
+        expect_precompile_revert,
+        precompiles::{METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert},
+        storage::hashmap::HashMapStorageProvider,
+        tip20::TIP20Token,
+    };
     use alloy::{
         primitives::{Bytes, U256, keccak256},
         sol_types::SolValue,
