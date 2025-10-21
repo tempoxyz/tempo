@@ -10,6 +10,7 @@ use reth_evm::{
         context::{
             Block, Cfg, ContextTr, Host, JournalTr, Transaction,
             result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
+            transaction::{AccessListItem, AccessListItemTr},
         },
         handler::{
             EvmTr, FrameResult, FrameTr, Handler,
@@ -19,7 +20,11 @@ use reth_evm::{
         inspector::{Inspector, InspectorHandler},
         interpreter::{
             Gas, InitialAndFloorGas,
-            gas::{STANDARD_TOKEN_COST, get_tokens_in_calldata},
+            gas::{
+                ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
+                CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost, get_tokens_in_calldata,
+                initcode_cost,
+            },
             instructions::utility::IntoAddress,
             interpreter::EthInterpreter,
         },
@@ -181,19 +186,9 @@ where
                 tx.inner.gas_limit = remaining_gas;
             }
 
-            // Validate and calculate gas for this call
-            let subcall_init_gas =
-                match Self::validate_and_calculate_call_gas(evm, init_and_floor_gas) {
-                    Ok(gas) => gas,
-                    Err(e) => {
-                        // Revert checkpoint before returning error
-                        evm.ctx().journal_mut().checkpoint_revert(checkpoint);
-                        return Err(e);
-                    }
-                };
-
-            // Execute this call using the provided single-call function
-            let frame_result = execute_single(self, evm, &subcall_init_gas);
+            // Execute call with NO additional initial gas (already deducted upfront in validation)
+            let zero_init_gas = InitialAndFloorGas::new(0, 0);
+            let frame_result = execute_single(self, evm, &zero_init_gas);
 
             // Restore original TxEnv immediately after execution, even if execution failed
             {
@@ -235,10 +230,8 @@ where
             let gas_refunded = frame_result.gas().refunded();
 
             accumulated_gas_refund = accumulated_gas_refund.saturating_add(gas_refunded);
-            // Subtract both execution gas AND per-call intrinsic costs (calldata, CREATE)
-            remaining_gas = remaining_gas
-                .saturating_sub(gas_used)
-                .saturating_sub(subcall_init_gas.initial_gas);
+            // Subtract only execution gas (intrinsic gas already deducted upfront)
+            remaining_gas = remaining_gas.saturating_sub(gas_used);
 
             final_result = Some(frame_result);
         }
@@ -260,47 +253,6 @@ where
         *result.gas_mut() = corrected_gas;
 
         Ok(result)
-    }
-
-    /// Validates the current call in TxEnv and calculates its intrinsic gas requirements.
-    ///
-    /// This function assumes TxEnv has already been updated to reflect the call being validated.
-    /// Returns an error if validation fails, but does NOT revert checkpoints (caller must handle that).
-    fn validate_and_calculate_call_gas(
-        evm: &TempoEvm<DB, I>,
-        init_and_floor_gas: &InitialAndFloorGas,
-    ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>> {
-        let spec = evm.ctx_ref().cfg().spec();
-        let cfg = evm.ctx_ref().cfg();
-        let tx = evm.ctx_ref().tx();
-
-        // EIP-3860: Limit and meter initcode. Still valid with EIP-7907 and increase of initcode size.
-        if spec.is_enabled_in(RevmSpecId::SHANGHAI)
-            && tx.kind().is_create()
-            && tx.input().len() > cfg.max_initcode_size()
-        {
-            return Err(EVMError::Transaction(
-                TempoInvalidTransaction::EthInvalidTransaction(
-                    InvalidTransaction::CreateInitCodeSizeLimit,
-                ),
-            ));
-        }
-
-        // Calculate initial gas for this specific call (includes base 21k + calldata + CREATE costs)
-        let call_initial_gas =
-            validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
-                .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
-
-        // Subtract the batch-level initial gas (base 21k + signature verification) since it was already paid
-        // This leaves only the call-specific costs (calldata, CREATE, etc.)
-        let additional_gas = call_initial_gas
-            .initial_gas
-            .saturating_sub(init_and_floor_gas.initial_gas);
-
-        Ok(InitialAndFloorGas::new(
-            additional_gas,
-            call_initial_gas.floor_gas,
-        ))
     }
 
     /// Executes a multi-call AA transaction atomically.
@@ -591,16 +543,127 @@ where
     /// - WebAuthn (>129 bytes): 21k base + 5k + calldata gas for variable data
     #[inline]
     fn validate_initial_tx_gas(&self, evm: &Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
-        validate_aa_initial_tx_gas(evm)
+        let tx = evm.ctx_ref().tx();
+
+        // Route to appropriate gas calculation based on transaction type
+        if tx.aa_tx_env.is_some() {
+            // AA transaction - use batch gas calculation
+            validate_aa_initial_tx_gas(evm)
+        } else {
+            // Standard transaction - use default revm validation
+            let spec = evm.ctx_ref().cfg().spec();
+            Ok(
+                validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
+                    .map_err(TempoInvalidTransaction::EthInvalidTransaction)?,
+            )
+        }
     }
+}
+
+/// Calculates intrinsic gas for an AA transaction batch using revm helpers.
+///
+/// This includes:
+/// - Base 21k stipend (once for the transaction)
+/// - Signature verification gas (P256: 5k, WebAuthn: 5k + webauthn_data)
+/// - Per-call account access cost (COLD_ACCOUNT_ACCESS_COST * calls.len())
+/// - Per-call input data gas (calldata tokens * 4 gas)
+/// - Per-call CREATE costs (if applicable):
+///   - Additional 32k base (CREATE constant)
+///   - Initcode analysis gas (2 per 32-byte chunk, Shanghai+)
+/// - Per-call value transfer cost (9k if value > 0 and TxKind::Call)
+/// - Access list costs (shared across batch)
+/// - Floor gas calculation (EIP-7623, Prague+)
+fn calculate_aa_batch_intrinsic_gas<'a>(
+    calls: &[tempo_primitives::transaction::Call],
+    signature: &AASignature,
+    access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
+    spec: RevmSpecId,
+) -> InitialAndFloorGas {
+    let mut gas = InitialAndFloorGas::default();
+
+    // 1. Base stipend (21k, once per transaction)
+    gas.initial_gas += 21_000;
+
+    // 2. Signature verification gas
+    let signature_gas = match signature {
+        AASignature::Secp256k1(_) => 0,          // Included in base 21k
+        AASignature::P256(_) => P256_VERIFY_GAS, // 5000 gas
+        AASignature::WebAuthn(webauthn_sig) => {
+            // P256 verification + calldata gas for webauthn_data
+            let tokens = get_tokens_in_calldata(
+                &webauthn_sig.webauthn_data,
+                spec.is_enabled_in(RevmSpecId::ISTANBUL),
+            );
+            P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
+        }
+    };
+    gas.initial_gas += signature_gas;
+
+    // 3. Per-call overhead: cold account access
+    // TODO: Maybe we should optimize this for the user, and only charge cold access cost
+    // if the `to` address has not appeared in the call batch before.
+    gas.initial_gas += COLD_ACCOUNT_ACCESS_COST * calls.len() as u64;
+
+    // 4. Per-call costs
+    let mut total_tokens = 0u64;
+
+    for call in calls {
+        // 4a. Calldata gas using revm helper
+        let tokens = get_tokens_in_calldata(&call.input, spec.is_enabled_in(RevmSpecId::ISTANBUL));
+        total_tokens += tokens;
+
+        // 4b. CREATE-specific costs
+        if call.to.is_create() {
+            // Additional base cost for CREATE (only in Homestead+)
+            // EIP-2: Homestead Hard-fork Changes
+            // Pre-Homestead: CREATE costs same as CALL (0 additional)
+            // Homestead+: CREATE costs 32000 additional gas
+            if spec.is_enabled_in(RevmSpecId::HOMESTEAD) {
+                gas.initial_gas += CREATE; // 32000 gas
+            }
+
+            // EIP-3860: Initcode analysis gas (Shanghai+) using revm helper
+            if spec.is_enabled_in(RevmSpecId::SHANGHAI) {
+                gas.initial_gas += initcode_cost(call.input.len());
+            }
+        }
+
+        // 4c. Value transfer cost using revm constant
+        if !call.value.is_zero() && !call.to.is_create() {
+            gas.initial_gas += CALLVALUE; // 9000 gas
+        }
+    }
+
+    gas.initial_gas += total_tokens * STANDARD_TOKEN_COST;
+
+    // 5. Access list costs using revm constants
+    if let Some(access_list) = access_list {
+        let (accounts, storages) =
+            access_list.fold((0u64, 0u64), |(acc_count, storage_count), item| {
+                (
+                    acc_count + 1,
+                    storage_count + item.storage_slots().count() as u64,
+                )
+            });
+        gas.initial_gas += accounts * ACCESS_LIST_ADDRESS; // 2400 per account
+        gas.initial_gas += storages * ACCESS_LIST_STORAGE_KEY; // 1900 per storage
+    }
+
+    // 6. Floor gas (EIP-7623, Prague+) using revm helper
+    if spec.is_enabled_in(RevmSpecId::PRAGUE) {
+        gas.floor_gas = calc_tx_floor_cost(total_tokens); // tokens * 10 + 21000
+    }
+
+    // TODO: Add 7702 gas costs here, once we implement it.
+
+    gas
 }
 
 /// Validates and calculates initial transaction gas for AA transactions.
 ///
-/// For AA transactions (type 0x5), calculates intrinsic gas based on:
+/// Calculates intrinsic gas based on:
 /// - Signature type (secp256k1: 21k, P256: 26k, WebAuthn: 26k + calldata)
-///
-/// For non-AA transactions, uses the default Ethereum calculation.
+/// - Batch call costs (per-call overhead, calldata, CREATE, value transfers)
 fn validate_aa_initial_tx_gas<DB, I>(
     evm: &TempoEvm<DB, I>,
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
@@ -608,65 +671,61 @@ where
     DB: reth_evm::Database,
 {
     let spec = evm.ctx_ref().cfg().spec();
-
     let tx = evm.ctx_ref().tx();
-    let standard_gas =
-        validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
-            .map_err(TempoInvalidTransaction::EthInvalidTransaction)?;
 
-    let Some(aa_env) = tx.aa_tx_env.as_ref() else {
-        // For non-AA transactions, use default validation
-        return Ok(standard_gas);
-    };
+    // This function should only be called for AA transactions
+    let aa_env = tx
+        .aa_tx_env
+        .as_ref()
+        .expect("validate_aa_initial_tx_gas called for non-AA transaction");
 
-    // For AA transactions, extract signature reference and gas limit
-    let aa_signature = &aa_env.signature;
+    let calls = &aa_env.aa_calls;
     let gas_limit = tx.gas_limit();
 
-    // Calculate AA-specific additional gas (signature + nonce key costs)
-
-    // Calculate additional signature verification gas beyond the base 21k
-    // secp256k1: 0 additional (already included in base)
-    // P256: 5,000 additional
-    // WebAuthn: 5,000 + calldata gas for variable data
-    let additional_signature_gas = match aa_signature {
-        AASignature::Secp256k1(_) => {
-            // secp256k1 signature - no additional gas needed (already included in base 21k)
-            0
+    // Validate all CREATE calls' initcode size upfront (EIP-3860)
+    if spec.is_enabled_in(RevmSpecId::SHANGHAI) {
+        let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
+        for call in calls {
+            if call.to.is_create() && call.input.len() > max_initcode_size {
+                return Err(EVMError::Transaction(
+                    TempoInvalidTransaction::EthInvalidTransaction(
+                        InvalidTransaction::CreateInitCodeSizeLimit,
+                    ),
+                ));
+            }
         }
-        AASignature::P256(_) => {
-            // P256 signature - add P256 verification gas
-            P256_VERIFY_GAS
-        }
-        AASignature::WebAuthn(webauthn_sig) => {
-            // WebAuthn signature - add P256 verification gas + calldata gas for variable data
-            // Calculate calldata gas using the standard revm function
-            // get_tokens_in_calldata counts zero bytes (1 token each) and non-zero bytes (4 tokens each for Istanbul)
-            // Multiply by STANDARD_TOKEN_COST (4) to get gas: zero byte = 4 gas, non-zero byte = 16 gas
-            let webauthn_data_tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, true);
-            let webauthn_data_gas = webauthn_data_tokens * STANDARD_TOKEN_COST;
-            P256_VERIFY_GAS + webauthn_data_gas
-        }
-    };
+    }
 
-    // Total intrinsic gas = standard_gas + additional_signature_gas
-    let total_intrinsic_gas = standard_gas
-        .initial_gas
-        .saturating_add(additional_signature_gas);
+    // Calculate batch intrinsic gas using helper
+    let mut batch_gas =
+        calculate_aa_batch_intrinsic_gas(calls, &aa_env.signature, tx.access_list(), spec);
 
-    // Validate gas limit is sufficient
-    if gas_limit < total_intrinsic_gas {
+    if evm.ctx.cfg.is_eip7623_disabled() {
+        batch_gas.floor_gas = 0u64;
+    }
+
+    // Validate gas limit is sufficient for initial gas
+    if gas_limit < batch_gas.initial_gas {
         return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
             gas_limit,
-            intrinsic_gas: total_intrinsic_gas,
+            intrinsic_gas: batch_gas.initial_gas,
         }
         .into());
     }
 
-    Ok(InitialAndFloorGas::new(
-        total_intrinsic_gas,
-        standard_gas.floor_gas,
-    ))
+    // Validate floor gas (Prague+)
+    if spec.is_enabled_in(RevmSpecId::PRAGUE)
+        && !evm.ctx.cfg.is_eip7623_disabled()
+        && gas_limit < batch_gas.floor_gas
+    {
+        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+            gas_limit,
+            intrinsic_gas: batch_gas.floor_gas,
+        }
+        .into());
+    }
+
+    Ok(batch_gas)
 }
 
 /// Looks up the user's fee token in the `TIPFeemanager` contract.
