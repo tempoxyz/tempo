@@ -1,6 +1,6 @@
 //! An actively running DKG ceremony.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt};
@@ -21,7 +21,7 @@ use commonware_p2p::utils::mux;
 use commonware_p2p::{Receiver, Sender};
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_storage::metadata::Metadata;
-use commonware_utils::{quorum, sequence::U64, set::Set};
+use commonware_utils::{sequence::U64, set::Set};
 use eyre::{WrapErr as _, bail, eyre};
 use governor::{Quota, RateLimiter, middleware::NoOpMiddleware, state::keyed::HashMapStateStore};
 use rand_core::CryptoRngCore;
@@ -128,7 +128,12 @@ where
             commonware_storage::metadata::Config {
                 // TODO: should we provide a prefix on the partition?
                 partition: config.partition_prefix.clone(),
-                codec_config: quorum(config.dealers.len() as u32) as usize,
+                // XXX: commonware's suggestion: use usize::MAX and don't worry
+                // about this
+                // TODO(janis): check if this really does not matter.
+                // Metadata::init alls Metadata::load, which does a V::read_cfg,
+                // passing config.codec_config to it.
+                codec_config: usize::MAX,
             },
         )
         .await
@@ -245,6 +250,103 @@ where
             arbiter,
             round_metadata,
         })
+    }
+
+    pub(super) async fn distribute(&mut self, epoch: Epoch) -> eyre::Result<()> {
+        // Only attempt distribution if the manager is also a dealer.
+        let Some(DealerMetadata {
+            dealer,
+            commitment,
+            shares,
+            acks,
+            ..
+        }) = &mut self.dealer_meta
+        else {
+            return;
+        };
+
+        // Find all contributors that need to be sent a share by filtering out those that have
+        // not yet acknowledged receipt of their share.
+        let needs_broadcast = self
+            .players
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !acks.contains_key(&(*i as u32)))
+            .collect::<Vec<_>>();
+
+        for (idx, contributor) in needs_broadcast {
+            if self.rate_limiter.check_key(contributor).is_err() {
+                debug!(round, player = ?contributor, "rate limited; skipping share send");
+                continue;
+            }
+
+            let share = shares.get(idx).cloned().unwrap();
+
+            if let Some((signer_index, ref mut player)) = self.player {
+                if idx == signer_index as usize {
+                    player
+                        .share(
+                            self.signer.public_key(),
+                            commitment.deref().clone(),
+                            share.clone(),
+                        )
+                        .unwrap();
+                    dealer.ack(self.signer.public_key()).unwrap();
+
+                    let ack = Ack::new::<_, V>(
+                        &union(&self.namespace, ACK_NAMESPACE),
+                        self.signer,
+                        signer_index,
+                        round,
+                        &self.signer.public_key(),
+                        commitment,
+                    );
+                    acks.insert(signer_index, ack.clone());
+
+                    // Persist the acknowledgement to storage.
+                    self.round_metadata
+                        .upsert_sync(self.epoch.into(), |meta| {
+                            if let Some((_, _, acks)) = &mut meta.deal {
+                                acks.insert(signer_index, ack);
+                            } else {
+                                meta.deal = Some((
+                                    commitment.deref().clone(),
+                                    shares.deref().clone(),
+                                    BTreeMap::from([(signer_index, ack)]),
+                                ));
+                            }
+                            meta.received_shares.push((
+                                self.signer.public_key(),
+                                commitment.deref().clone(),
+                                share,
+                            ));
+                        })
+                        .await
+                        .expect("must persist ack");
+
+                    continue;
+                }
+            }
+
+            let payload =
+                Payload::<V, C::Signature>::Share(Share::new(commitment.deref().clone(), share))
+                    .into_message(round);
+            let success = self
+                .sender
+                .send(
+                    Recipients::One(contributor.clone()),
+                    payload.encode().freeze(),
+                    true,
+                )
+                .await
+                .expect("must send share");
+
+            if success.is_empty() {
+                warn!(round, player = ?contributor, "failed to send share");
+            } else {
+                info!(round, player = ?contributor, "sent share");
+            }
+        }
     }
 
     pub(super) fn epoch(&self) -> Epoch {

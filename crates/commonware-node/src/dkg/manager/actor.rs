@@ -96,50 +96,55 @@ where
         TReceiver: Receiver,
         TSender: Sender,
     {
-        if let Some(epoch) = epoch::of_height(block.height(), self.config.heights_per_epoch) {
-            if epoch::is_first_height_of_epoch(block.height(), epoch, self.config.heights_per_epoch)
-            {
-                let (sender, receiver) = mux
-                    .register(epoch as u32)
-                    .await
-                    .wrap_err("mux subchannel already running for epoch; this is a problem")?;
-
-                let config = ceremony::Config {
-                    namespace: self.config.namespace.clone(),
-                    me: self.config.me.clone(),
-                    public: self.config.public.clone(),
-                    share: self.config.share.clone(),
-                    epoch,
-                    dealers: self.config.participants.clone(),
-                    players: self.config.participants.clone(),
-                    send_rate_limit: self.config.rate_limit,
-                    receiver,
-                    sender,
-                    partition_prefix: format!("{}_ceremny", self.config.partition_prefix.clone()),
-                };
-
-                let new_ceremony = ceremony::Ceremony::init(&mut self.context, config)
-                    .await
-                    .wrap_err(
-                        "failed initializing a new ceremony on the first height of the epoch",
-                    )?;
-                if let Some(old) = ceremony.replace(new_ceremony) {
-                    warn!(
-                        epoch = old.epoch(),
-                        "an old ceremony was still running on the first height of the new epoch",
-                    );
-                }
-            }
-        }
         match epoch::relative_position(block.height(), self.config.heights_per_epoch) {
             epoch::RelativePosition::FirstHalf => {
-                todo!()
-                //     // Continuously distribute shares to any players who haven't acknowledged
-                //     // receipt yet.
-                //     manager.distribute(epoch).await;
+                if ceremony.is_none() {
+                    let epoch = epoch::of_height(block.height(), self.config.heights_per_epoch)
+                        .expect("genesis block with height == 0 must never be finalized and all other blocks belong to an epoch");
 
-                //     // Process any incoming messages from other dealers/players.
-                //     manager.process_messages(epoch).await;
+                    let (sender, receiver) = mux
+                        .register(epoch as u32)
+                        .await
+                        .wrap_err("mux subchannel already running for epoch; this is a problem")?;
+
+                    let config = ceremony::Config {
+                        namespace: self.config.namespace.clone(),
+                        me: self.config.me.clone(),
+                        public: self.config.public.clone(),
+                        share: self.config.share.clone(),
+                        epoch,
+                        dealers: self.config.participants.clone(),
+                        players: self.config.participants.clone(),
+                        send_rate_limit: self.config.rate_limit,
+                        receiver,
+                        sender,
+                        partition_prefix: format!(
+                            "{}_ceremny",
+                            self.config.partition_prefix.clone()
+                        ),
+                    };
+
+                    let new_ceremony = ceremony::Ceremony::init(&mut self.context, config)
+                        .await
+                        .wrap_err(
+                            "failed initializing a new ceremony on the first height of the epoch",
+                        )?;
+                    if let Some(old) = ceremony.replace(new_ceremony) {
+                        warn!(
+                            epoch = old.epoch(),
+                            "an old ceremony was still running on the first height of the new epoch",
+                        );
+                    }
+                }
+
+                let ceremony = ceremony
+                    .as_mut()
+                    .expect("ceremony is initialized immediately above");
+
+                ceremony.distribute().await;
+
+                // Process any incoming messages from other dealers/players.
+                manager.process_messages(epoch).await;
             }
             epoch::RelativePosition::Middle => todo!(),
             epoch::RelativePosition::SecondHalf => todo!(),
