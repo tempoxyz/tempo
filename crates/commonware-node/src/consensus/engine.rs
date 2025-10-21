@@ -8,7 +8,7 @@ use std::{
 };
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{Reporters, marshal, simplex::signing_scheme::bls12381_threshold};
+use commonware_consensus::{Reporters, marshal};
 use commonware_cryptography::{
     Signer as _,
     bls12381::primitives::{
@@ -125,6 +125,11 @@ where
                 participants: self.participants.clone(),
                 public: self.polynomial.clone(),
                 share: self.share.clone(),
+                namespace: crate::config::NAMESPACE.to_vec(),
+                me: self.signer.clone(),
+                partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
+                // TODO: is that reasonable? Probably define a specific quota for that?
+                rate_limit: BACKFILL_QUOTA,
             },
         );
 
@@ -224,6 +229,9 @@ where
 
             broadcast,
             broadcast_mailbox,
+
+            dkg_manager,
+            dkg_manager_mailbox,
 
             execution_driver,
             execution_driver_mailbox,

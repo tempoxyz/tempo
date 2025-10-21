@@ -42,6 +42,7 @@ indexmap.workspace = true
 
 prometheus-client.workspace = true
 rand.workspace = true
+rand_core.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-primitives-traits.workspace = true

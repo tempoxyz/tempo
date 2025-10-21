@@ -1,28 +1,35 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use commonware_consensus::{Block as _, simplex::signing_scheme::bls12381_threshold, types::Epoch};
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_p2p::{Receiver, Sender};
-use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
+use commonware_p2p::{Receiver, Sender, utils::mux};
+use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
+use commonware_storage::metadata::{self, Metadata};
+use commonware_utils::sequence::U64;
+use eyre::WrapErr as _;
 use futures::{StreamExt as _, channel::mpsc};
-use tracing::{Span, instrument};
+use rand_core::CryptoRngCore;
+use tracing::{Span, instrument, warn};
 
-use crate::{dkg::manager::ingress::Finalize, epoch};
+use crate::{
+    dkg::{
+        ceremony::{self, Ceremony},
+        manager::ingress::Finalize,
+    },
+    epoch,
+};
 
 pub(crate) struct Actor<TContext> {
     pub(super) config: super::Config,
     pub(super) context: ContextCell<TContext>,
     pub(super) mailbox: mpsc::UnboundedReceiver<super::Message>,
-    pub(super) per_epoch_schemes:
-        Arc<Mutex<HashMap<Epoch, Arc<bls12381_threshold::Scheme<MinSig>>>>>,
+    pub(super) schemes_per_epoch:
+        Arc<std::sync::Mutex<HashMap<Epoch, Arc<bls12381_threshold::Scheme<MinSig>>>>>,
 }
 
 impl<TContext> Actor<TContext>
 where
-    TContext: Spawner,
+    TContext: Clock + governor::clock::Clock + CryptoRngCore + Metrics + Spawner + Storage,
 {
     async fn run(
         mut self,
@@ -31,11 +38,24 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
+        let (mux, mut ceremony_mux) = mux::Muxer::new(
+            self.context.with_label("ceremony_mux"),
+            sender,
+            receiver,
+            100,
+        );
+        mux.start();
+
+        // Can't know the some of the types of ceremony until after receiving
+        // Sender and Receiver and so must make it an ephemeral variable.
+        let mut ceremony = None;
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
             match message.command {
                 super::Command::Finalize(finalize) => {
-                    let _: Result<_, _> = self.handle_finalize(cause, finalize).await;
+                    let _: Result<_, _> = self
+                        .handle_finalize(cause, finalize, &mut ceremony, &mut ceremony_mux)
+                        .await;
                 }
                 super::Command::GetScheme(get_scheme) => todo!(),
             }
@@ -51,20 +71,76 @@ where
     ) -> Handle<()> {
         spawn_cell!(self.context, self.run(dkg_channel).await)
     }
+}
 
+impl<TContext> Actor<TContext>
+where
+    TContext: Clock + governor::clock::Clock + CryptoRngCore + Metrics + Spawner + Storage,
+{
     #[instrument(
         parent = cause,
         skip_all,
-        fields(),
+        fields(
+            derived_epoch = epoch::of_height(block.height(), self.config.heights_per_epoch),
+        ),
         err,
     )]
-    async fn handle_finalize(
+    async fn handle_finalize<TReceiver, TSender>(
         &mut self,
         cause: Span,
         Finalize { block, response }: Finalize,
-    ) -> eyre::Result<()> {
+        ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
+        mux: &mut mux::MuxHandle<TSender, TReceiver>,
+    ) -> eyre::Result<()>
+    where
+        TReceiver: Receiver,
+        TSender: Sender,
+    {
+        if let Some(epoch) = epoch::of_height(block.height(), self.config.heights_per_epoch) {
+            if epoch::is_first_height_of_epoch(block.height(), epoch, self.config.heights_per_epoch)
+            {
+                let (sender, receiver) = mux
+                    .register(epoch as u32)
+                    .await
+                    .wrap_err("mux subchannel already running for epoch; this is a problem")?;
+
+                let config = ceremony::Config {
+                    namespace: self.config.namespace.clone(),
+                    me: self.config.me.clone(),
+                    public: self.config.public.clone(),
+                    share: self.config.share.clone(),
+                    epoch,
+                    dealers: self.config.participants.clone(),
+                    players: self.config.participants.clone(),
+                    send_rate_limit: self.config.rate_limit,
+                    receiver,
+                    sender,
+                    partition_prefix: format!("{}_ceremny", self.config.partition_prefix.clone()),
+                };
+
+                let new_ceremony = ceremony::Ceremony::init(&mut self.context, config)
+                    .await
+                    .wrap_err(
+                        "failed initializing a new ceremony on the first height of the epoch",
+                    )?;
+                if let Some(old) = ceremony.replace(new_ceremony) {
+                    warn!(
+                        epoch = old.epoch(),
+                        "an old ceremony was still running on the first height of the new epoch",
+                    );
+                }
+            }
+        }
         match epoch::relative_position(block.height(), self.config.heights_per_epoch) {
-            epoch::RelativePosition::FirstHalf => todo!(),
+            epoch::RelativePosition::FirstHalf => {
+                todo!()
+                //     // Continuously distribute shares to any players who haven't acknowledged
+                //     // receipt yet.
+                //     manager.distribute(epoch).await;
+
+                //     // Process any incoming messages from other dealers/players.
+                //     manager.process_messages(epoch).await;
+            }
             epoch::RelativePosition::Middle => todo!(),
             epoch::RelativePosition::SecondHalf => todo!(),
         }

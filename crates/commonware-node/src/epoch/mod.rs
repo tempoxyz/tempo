@@ -29,21 +29,54 @@ pub(crate) fn parent_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {
     first_height_of_epoch.saturating_sub(1)
 }
 
+/// The relative position of in an epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelativePosition {
     FirstHalf,
     Middle,
     SecondHalf,
 }
 
-pub(crate) fn relative_position(height: u64, heights_per_epoch: u64) -> Option<RelativePosition> {
-    // Special case genesis: it's never party of any epoch.
-    if height == 0 {
-        return None;
-    }
+/// Returns the relative position of `height` in an epoch given `epoch_length`.
+///
+/// This function is written under the assumption that a height `h` belongs to
+/// epoch `E` if `(E*epoch_length)+1 <= h <= (E+1)*epoch_length`. For example,
+/// for `epoch_length == 1000`, epoch `E=0` includes blocks 1 to 1000, epoch
+/// `E=1` includes 1001 to 2000, and so on.
+///
+/// For epoch length 1000, we have the following cases:
+///
+/// 1. heights 1 to 500, 1001 to 1500, etc: first half.
+/// 2. heights 501, 1501, etc: middle.
+/// 3. heights 502 to 1000, 1502 to 2000, etc: second half.
+///
+/// # The special case `height == 0`
+///
+/// `height = 0` technically does not belong to any epoch, but in this
+/// calculation we consider it to be in the second half of the epoch (because
+/// depending on how one looks at it, it's always parent of the epoch = 0 and
+/// hence the last height of epoch = -1).
+///
+/// # Panics
+///
+/// Panics if `epoch_length = 0`.
+pub(crate) fn relative_position(height: u64, epoch_length: u64) -> RelativePosition {
+    let mid_point = epoch_length / 2;
 
-    let mid_point = heights_per_epoch / 2;
+    // XXX: This is basically `(a+p-b)%p` like addition defined over a finite
+    // field (just that we usually don't have a finite field):
+    //
+    // + b = 1 because height == (E+1)*epoch_length belongs is the last height
+    //   in an epoch.
+    // + % epoch_length because we need to map 0 to the last height.
+    // + u64::rem_euclid because it's the same as `rem` or `%` for u64 but works
+    // in postfix notation without importing a trait.
+    let height_finite_field = height
+        .saturating_add(epoch_length)
+        .saturating_sub(1)
+        .rem_euclid(epoch_length);
 
-    match (height % heights_per_epoch).cmp(&mid_point) {
+    match height_finite_field.cmp(&mid_point) {
         std::cmp::Ordering::Less => RelativePosition::FirstHalf,
         std::cmp::Ordering::Equal => RelativePosition::Middle,
         std::cmp::Ordering::Greater => RelativePosition::SecondHalf,
@@ -57,8 +90,14 @@ pub(crate) fn of_height(height: u64, heights_per_epoch: u64) -> Option<Epoch> {
     (height != 0).then(|| height.saturating_sub(1).saturating_div(heights_per_epoch))
 }
 
-pub(crate) fn is_first_height(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
-    height == first_height(epoch, heights_per_epoch)
+/// Returns if `height % epoch_length == 1`.
+pub(crate) fn is_first_height(height: u64, epoch_length: u64) -> bool {
+    (height % epoch_length) == 1
+}
+
+/// Returns if `height` is the first height of `epoch` of `epoch_length`.
+pub(crate) fn is_first_height_of_epoch(height: u64, epoch: Epoch, epoch_length: u64) -> bool {
+    height == first_height(epoch, epoch_length)
 }
 
 /// Returns if the `height` falls inside `epoch`, given `heights_per_epoch`.
@@ -74,9 +113,27 @@ pub(crate) fn is_last_height(height: u64, epoch: Epoch, heights_per_epoch: u64) 
 mod tests {
     use commonware_consensus::types::Epoch;
 
-    use crate::epoch::RelativePosition;
+    use crate::epoch::is_first_height;
 
-    use super::{contains_height, first_height, last_height, of_height, parent_height};
+    use super::{
+        RelativePosition, contains_height, first_height, last_height, of_height, parent_height,
+        relative_position,
+    };
+
+    #[test]
+    fn are_firsr_heights() {
+        assert!(is_first_height(1, 1000));
+        assert!(is_first_height(1001, 1000));
+        assert!(is_first_height(2001, 1000));
+
+        assert!(!is_first_height(0, 1000));
+        assert!(!is_first_height(1000, 1000));
+        assert!(!is_first_height(2000, 1000));
+
+        assert!(!is_first_height(999, 1000));
+        assert!(!is_first_height(1999, 1000));
+        assert!(!is_first_height(2999, 1000));
+    }
 
     #[track_caller]
     fn assert_first_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
@@ -228,19 +285,44 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_relative_height(
-        height: u64,
-        heights_per_epoch: u64,
-        relative_position: RelativePosition,
-    ) {
+    fn assert_relative_position(expected: RelativePosition, height: u64, heights_per_epoch: u64) {
+        assert_eq!(expected, relative_position(height, heights_per_epoch),);
     }
 
     #[test]
-    fn height_falls_into_correct_part_of() {
+    fn height_falls_into_correct_part_of_epoch() {
         use RelativePosition::*;
-        assert_relative_height(0, 100, FirstHalf);
-        assert_relative_height(49, 100, FirstHalf);
-        assert_relative_height(0, 100, FirstHalf);
-        assert_relative_height(0, 100, FirstHalf);
+
+        assert_relative_position(SecondHalf, 0, 100);
+
+        assert_relative_position(FirstHalf, 1, 100);
+        assert_relative_position(FirstHalf, 50, 100);
+        assert_relative_position(Middle, 51, 100);
+        assert_relative_position(SecondHalf, 52, 100);
+        assert_relative_position(SecondHalf, 100, 100);
+
+        assert_relative_position(FirstHalf, 101, 100);
+        assert_relative_position(FirstHalf, 150, 100);
+        assert_relative_position(Middle, 151, 100);
+        assert_relative_position(SecondHalf, 152, 100);
+        assert_relative_position(SecondHalf, 200, 100);
+
+        assert_relative_position(FirstHalf, 1, 99);
+        assert_relative_position(FirstHalf, 49, 99);
+        assert_relative_position(Middle, 50, 99);
+        assert_relative_position(SecondHalf, 51, 99);
+        assert_relative_position(SecondHalf, 99, 99);
+
+        assert_relative_position(FirstHalf, 100, 99);
+        assert_relative_position(FirstHalf, 148, 99);
+        assert_relative_position(Middle, 149, 99);
+        assert_relative_position(SecondHalf, 150, 99);
+        assert_relative_position(SecondHalf, 198, 99);
+
+        assert_relative_position(FirstHalf, 1, 199);
+        assert_relative_position(FirstHalf, 99, 199);
+        assert_relative_position(Middle, 100, 199);
+        assert_relative_position(SecondHalf, 101, 199);
+        assert_relative_position(SecondHalf, 199, 199);
     }
 }

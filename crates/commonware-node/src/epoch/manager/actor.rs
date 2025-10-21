@@ -231,6 +231,7 @@ where
         >,
     ) {
         if let Some(epoch) = epoch::of_height(height, self.config.heights_per_epoch) {
+            // FIXME: is_last_height_of_epoch
             if epoch::is_last_height(height, epoch, self.config.heights_per_epoch) {
                 let incoming_epoch = epoch.saturating_add(1);
                 info!(
@@ -249,7 +250,7 @@ where
                     .await;
             }
 
-            if epoch::is_first_height(height, epoch, self.config.heights_per_epoch)
+            if epoch::is_first_height_of_epoch(height, epoch, self.config.heights_per_epoch)
                 // XXX: This handles the case epoch = 0, height = 1.
                 && let Some(outgoing_epoch) = epoch.checked_sub(1)
             {

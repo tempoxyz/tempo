@@ -11540,6 +11540,7 @@ dependencies = [
  "indexmap 2.11.4",
  "prometheus-client",
  "rand 0.8.5",
+ "rand_core 0.6.4",
  "reth-node-builder",
  "reth-node-core",
  "reth-primitives-traits",
