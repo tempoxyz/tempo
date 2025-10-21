@@ -130,6 +130,7 @@ pub struct TxAA {
     )]
     pub gas_limit: u64,
 
+    /// Calls to be executed atomically
     pub calls: Vec<Call>,
 
     /// Access list (EIP-2930)
