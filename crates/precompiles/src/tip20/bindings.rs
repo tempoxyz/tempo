@@ -193,8 +193,8 @@ impl TIP20Error {
     }
 }
 
-impl Into<PrecompileError> for TIP20Error {
-    fn into(self) -> PrecompileError {
-        PrecompileError::Other(format!("{:?}", self.selector()))
+impl From<TIP20Error> for PrecompileError {
+    fn from(val: TIP20Error) -> Self {
+        PrecompileError::Other(format!("{:?}", val.selector()))
     }
 }

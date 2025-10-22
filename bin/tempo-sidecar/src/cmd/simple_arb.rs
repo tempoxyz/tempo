@@ -8,14 +8,7 @@ use clap::Parser;
 use eyre::Context;
 use itertools::Itertools;
 use std::{collections::HashSet, time::Duration};
-use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    contracts::{
-        ITIP20Factory,
-        ITIPFeeAMM::{self},
-        token_id_to_address,
-    },
-};
+use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS};
 use tempo_telemetry_util::error_field;
 use tracing::{debug, error, info, instrument};
 

@@ -14,14 +14,14 @@ pub use orderbook::{
 };
 
 use crate::{
-    DelegateCallNotAllowed, LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     linking_usd::LinkingUSD,
     stablecoin_exchange::{
         bindings::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents},
         orderbook::{compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick},
     },
     storage::{
-        PrecompileStorageProvider, StorageOps, evm::EvmPrecompileStorageProvider,
+        PrecompileStorageProvider, StorageOps,
         slots::mapping_slot,
     },
     tip20::{
@@ -30,9 +30,8 @@ use crate::{
     },
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
-use alloy_evm::precompiles::DynPrecompile;
 use revm::{
-    precompile::{PrecompileError, PrecompileOutput},
+    precompile::PrecompileError,
     state::Bytecode,
 };
 
@@ -93,9 +92,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Set active order ID
     fn set_active_order_id(&mut self, order_id: u128) -> Result<(), PrecompileError> {
-        Ok(self
+        self
             .storage
-            .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))?)
+            .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))
     }
 
     /// Increment and return the pending order id
@@ -141,10 +140,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
 
-        Ok(self
-            .storage
-            .sstore(self.address, balance_slot, U256::from(amount))
-            .expect("TODO: handle error"))
+        self
+        .storage
+        .sstore(self.address, balance_slot, U256::from(amount))
+        .expect("TODO: handle error");
+        Ok(())
     }
 
     /// Add to user's balance
@@ -414,20 +414,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let book_key = compute_book_key(token, quote_token);
         let book = Orderbook::from_storage(book_key, self.storage, self.address);
         if book.base.is_zero() {
-            return Err(StablecoinExchangeError::pair_does_not_exist().into());
+            return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
         // Validate tick is within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
+            return Err(StablecoinExchangeError::tick_out_of_bounds(tick));
         }
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance())
-                .map_err(Into::into)?;
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -494,22 +493,22 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Validate tick and flip_tick are within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
+            return Err(StablecoinExchangeError::tick_out_of_bounds(tick));
         }
         if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
-            return Err(StablecoinExchangeError::tick_out_of_bounds(flip_tick).into());
+            return Err(StablecoinExchangeError::tick_out_of_bounds(flip_tick));
         }
 
         // Validate flip_tick relationship to tick based on order side
         if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
-            return Err(StablecoinExchangeError::invalid_flip_tick().into());
+            return Err(StablecoinExchangeError::invalid_flip_tick());
         }
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance().into())?;
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -555,7 +554,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn execute_block(&mut self, sender: &Address) -> Result<(), StablecoinExchangeError> {
         // Only protocol can call this
         if *sender != Address::ZERO {
-            return Err(StablecoinExchangeError::unauthorized().into());
+            return Err(StablecoinExchangeError::unauthorized());
         }
 
         let next_order_id = self
@@ -939,15 +938,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let order = Order::from_storage(order_id, self.storage, self.address);
 
         if order.maker().is_zero() {
-            return Err(StablecoinExchangeError::order_does_not_exist().into());
+            return Err(StablecoinExchangeError::order_does_not_exist());
         }
 
         if order.maker() != *sender {
-            return Err(StablecoinExchangeError::unauthorized().into());
+            return Err(StablecoinExchangeError::unauthorized());
         }
 
         if order.remaining() == 0 {
-            return Err(StablecoinExchangeError::order_does_not_exist().into());
+            return Err(StablecoinExchangeError::order_does_not_exist());
         }
 
         // Check if the order is still pending (not yet in active orderbook)
@@ -958,10 +957,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>();
 
         if order.order_id() > next_order_id {
-            self.cancel_pending_order(order).map_err(Into::into)
-        } else {
-            self.cancel_active_order(order).map_err(Into::into)
-        }
+            self.cancel_pending_order(order)} else {
+            self.cancel_active_order(order)}
     }
 
     /// Cancel a pending order (not yet in the active orderbook)
@@ -1086,7 +1083,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     ) -> Result<(), StablecoinExchangeError> {
         let current_balance = self.balance_of(user, token).expect("TODO: handle error");
         if current_balance < amount {
-            return Err(StablecoinExchangeError::insufficient_balance().into());
+            return Err(StablecoinExchangeError::insufficient_balance());
         }
         self.sub_balance(user, token, amount)
             .expect("TODO: handle error");

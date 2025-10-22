@@ -23,11 +23,15 @@ use tempo_contracts::{
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        EvmPrecompileStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
-        linking_usd::LinkingUSD, stablecoin_exchange::StablecoinExchange,
-        tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE, types::ITIPFeeAMM,
+    linking_usd::LinkingUSD,
+    stablecoin_exchange::StablecoinExchange,
+    storage::evm::EvmPrecompileStorageProvider,
+    tip_fee_manager::{
+        TipFeeManager,
+        bindings::{IFeeManager, ITIPFeeAMM},
     },
+    tip20::{ISSUER_ROLE, TIP20Token, bindings::ITIP20},
+    tip20_factory::{TIP20Factory, bindings::ITIP20Factory},
 };
 
 /// Generate genesis allocation file for testing
@@ -397,7 +401,7 @@ fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre:
     let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut exchange = StablecoinExchange::new(&mut provider);
-    exchange.initialize();
+    exchange.initialize()?;
 
     Ok(())
 }

@@ -2,13 +2,8 @@ pub mod bindings;
 pub mod dispatch;
 
 use self::bindings::INonce;
-use crate::{
-    DelegateCallNotAllowed,
-    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
-};
+use crate::storage::PrecompileStorageProvider;
 use alloy::primitives::{Address, U256};
-use alloy_evm::precompiles::DynPrecompile;
-use revm::precompile::PrecompileOutput;
 
 /// Storage slots for Nonce precompile data
 pub mod slots {

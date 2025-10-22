@@ -1,13 +1,12 @@
 use super::bindings::{ITIP20, TIP20Error};
 use crate::{
     Precompile, metadata, mutate, mutate_void,
-    stablecoin_exchange::{StablecoinExchange, bindings::IStablecoinExchange},
     storage::PrecompileStorageProvider,
     tip20::{
         TIP20Token,
         bindings::{IRolesAuth, RolesAuthError},
     },
-    view, view_result,
+    view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};

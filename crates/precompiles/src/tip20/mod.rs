@@ -6,7 +6,6 @@ use crate::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     storage::{
         PrecompileStorageProvider,
-        evm::EvmPrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
     tip20::{
@@ -23,7 +22,6 @@ use alloy::{
     primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
     sol_types::SolStruct,
 };
-use alloy_evm::precompiles::DynPrecompile;
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,

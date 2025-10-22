@@ -1,8 +1,8 @@
 pub mod dispatch;
 
 use crate::{
-    DelegateCallNotAllowed, STABLECOIN_EXCHANGE_ADDRESS,
-    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    STABLECOIN_EXCHANGE_ADDRESS,
+    storage::PrecompileStorageProvider,
     tip20::{
         TIP20Token,
         bindings::{ITIP20, TIP20Error},
@@ -10,8 +10,6 @@ use crate::{
     },
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
-use alloy_evm::precompiles::DynPrecompile;
-use revm::precompile::{PrecompileId, PrecompileOutput};
 use std::sync::LazyLock;
 
 pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));
