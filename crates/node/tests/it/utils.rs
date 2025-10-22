@@ -28,10 +28,15 @@ use tempo_node::node::TempoNode;
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    contracts::{
-        ITIP20::ITIP20Instance, ITIP20Factory, tip20::ISSUER_ROLE, token_id_to_address,
-        types::IRolesAuth,
+    tip20::{
+        ISSUER_ROLE,
+        bindings::{
+            IRolesAuth,
+            ITIP20::{self, ITIP20Instance},
+        },
+        token_id_to_address,
     },
+    tip20_factory::bindings::ITIP20Factory,
 };
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -58,7 +63,7 @@ where
     let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
 
     let token_addr = token_id_to_address(event.tokenId.to());
-    let token = ITIP20Instance::new(token_addr, provider.clone());
+    let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
 
     roles

@@ -9,14 +9,11 @@ use alloy_primitives::{Address, uint};
 use std::env;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        ITIP20::ITIP20Instance,
-        tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
-        types::{
-            IFeeManager, ITIP20,
-            ITIPFeeAMM::{self},
-        },
+    tip_fee_manager::{
+        amm::{MIN_LIQUIDITY, PoolKey},
+        bindings::{IFeeManager, ITIPFeeAMM},
     },
+    tip20::bindings::ITIP20::{self, ITIP20Instance},
 };
 
 #[tokio::test(flavor = "multi_thread")]

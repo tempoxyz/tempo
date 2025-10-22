@@ -9,10 +9,8 @@ use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP403_REGISTRY_ADDRESS,
-    contracts::{
-        ITIP20::{self, ITIP20Errors},
-        types::ITIP403Registry,
-    },
+    tip20::bindings::{ITIP20, TIP20Error},
+    tip403_registry::bindings::ITIP403Registry,
 };
 
 use crate::utils::setup_test_token;
@@ -84,8 +82,8 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
             panic!("expected error");
         };
         assert_eq!(
-            result.as_decoded_interface_error::<ITIP20Errors>(),
-            Some(ITIP20Errors::InsufficientBalance(
+            result.as_decoded_interface_error::<TIP20Error>(),
+            Some(TIP20Error::InsufficientBalance(
                 ITIP20::InsufficientBalance {}
             ))
         );
@@ -213,10 +211,8 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     // TODO: Update to assert the actual error once Precompile errors are propagated through revm
     let err = max_mint_result.unwrap_err();
     assert_eq!(
-        err.as_decoded_interface_error::<ITIP20Errors>(),
-        Some(ITIP20Errors::SupplyCapExceeded(
-            ITIP20::SupplyCapExceeded {}
-        ))
+        err.as_decoded_interface_error::<TIP20Error>(),
+        Some(TIP20Error::SupplyCapExceeded(ITIP20::SupplyCapExceeded {}))
     );
 
     Ok(())

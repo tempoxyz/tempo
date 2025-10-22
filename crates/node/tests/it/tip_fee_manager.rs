@@ -14,7 +14,8 @@ use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use std::env;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{ITIP20, ITIPFeeAMM, types::IFeeManager},
+    tip20::bindings::ITIP20,
+    tip_fee_manager::bindings::{IFeeManager, ITIPFeeAMM},
 };
 use tempo_primitives::TxFeeToken;
 

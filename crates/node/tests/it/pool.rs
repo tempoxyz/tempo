@@ -11,7 +11,7 @@ use reth_transaction_pool::{TransactionOrigin, pool::AddedTransactionState};
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::{args::TempoArgs, node::TempoNode};
-use tempo_precompiles::contracts::{storage::slots, tip_fee_manager};
+use tempo_precompiles::{storage::slots, tip_fee_manager};
 use tempo_primitives::TempoTxEnvelope;
 
 #[tokio::test(flavor = "multi_thread")]

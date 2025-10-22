@@ -6,6 +6,7 @@ use alloy::{sol, sol_types::SolInterface};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
     interface IRolesAuth {
         function hasRole(address account, bytes32 role) external view returns (bool);
         function getRoleAdmin(bytes32 role) external view returns (bytes32);

@@ -8,7 +8,8 @@ use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    contracts::{ITIP20, ITIP20Factory, token_id_to_address},
+    tip20::{bindings::ITIP20, token_id_to_address},
+    tip20_factory::bindings::ITIP20Factory,
 };
 
 #[tokio::test(flavor = "multi_thread")]

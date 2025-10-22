@@ -14,9 +14,12 @@ use reth_e2e_test_utils::transaction::TransactionTestContext;
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    contracts::{
-        ITIP20, ITIP20Factory, tip20::ISSUER_ROLE, token_id_to_address, types::IRolesAuth,
+    tip20::{
+        ISSUER_ROLE,
+        bindings::{IRolesAuth, ITIP20},
+        token_id_to_address,
     },
+    tip20_factory::bindings::ITIP20Factory,
 };
 use tempo_primitives::TempoTxEnvelope;
 

@@ -9,7 +9,8 @@ use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager, ITIP20},
+    tip_fee_manager::bindings::{IFeeManager},
+    tip20::bindings::ITIP20,
 };
 
 #[tokio::test(flavor = "multi_thread")]

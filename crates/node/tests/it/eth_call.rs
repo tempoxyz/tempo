@@ -16,10 +16,10 @@ use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
-    contracts::{
-        ITIP20::{self, transferCall},
-        storage::slots::mapping_slot,
-        tip20,
+    storage::slots::mapping_slot,
+    tip20::{
+        self,
+        bindings::ITIP20::{self, transferCall},
     },
 };
 
@@ -292,7 +292,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
         .await?;
 
     // Setup fee manager to configure different tokens
-    let fee_manager = tempo_precompiles::contracts::types::IFeeManager::new(
+    let fee_manager = tempo_precompiles::tip_fee_manager::bindings::IFeeManager::new(
         tempo_precompiles::TIP_FEE_MANAGER_ADDRESS,
         provider.clone(),
     );
@@ -300,7 +300,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     // Supply liquidity to enable fee token swapping
     let validator_token_address = DEFAULT_FEE_TOKEN;
 
-    let fee_amm = tempo_precompiles::contracts::types::ITIPFeeAMM::new(
+    let fee_amm = tempo_precompiles::tip_fee_manager::bindings::ITIPFeeAMM::new(
         tempo_precompiles::TIP_FEE_MANAGER_ADDRESS,
         provider.clone(),
     );
