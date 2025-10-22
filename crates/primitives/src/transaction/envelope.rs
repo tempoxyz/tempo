@@ -1,13 +1,10 @@
-use super::{
-    aa_signature::AASignature, aa_signed::AASigned, account_abstraction::TxAA,
-    fee_token::TxFeeToken,
-};
+use super::{aa_signed::AASigned, fee_token::TxFeeToken};
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
     TypedTransaction,
     error::{UnsupportedTransactionType, ValueError},
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, SignatureError, U256};
+use alloy_primitives::{Address, B256, Signature, SignatureError, U256};
 use core::fmt;
 use reth_primitives_traits::InMemorySize;
 use tempo_precompiles::TIP20_PAYMENT_PREFIX;
@@ -364,9 +361,14 @@ impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelop
 
 #[cfg(feature = "reth-codec")]
 mod codec {
+    use crate::{AASignature, TxAA};
+
     use super::*;
     use alloy_eips::eip2718::EIP7702_TX_TYPE_ID;
-    use alloy_primitives::{Signature, bytes, bytes::BufMut};
+    use alloy_primitives::{
+        Bytes, Signature,
+        bytes::{self, BufMut},
+    };
     use reth_codecs::{
         Compact,
         alloy::transaction::{CompactEnvelope, Envelope},
