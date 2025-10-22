@@ -316,10 +316,7 @@ fn create_mock_aa_signature(key_type: &KeyType, key_data: Option<&Bytes>) -> AAS
                 // Add padding bytes to origin field
                 // {"type":"webauthn.get","challenge":"","origin":"XXXXX"}
                 let padding = "x".repeat(additional_bytes);
-                format!(
-                    r#"{{"type":"webauthn.get","challenge":"","origin":"{}"}}"#,
-                    padding
-                )
+                format!(r#"{{"type":"webauthn.get","challenge":"","origin":"{padding}"}}"#,)
             } else {
                 BASE_CLIENT_JSON.to_string()
             };
