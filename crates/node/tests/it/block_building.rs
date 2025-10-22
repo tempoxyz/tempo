@@ -19,7 +19,7 @@ use tempo_precompiles::{
         bindings::{IRolesAuth, ITIP20},
         token_id_to_address,
     },
-    tip20_factory::bindings::ITIP20Factory,
+    tip20_factory::ITIP20Factory,
 };
 use tempo_primitives::TempoTxEnvelope;
 

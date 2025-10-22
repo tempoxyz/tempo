@@ -10,7 +10,7 @@ use p256::ecdsa::signature::hazmat::PrehashSigner;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
-    tip20::bindings::{ITIP20, ITIP20::transferCall},
+    tip20::{ITIP20, ITIP20::transferCall},
 };
 use tempo_primitives::{
     TempoTxEnvelope,

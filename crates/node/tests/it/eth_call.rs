@@ -19,7 +19,7 @@ use tempo_precompiles::{
     storage::slots::mapping_slot,
     tip20::{
         self,
-        bindings::ITIP20::{self, transferCall},
+        ITIP20::{self, transferCall},
     },
 };
 
@@ -292,18 +292,13 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
         .await?;
 
     // Setup fee manager to configure different tokens
-    let fee_manager = tempo_precompiles::tip_fee_manager::bindings::IFeeManager::new(
-        tempo_precompiles::TIP_FEE_MANAGER_ADDRESS,
-        provider.clone(),
-    );
+    let fee_manager =
+        IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Supply liquidity to enable fee token swapping
     let validator_token_address = DEFAULT_FEE_TOKEN;
 
-    let fee_amm = tempo_precompiles::tip_fee_manager::bindings::ITIPFeeAMM::new(
-        tempo_precompiles::TIP_FEE_MANAGER_ADDRESS,
-        provider.clone(),
-    );
+    let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Provide liquidity for the fee token pair
     let liquidity_amount = U256::from(u32::MAX);

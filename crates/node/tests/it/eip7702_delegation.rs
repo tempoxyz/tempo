@@ -9,9 +9,7 @@ use alloy_primitives::{Address, B256, U256, b256, keccak256};
 use reth_evm::revm::state::Bytecode;
 use std::{env, str::FromStr};
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
-use tempo_precompiles::{
-    TIP_ACCOUNT_REGISTRAR, tip_account_registrar::bindings::ITipAccountRegistrar,
-};
+use tempo_precompiles::{TIP_ACCOUNT_REGISTRAR, tip_account_registrar::ITipAccountRegistrar};
 
 sol! {
     struct Call {
