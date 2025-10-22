@@ -7,6 +7,8 @@ pub(crate) mod config;
 pub mod consensus;
 pub mod metrics;
 
+mod subblocks;
+
 use std::net::SocketAddr;
 
 use commonware_cryptography::Signer;
@@ -18,9 +20,9 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::config::{
-    BACKFILL_BY_DIGEST_CHANNEL_IDENTL, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT,
-    BROADCASTER_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT,
-    RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    BACKFILL_BY_DIGEST_CHANNEL_IDENT, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
+    PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT,
+    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
 };
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
@@ -46,7 +48,7 @@ pub async fn run_consensus_stack(
         message_backlog,
     );
     let backfill = network.register(
-        BACKFILL_BY_DIGEST_CHANNEL_IDENTL,
+        BACKFILL_BY_DIGEST_CHANNEL_IDENT,
         BACKFILL_QUOTA,
         message_backlog,
     );
