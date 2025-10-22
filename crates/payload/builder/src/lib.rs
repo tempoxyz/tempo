@@ -40,8 +40,8 @@ use tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    stablecoin_exchange::bindings::IStablecoinExchange, tip_fee_manager::bindings::IFeeManager,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
+    tip_fee_manager::IFeeManager,
 };
 use tempo_primitives::{
     TempoHeader, TempoPrimitives, TempoTxEnvelope,
