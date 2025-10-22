@@ -8,7 +8,9 @@ use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
 use std::env;
 use tempo_contracts::precompiles::{
-    IFeeManager, ITIPFeeAMM, ITIP20::{self, ITIP20Instance},
+    IFeeManager,
+    ITIP20::{self, ITIP20Instance},
+    ITIPFeeAMM,
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,

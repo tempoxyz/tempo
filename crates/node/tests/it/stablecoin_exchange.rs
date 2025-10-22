@@ -2,7 +2,8 @@ use alloy::{primitives::U256, providers::ProviderBuilder, signers::local::Mnemon
 use rand::Rng;
 use std::env;
 use tempo_contracts::precompiles::{
-    IStablecoinExchange, ITIP20::{self, ITIP20Instance},
+    IStablecoinExchange,
+    ITIP20::{self, ITIP20Instance},
 };
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS,

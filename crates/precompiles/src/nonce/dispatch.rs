@@ -1,4 +1,4 @@
-use crate::{nonce::NonceManager, storage::PrecompileStorageProvider, view, Precompile};
+use crate::{Precompile, nonce::NonceManager, storage::PrecompileStorageProvider, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 

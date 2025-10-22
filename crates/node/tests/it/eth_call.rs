@@ -15,13 +15,11 @@ use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{
-    IFeeManager, ITIPFeeAMM, ITIP20::{self, transferCall},
+    IFeeManager,
+    ITIP20::{self, transferCall},
+    ITIPFeeAMM,
 };
-use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN,
-    storage::slots::mapping_slot,
-    tip20,
-};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, storage::slots::mapping_slot, tip20};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call() -> eyre::Result<()> {

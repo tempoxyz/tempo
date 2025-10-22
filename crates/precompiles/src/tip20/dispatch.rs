@@ -2,10 +2,7 @@ use super::{ITIP20, TIP20Error};
 use crate::{
     Precompile, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip20::{
-        TIP20Token,
-        {IRolesAuth, RolesAuthError},
-    },
+    tip20::{IRolesAuth, RolesAuthError, TIP20Token},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};

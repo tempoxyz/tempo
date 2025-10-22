@@ -2,9 +2,7 @@ pub mod dispatch;
 
 pub use tempo_contracts::precompiles::{ITipAccountRegistrar, TipAccountRegistrarError};
 
-use crate::{
-    storage::PrecompileStorageProvider,
-};
+use crate::storage::PrecompileStorageProvider;
 use alloy::{
     eips::eip7702::constants::SECP256K1N_HALF,
     primitives::{Address, B512, U256},

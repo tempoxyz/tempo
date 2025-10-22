@@ -1,7 +1,9 @@
 pub mod amm;
 pub mod dispatch;
 
-pub use tempo_contracts::precompiles::{IFeeManager, ITIPFeeAMM, FeeManagerError, FeeManagerEvent, TIPFeeAMMError, TIPFeeAMMEvent};
+pub use tempo_contracts::precompiles::{
+    FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent,
+};
 
 use crate::{
     DEFAULT_FEE_TOKEN,
@@ -10,7 +12,7 @@ use crate::{
         amm::{PoolKey, TIPFeeAMM},
         slots::{collected_fees_slot, user_token_slot, validator_token_slot},
     },
-    tip20::{TIP20Token, address_to_token_id_unchecked, ITIP20, is_tip20},
+    tip20::{ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20},
 };
 
 // Re-export PoolKey for backward compatibility with tests
@@ -565,8 +567,7 @@ mod tests {
         storage::hashmap::HashMapStorageProvider,
         tip_fee_manager::slots::collected_fees_slot,
         tip20::{
-            ISSUER_ROLE, TIP20Token, address_to_token_id_unchecked, ITIP20,
-            token_id_to_address,
+            ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked, token_id_to_address,
         },
     };
 

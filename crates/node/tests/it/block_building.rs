@@ -11,16 +11,11 @@ use alloy_network::Ethereum;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::transaction::TransactionTestContext;
+use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
 use tempo_node::node::TempoNode;
-use tempo_contracts::precompiles::{
-    IRolesAuth, ITIP20, ITIP20Factory,
-};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip20::{
-        ISSUER_ROLE,
-        token_id_to_address,
-    },
+    tip20::{ISSUER_ROLE, token_id_to_address},
 };
 use tempo_primitives::TempoTxEnvelope;
 

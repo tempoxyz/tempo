@@ -4,10 +4,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
     storage::PrecompileStorageProvider,
-    tip403_registry::{
-        TIP403Registry,
-        ITIP403Registry, TIP403RegistryError,
-    },
+    tip403_registry::{ITIP403Registry, TIP403Registry, TIP403RegistryError},
 };
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {

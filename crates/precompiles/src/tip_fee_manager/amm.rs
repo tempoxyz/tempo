@@ -1,7 +1,7 @@
 use crate::{
     storage::{PrecompileStorageProvider, StorageOps},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
-    tip20::{TIP20Token, address_to_token_id_unchecked, ITIP20},
+    tip20::{ITIP20, TIP20Token, address_to_token_id_unchecked},
 };
 use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},

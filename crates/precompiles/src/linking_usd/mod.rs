@@ -3,11 +3,7 @@ pub mod dispatch;
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     storage::PrecompileStorageProvider,
-    tip20::{
-        TIP20Token,
-        ITIP20, TIP20Error,
-        roles::RolesAuthContract,
-    },
+    tip20::{ITIP20, TIP20Error, TIP20Token, roles::RolesAuthContract},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::sync::LazyLock;

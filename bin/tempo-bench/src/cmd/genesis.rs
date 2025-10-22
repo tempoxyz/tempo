@@ -26,11 +26,9 @@ use tempo_precompiles::{
     linking_usd::LinkingUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::evm::EvmPrecompileStorageProvider,
-    tip_fee_manager::{
-        TipFeeManager, IFeeManager, ITIPFeeAMM,
-    },
-    tip20::{ISSUER_ROLE, TIP20Token, ITIP20},
-    tip20_factory::{TIP20Factory, ITIP20Factory},
+    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
+    tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
+    tip20_factory::{ITIP20Factory, TIP20Factory},
 };
 
 /// Generate genesis allocation file for testing

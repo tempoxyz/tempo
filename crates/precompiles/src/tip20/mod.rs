@@ -1,7 +1,9 @@
 pub mod dispatch;
 pub mod roles;
 
-pub use tempo_contracts::precompiles::{ITIP20, IRolesAuth, TIP20Error, TIP20Event, RolesAuthError, RolesAuthEvent};
+pub use tempo_contracts::precompiles::{
+    IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
+};
 
 use crate::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,

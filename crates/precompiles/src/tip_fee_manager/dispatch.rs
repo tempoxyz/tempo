@@ -1,7 +1,7 @@
 use crate::{
     Precompile, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip_fee_manager::{TipFeeManager, IFeeManager, ITIPFeeAMM},
+    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -106,10 +106,9 @@ mod tests {
         LINKING_USD_ADDRESS, MUTATE_FUNC_GAS, TIP_FEE_MANAGER_ADDRESS, VIEW_FUNC_GAS,
         expect_precompile_revert,
         storage::hashmap::HashMapStorageProvider,
-        tip_fee_manager::{TipFeeManager, amm::PoolKey, TIPFeeAMMError},
+        tip_fee_manager::{TIPFeeAMMError, TipFeeManager, amm::PoolKey},
         tip20::{
-            ISSUER_ROLE, TIP20Token, address_to_token_id_unchecked, ITIP20,
-            token_id_to_address,
+            ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked, token_id_to_address,
         },
     };
     use alloy::{

@@ -6,10 +6,7 @@ pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryEvent};
 use crate::{
     TIP20_FACTORY_ADDRESS,
     storage::PrecompileStorageProvider,
-    tip20::{
-        TIP20Token, address_to_token_id_unchecked, TIP20Error, is_tip20,
-        token_id_to_address,
-    },
+    tip20::{TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address},
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
