@@ -125,14 +125,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`   
-    pub fn get_order(&mut self, order_id: u128) -> Result<Order, PrecompileError> {
+    pub fn get_order(&mut self, order_id: u128) -> Result<Order, StablecoinExchangeError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
 
         // If the order is not filled and currently active
-        if !order.maker().is_zero() && order.order_id() <= self.get_active_order_id()? {
+        if !order.maker().is_zero()
+            && order.order_id()
+                <= self
+                    .get_active_order_id()
+                    .expect("Failed to get active order ID")
+        {
             Ok(order)
         } else {
-            Err(StablecoinExchangeError::order_does_not_exist().into())
+            Err(StablecoinExchangeError::order_does_not_exist())
         }
     }
 
@@ -142,13 +147,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         user: Address,
         token: Address,
         amount: u128,
-    ) -> Result<(), PrecompileError> {
+    ) -> Result<(), StablecoinExchangeError> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
 
         Ok(self
             .storage
-            .sstore(self.address, balance_slot, U256::from(amount))?)
+            .sstore(self.address, balance_slot, U256::from(amount))
+            .expect("TODO: handle error"))
     }
 
     /// Add to user's balance
@@ -157,8 +163,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         user: Address,
         token: Address,
         amount: u128,
-    ) -> Result<(), PrecompileError> {
-        let current = self.balance_of(user, token)?;
+    ) -> Result<(), StablecoinExchangeError> {
+        let current = self.balance_of(user, token).expect("TODO: handle error");
         self.set_balance(user, token, current + amount)
     }
 
@@ -168,8 +174,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         user: Address,
         token: Address,
         amount: u128,
-    ) -> Result<(), PrecompileError> {
-        let current = self.balance_of(user, token)?;
+    ) -> Result<(), StablecoinExchangeError> {
+        let current = self.balance_of(user, token).expect("TODO: handle error");
         self.set_balance(user, token, current.saturating_sub(amount))
     }
 
@@ -230,14 +236,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         user: Address,
         token: Address,
         amount: u128,
-    ) -> Result<(), PrecompileError> {
-        let user_balance = self.balance_of(user, token)?;
+    ) -> Result<(), StablecoinExchangeError> {
+        let user_balance = self.balance_of(user, token).expect("TODO: handle error");
         if user_balance >= amount {
             self.sub_balance(user, token, amount)?;
         } else {
             self.set_balance(user, token, 0)?;
             let remaining = amount - user_balance;
-            self.transfer_from(token, user, remaining).map(Into::into)?;
+            self.transfer_from(token, user, remaining)
+                .expect("TODO: handle error");
         }
         Ok(())
     }
@@ -283,22 +290,22 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_in: u128,
         min_amount_out: u128,
-    ) -> Result<u128, PrecompileError> {
+    ) -> Result<u128, StablecoinExchangeError> {
         let book_key = compute_book_key(token_in, token_out);
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exist().into());
+            return Err(StablecoinExchangeError::pair_does_not_exist());
         }
 
         let base_for_quote = token_in == orderbook.base;
-        let amount_out = self
-            .fill_orders_exact_in(book_key, base_for_quote, amount_in, min_amount_out)
-            .expect("TODO: handle error ");
+        let amount_out =
+            self.fill_orders_exact_in(book_key, base_for_quote, amount_in, min_amount_out)?;
 
-        self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
+        self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)
+            .expect("Failed to decrement balance or transfer from sender");
         self.transfer(token_out, *sender, amount_out)
-            .expect("TODO: handle error ");
+            .expect("Failed to transfer tokens to sender");
 
         Ok(amount_out)
     }
@@ -323,9 +330,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             self.fill_orders_exact_out(book_key, base_for_quote, amount_out, max_amount_in)?;
 
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)
-            .expect("TODO: handle error");
+            .expect("Failed to decrement balance or transfer from sender");
         self.transfer(token_out, *sender, amount_out)
-            .expect("TODO: handle error");
+            .expect("Failed to transfer tokens to sender");
 
         Ok(amount_in)
     }
@@ -408,7 +415,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         amount: u128,
         is_bid: bool,
         tick: i16,
-    ) -> Result<u128, PrecompileError> {
+    ) -> Result<u128, StablecoinExchangeError> {
         // Lookup quote token from TIP20 token
         let quote_token =
             TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
@@ -441,7 +448,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount)?;
 
         // Create the order
-        let order_id = self.increment_pending_order_id()?;
+        let order_id = self
+            .increment_pending_order_id()
+            .expect("TODO: handle error");
         let order = if is_bid {
             Order::new_bid(order_id, *sender, book_key, amount, tick)
         } else {
@@ -485,7 +494,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         is_bid: bool,
         tick: i16,
         flip_tick: i16,
-    ) -> Result<u128, PrecompileError> {
+    ) -> Result<u128, StablecoinExchangeError> {
         // Lookup quote token from TIP20 token
         let quote_token =
             TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
@@ -521,7 +530,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount)?;
 
         // Create the flip order
-        let order_id = self.increment_pending_order_id()?;
+        let order_id = self
+            .increment_pending_order_id()
+            .expect("TODO: handle error");
         let order = Order::new_flip(order_id, *sender, book_key, amount, tick, is_bid, flip_tick)
             .expect("Invalid flip tick");
 
@@ -551,7 +562,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Process all pending orders into the active orderbook
     ///
     /// Only callable by the protocol via system transaction (sender must be Address::ZERO)
-    pub fn execute_block(&mut self, sender: &Address) -> Result<(), PrecompileError> {
+    pub fn execute_block(&mut self, sender: &Address) -> Result<(), StablecoinExchangeError> {
         // Only protocol can call this
         if *sender != Address::ZERO {
             return Err(StablecoinExchangeError::unauthorized().into());
@@ -559,10 +570,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let next_order_id = self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)?
+            .sload(self.address, slots::ACTIVE_ORDER_ID)
+            .expect("TODO: handle error")
             .to::<u128>();
 
-        let pending_order_id = self.get_pending_order_id()?;
+        let pending_order_id = self.get_pending_order_id().expect("TODO: handle error");
 
         let mut current_order_id = next_order_id + 1;
         while current_order_id <= pending_order_id {
@@ -929,7 +941,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Cancel an order and refund tokens to maker
     /// Only the order maker can cancel their own order
-    pub fn cancel(&mut self, sender: &Address, order_id: u128) -> Result<(), PrecompileError> {
+    pub fn cancel(
+        &mut self,
+        sender: &Address,
+        order_id: u128,
+    ) -> Result<(), StablecoinExchangeError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
 
         if order.maker().is_zero() {
@@ -947,7 +963,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Check if the order is still pending (not yet in active orderbook)
         let next_order_id = self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)?
+            .sload(self.address, slots::ACTIVE_ORDER_ID)
+            .expect("TODO: handle error")
             .to::<u128>();
 
         if order.order_id() > next_order_id {
@@ -1076,13 +1093,16 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         user: Address,
         token: Address,
         amount: u128,
-    ) -> Result<(), PrecompileError> {
-        let current_balance = self.balance_of(user, token)?;
+    ) -> Result<(), StablecoinExchangeError> {
+        let current_balance = self.balance_of(user, token).expect("TODO: handle error");
         if current_balance < amount {
             return Err(StablecoinExchangeError::insufficient_balance().into());
         }
-        self.sub_balance(user, token, amount)?;
-        self.transfer(token, user, amount).map_err(Into::into)?;
+        self.sub_balance(user, token, amount)
+            .expect("TODO: handle error");
+
+        self.transfer(token, user, amount)
+            .expect("TODO: handle error");
 
         Ok(())
     }

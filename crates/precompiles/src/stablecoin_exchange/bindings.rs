@@ -151,9 +151,8 @@ impl StablecoinExchangeError {
     }
 }
 
-impl Into<PrecompileError> for StablecoinExchangeError {
-    fn into(self) -> PrecompileError {
-        PrecompileError::Other(format!("{:?}", self.selector()))
+impl From<StablecoinExchangeError> for PrecompileError {
+    fn from(err: StablecoinExchangeError) -> PrecompileError {
+        PrecompileError::Other(format!("{:?}", err.selector()))
     }
 }
-
