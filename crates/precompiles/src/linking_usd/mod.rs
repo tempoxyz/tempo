@@ -929,7 +929,6 @@ mod tests {
         let mut roles = linking_usd.get_roles_contract();
         roles.grant_role_internal(&pauser, *PAUSE_ROLE);
         roles.grant_role_internal(&unpauser, *UNPAUSE_ROLE);
-        drop(roles);
 
         // Verify initial state (not paused)
         assert!(!linking_usd.paused());
