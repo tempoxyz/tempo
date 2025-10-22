@@ -6,7 +6,7 @@ use crate::{
     storage::PrecompileStorageProvider,
     tip403_registry::{
         TIP403Registry,
-        bindings::{ITIP403Registry, TIP403RegistryError},
+        ITIP403Registry, TIP403RegistryError,
     },
 };
 

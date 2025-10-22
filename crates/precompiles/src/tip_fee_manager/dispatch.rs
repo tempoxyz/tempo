@@ -3,7 +3,7 @@ use crate::{
     storage::PrecompileStorageProvider,
     tip_fee_manager::{
         TipFeeManager,
-        bindings::{IFeeManager, ITIPFeeAMM},
+        IFeeManager, ITIPFeeAMM,
     },
     view,
 };
@@ -109,9 +109,9 @@ mod tests {
         LINKING_USD_ADDRESS, MUTATE_FUNC_GAS, TIP_FEE_MANAGER_ADDRESS, VIEW_FUNC_GAS,
         expect_precompile_revert,
         storage::hashmap::HashMapStorageProvider,
-        tip_fee_manager::{TipFeeManager, amm::PoolKey, bindings::TIPFeeAMMError},
+        tip_fee_manager::{TipFeeManager, amm::PoolKey, TIPFeeAMMError},
         tip20::{
-            ISSUER_ROLE, TIP20Token, address_to_token_id_unchecked, bindings::ITIP20,
+            ISSUER_ROLE, TIP20Token, address_to_token_id_unchecked, ITIP20,
             token_id_to_address,
         },
     };

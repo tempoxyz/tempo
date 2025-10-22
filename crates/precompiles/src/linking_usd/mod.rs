@@ -5,7 +5,7 @@ use crate::{
     storage::PrecompileStorageProvider,
     tip20::{
         TIP20Token,
-        bindings::{ITIP20, TIP20Error},
+        ITIP20, TIP20Error,
         roles::RolesAuthContract,
     },
 };

@@ -2,15 +2,16 @@ pub mod amm;
 pub mod bindings;
 pub mod dispatch;
 
+pub use bindings::*;
+
 use crate::{
     DEFAULT_FEE_TOKEN,
     storage::{PrecompileStorageProvider, StorageOps},
     tip_fee_manager::{
         amm::{PoolKey, TIPFeeAMM},
-        bindings::{FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM},
         slots::{collected_fees_slot, user_token_slot, validator_token_slot},
     },
-    tip20::{TIP20Token, address_to_token_id_unchecked, bindings::ITIP20, is_tip20},
+    tip20::{TIP20Token, address_to_token_id_unchecked, ITIP20, is_tip20},
 };
 
 // Re-export PoolKey for backward compatibility with tests
@@ -565,7 +566,7 @@ mod tests {
         storage::hashmap::HashMapStorageProvider,
         tip_fee_manager::slots::collected_fees_slot,
         tip20::{
-            ISSUER_ROLE, TIP20Token, address_to_token_id_unchecked, bindings::ITIP20,
+            ISSUER_ROLE, TIP20Token, address_to_token_id_unchecked, ITIP20,
             token_id_to_address,
         },
     };

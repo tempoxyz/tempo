@@ -6,7 +6,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
     Precompile, mutate, mutate_void,
-    stablecoin_exchange::{StablecoinExchange, bindings::IStablecoinExchange},
+    stablecoin_exchange::{StablecoinExchange, IStablecoinExchange},
     storage::PrecompileStorageProvider,
     view, view_result,
 };

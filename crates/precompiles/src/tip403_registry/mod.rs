@@ -1,13 +1,14 @@
 pub mod bindings;
 pub mod dispatch;
 
+pub use bindings::*;
+
 use crate::{
     TIP403_REGISTRY_ADDRESS,
     storage::{
         PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
-    tip403_registry::bindings::{ITIP403Registry, TIP403RegistryError, TIP403RegistryEvent},
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use alloy_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};

@@ -2,7 +2,8 @@
 pub mod bindings;
 pub mod dispatch;
 
-use crate::tip4217_registry::bindings::ITIP4217Registry;
+pub use bindings::*;
+
 
 const KNOWN_DECIMALS: &[(&str, u8)] = &[("USD", 6)];
 

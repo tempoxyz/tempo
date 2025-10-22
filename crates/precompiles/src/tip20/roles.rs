@@ -5,7 +5,7 @@ use crate::{
         PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
-    tip20::bindings::{IRolesAuth, RolesAuthError, RolesAuthEvent},
+    tip20::{IRolesAuth, RolesAuthError, RolesAuthEvent},
 };
 
 pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;

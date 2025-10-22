@@ -1,9 +1,10 @@
 pub mod bindings;
 pub mod dispatch;
 
+pub use bindings::*;
+
 use crate::{
     storage::PrecompileStorageProvider,
-    tip_account_registrar::bindings::{ITipAccountRegistrar, TipAccountRegistrarError},
 };
 use alloy::{
     eips::eip7702::constants::SECP256K1N_HALF,

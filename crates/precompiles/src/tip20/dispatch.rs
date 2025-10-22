@@ -1,10 +1,10 @@
-use super::bindings::{ITIP20, TIP20Error};
+use super::{ITIP20, TIP20Error};
 use crate::{
     Precompile, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip20::{
         TIP20Token,
-        bindings::{IRolesAuth, RolesAuthError},
+        {IRolesAuth, RolesAuthError},
     },
     view,
 };

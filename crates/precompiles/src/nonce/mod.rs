@@ -1,7 +1,9 @@
 pub mod bindings;
 pub mod dispatch;
 
-use self::bindings::INonce;
+pub use bindings::*;
+
+use self::INonce;
 use crate::storage::PrecompileStorageProvider;
 use alloy::primitives::{Address, U256};
 

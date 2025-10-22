@@ -3,7 +3,7 @@ use crate::{
     linking_usd::LinkingUSD,
     metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip20::bindings::{ITIP20, TIP20Error},
+    tip20::{ITIP20, TIP20Error},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};

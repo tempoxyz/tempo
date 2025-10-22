@@ -2,19 +2,18 @@ pub mod bindings;
 pub mod dispatch;
 pub mod roles;
 
+pub use bindings::*;
+
 use crate::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     storage::{
         PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
-    tip20::{
-        bindings::{ITIP20, TIP20Error, TIP20Event},
-        roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
-    },
+    tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
-    tip403_registry::{TIP403Registry, bindings::ITIP403Registry},
-    tip4217_registry::{TIP4217Registry, bindings::ITIP4217Registry},
+    tip403_registry::{TIP403Registry, ITIP403Registry},
+    tip4217_registry::{TIP4217Registry, ITIP4217Registry},
 };
 use alloy::{
     consensus::crypto::secp256k1 as eth_secp256k1,
@@ -1101,7 +1100,7 @@ mod tests {
     use super::*;
     use crate::{
         DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider,
-        tip20_factory::bindings::ITIP20Factory,
+        tip20_factory::ITIP20Factory,
     };
 
     /// Initialize a factory and create a single token

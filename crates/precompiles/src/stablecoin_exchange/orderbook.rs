@@ -5,7 +5,7 @@ use super::{
     slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS},
 };
 use crate::{
-    stablecoin_exchange::{bindings::IStablecoinExchange, error::OrderError},
+    stablecoin_exchange::{IStablecoinExchange, error::OrderError},
     storage::{PrecompileStorageProvider, slots::mapping_slot},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};

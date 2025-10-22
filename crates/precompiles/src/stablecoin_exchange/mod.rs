@@ -7,6 +7,8 @@ pub mod order;
 pub mod orderbook;
 pub mod slots;
 
+pub use bindings::*;
+
 pub use order::Order;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, PriceLevel, TickBitmap, price_to_tick,
@@ -16,14 +18,11 @@ pub use orderbook::{
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     linking_usd::LinkingUSD,
-    stablecoin_exchange::{
-        bindings::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents},
-        orderbook::{compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick},
-    },
+    stablecoin_exchange::orderbook::{compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick},
     storage::{PrecompileStorageProvider, StorageOps, slots::mapping_slot},
     tip20::{
         TIP20Token, address_to_token_id_unchecked,
-        bindings::{ITIP20, TIP20Error},
+        ITIP20, TIP20Error,
     },
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};

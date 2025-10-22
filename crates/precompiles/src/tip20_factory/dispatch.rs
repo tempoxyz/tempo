@@ -4,7 +4,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
     storage::PrecompileStorageProvider,
-    tip20_factory::{TIP20Factory, bindings::ITIP20Factory},
+    tip20_factory::{TIP20Factory, ITIP20Factory},
 };
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {

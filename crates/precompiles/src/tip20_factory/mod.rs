@@ -2,14 +2,16 @@
 pub mod bindings;
 pub mod dispatch;
 
+pub use bindings::*;
+
 use crate::{
     TIP20_FACTORY_ADDRESS,
     storage::PrecompileStorageProvider,
     tip20::{
-        TIP20Token, address_to_token_id_unchecked, bindings::TIP20Error, is_tip20,
+        TIP20Token, address_to_token_id_unchecked, TIP20Error, is_tip20,
         token_id_to_address,
     },
-    tip20_factory::bindings::ITIP20Factory,
+    tip20_factory::ITIP20Factory,
 };
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};

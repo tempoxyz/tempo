@@ -5,7 +5,7 @@
 //! automatically place opposite-side orders when filled.
 
 use crate::{
-    stablecoin_exchange::{bindings::IStablecoinExchange, error::OrderError},
+    stablecoin_exchange::{IStablecoinExchange, error::OrderError},
     storage::{PrecompileStorageProvider, slots::mapping_slot},
 };
 use alloy::primitives::{Address, B256, U256, uint};
