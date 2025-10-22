@@ -105,7 +105,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
-    /// `StablecoinExchangeError::OrderDoesNotExist`   
+    /// `StablecoinExchangeError::OrderDoesNotExist`
     pub fn get_order(&mut self, order_id: u128) -> Result<Order, StablecoinExchangeError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
 
@@ -236,15 +236,27 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_out: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let book_key = compute_book_key(token_in, token_out);
-        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+        // Find the trade path (may be direct or multi-hop)
+        let path = self.find_trade_path(token_in, token_out)?;
 
-        if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exist());
+        // Execute quotes backwards from output to input
+        let mut current_amount = amount_out;
+        for i in (0..path.len() - 1).rev() {
+            let hop_token_in = path[i];
+            let hop_token_out = path[i + 1];
+
+            let book_key = compute_book_key(hop_token_in, hop_token_out);
+            let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+
+            if orderbook.base.is_zero() {
+                return Err(StablecoinExchangeError::pair_does_not_exist());
+            }
+
+            let base_for_quote = hop_token_in == orderbook.base;
+            current_amount = self.quote_exact_out(book_key, current_amount, base_for_quote)?;
         }
 
-        let base_for_quote = token_in == orderbook.base;
-        self.quote_exact_out(book_key, amount_out, base_for_quote)
+        Ok(current_amount)
     }
 
     pub fn quote_swap_exact_amount_in(
@@ -253,15 +265,27 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_in: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let book_key = compute_book_key(token_in, token_out);
-        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+        // Find the trade path (may be direct or multi-hop)
+        let path = self.find_trade_path(token_in, token_out)?;
 
-        if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exist());
+        // Execute quotes for each hop in the path
+        let mut current_amount = amount_in;
+        for i in 0..path.len() - 1 {
+            let hop_token_in = path[i];
+            let hop_token_out = path[i + 1];
+
+            let book_key = compute_book_key(hop_token_in, hop_token_out);
+            let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+
+            if orderbook.base.is_zero() {
+                return Err(StablecoinExchangeError::pair_does_not_exist());
+            }
+
+            let base_for_quote = hop_token_in == orderbook.base;
+            current_amount = self.quote_exact_in(book_key, current_amount, base_for_quote)?;
         }
 
-        let base_for_quote = token_in == orderbook.base;
-        self.quote_exact_in(book_key, amount_in, base_for_quote)
+        Ok(current_amount)
     }
 
     pub fn swap_exact_amount_in(
@@ -272,19 +296,40 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         amount_in: u128,
         min_amount_out: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let book_key = compute_book_key(token_in, token_out);
-        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+        // Find the trade path (may be direct or multi-hop)
+        let path = self.find_trade_path(token_in, token_out)?;
 
-        if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exist());
-        }
-
-        let base_for_quote = token_in == orderbook.base;
-        let amount_out =
-            self.fill_orders_exact_in(book_key, base_for_quote, amount_in, min_amount_out)?;
-
+        // Deduct input tokens from sender (only once, at the start)
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)
             .expect("Failed to decrement balance or transfer from sender");
+
+        // Execute swaps for each hop - intermediate balances are transitory
+        let mut current_amount = amount_in;
+        for i in 0..path.len() - 1 {
+            let hop_token_in = path[i];
+            let hop_token_out = path[i + 1];
+
+            let book_key = compute_book_key(hop_token_in, hop_token_out);
+            let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+
+            if orderbook.base.is_zero() {
+                return Err(StablecoinExchangeError::pair_does_not_exist());
+            }
+
+            let base_for_quote = hop_token_in == orderbook.base;
+            // Fill orders for this hop - no min check on intermediate hops
+            current_amount =
+                self.fill_orders_exact_in(book_key, base_for_quote, current_amount, 0)?;
+        }
+
+        let amount_out = current_amount;
+
+        // Check final output meets minimum requirement
+        if amount_out < min_amount_out {
+            return Err(StablecoinExchangeError::insufficient_output());
+        }
+
+        // Transfer only the final output token to sender (only once, at the end)
         self.transfer(token_out, *sender, amount_out)
             .expect("Failed to transfer tokens to sender");
 
@@ -299,19 +344,39 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         amount_out: u128,
         max_amount_in: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let book_key = compute_book_key(token_in, token_out);
-        let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+        let path = self.find_trade_path(token_in, token_out)?;
 
-        if orderbook.base == Address::ZERO {
-            return Err(StablecoinExchangeError::pair_does_not_exist());
+        // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
+        let mut current_amount = amount_out;
+        for i in (0..path.len() - 1).rev() {
+            let hop_token_in = path[i];
+            let hop_token_out = path[i + 1];
+            let book_key = compute_book_key(hop_token_in, hop_token_out);
+            let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+
+            if orderbook.base.is_zero() {
+                return Err(StablecoinExchangeError::pair_does_not_exist());
+            }
+
+            let base_for_quote = hop_token_in == orderbook.base;
+            current_amount = self.fill_orders_exact_out(
+                book_key,
+                base_for_quote,
+                current_amount,
+                max_amount_in,
+            )?;
         }
 
-        let base_for_quote = token_in == orderbook.base;
-        let amount_in =
-            self.fill_orders_exact_out(book_key, base_for_quote, amount_out, max_amount_in)?;
+        let amount_in = current_amount;
+        if amount_in > max_amount_in {
+            return Err(StablecoinExchangeError::max_input_exceeded());
+        }
 
+        // Deduct input tokens ONCE at end
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)
             .expect("Failed to decrement balance or transfer from sender");
+
+        // Transfer only final output ONCE at end
         self.transfer(token_out, *sender, amount_out)
             .expect("Failed to transfer tokens to sender");
 
@@ -1208,6 +1273,102 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         Ok(amount_in)
+    }
+
+    /// Find the trade path between two tokens
+    /// Returns a vector of addresses representing the trading route
+    fn find_trade_path(
+        &mut self,
+        token_in: Address,
+        token_out: Address,
+    ) -> Result<Vec<Address>, StablecoinExchangeError> {
+        // Cannot trade same token
+        if token_in == token_out {
+            return Err(StablecoinExchangeError::pair_does_not_exist());
+        }
+
+        // Check if direct pair exists (token_in -> token_out)
+        let token_in_id = address_to_token_id_unchecked(&token_in);
+        let token_in_quote = TIP20Token::new(token_in_id, self.storage).quote_token();
+
+        if token_in_quote == token_out {
+            return Ok(vec![token_in, token_out]);
+        }
+
+        // Check if reverse pair exists (token_out -> token_in)
+        let token_out_id = address_to_token_id_unchecked(&token_out);
+        let token_out_quote = TIP20Token::new(token_out_id, self.storage).quote_token();
+
+        if token_out_quote == token_in {
+            return Ok(vec![token_in, token_out]);
+        }
+
+        // Multi-hop: Find LCA and build path
+        let path_in = self.find_path_to_root(token_in)?;
+        let path_out = self.find_path_to_root(token_out)?;
+
+        // Find the lowest common ancestor (LCA)
+        let mut lca = None;
+        for token_a in &path_in {
+            if path_out.contains(token_a) {
+                lca = Some(*token_a);
+                break;
+            }
+        }
+
+        let lca = lca.ok_or_else(StablecoinExchangeError::pair_does_not_exist)?;
+
+        // Build the trade path: token_in -> ... -> LCA -> ... -> token_out
+        let mut trade_path = Vec::new();
+
+        // Add path from token_in up to and including LCA
+        for token in &path_in {
+            trade_path.push(*token);
+            if *token == lca {
+                break;
+            }
+        }
+
+        // Add path from LCA down to token_out (excluding LCA itself)
+        let lca_to_out: Vec<Address> = path_out
+            .iter()
+            .take_while(|&&t| t != lca)
+            .copied()
+            .collect();
+
+        // Reverse to get path from LCA to token_out
+        trade_path.extend(lca_to_out.iter().rev());
+
+        Ok(trade_path)
+    }
+
+    /// Find the path from a token to the root (LinkingUSD)
+    /// Returns a vector of addresses starting with the token and ending with LinkingUSD
+    fn find_path_to_root(
+        &mut self,
+        token: Address,
+    ) -> Result<Vec<Address>, StablecoinExchangeError> {
+        let mut path = Vec::new();
+        let mut current = token;
+
+        // Walk up the tree until we reach LinkingUSD (which has quote_token == Address::ZERO)
+        loop {
+            path.push(current);
+
+            // Check if we've reached LinkingUSD
+            if current == LINKING_USD_ADDRESS {
+                break;
+            }
+
+            // Get the quote token for the current token
+            let token_id = address_to_token_id_unchecked(&current);
+            let quote_token = TIP20Token::new(token_id, self.storage).quote_token();
+
+            // Move to the parent (quote token)
+            current = quote_token;
+        }
+
+        Ok(path)
     }
 
     /// Quote exact input amount without executing trades
@@ -2271,5 +2432,899 @@ mod tests {
 
         let result = exchange.create_pair(&base_token);
         assert_eq!(result, Err(StablecoinExchangeError::pair_already_exists()));
+    }
+
+    #[test]
+    fn test_find_path_to_root() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+
+        // Setup: LinkingUSD <- USDC <- TokenA
+        let linking_usd_addr = {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            linking_usd
+                .initialize(&admin)
+                .expect("Failed to initialize LinkingUSD");
+            linking_usd.token.token_address
+        };
+
+        let usdc_addr = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize USDC");
+            usdc.token_address
+        };
+
+        let token_a_addr = {
+            let mut token_a = TIP20Token::new(3, exchange.storage);
+            token_a
+                .initialize("TokenA", "TKA", "USD", usdc_addr, &admin)
+                .expect("Failed to initialize TokenA");
+            token_a.token_address
+        };
+
+        // Find path from TokenA to root
+        let path = exchange
+            .find_path_to_root(token_a_addr)
+            .expect("Failed to find path");
+
+        // Expected: [TokenA, USDC, LinkingUSD]
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0], token_a_addr);
+        assert_eq!(path[1], usdc_addr);
+        assert_eq!(path[2], linking_usd_addr);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_trade_path_same_token_errors() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let user = Address::random();
+
+        let (token, _) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &user,
+            exchange.address,
+            1_000_000u128,
+        );
+
+        // Trading same token should error
+        let result = exchange.find_trade_path(token, token);
+        assert!(result.is_err(), "Should error when token_in == token_out");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_trade_path_direct_pair() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let user = Address::random();
+
+        // Setup: LinkingUSD <- Token (direct pair)
+        let (token, linking_usd) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &user,
+            exchange.address,
+            1_000_000u128,
+        );
+
+        // Trade token -> linking_usd (direct pair)
+        let path = exchange
+            .find_trade_path(token, linking_usd)
+            .expect("Should find direct pair");
+
+        // Expected: [token, linking_usd]
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0], token);
+        assert_eq!(path[1], linking_usd);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_trade_path_reverse_pair() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let user = Address::random();
+
+        // Setup: LinkingUSD <- Token
+        let (token, linking_usd) = setup_test_tokens(
+            exchange.storage,
+            &admin,
+            &user,
+            exchange.address,
+            1_000_000u128,
+        );
+
+        // Trade linking_usd -> token (reverse direction)
+        let path = exchange
+            .find_trade_path(linking_usd, token)
+            .expect("Should find reverse pair");
+
+        // Expected: [linking_usd, token]
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0], linking_usd);
+        assert_eq!(path[1], token);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_trade_path_two_hop_siblings() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+
+        // Setup: LinkingUSD <- USDC
+        //        LinkingUSD <- EURC
+        // (USDC and EURC are siblings, both have LinkingUSD as quote)
+        let linking_usd_addr = {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            linking_usd
+                .initialize(&admin)
+                .expect("Failed to initialize LinkingUSD");
+            linking_usd.token.token_address
+        };
+
+        let usdc_addr = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize USDC");
+            usdc.token_address
+        };
+
+        let eurc_addr = {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize EURC");
+            eurc.token_address
+        };
+
+        // Trade USDC -> EURC should go through LinkingUSD
+        let path = exchange
+            .find_trade_path(usdc_addr, eurc_addr)
+            .expect("Should find path");
+
+        // Expected: [USDC, LinkingUSD, EURC]
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0], usdc_addr);
+        assert_eq!(path[1], linking_usd_addr);
+        assert_eq!(path[2], eurc_addr);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_quote_exact_in_multi_hop() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let alice = Address::random();
+
+        // Setup: LinkingUSD <- USDC
+        //        LinkingUSD <- EURC
+        let linking_usd_addr = {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            linking_usd
+                .initialize(&admin)
+                .expect("Failed to initialize LinkingUSD");
+            linking_usd.token.token_address
+        };
+
+        let usdc_addr = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize USDC");
+            usdc.token_address
+        };
+
+        let eurc_addr = {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize EURC");
+            eurc.token_address
+        };
+
+        // Create pairs
+        exchange
+            .create_pair(&usdc_addr)
+            .expect("Failed to create USDC pair");
+        exchange
+            .create_pair(&eurc_addr)
+            .expect("Failed to create EURC pair");
+
+        // Setup tokens and roles
+        {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            let mut usdc_roles = usdc.get_roles_contract();
+            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            usdc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint USDC");
+        }
+
+        {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            let mut eurc_roles = eurc.get_roles_contract();
+            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            eurc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint EURC");
+        }
+
+        {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            let mut linking_usd_roles = linking_usd.get_roles_contract();
+            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            linking_usd
+                .token
+                .mint(
+                    &admin,
+                    ITIP20::mintCall {
+                        to: alice,
+                        amount: U256::from(10_000_000u128),
+                    },
+                )
+                .expect("Failed to mint LinkingUSD");
+        }
+
+        // Approve exchange
+        {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.approve(
+                &alice,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve USDC");
+        }
+
+        {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.approve(
+                &alice,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve EURC");
+        }
+
+        {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            linking_usd
+                .token
+                .approve(
+                    &alice,
+                    ITIP20::approveCall {
+                        spender: exchange.address,
+                        amount: U256::from(10_000_000u128),
+                    },
+                )
+                .expect("Failed to approve LinkingUSD");
+        }
+
+        // Place orders to provide liquidity at 1:1 rate (tick 0)
+        // For trade USDC -> LinkingUSD -> EURC:
+        // - First hop needs: bid on USDC (someone buying USDC with LinkingUSD)
+        // - Second hop needs: ask on EURC (someone selling EURC for LinkingUSD)
+
+        // USDC bid: buy USDC with LinkingUSD
+        exchange
+            .place(&alice, usdc_addr, 5_000_000u128, true, 0)
+            .expect("Failed to place USDC bid order");
+
+        // EURC ask: sell EURC for LinkingUSD
+        exchange
+            .place(&alice, eurc_addr, 5_000_000u128, false, 0)
+            .expect("Failed to place EURC ask order");
+
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Failed to execute block");
+
+        // Quote multi-hop: USDC -> LinkingUSD -> EURC
+        let amount_in = 1_000_000u128;
+        let amount_out = exchange
+            .quote_swap_exact_amount_in(usdc_addr, eurc_addr, amount_in)
+            .expect("Should quote multi-hop trade");
+
+        // With 1:1 rates at each hop, output should equal input
+        assert_eq!(
+            amount_out, amount_in,
+            "With 1:1 rates, output should equal input"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_quote_exact_out_multi_hop() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let alice = Address::random();
+
+        // Setup: LinkingUSD <- USDC
+        //        LinkingUSD <- EURC
+        let linking_usd_addr = {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            linking_usd
+                .initialize(&admin)
+                .expect("Failed to initialize LinkingUSD");
+            linking_usd.token.token_address
+        };
+
+        let usdc_addr = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize USDC");
+            usdc.token_address
+        };
+
+        let eurc_addr = {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize EURC");
+            eurc.token_address
+        };
+
+        // Create pairs and setup (same as previous test)
+        exchange
+            .create_pair(&usdc_addr)
+            .expect("Failed to create USDC pair");
+        exchange
+            .create_pair(&eurc_addr)
+            .expect("Failed to create EURC pair");
+
+        {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            let mut usdc_roles = usdc.get_roles_contract();
+            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            usdc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint USDC");
+            usdc.approve(
+                &alice,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve USDC");
+        }
+
+        {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            let mut eurc_roles = eurc.get_roles_contract();
+            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            eurc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint EURC");
+            eurc.approve(
+                &alice,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve EURC");
+        }
+
+        {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            let mut linking_usd_roles = linking_usd.get_roles_contract();
+            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            linking_usd
+                .token
+                .mint(
+                    &admin,
+                    ITIP20::mintCall {
+                        to: alice,
+                        amount: U256::from(10_000_000u128),
+                    },
+                )
+                .expect("Failed to mint LinkingUSD");
+            linking_usd
+                .token
+                .approve(
+                    &alice,
+                    ITIP20::approveCall {
+                        spender: exchange.address,
+                        amount: U256::from(10_000_000u128),
+                    },
+                )
+                .expect("Failed to approve LinkingUSD");
+        }
+
+        // Place orders at 1:1 rate
+        exchange
+            .place(&alice, usdc_addr, 5_000_000u128, true, 0)
+            .expect("Failed to place USDC bid order");
+        exchange
+            .place(&alice, eurc_addr, 5_000_000u128, false, 0)
+            .expect("Failed to place EURC ask order");
+
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Failed to execute block");
+
+        // Quote multi-hop for exact output: USDC -> LinkingUSD -> EURC
+        let amount_out = 1_000_000u128;
+        let amount_in = exchange
+            .quote_swap_exact_amount_out(usdc_addr, eurc_addr, amount_out)
+            .expect("Should quote multi-hop trade for exact output");
+
+        // With 1:1 rates at each hop, input should equal output
+        assert_eq!(
+            amount_in, amount_out,
+            "With 1:1 rates, input should equal output"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_swap_exact_in_multi_hop_transitory_balances() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let alice = Address::random();
+        let bob = Address::random();
+
+        // Setup: LinkingUSD <- USDC <- EURC
+        let linking_usd_addr = {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            linking_usd
+                .initialize(&admin)
+                .expect("Failed to initialize LinkingUSD");
+            linking_usd.token.token_address
+        };
+
+        let usdc_addr = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize USDC");
+            usdc.token_address
+        };
+
+        let eurc_addr = {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize EURC");
+            eurc.token_address
+        };
+
+        exchange
+            .create_pair(&usdc_addr)
+            .expect("Failed to create USDC pair");
+        exchange
+            .create_pair(&eurc_addr)
+            .expect("Failed to create EURC pair");
+
+        // Setup alice as liquidity provider
+        {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            let mut usdc_roles = usdc.get_roles_contract();
+            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            usdc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint USDC");
+            usdc.approve(
+                &alice,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve USDC");
+        }
+
+        {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            let mut eurc_roles = eurc.get_roles_contract();
+            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            eurc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint EURC");
+            eurc.approve(
+                &alice,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve EURC");
+        }
+
+        {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            let mut linking_usd_roles = linking_usd.get_roles_contract();
+            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            linking_usd
+                .token
+                .mint(
+                    &admin,
+                    ITIP20::mintCall {
+                        to: alice,
+                        amount: U256::from(10_000_000u128),
+                    },
+                )
+                .expect("Failed to mint LinkingUSD");
+            linking_usd
+                .token
+                .approve(
+                    &alice,
+                    ITIP20::approveCall {
+                        spender: exchange.address,
+                        amount: U256::from(10_000_000u128),
+                    },
+                )
+                .expect("Failed to approve LinkingUSD");
+        }
+
+        // Setup bob as trader
+        {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: bob,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint USDC for bob");
+            usdc.approve(
+                &bob,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve USDC for bob");
+        }
+
+        // Place liquidity orders at 1:1
+        exchange
+            .place(&alice, usdc_addr, 5_000_000u128, true, 0)
+            .expect("Failed to place USDC bid order");
+        exchange
+            .place(&alice, eurc_addr, 5_000_000u128, false, 0)
+            .expect("Failed to place EURC ask order");
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Failed to execute block");
+
+        // Check bob's balances before swap
+        let bob_usdc_before = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+        let bob_eurc_before = {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+
+        // Execute multi-hop swap: USDC -> LinkingUSD -> EURC
+        let amount_in = 1_000_000u128;
+        let amount_out = exchange
+            .swap_exact_amount_in(
+                &bob, usdc_addr, eurc_addr, amount_in, 0, // min_amount_out
+            )
+            .expect("Should execute multi-hop swap");
+
+        // Check bob's balances after swap
+        let bob_usdc_after = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+        let bob_eurc_after = {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+
+        // Verify bob spent USDC and received EURC
+        assert_eq!(
+            bob_usdc_before - bob_usdc_after,
+            U256::from(amount_in),
+            "Bob should have spent exact amount_in USDC"
+        );
+        assert_eq!(
+            bob_eurc_after - bob_eurc_before,
+            U256::from(amount_out),
+            "Bob should have received amount_out EURC"
+        );
+
+        // Verify bob has ZERO LinkingUSD (intermediate token should be transitory)
+        let bob_linking_usd_wallet = {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            linking_usd
+                .token
+                .balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+        assert_eq!(
+            bob_linking_usd_wallet,
+            U256::ZERO,
+            "Bob should have ZERO LinkingUSD in wallet (transitory)"
+        );
+
+        let bob_linking_usd_exchange = exchange
+            .balance_of(bob, linking_usd_addr)
+            .expect("Failed to get bob's LinkingUSD exchange balance");
+        assert_eq!(
+            bob_linking_usd_exchange, 0,
+            "Bob should have ZERO LinkingUSD on exchange (transitory)"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_swap_exact_out_multi_hop_transitory_balances() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let alice = Address::random();
+        let bob = Address::random();
+
+        // Setup: LinkingUSD <- USDC <- EURC
+        let linking_usd_addr = {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            linking_usd
+                .initialize(&admin)
+                .expect("Failed to initialize LinkingUSD");
+            linking_usd.token.token_address
+        };
+
+        let usdc_addr = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize USDC");
+            usdc.token_address
+        };
+
+        let eurc_addr = {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, &admin)
+                .expect("Failed to initialize EURC");
+            eurc.token_address
+        };
+
+        exchange
+            .create_pair(&usdc_addr)
+            .expect("Failed to create USDC pair");
+        exchange
+            .create_pair(&eurc_addr)
+            .expect("Failed to create EURC pair");
+
+        // Setup alice as liquidity provider
+        {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            let mut usdc_roles = usdc.get_roles_contract();
+            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            usdc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint USDC");
+            usdc.approve(
+                &alice,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve USDC");
+        }
+
+        {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            let mut eurc_roles = eurc.get_roles_contract();
+            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            eurc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint EURC");
+            eurc.approve(
+                &alice,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve EURC");
+        }
+
+        {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            let mut linking_usd_roles = linking_usd.get_roles_contract();
+            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            linking_usd
+                .token
+                .mint(
+                    &admin,
+                    ITIP20::mintCall {
+                        to: alice,
+                        amount: U256::from(10_000_000u128),
+                    },
+                )
+                .expect("Failed to mint LinkingUSD");
+            linking_usd
+                .token
+                .approve(
+                    &alice,
+                    ITIP20::approveCall {
+                        spender: exchange.address,
+                        amount: U256::from(10_000_000u128),
+                    },
+                )
+                .expect("Failed to approve LinkingUSD");
+        }
+
+        // Setup bob as trader
+        {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: bob,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to mint USDC for bob");
+            usdc.approve(
+                &bob,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )
+            .expect("Failed to approve USDC for bob");
+        }
+
+        // Place liquidity orders at 1:1
+        exchange
+            .place(&alice, usdc_addr, 5_000_000u128, true, 0)
+            .expect("Failed to place USDC bid order");
+        exchange
+            .place(&alice, eurc_addr, 5_000_000u128, false, 0)
+            .expect("Failed to place EURC ask order");
+        exchange
+            .execute_block(&Address::ZERO)
+            .expect("Failed to execute block");
+
+        // Check bob's balances before swap
+        let bob_usdc_before = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+        let bob_eurc_before = {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+
+        // Execute multi-hop swap: USDC -> LinkingUSD -> EURC (exact output)
+        let amount_out = 90u128;
+        let amount_in = exchange
+            .swap_exact_amount_out(
+                &bob,
+                usdc_addr,
+                eurc_addr,
+                amount_out,
+                u128::MAX, // max_amount_in
+            )
+            .expect("Should execute multi-hop swap");
+
+        // Check bob's balances after swap
+        let bob_usdc_after = {
+            let mut usdc = TIP20Token::new(2, exchange.storage);
+            usdc.balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+        let bob_eurc_after = {
+            let mut eurc = TIP20Token::new(3, exchange.storage);
+            eurc.balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+
+        // Verify bob spent USDC and received exact EURC
+        assert_eq!(
+            bob_usdc_before - bob_usdc_after,
+            U256::from(amount_in),
+            "Bob should have spent amount_in USDC"
+        );
+        assert_eq!(
+            bob_eurc_after - bob_eurc_before,
+            U256::from(amount_out),
+            "Bob should have received exact amount_out EURC"
+        );
+
+        // Verify bob has ZERO LinkingUSD (intermediate token should be transitory)
+        let bob_linking_usd_wallet = {
+            let mut linking_usd = LinkingUSD::new(exchange.storage);
+            linking_usd
+                .token
+                .balance_of(ITIP20::balanceOfCall { account: bob })
+        };
+        assert_eq!(
+            bob_linking_usd_wallet,
+            U256::ZERO,
+            "Bob should have ZERO LinkingUSD in wallet (transitory)"
+        );
+
+        let bob_linking_usd_exchange = exchange
+            .balance_of(bob, linking_usd_addr)
+            .expect("Failed to get bob's LinkingUSD exchange balance");
+        assert_eq!(
+            bob_linking_usd_exchange, 0,
+            "Bob should have ZERO LinkingUSD on exchange (transitory)"
+        );
+
+        Ok(())
     }
 }
