@@ -1535,25 +1535,16 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
     println!("Test address: {signer_addr}");
 
     let recipient = Address::random();
-    let chain_id = provider.get_chain_id().await?;
 
     // Create a simple AA transaction request for gas estimation (based on issue #516 format)
     // Note: We provide maxFeePerGas and maxPriorityFeePerGas but NOT gas - gas is what we're estimating!
     let tx_request = serde_json::json!({
         "from": signer_addr.to_string(),
-        "nonce": "0x0",
-        "nonceKey": "0x0",
-        "type": "0x76",
-        "chainId": format!("0x{:x}", chain_id),
         "calls": [{
             "to": recipient.to_string(),
             "value": "0x0",
-            "input": {
-                "input": "0x"
-            }
+            "input": "0x"
         }],
-        "maxFeePerGas": format!("0x{:x}", TEMPO_BASE_FEE),
-        "maxPriorityFeePerGas": format!("0x{:x}", TEMPO_BASE_FEE),
     });
 
     // Test 1: Estimate gas WITHOUT keyType (baseline - uses secp256k1)
