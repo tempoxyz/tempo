@@ -274,25 +274,17 @@ fn verify_p256_signature_internal(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
-    // Construct uncompressed public key point (0x04 || x || y)
-    let mut pub_key_bytes = [0u8; 65];
-    pub_key_bytes[0] = 0x04; // Uncompressed point marker
-    pub_key_bytes[1..33].copy_from_slice(pub_key_x);
-    pub_key_bytes[33..65].copy_from_slice(pub_key_y);
-
-    // Parse public key
-    let encoded_point =
-        EncodedPoint::from_bytes(pub_key_bytes).map_err(|_| "Invalid P256 public key encoding")?;
+    // Parse public key from affine coordinates
+    let encoded_point = EncodedPoint::from_affine_coordinates(
+        pub_key_x.into(),
+        pub_key_y.into(),
+        false, // Not compressed
+    );
 
     let verifying_key =
         VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| "Invalid P256 public key")?;
 
-    // Construct signature from r and s
-    let mut sig_bytes = [0u8; 64];
-    sig_bytes[0..32].copy_from_slice(r);
-    sig_bytes[32..64].copy_from_slice(s);
-
-    let signature = P256Signature::from_bytes(&sig_bytes.into())
+    let signature = P256Signature::from_slice(&[r, s].concat())
         .map_err(|_| "Invalid P256 signature encoding")?;
 
     // Verify signature
