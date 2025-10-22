@@ -155,7 +155,14 @@ where
 
                 let _ = ceremony.construct_deal_outcome().await;
             }
-            epoch::RelativePosition::SecondHalf => todo!(),
+            epoch::RelativePosition::SecondHalf => {
+                let Some(ceremony) = ceremony else {
+                    return Err(eyre!(
+                        "no dkg ceremony was running during the second half of the epoch"
+                    ));
+                };
+                let _ = ceremony.process_block(block).await;
+            }
         }
         Ok(())
     }

@@ -11,7 +11,7 @@ use commonware_consensus::{Block as _, types::Epoch};
 use commonware_cryptography::{
     Signer as _, Verifier as _,
     bls12381::{
-        dkg::{Arbiter, Dealer, Player, player::Output},
+        dkg::{self, Arbiter, Dealer, Player, arbiter, player::Output},
         primitives::{group, poly::Public, variant::MinSig},
     },
     ed25519::{PrivateKey, PublicKey, Signature},
@@ -26,7 +26,7 @@ use futures::FutureExt as _;
 use governor::{Quota, RateLimiter, middleware::NoOpMiddleware, state::keyed::HashMapStateStore};
 use indexmap::{IndexMap, IndexSet};
 use rand_core::CryptoRngCore;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::consensus::block::Block;
 
@@ -525,7 +525,7 @@ where
     /// Processes a [Block] that may contain a [DealOutcome], tracking it with the [Arbiter] if
     /// all acknowledgement signatures are valid.
     #[instrument(skip_all, fields(epoch = self.epoch(), block.height = block.height()), err)]
-    async fn process_block(&mut self, block: Block) -> eyre::Result<()> {
+    pub(super) async fn process_block(&mut self, block: Block) -> eyre::Result<()> {
         let Some(block_outcome) = read_deal_outcome_from_block(block) else {
             debug!("saw block with no deal outcome");
             return Ok(());
@@ -604,7 +604,7 @@ where
     }
 
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
-    pub async fn construct_deal_outcome(&mut self) -> eyre::Result<()> {
+    pub(super) async fn construct_deal_outcome(&mut self) -> eyre::Result<()> {
         let reveals = self
             .config
             .players
@@ -640,6 +640,74 @@ where
         self.dealer_meta.outcome = local_outcome;
 
         Ok(())
+    }
+
+    // TODO(janis): find a better return value than a 3-tuple with a flag to
+    // show failure/success.
+    #[instrument(skip_all, fields(epoch = self.epoch()))]
+    pub(super) async fn finalize(self) -> (Set<PublicKey>, RoundResult, bool) {
+        let (result, disqualified) = self.arbiter.finalize();
+
+        let arbiter::Output {
+            public,
+            commitments,
+            reveals,
+        } = match result {
+            Ok(output) => output,
+            Err(error) => {
+                error!(
+                    error = %eyre::Report::new(error),
+                    ?disqualified,
+                    "failed to finalize arbiter; aborting ceremony and \
+                    returning previous dealers and commitment",
+                );
+                return (self.config.dealers, self.previous, false);
+            }
+        };
+
+        if let Some(player_me) = self.player_me {
+            let my_index = self
+                .players_indexed
+                .get_index_of(&self.config.me.public_key())
+                .expect("if I am a player, I must be indexed");
+            let reveals = reveals
+                .into_iter()
+                .filter_map(|(dealer_idx, shares)| {
+                    shares
+                        .iter()
+                        .find(|s| s.index == my_index as u32)
+                        .cloned()
+                        .map(|share| (dealer_idx, share))
+                })
+                .collect::<BTreeMap<_, _>>();
+
+            let n_commitments = commitments.len();
+            let n_reveals = reveals.len();
+
+            let output = match player_me.finalize(commitments, reveals) {
+                Ok(output) => output,
+                Err(error) => {
+                    error!(
+                        error = %eyre::Report::new(error),
+                        "failed to finalize player; aborting ceremony and \
+                        returning previous dealers and commitment"
+                    );
+                    return (self.config.dealers, self.previous, false);
+                }
+            };
+
+            info!(
+                ?disqualified,
+                n_commitments,
+                n_reveals,
+                "successfully finalized DKG ceremony; returning new \
+                    players and commitment"
+            );
+
+            (self.config.players, RoundResult::Output(output), true)
+        } else {
+            (self.config.players, RoundResult::Polynomial(public), true)
+        }
     }
 
     pub(super) fn epoch(&self) -> Epoch {
@@ -688,7 +756,7 @@ struct DealOutcome {
 
 impl DealOutcome {
     /// Creates a new [DealOutcome], signing its inner payload with the [commonware_cryptography::bls12381::dkg::Dealer]'s [Signer].
-    pub fn new(
+    pub(super) fn new(
         dealer_signer: &PrivateKey,
         namespace: &[u8],
         epoch: Epoch,
@@ -711,7 +779,7 @@ impl DealOutcome {
     }
 
     /// Verifies the [DealOutcome]'s signature.
-    pub fn verify(&self, namespace: &[u8]) -> bool {
+    pub(super) fn verify(&self, namespace: &[u8]) -> bool {
         let payload = Self::signature_payload_from_parts(
             self.epoch,
             &self.commitment,
@@ -805,7 +873,7 @@ struct Ack {
 
 impl Ack {
     /// Create a new [Ack] message, constructing and signing the payload with the provided [Signer].
-    pub fn new(
+    pub(super) fn new(
         namespace: &[u8],
         signer: PrivateKey,
         player: PublicKey,
@@ -963,11 +1031,11 @@ struct Share {
     /// The [Dealer]'s public commitment (coefficients of the polynomial).
     ///
     /// [Dealer]: crate::bls12381::dkg::Dealer
-    pub commitment: Public<MinSig>,
+    pub(super) commitment: Public<MinSig>,
     /// The secret share evaluated for the recipient [Player].
     ///
     /// [Player]: crate::bls12381::dkg::Player
-    pub share: group::Share,
+    pub(super) share: group::Share,
 }
 
 impl Write for Share {
@@ -996,7 +1064,7 @@ impl Read for Share {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Payload {
+pub(super) enum Payload {
     /// Message sent by a dealer node to a player node.
     ///
     /// Contains the dealer's public commitment to their polynomial and the specific
@@ -1065,9 +1133,9 @@ impl EncodeSize for Payload {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Dkg {
-    pub epoch: Epoch,
-    pub payload: Payload,
+pub(super) struct Dkg {
+    pub(super) epoch: Epoch,
+    pub(super) payload: Payload,
 }
 
 impl Write for Dkg {
