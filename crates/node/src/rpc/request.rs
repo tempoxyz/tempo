@@ -279,16 +279,53 @@ fn create_mock_aa_signature(key_type: &KeyType, key_data: Option<&Bytes>) -> AAS
             })
         }
         KeyType::WebAuthn => {
-            // Create a dummy WebAuthn signature with the provided keyData or minimal data
-            let webauthn_data = key_data.cloned().unwrap_or_else(|| {
-                // Minimum valid WebAuthn data: 37 bytes authenticatorData + minimal clientDataJSON
-                let mut data = vec![0u8; 37];
-                data[32] = 0x01; // UP flag
-                let client_json =
-                    r#"{"type":"webauthn.get","challenge":"","origin":"https://example.com"}"#;
-                data.extend_from_slice(client_json.as_bytes());
-                Bytes::from(data)
-            });
+            // Create a dummy WebAuthn signature with the specified size
+            // key_data contains the total size of webauthn_data (excluding 128 bytes for public keys)
+            // Default: 200 bytes if no key_data provided
+
+            // Base clientDataJSON template (50 bytes): {"type":"webauthn.get","challenge":"","origin":""}
+            // Authenticator data (37 bytes): 32 rpIdHash + 1 flags + 4 signCount
+            // Minimum total: 87 bytes
+            const BASE_CLIENT_JSON: &str = r#"{"type":"webauthn.get","challenge":"","origin":""}"#;
+            const AUTH_DATA_SIZE: usize = 37;
+            const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len(); // 87 bytes
+            const DEFAULT_WEBAUTHN_SIZE: usize = 200; // Default when no key_data provided
+
+            // Parse size from key_data, or use default
+            let size = if let Some(data) = key_data {
+                match data.len() {
+                    1 => data[0] as usize,
+                    2 => u16::from_be_bytes([data[0], data[1]]) as usize,
+                    4 => u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize,
+                    _ => DEFAULT_WEBAUTHN_SIZE, // Fallback default
+                }
+            } else {
+                DEFAULT_WEBAUTHN_SIZE // Default size when no key_data provided
+            };
+
+            // Ensure size is at least minimum
+            let size = size.max(MIN_WEBAUTHN_SIZE);
+
+            // Construct authenticatorData (37 bytes)
+            let mut webauthn_data = vec![0u8; AUTH_DATA_SIZE];
+            webauthn_data[32] = 0x01; // UP flag set
+
+            // Construct clientDataJSON with padding in origin field if needed
+            let additional_bytes = size - MIN_WEBAUTHN_SIZE;
+            let client_json = if additional_bytes > 0 {
+                // Add padding bytes to origin field
+                // {"type":"webauthn.get","challenge":"","origin":"XXXXX"}
+                let padding = "x".repeat(additional_bytes);
+                format!(
+                    r#"{{"type":"webauthn.get","challenge":"","origin":"{}"}}"#,
+                    padding
+                )
+            } else {
+                BASE_CLIENT_JSON.to_string()
+            };
+
+            webauthn_data.extend_from_slice(client_json.as_bytes());
+            let webauthn_data = Bytes::from(webauthn_data);
 
             AASignature::WebAuthn(WebAuthnSignature {
                 webauthn_data,

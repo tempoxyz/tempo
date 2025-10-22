@@ -761,7 +761,7 @@ mod serde_input {
 mod tests {
     use super::*;
     use crate::transaction::aa_signature::{AASignature, derive_p256_address};
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, hex, bytes};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
     #[test]
@@ -1431,8 +1431,14 @@ mod tests {
     #[test]
     #[cfg(feature = "serde")]
     fn call_serde() {
-        let call: Call = serde_json::from_str(r#"{"to":"0x0000000000000000000000000000000000000002","value":"0x1","input":"0x1234"}"#).unwrap();
-        assert_eq!(call.to, TxKind::Call(address!("0000000000000000000000000000000000000002")));
+        let call: Call = serde_json::from_str(
+            r#"{"to":"0x0000000000000000000000000000000000000002","value":"0x1","input":"0x1234"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            call.to,
+            TxKind::Call(address!("0000000000000000000000000000000000000002"))
+        );
         assert_eq!(call.value, U256::ONE);
         assert_eq!(call.input, bytes!("0x1234"));
     }
