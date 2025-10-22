@@ -525,9 +525,9 @@ where
     /// Processes a [Block] that may contain a [DealOutcome], tracking it with the [Arbiter] if
     /// all acknowledgement signatures are valid.
     #[instrument(skip_all, fields(epoch = self.epoch(), block.height = block.height()), err)]
-    pub(super) async fn process_block(&mut self, block: Block) -> eyre::Result<()> {
-        let Some(block_outcome) = read_deal_outcome_from_block(block) else {
-            debug!("saw block with no deal outcome");
+    pub(super) async fn process_block(&mut self, block: &Block) -> eyre::Result<()> {
+        let Some(block_outcome) = block.try_read_ceremony_deal_outcome() else {
+            info!("block contained no usable deal outcome");
             return Ok(());
         };
 
@@ -585,6 +585,7 @@ where
             )
             .wrap_err("failed to track dealer outcome in arbiter")?;
 
+        let block_dealer = block_outcome.dealer.clone();
         self.round_metadata
             .upsert_sync(self.epoch().into(), |meta| {
                 if let Some(pos) = meta
@@ -599,6 +600,12 @@ where
             })
             .await
             .expect("must persist deal outcome");
+
+        // If the block outcome is ours, remove it. This ensures that the app
+        // does not include the outcome into the block again.
+        if block_dealer == self.config.me.public_key() {
+            let _ = self.dealer_meta.outcome.take();
+        }
 
         Ok(())
     }
@@ -713,6 +720,10 @@ where
     pub(super) fn epoch(&self) -> Epoch {
         self.config.epoch
     }
+
+    pub(super) fn deal_outcome(&self) -> Option<&DealOutcome> {
+        self.dealer_meta.outcome.as_ref()
+    }
 }
 
 /// Metadata associated with a [Dealer].
@@ -734,7 +745,7 @@ struct DealerMetadata {
 ///
 /// [Dealer]: commonware_cryptography::bls12381::dkg::Dealer
 #[derive(Clone)]
-struct DealOutcome {
+pub(crate) struct DealOutcome {
     /// The public key of the dealer.
     dealer: PublicKey,
 
@@ -937,7 +948,7 @@ impl Read for Ack {
 }
 
 /// A result of a DKG/reshare round.
-enum RoundResult {
+pub(super) enum RoundResult {
     /// The new group polynomial, if the manager is not a [Player].
     Polynomial(Public<MinSig>),
     /// The new group polynomial and the local share, if the manager is a [Player].
@@ -1159,8 +1170,4 @@ impl EncodeSize for Dkg {
     fn encode_size(&self) -> usize {
         UInt(self.epoch).encode_size() + self.payload.encode_size()
     }
-}
-
-fn read_deal_outcome_from_block(block: Block) -> Option<DealOutcome> {
-    todo!()
 }

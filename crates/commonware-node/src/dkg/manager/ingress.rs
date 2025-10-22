@@ -1,16 +1,14 @@
 use std::sync::{Arc, Mutex};
 
 use commonware_consensus::{
-    Block as _, Reporter, marshal::SchemeProvider, simplex::signing_scheme::bls12381_threshold,
-    types::Epoch,
+    Reporter, marshal::SchemeProvider, simplex::signing_scheme::bls12381_threshold, types::Epoch,
 };
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_resolver::p2p::Coordinator;
+use commonware_cryptography::bls12381::primitives::variant::MinSig;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
 use tracing::{Span, warn};
 
-use crate::consensus::{Digest, block::Block};
+use crate::{consensus::block::Block, dkg::ceremony::DealOutcome};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -25,6 +23,36 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
+    pub(crate) async fn get_ceremony_deal(
+        &self,
+        epoch: Epoch,
+    ) -> eyre::Result<Option<DealOutcome>> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(GetCeremonyDeal {
+                epoch,
+                response,
+            }))
+            .wrap_err("failed sending message to actor")?;
+        rx.await
+            .wrap_err("actor dropped channel before responding with ceremony deal outcome")
+    }
+
+    pub(crate) async fn get_ceremony_outcome(
+        &self,
+        epoch: Epoch,
+    ) -> eyre::Result<Option<DealOutcome>> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(GetCeremonyOutcome {
+                epoch,
+                response,
+            }))
+            .wrap_err("failed sending message to actor")?;
+        rx.await
+            .wrap_err("actor dropped channel before responding with ceremony deal outcome")
+    }
+
     pub(crate) async fn get_scheme(
         &self,
         epoch: Epoch,
@@ -54,6 +82,8 @@ impl Message {
 
 pub(super) enum Command {
     Finalize(Finalize),
+    GetCeremonyDeal(GetCeremonyDeal),
+    GetCeremonyOutcome(GetCeremonyOutcome),
     GetScheme(GetScheme),
 }
 
@@ -69,6 +99,18 @@ impl From<GetScheme> for Command {
     }
 }
 
+impl From<GetCeremonyDeal> for Command {
+    fn from(value: GetCeremonyDeal) -> Self {
+        Self::GetCeremonyDeal(value)
+    }
+}
+
+impl From<GetCeremonyOutcome> for Command {
+    fn from(value: GetCeremonyOutcome) -> Self {
+        Self::GetCeremonyOutcome(value)
+    }
+}
+
 pub(super) struct Finalize {
     pub(super) block: Block,
     pub(super) response: oneshot::Sender<()>,
@@ -77,6 +119,16 @@ pub(super) struct Finalize {
 pub(super) struct GetScheme {
     epoch: Epoch,
     response: oneshot::Sender<Arc<bls12381_threshold::Scheme<MinSig>>>,
+}
+
+pub(super) struct GetCeremonyDeal {
+    pub(super) epoch: Epoch,
+    pub(super) response: oneshot::Sender<Option<DealOutcome>>,
+}
+
+pub(super) struct GetCeremonyOutcome {
+    pub(super) epoch: Epoch,
+    pub(super) response: oneshot::Sender<Option<DealOutcome>>,
 }
 
 impl Reporter for Mailbox {

@@ -232,7 +232,7 @@ where
     ) {
         if let Some(epoch) = epoch::of_height(height, self.config.heights_per_epoch) {
             // FIXME: is_last_height_of_epoch
-            if epoch::is_last_height(height, epoch, self.config.heights_per_epoch) {
+            if epoch::is_last_height_of_epoch(height, epoch, self.config.heights_per_epoch) {
                 let incoming_epoch = epoch.saturating_add(1);
                 info!(
                     incoming_epoch,

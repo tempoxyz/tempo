@@ -228,6 +228,7 @@ struct Inner<TState> {
     my_mailbox: ExecutionDriverMailbox,
 
     marshal: crate::alias::marshal::Mailbox,
+    dkg_manager: crate::dkg::manager::Mailbox,
 
     genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
@@ -326,7 +327,8 @@ impl Inner<Init> {
             mut response,
             round,
         } = request;
-        let proposal = select!(
+
+        let mut proposal = select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
@@ -339,8 +341,37 @@ impl Inner<Init> {
             }
         )?;
 
-        let proposed_block_digest = proposal.digest();
-        response.send(proposed_block_digest).map_err(|_| {
+        if proposal.digest() != parent_digest {
+            if epoch::is_last_height_of_epoch(
+                proposal.height(),
+                round.epoch(),
+                self.heights_per_epoch,
+            ) {
+                match self
+                    .dkg_manager
+                    .get_ceremony_outcome(request.round.epoch())
+                    .await {}
+            } else {
+                match self
+                    .dkg_manager
+                    .get_ceremony_deal(request.round.epoch())
+                    .await
+                {
+                    Err(error) => warn!(
+                        %error,
+                        "failed getting ceremony deal for current epoch becasue DKG manager went away",
+                    ),
+                    Ok(None) => {}
+                    Ok(Some(deal_outcome)) => {
+                        proposal = proposal.insert_ceremony_deal_outcome(deal_outcome);
+                    }
+                }
+            }
+        }
+
+        let proposal_digest = proposal.digest();
+
+        response.send(proposal_digest).map_err(|_| {
             eyre!(
                 "failed returning proposal to consensus engine: response channel was already closed"
             )
@@ -348,7 +379,7 @@ impl Inner<Init> {
 
         // If re-proposing, then don't store the parent for broadcasting and
         // don't touch the execution layer.
-        if proposed_block_digest == parent_digest {
+        if proposal_digest == parent_digest {
             return Ok(());
         }
 
@@ -360,11 +391,11 @@ impl Inner<Init> {
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize(None, proposed_block_digest)
+            .canonicalize(None, proposal_digest)
         {
             warn!(
                 %error,
-                %proposed_block_digest,
+                %proposal_digest,
                 "failed making the proposal the head of the canonical chain",
             );
         }
@@ -456,9 +487,9 @@ impl Inner<Init> {
         debug!(height = parent.height(), "retrieved parent block",);
 
         // XXX: Re-propose the parent if the parent is the last height of the
-        // round. parent.height+1 should be proposed as the first block of the
+        // epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
-        if epoch::is_last_height(parent.height(), round.epoch(), self.heights_per_epoch) {
+        if epoch::is_last_height_of_epoch(parent.height(), round.epoch(), self.heights_per_epoch) {
             info!("last height of epoch reached; re-proposing parent");
             return Ok(parent);
         }
@@ -569,7 +600,8 @@ impl Inner<Init> {
         // immediately, and happen very rarely. It's better to optimize for the
         // general case.
         if payload == parent_digest {
-            if epoch::is_last_height(block.height(), round.epoch(), self.heights_per_epoch) {
+            if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.heights_per_epoch)
+            {
                 return Ok((block, true));
             } else {
                 return Ok((block, false));

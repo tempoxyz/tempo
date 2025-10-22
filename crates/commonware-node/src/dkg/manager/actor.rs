@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use commonware_consensus::{Block as _, simplex::signing_scheme::bls12381_threshold, types::Epoch};
+use commonware_cryptography::bls12381::dkg::player::Output;
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_p2p::{Receiver, Sender, utils::mux};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
@@ -10,8 +11,13 @@ use eyre::WrapErr as _;
 use eyre::eyre;
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::CryptoRngCore;
+use tracing::info;
 use tracing::{Span, instrument, warn};
 
+use crate::dkg::ceremony::DealOutcome;
+use crate::dkg::ceremony::RoundResult;
+use crate::dkg::manager::ingress::GetCeremonyDeal;
+use crate::dkg::manager::ingress::GetCeremonyOutcome;
 use crate::{
     dkg::{
         ceremony::{self, Ceremony},
@@ -49,10 +55,22 @@ where
 
         // Can't know the some of the types of ceremony until after receiving
         // Sender and Receiver and so must make it an ephemeral variable.
+
         let mut ceremony = None;
+
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
             match message.command {
+                super::Command::GetCeremonyDeal(get_ceremony_deal) => {
+                    let _: Result<_, _> = self
+                        .handle_get_ceremony_deal(cause, get_ceremony_deal, &mut ceremony)
+                        .await;
+                }
+                super::Command::GetCeremonyOutcome(get_ceremony_outcome) => {
+                    let _: Result<_, _> = self
+                        .handle_get_ceremony_outcome(cause, get_ceremony_outcome, &mut ceremony)
+                        .await;
+                }
                 super::Command::Finalize(finalize) => {
                     let _: Result<_, _> = self
                         .handle_finalize(cause, finalize, &mut ceremony, &mut ceremony_mux)
@@ -72,12 +90,87 @@ where
     ) -> Handle<()> {
         spawn_cell!(self.context, self.run(dkg_channel).await)
     }
-}
 
-impl<TContext> Actor<TContext>
-where
-    TContext: Clock + governor::clock::Clock + CryptoRngCore + Metrics + Spawner + Storage,
-{
+    #[instrument(
+        parent = cause,
+        skip_all,
+        fields(
+            request.epoch = epoch,
+        ),
+        err,
+    )]
+    async fn handle_get_ceremony_deal<TReceiver, TSender>(
+        &mut self,
+        cause: Span,
+        GetCeremonyDeal { epoch, response }: GetCeremonyDeal,
+        ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
+    ) -> eyre::Result<()>
+    where
+        TReceiver: Receiver<PublicKey = PublicKey>,
+        TSender: Sender<PublicKey = PublicKey>,
+    {
+        let mut outcome = None;
+
+        'get_outcome: {
+            let Some(ceremony) = ceremony else {
+                warn!("no dkg ceremony currently active");
+                break 'get_outcome;
+            };
+            if ceremony.epoch() != epoch {
+                warn!(
+                    ceremony.epoch = %ceremony.epoch(),
+                    "deal outcome for ceremony of different epoch requested",
+                );
+                break 'get_outcome;
+            }
+            outcome = ceremony.deal_outcome().cloned();
+        }
+
+        response
+            .send(outcome)
+            .map_err(|_| eyre!("failed returning outcome because requester went away"))
+    }
+
+    #[instrument(
+        parent = cause,
+        skip_all,
+        fields(
+            request.epoch = epoch,
+        ),
+        err,
+    )]
+    async fn handle_get_ceremony_outcome<TReceiver, TSender>(
+        &mut self,
+        cause: Span,
+        GetCeremonyOutcome { epoch, response }: GetCeremonyOutcome,
+        ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
+    ) -> eyre::Result<()>
+    where
+        TReceiver: Receiver<PublicKey = PublicKey>,
+        TSender: Sender<PublicKey = PublicKey>,
+    {
+        let mut outcome = None;
+
+        'get_outcome: {
+            let Some(ceremony) = ceremony else {
+                warn!("no dkg ceremony currently active");
+                break 'get_outcome;
+            };
+            if ceremony.epoch() != epoch {
+                warn!(
+                    ceremony.epoch = %ceremony.epoch(),
+                    "deal outcome for ceremony of different epoch requested",
+                );
+                break 'get_outcome;
+            }
+            outcome = ceremony.deal_outcome().cloned();
+        }
+
+        response
+            .send(outcome)
+            .map_err(|_| eyre!("failed returning outcome because requester went away"))
+    }
+
     #[instrument(
         parent = cause,
         skip_all,
@@ -161,8 +254,55 @@ where
                         "no dkg ceremony was running during the second half of the epoch"
                     ));
                 };
-                let _ = ceremony.process_block(block).await;
+                let _ = ceremony.process_block(&block).await;
             }
+        }
+
+        // XXX: Need to finalize on the pre-to-last height of the epoch so that
+        // the information becomes availaboe on the last height and can be
+        // stored on chain.
+        if epoch::is_last_height(
+            block.height().saturating_add(1),
+            self.config.heights_per_epoch,
+        ) {
+            let Some(ceremony) = ceremony.take() else {
+                return Err(eyre!(
+                    "no dkg ceremony was running on the pre-to-last block of the epoch"
+                ));
+            };
+            let (next_participants, next_public_polynomial, next_share, success) =
+                match ceremony.finalize().await {
+                    (next_participants, RoundResult::Output(Output { public, share }), success) => {
+                        (next_participants, public, Some(share), success)
+                    }
+                    (next_participants, RoundResult::Polynomial(public), success) => {
+                        (next_participants, public, None, success)
+                    }
+                };
+
+            // TODO(janis): add metrics
+            // if !success {
+            //     self.failed_rounds.inc();
+            // }
+
+            // TODO(janis): add display formatting to the polynomial
+            info!(
+                success,
+                ?next_public_polynomial,
+                "finalized dkg reshare ceremony; instructing reconfiguration after reshare.",
+            );
+            // let next_epoch = epoch + 1;
+
+            // // Persist the next epoch information
+            // let epoch_state = EpochState {
+            //     epoch: next_epoch,
+            //     public: next_public.clone(),
+            //     share: next_share.clone(),
+            // };
+            // self.epoch_metadata
+            //     .put_sync(EPOCH_METADATA_KEY, epoch_state)
+            //     .await
+            //     .expect("epoch metadata must update");
         }
         Ok(())
     }
