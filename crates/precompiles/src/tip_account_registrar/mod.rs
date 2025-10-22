@@ -1,29 +1,17 @@
 pub mod bindings;
 pub mod dispatch;
 
+use crate::{
+    storage::PrecompileStorageProvider,
+    tip_account_registrar::bindings::{ITipAccountRegistrar, TipAccountRegistrarError},
+};
 use alloy::{
     eips::eip7702::constants::SECP256K1N_HALF,
     primitives::{Address, B512, U256},
 };
+use alloy_evm::precompiles::DynPrecompile;
 use revm::{precompile::secp256k1::ecrecover, state::Bytecode};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
-
-use crate::{
-    storage::PrecompileStorageProvider,
-    tempo_precompile,
-    tip_account_registrar::bindings::{ITipAccountRegistrar, TipAccountRegistrarError},
-};
-use alloy_evm::precompiles::DynPrecompile;
-
-pub struct TipAccountRegistrarPrecompile;
-
-impl TipAccountRegistrarPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("TipAccountRegistrar", |input| TipAccountRegistrar::new(
-            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(input.internals, chain_id),
-        ))
-    }
-}
 
 pub struct TipAccountRegistrar<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,

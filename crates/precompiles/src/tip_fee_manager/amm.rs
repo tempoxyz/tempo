@@ -704,7 +704,7 @@ mod tests {
     /// Test basic fee swap functionality
     /// Corresponds to testFeeSwap in StableAMM.t.sol
     #[test]
-    fn test_fee_swap() -> Result<(), PrecompileError> {
+    fn test_fee_swap() -> eyre::Result<()> {
         let (mut amm, _, user_token, validator_token) = setup_test_amm();
 
         // Setup pool with 100,000 tokens each
@@ -724,7 +724,8 @@ mod tests {
         let expected_out = (amount_in * M) / SCALE;
 
         // Execute fee swap
-        amm.fee_swap(user_token, validator_token, amount_in)?;
+        amm.fee_swap(user_token, validator_token, amount_in)
+            .expect("Could not execute fee swap");
 
         // Check pending swaps updated
         let pending_in = amm.get_pending_fee_swap_in(&pool_id)?;
@@ -838,7 +839,11 @@ mod tests {
 
         // Check total pending
         let total_pending = swap1 + swap2 + swap3;
-        assert_eq!(amm.get_pending_fee_swap_in(&pool_id), total_pending);
+        assert_eq!(
+            amm.get_pending_fee_swap_in(&pool_id)
+                .expect("Could not get fee swap in"),
+            total_pending
+        );
 
         // Execute all pending swaps
         let total_out = amm.execute_pending_fee_swaps(user_token, validator_token)?;
@@ -846,7 +851,11 @@ mod tests {
         assert_eq!(total_out, expected_total_out);
 
         // Verify pending cleared
-        assert_eq!(amm.get_pending_fee_swap_in(&pool_id), U256::ZERO);
+        assert_eq!(
+            amm.get_pending_fee_swap_in(&pool_id)
+                .expect("Could not get fee swap in"),
+            U256::ZERO
+        );
 
         // Verify reserves updated
         let pool = amm.get_pool(&pool_id);

@@ -5,21 +5,10 @@ use self::bindings::INonce;
 use crate::{
     DelegateCallNotAllowed,
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
-    tempo_precompile,
 };
 use alloy::primitives::{Address, U256};
 use alloy_evm::precompiles::DynPrecompile;
 use revm::precompile::PrecompileOutput;
-
-pub struct NoncePrecompile;
-
-impl NoncePrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("NonceManager", |input| NonceManager::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
-        ))
-    }
-}
 
 /// Storage slots for Nonce precompile data
 pub mod slots {

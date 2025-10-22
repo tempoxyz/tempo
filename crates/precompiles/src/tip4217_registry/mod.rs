@@ -2,24 +2,13 @@
 pub mod bindings;
 pub mod dispatch;
 
-use crate::tempo_precompile;
-use alloy_evm::precompiles::DynPrecompile;
-
 use crate::tip4217_registry::bindings::ITIP4217Registry;
-
-pub struct TIP4217RegistryPrecompile;
-
-impl TIP4217RegistryPrecompile {
-    pub fn create() -> DynPrecompile {
-        tempo_precompile!("TIP4217Registry", |input| TIP4217Registry::default())
-    }
-}
+use alloy_evm::precompiles::DynPrecompile;
 
 const KNOWN_DECIMALS: &[(&str, u8)] = &[("USD", 6)];
 
 #[derive(Debug, Default)]
 pub struct TIP4217Registry {}
-
 impl TIP4217Registry {
     pub fn get_currency_decimals(&mut self, call: ITIP4217Registry::getCurrencyDecimalsCall) -> u8 {
         // If it's a known currency, return the decimals

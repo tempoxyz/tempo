@@ -1,19 +1,17 @@
 pub mod dispatch;
 
 use crate::{
-    STABLECOIN_EXCHANGE_ADDRESS, DelegateCallNotAllowed,
+    DelegateCallNotAllowed, STABLECOIN_EXCHANGE_ADDRESS,
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
-    tempo_precompile,
     tip20::{
         TIP20Token,
         bindings::{ITIP20, TIP20Error},
         roles::RolesAuthContract,
     },
 };
-use revm::precompile::PrecompileOutput;
 use alloy::primitives::{Address, B256, U256, keccak256};
 use alloy_evm::precompiles::DynPrecompile;
-use revm::precompile::PrecompileId;
+use revm::precompile::{PrecompileId, PrecompileOutput};
 use std::sync::LazyLock;
 
 pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));
@@ -22,15 +20,6 @@ pub static RECEIVE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"RECEIVE_R
 const NAME: &str = "linkingUSD";
 const SYMBOL: &str = "linkingUSD";
 const CURRENCY: &str = "USD";
-
-pub struct LinkingUSDPrecompile;
-impl LinkingUSDPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
-        ))
-    }
-}
 
 pub struct LinkingUSD<'a, S: PrecompileStorageProvider> {
     pub token: TIP20Token<'a, S>,

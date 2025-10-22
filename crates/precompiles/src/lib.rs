@@ -1,12 +1,11 @@
 //! Tempo precompile implementations.
-
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 pub mod linking_usd;
 pub mod nonce;
 pub mod stablecoin_exchange;
-mod storage;
+pub mod storage;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
@@ -14,25 +13,27 @@ pub mod tip4217_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
+use crate::{
+    linking_usd::LinkingUSD,
+    nonce::NonceManager,
+    stablecoin_exchange::StablecoinExchange,
+    storage::evm::EvmPrecompileStorageProvider,
+    tip_account_registrar::TipAccountRegistrar,
+    tip_fee_manager::TipFeeManager,
+    tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20},
+    tip20_factory::TIP20Factory,
+    tip403_registry::TIP403Registry,
+    tip4217_registry::TIP4217Registry,
+};
 use alloy::{
-    primitives::{Address, Bytes, address, hex},
+    primitives::{Address, Bytes, address},
     sol,
     sol_types::{SolCall, SolError, SolInterface},
 };
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
-use linking_usd::LinkingUSDPrecompile;
-use nonce::NoncePrecompile;
-use revm::precompile::{PrecompileOutput, PrecompileResult};
-use stablecoin_exchange::StablecoinExchangePrecompile;
-use tip_account_registrar::TipAccountRegistrarPrecompile;
-use tip_fee_manager::TipFeeManagerPrecompile;
-use tip20::TIP20Precompile;
-use tip20_factory::TIP20FactoryPrecompile;
-use tip4217_registry::TIP4217RegistryPrecompile;
-
-use crate::{
-    tip20::{address_to_token_id_unchecked, is_tip20},
-    tip403_registry::{TIP403Registry, TIP403RegistryPrecompile},
+use revm::{
+    context::Block,
+    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
@@ -89,7 +90,6 @@ sol! {
     error DelegateCallNotAllowed();
 }
 
-#[macro_export]
 macro_rules! tempo_precompile {
     ($id:expr, |$input:ident| $impl:expr) => {
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
@@ -102,6 +102,89 @@ macro_rules! tempo_precompile {
             $impl.call($input.data, &$input.caller)
         })
     };
+}
+
+pub struct TipFeeManagerPrecompile;
+impl TipFeeManagerPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
+            TIP_FEE_MANAGER_ADDRESS,
+            input.internals.block_env().beneficiary(),
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
+        ))
+    }
+}
+
+pub struct TipAccountRegistrarPrecompile;
+impl TipAccountRegistrarPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("TipAccountRegistrar", |input| TipAccountRegistrar::new(
+            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(input.internals, chain_id),
+        ))
+    }
+}
+
+pub struct TIP4217RegistryPrecompile;
+impl TIP4217RegistryPrecompile {
+    pub fn create() -> DynPrecompile {
+        tempo_precompile!("TIP4217Registry", |input| TIP4217Registry::default())
+    }
+}
+
+pub struct TIP403RegistryPrecompile;
+impl TIP403RegistryPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("TIP403Registry", |input| TIP403Registry::new(
+            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(input.internals, chain_id),
+        ))
+    }
+}
+
+pub struct TIP20FactoryPrecompile;
+impl TIP20FactoryPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("TIP20Factory", |input| TIP20Factory::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
+        ))
+    }
+}
+
+pub struct TIP20Precompile;
+impl TIP20Precompile {
+    pub fn create(address: &Address, chain_id: u64) -> DynPrecompile {
+        let token_id = address_to_token_id_unchecked(address);
+        tempo_precompile!("TIP20Token", |input| TIP20Token::new(
+            token_id,
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+        ))
+    }
+}
+
+pub struct StablecoinExchangePrecompile;
+impl StablecoinExchangePrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
+        ))
+    }
+}
+
+pub struct NoncePrecompile;
+impl NoncePrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("NonceManager", |input| NonceManager::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
+        ))
+    }
+}
+
+pub struct LinkingUSDPrecompile;
+impl LinkingUSDPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+        ))
+    }
 }
 
 #[inline]

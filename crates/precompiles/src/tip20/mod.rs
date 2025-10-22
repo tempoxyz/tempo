@@ -9,7 +9,6 @@ use crate::{
         evm::EvmPrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
-    tempo_precompile,
     tip20::{
         bindings::{ITIP20, TIP20Error, TIP20Event},
         roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
@@ -54,17 +53,6 @@ pub fn token_id_to_address(token_id: u64) -> Address {
 
 pub fn address_to_token_id_unchecked(address: &Address) -> u64 {
     u64::from_be_bytes(address.as_slice()[12..20].try_into().unwrap())
-}
-
-pub struct TIP20Precompile;
-impl TIP20Precompile {
-    pub fn create(address: &Address, chain_id: u64) -> DynPrecompile {
-        let token_id = address_to_token_id_unchecked(address);
-        tempo_precompile!("TIP20Token", |input| TIP20Token::new(
-            token_id,
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
-        ))
-    }
 }
 
 pub mod slots {

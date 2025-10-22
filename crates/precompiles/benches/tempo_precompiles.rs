@@ -3,13 +3,10 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use tempo_precompiles::{
     LINKING_USD_ADDRESS,
-    contracts::{
-        storage::hashmap::HashMapStorageProvider,
-        tip20::{ISSUER_ROLE, TIP20Token},
-        tip20_factory::TIP20Factory,
-        tip403_registry::TIP403Registry,
-        types::{ITIP20, ITIP20Factory, ITIP403Registry},
-    },
+    storage::hashmap::HashMapStorageProvider,
+    tip20::{ISSUER_ROLE, PAUSE_ROLE, TIP20Token, UNPAUSE_ROLE, bindings::ITIP20},
+    tip20_factory::{TIP20Factory, bindings::ITIP20Factory},
+    tip403_registry::{TIP403Registry, bindings::ITIP403Registry},
 };
 
 fn tip20_metadata(c: &mut Criterion) {
@@ -435,7 +432,6 @@ fn tip20_mutate(c: &mut Criterion) {
     });
 
     c.bench_function("tip20_pause", |b| {
-        use tempo_precompiles::contracts::tip20::PAUSE_ROLE;
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
@@ -454,7 +450,6 @@ fn tip20_mutate(c: &mut Criterion) {
     });
 
     c.bench_function("tip20_unpause", |b| {
-        use tempo_precompiles::contracts::tip20::UNPAUSE_ROLE;
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);

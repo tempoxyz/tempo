@@ -5,7 +5,6 @@ pub mod dispatch;
 use crate::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     storage::{PrecompileStorageProvider, StorageOps, evm::EvmPrecompileStorageProvider},
-    tempo_precompile,
     tip_fee_manager::{
         amm::{PoolKey, TIPFeeAMM},
         bindings::{FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM},
@@ -15,18 +14,6 @@ use crate::{
 };
 
 use alloy_evm::precompiles::DynPrecompile;
-
-pub struct TipFeeManagerPrecompile;
-
-impl TipFeeManagerPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            input.internals.block_env().beneficiary(),
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
-        ))
-    }
-}
 
 // Re-export PoolKey for backward compatibility with tests
 use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};

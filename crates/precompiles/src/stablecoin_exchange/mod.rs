@@ -24,7 +24,6 @@ use crate::{
         PrecompileStorageProvider, StorageOps, evm::EvmPrecompileStorageProvider,
         slots::mapping_slot,
     },
-    tempo_precompile,
     tip20::{
         TIP20Token, address_to_token_id_unchecked,
         bindings::{ITIP20, TIP20Error},
@@ -36,15 +35,6 @@ use revm::{
     precompile::{PrecompileError, PrecompileOutput},
     state::Bytecode,
 };
-
-pub struct StablecoinExchangePrecompile;
-impl StablecoinExchangePrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
-        ))
-    }
-}
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///

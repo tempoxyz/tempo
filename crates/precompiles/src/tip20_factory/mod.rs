@@ -5,7 +5,6 @@ pub mod dispatch;
 use crate::{
     TIP20_FACTORY_ADDRESS,
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
-    tempo_precompile,
     tip20::{
         TIP20Token, address_to_token_id_unchecked, bindings::TIP20Error, is_tip20,
         token_id_to_address,
@@ -17,16 +16,6 @@ use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use alloy_evm::precompiles::DynPrecompile;
 use revm::{precompile::PrecompileError, state::Bytecode};
 use tracing::trace;
-
-pub struct TIP20FactoryPrecompile;
-
-impl TIP20FactoryPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("TIP20Factory", |input| TIP20Factory::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
-        ))
-    }
-}
 
 mod slots {
     use alloy::primitives::U256;

@@ -7,7 +7,6 @@ use crate::{
         PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
     },
-    tempo_precompile,
     tip403_registry::bindings::{ITIP403Registry, TIP403RegistryError, TIP403RegistryEvent},
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
@@ -23,16 +22,6 @@ mod slots {
     pub(super) const POLICY_ID_COUNTER: U256 = uint!(0_U256);
     pub(super) const POLICY_DATA: U256 = uint!(1_U256);
     pub(super) const POLICY_SET: U256 = uint!(2_U256);
-}
-
-pub struct TIP403RegistryPrecompile;
-
-impl TIP403RegistryPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("TIP403Registry", |input| TIP403Registry::new(
-            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(input.internals, chain_id),
-        ))
-    }
 }
 
 #[derive(Debug)]
