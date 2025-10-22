@@ -11614,6 +11614,7 @@ name = "tempo-contracts"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "revm",
 ]
 
 [[package]]

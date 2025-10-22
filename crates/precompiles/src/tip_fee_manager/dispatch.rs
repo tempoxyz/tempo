@@ -1,10 +1,7 @@
 use crate::{
     Precompile, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip_fee_manager::{
-        TipFeeManager,
-        IFeeManager, ITIPFeeAMM,
-    },
+    tip_fee_manager::{TipFeeManager, IFeeManager, ITIPFeeAMM},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};

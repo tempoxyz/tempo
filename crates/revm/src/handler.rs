@@ -31,7 +31,7 @@ use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
-    tip_fee_manager::{self, TipFeeManager, bindings::IFeeManager},
+    tip_fee_manager::{self, IFeeManager, TipFeeManager},
     tip20,
 };
 use tempo_primitives::transaction::AASignature;

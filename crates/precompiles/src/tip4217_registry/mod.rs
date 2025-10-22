@@ -1,8 +1,7 @@
 // Module for tip4217_registry precompile
-pub mod bindings;
 pub mod dispatch;
 
-pub use bindings::*;
+pub use tempo_contracts::precompiles::ITIP4217Registry;
 
 
 const KNOWN_DECIMALS: &[(&str, u8)] = &[("USD", 6)];

@@ -1,7 +1,6 @@
-pub mod bindings;
 pub mod dispatch;
 
-pub use bindings::*;
+pub use tempo_contracts::precompiles::{ITipAccountRegistrar, TipAccountRegistrarError};
 
 use crate::{
     storage::PrecompileStorageProvider,

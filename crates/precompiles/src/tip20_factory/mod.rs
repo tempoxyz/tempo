@@ -1,8 +1,7 @@
 // Module for tip20_factory precompile
-pub mod bindings;
 pub mod dispatch;
 
-pub use bindings::*;
+pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryEvent};
 
 use crate::{
     TIP20_FACTORY_ADDRESS,
@@ -11,9 +10,7 @@ use crate::{
         TIP20Token, address_to_token_id_unchecked, TIP20Error, is_tip20,
         token_id_to_address,
     },
-    tip20_factory::ITIP20Factory,
 };
-pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 use tracing::trace;

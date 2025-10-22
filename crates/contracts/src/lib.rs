@@ -62,5 +62,4 @@ pub mod contracts {
 
 pub use contracts::{CreateX, IthacaAccount, Multicall, Permit2, SafeDeployer};
 
-// TODO: re-export precompiles
-pub mod precompiles {}
+pub mod precompiles;

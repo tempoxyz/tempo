@@ -1,5 +1,4 @@
 //! Stablecoin DEX types and utilities.
-pub mod bindings;
 pub mod dispatch;
 pub mod error;
 pub mod offsets;
@@ -7,7 +6,7 @@ pub mod order;
 pub mod orderbook;
 pub mod slots;
 
-pub use bindings::*;
+pub use tempo_contracts::precompiles::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents};
 
 pub use order::Order;
 pub use orderbook::{

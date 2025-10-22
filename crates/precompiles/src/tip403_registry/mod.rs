@@ -1,7 +1,6 @@
-pub mod bindings;
 pub mod dispatch;
 
-pub use bindings::*;
+pub use tempo_contracts::precompiles::{ITIP403Registry, TIP403RegistryError, TIP403RegistryEvent};
 
 use crate::{
     TIP403_REGISTRY_ADDRESS,

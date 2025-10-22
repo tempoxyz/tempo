@@ -1,9 +1,7 @@
-pub mod bindings;
 pub mod dispatch;
 
-pub use bindings::*;
+pub use tempo_contracts::precompiles::INonce;
 
-use self::INonce;
 use crate::storage::PrecompileStorageProvider;
 use alloy::primitives::{Address, U256};
 

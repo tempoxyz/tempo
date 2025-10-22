@@ -1,8 +1,7 @@
-pub mod bindings;
 pub mod dispatch;
 pub mod roles;
 
-pub use bindings::*;
+pub use tempo_contracts::precompiles::{ITIP20, IRolesAuth, TIP20Error, TIP20Event, RolesAuthError, RolesAuthEvent};
 
 use crate::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -12,8 +11,8 @@ use crate::{
     },
     tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
-    tip403_registry::{TIP403Registry, ITIP403Registry},
-    tip4217_registry::{TIP4217Registry, ITIP4217Registry},
+    tip403_registry::{ITIP403Registry, TIP403Registry},
+    tip4217_registry::{ITIP4217Registry, TIP4217Registry},
 };
 use alloy::{
     consensus::crypto::secp256k1 as eth_secp256k1,

@@ -16,8 +16,8 @@ use reth_evm::{
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    stablecoin_exchange::bindings::IStablecoinExchange, tip_fee_manager::bindings::IFeeManager,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
+    tip_fee_manager::IFeeManager,
 };
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_revm::evm::TempoContext;

@@ -1,8 +1,7 @@
 pub mod amm;
-pub mod bindings;
 pub mod dispatch;
 
-pub use bindings::*;
+pub use tempo_contracts::precompiles::{IFeeManager, ITIPFeeAMM, FeeManagerError, FeeManagerEvent, TIPFeeAMMError, TIPFeeAMMEvent};
 
 use crate::{
     DEFAULT_FEE_TOKEN,
