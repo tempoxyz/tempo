@@ -277,3 +277,4 @@ impl Into<PrecompileError> for TIPFeeAMMError {
         PrecompileError::Other(format!("{:?}", self.selector()))
     }
 }
+

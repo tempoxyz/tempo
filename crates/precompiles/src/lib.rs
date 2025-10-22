@@ -19,7 +19,7 @@ use alloy::{
     sol,
     sol_types::{SolCall, SolError, SolInterface},
 };
-use alloy_evm::precompiles::PrecompilesMap;
+use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use linking_usd::LinkingUSDPrecompile;
 use nonce::NoncePrecompile;
 use revm::precompile::{PrecompileOutput, PrecompileResult};
@@ -30,7 +30,10 @@ use tip20::TIP20Precompile;
 use tip20_factory::TIP20FactoryPrecompile;
 use tip4217_registry::TIP4217RegistryPrecompile;
 
-use crate::tip403_registry::TIP403RegistryPrecompile;
+use crate::{
+    tip20::{address_to_token_id_unchecked, is_tip20},
+    tip403_registry::{TIP403Registry, TIP403RegistryPrecompile},
+};
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
 pub const LINKING_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
@@ -65,7 +68,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id))
         } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403Registry::create(chain_id))
+            Some(TIP403RegistryPrecompile::create(chain_id))
         } else if *address == TIP4217_REGISTRY_ADDRESS {
             Some(TIP4217RegistryPrecompile::create())
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
