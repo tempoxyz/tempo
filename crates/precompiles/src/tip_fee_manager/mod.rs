@@ -203,10 +203,13 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         user_token: Address,
         _to: Address,
         max_amount: U256,
-    ) -> Result<Address, PrecompileError> {
+    ) -> Result<Address, FeeManagerError> {
         // Get the validator's token preference
         let validator_slot = validator_token_slot(&self.beneficiary);
-        let mut validator_token = self.sload(validator_slot)?.into_address();
+        let mut validator_token = self
+            .sload(validator_slot)
+            .expect("TODO: handle error")
+            .into_address();
 
         if validator_token.is_zero() {
             validator_token = DEFAULT_FEE_TOKEN;
@@ -216,7 +219,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         if user_token != validator_token {
             let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
             if !amm.has_liquidity(user_token, validator_token, max_amount) {
-                return Err(FeeManagerError::insufficient_liquidity().into());
+                return Err(FeeManagerError::insufficient_liquidity());
             }
         }
 
