@@ -27,11 +27,10 @@ use tempo_precompiles::{
     stablecoin_exchange::StablecoinExchange,
     storage::evm::EvmPrecompileStorageProvider,
     tip_fee_manager::{
-        TipFeeManager,
-        bindings::{IFeeManager, ITIPFeeAMM},
+        TipFeeManager, IFeeManager, ITIPFeeAMM,
     },
-    tip20::{ISSUER_ROLE, TIP20Token, bindings::ITIP20},
-    tip20_factory::{TIP20Factory, bindings::ITIP20Factory},
+    tip20::{ISSUER_ROLE, TIP20Token, ITIP20},
+    tip20_factory::{TIP20Factory, ITIP20Factory},
 };
 
 /// Generate genesis allocation file for testing
