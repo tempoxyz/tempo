@@ -7,6 +7,7 @@ use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, 
 use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::sequence::U64;
 use eyre::WrapErr as _;
+use eyre::eyre;
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::CryptoRngCore;
 use tracing::{Span, instrument, warn};
@@ -93,8 +94,8 @@ where
         mux: &mut mux::MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<()>
     where
-        TReceiver: Receiver,
-        TSender: Sender,
+        TReceiver: Receiver<PublicKey = PublicKey>,
+        TSender: Sender<PublicKey = PublicKey>,
     {
         match epoch::relative_position(block.height(), self.config.heights_per_epoch) {
             epoch::RelativePosition::FirstHalf => {
@@ -141,12 +142,19 @@ where
                     .as_mut()
                     .expect("ceremony is initialized immediately above");
 
-                ceremony.distribute().await;
-
-                // Process any incoming messages from other dealers/players.
-                manager.process_messages(epoch).await;
+                let _ = ceremony.request_acks().await;
+                let _ = ceremony.process_messages().await;
             }
-            epoch::RelativePosition::Middle => todo!(),
+            epoch::RelativePosition::Middle => {
+                let Some(ceremony) = ceremony else {
+                    return Err(eyre!(
+                        "no dkg ceremony was running at the midpoint of the epoch"
+                    ));
+                };
+                let _ = ceremony.process_messages().await;
+
+                let _ = ceremony.construct_deal_outcome().await;
+            }
             epoch::RelativePosition::SecondHalf => todo!(),
         }
         Ok(())
