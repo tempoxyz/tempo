@@ -562,7 +562,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             current_order_id += 1;
         }
 
-        self.set_active_order_id(pending_order_id);
+        self.set_active_order_id(pending_order_id)
+            .expect("TODO: handle error");
 
         Ok(())
     }
@@ -645,10 +646,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         order.update_remaining(new_remaining, self.storage, self.address);
 
         if order.is_bid() {
-            self.increment_balance(order.maker(), orderbook.base, fill_amount);
+            self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
         } else {
             let quote_amount = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
-            self.increment_balance(order.maker(), orderbook.quote, quote_amount);
+            self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
 
         let amount_out = if order.is_bid() {
@@ -699,7 +700,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let fill_amount = order.remaining();
 
         let amount_out = if order.is_bid() {
-            self.increment_balance(order.maker(), orderbook.base, fill_amount);
+            self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
             fill_amount
                 .checked_mul(price as u128)
                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
@@ -709,7 +710,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 .checked_mul(price as u128)
                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
                 .expect("Amount out calculation overflow");
-            self.increment_balance(order.maker(), orderbook.quote, quote_amount);
+            self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
 
             fill_amount
         };
@@ -972,7 +973,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         };
 
         // Credit remaining tokens to user's withdrawable balance
-        self.increment_balance(order.maker(), token, refund_amount);
+        self.increment_balance(order.maker(), token, refund_amount)?;
 
         // Clear the order from storage
         order.delete(self.storage, self.address);
@@ -1044,10 +1045,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 .checked_mul(price as u128)
                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
                 .expect("Quote amount calculation overflow");
-            self.increment_balance(order.maker(), orderbook.quote, quote_amount);
+            self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         } else {
             // Ask orders are in base token, refund base amount
-            self.increment_balance(order.maker(), orderbook.base, order.remaining());
+            self.increment_balance(order.maker(), orderbook.base, order.remaining())?;
         }
 
         // Clear the order from storage
@@ -1418,10 +1419,10 @@ mod tests {
     }
 
     #[test]
-    fn test_place_order_pair_does_not_exist() {
+    fn test_place_order_pair_does_not_exist() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize()?;
 
         let alice = Address::random();
         let admin = Address::random();
@@ -1440,17 +1441,16 @@ mod tests {
         );
 
         let result = exchange.place(&alice, base_token, amount, true, tick);
-        assert_eq!(
-            result,
-            Err(StablecoinExchangeError::pair_does_not_exist().into())
-        );
+        assert_eq!(result, Err(StablecoinExchangeError::pair_does_not_exist()));
+
+        Ok(())
     }
 
     #[test]
     fn test_place_bid_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize()?;
 
         let alice = Address::random();
         let admin = Address::random();
@@ -1526,7 +1526,7 @@ mod tests {
     fn test_place_ask_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let admin = Address::random();
@@ -1588,7 +1588,7 @@ mod tests {
     fn test_place_flip_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let admin = Address::random();
@@ -1664,7 +1664,7 @@ mod tests {
     fn test_cancel_pending_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let admin = Address::random();
@@ -1732,7 +1732,7 @@ mod tests {
     fn test_execute_block() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let admin = Address::random();
@@ -1818,17 +1818,17 @@ mod tests {
     fn test_execute_block_unauthorized() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let result = exchange.execute_block(&Address::random());
-        assert_eq!(result, Err(StablecoinExchangeError::unauthorized().into()));
+        assert_eq!(result, Err(StablecoinExchangeError::unauthorized()));
     }
 
     #[test]
     fn test_withdraw() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let admin = Address::random();
@@ -1890,7 +1890,7 @@ mod tests {
     fn test_withdraw_insufficient_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let admin = Address::random();
@@ -1909,10 +1909,7 @@ mod tests {
         // Try to withdraw more than balance
         let result = exchange.withdraw(alice, quote_token, 100u128);
 
-        assert_eq!(
-            result,
-            Err(StablecoinExchangeError::insufficient_balance().into())
-        );
+        assert_eq!(result, Err(StablecoinExchangeError::insufficient_balance()));
 
         Ok(())
     }
@@ -1921,7 +1918,7 @@ mod tests {
     fn test_quote_swap_exact_amount_out() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let admin = Address::random();
@@ -1961,7 +1958,7 @@ mod tests {
     fn test_quote_swap_exact_amount_in() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let admin = Address::random();
@@ -2002,7 +1999,7 @@ mod tests {
     fn test_quote_swap_exact_amount_out_base_for_quote() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let admin = Address::random();
@@ -2045,7 +2042,7 @@ mod tests {
     fn test_swap_exact_amount_out() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let bob = Address::random();
@@ -2073,7 +2070,9 @@ mod tests {
             .execute_block(&Address::ZERO)
             .expect("Execute block should succeed");
 
-        exchange.set_balance(bob, quote_token, 2_000_000u128);
+        exchange
+            .set_balance(bob, quote_token, 2_000_000u128)
+            .expect("Could not set balance");
 
         let price = orderbook::tick_to_price(tick);
         let max_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
@@ -2097,7 +2096,7 @@ mod tests {
     fn test_swap_exact_amount_in() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let bob = Address::random();
@@ -2125,7 +2124,9 @@ mod tests {
             .execute_block(&Address::ZERO)
             .expect("Execute block should succeed");
 
-        exchange.set_balance(bob, base_token, 2_000_000u128);
+        exchange
+            .set_balance(bob, base_token, 2_000_000u128)
+            .expect("Could not set balance");
 
         let price = orderbook::tick_to_price(tick);
         let min_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
@@ -2151,7 +2152,7 @@ mod tests {
     fn test_flip_order_execution() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let alice = Address::random();
         let bob = Address::random();
@@ -2183,7 +2184,9 @@ mod tests {
             .execute_block(&Address::ZERO)
             .expect("Execute block should succeed");
 
-        exchange.set_balance(bob, base_token, amount);
+        exchange
+            .set_balance(bob, base_token, amount)
+            .expect("Could not set balance");
 
         exchange
             .swap_exact_amount_in(&bob, base_token, quote_token, amount, 0)
@@ -2211,7 +2214,7 @@ mod tests {
     fn test_pair_created() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let admin = Address::random();
         let alice = Address::random();
@@ -2248,7 +2251,7 @@ mod tests {
     fn test_pair_already_created() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize();
+        exchange.initialize().expect("Could not init exchange");
 
         let admin = Address::random();
         let alice = Address::random();
