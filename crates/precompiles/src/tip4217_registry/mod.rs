@@ -3,7 +3,6 @@ pub mod bindings;
 pub mod dispatch;
 
 use crate::tip4217_registry::bindings::ITIP4217Registry;
-use alloy_evm::precompiles::DynPrecompile;
 
 const KNOWN_DECIMALS: &[(&str, u8)] = &[("USD", 6)];
 

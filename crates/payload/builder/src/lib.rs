@@ -41,7 +41,7 @@ use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager::executeBlockCall, types::IStablecoinExchange},
+    stablecoin_exchange::bindings::IStablecoinExchange, tip_fee_manager::bindings::IFeeManager,
 };
 use tempo_primitives::{
     TempoHeader, TempoPrimitives, TempoTxEnvelope,
@@ -88,7 +88,7 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
         let chain_id = Some(self.provider.chain_spec().chain().id());
 
         // Build fee manager system transaction
-        let fee_manager_input = executeBlockCall
+        let fee_manager_input = IFeeManager::executeBlockCall
             .abi_encode()
             .into_iter()
             .chain(block_env.number.to_be_bytes_vec())

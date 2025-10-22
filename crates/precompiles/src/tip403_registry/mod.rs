@@ -10,10 +10,7 @@ use crate::{
     tip403_registry::bindings::{ITIP403Registry, TIP403RegistryError, TIP403RegistryEvent},
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
-use alloy_evm::{
-    precompiles::DynPrecompile,
-    revm::interpreter::instructions::utility::{IntoAddress, IntoU256},
-};
+use alloy_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use revm::state::Bytecode;
 
 mod slots {

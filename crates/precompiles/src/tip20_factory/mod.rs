@@ -4,7 +4,7 @@ pub mod dispatch;
 
 use crate::{
     TIP20_FACTORY_ADDRESS,
-    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    storage::PrecompileStorageProvider,
     tip20::{
         TIP20Token, address_to_token_id_unchecked, bindings::TIP20Error, is_tip20,
         token_id_to_address,
@@ -13,8 +13,7 @@ use crate::{
 };
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
-use alloy_evm::precompiles::DynPrecompile;
-use revm::{precompile::PrecompileError, state::Bytecode};
+use revm::state::Bytecode;
 use tracing::trace;
 
 mod slots {

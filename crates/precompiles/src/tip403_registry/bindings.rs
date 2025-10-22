@@ -57,8 +57,8 @@ impl TIP403RegistryError {
     }
 }
 
-impl Into<PrecompileError> for TIP403RegistryError {
-    fn into(self) -> PrecompileError {
-        PrecompileError::Other(format!("{:?}", self.selector()))
+impl From<TIP403RegistryError> for PrecompileError {
+    fn from(value: TIP403RegistryError) -> Self {
+        Self::Other(format!("{:?}", value.selector()))
     }
 }

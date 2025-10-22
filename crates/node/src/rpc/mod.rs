@@ -35,7 +35,7 @@ use reth_rpc_eth_types::{
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_evm::TempoEvmConfig;
-use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
+use tempo_precompiles::provider::TIPFeeDatabaseExt;
 use tempo_primitives::TempoReceipt;
 use tokio::sync::Mutex;
 
