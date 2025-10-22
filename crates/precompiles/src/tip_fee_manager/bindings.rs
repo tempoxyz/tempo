@@ -179,9 +179,9 @@ impl FeeManagerError {
     }
 }
 
-impl Into<PrecompileError> for FeeManagerError {
-    fn into(self) -> PrecompileError {
-        PrecompileError::Other(format!("{:?}", self.selector()))
+impl From<FeeManagerError> for PrecompileError {
+    fn from(value: FeeManagerError) -> Self {
+        Self::Other(format!("{:?}", value.selector()))
     }
 }
 
@@ -272,9 +272,9 @@ impl TIPFeeAMMError {
     }
 }
 
-impl Into<PrecompileError> for TIPFeeAMMError {
-    fn into(self) -> PrecompileError {
-        PrecompileError::Other(format!("{:?}", self.selector()))
+impl From<TIPFeeAMMError> for PrecompileError {
+    fn from(value: TIPFeeAMMError) -> Self {
+        Self::Other(format!("{:?}", value.selector()))
     }
 }
 

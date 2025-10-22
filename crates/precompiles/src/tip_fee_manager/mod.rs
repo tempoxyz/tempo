@@ -3,8 +3,8 @@ pub mod bindings;
 pub mod dispatch;
 
 use crate::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    storage::{PrecompileStorageProvider, StorageOps, evm::EvmPrecompileStorageProvider},
+    DEFAULT_FEE_TOKEN,
+    storage::{PrecompileStorageProvider, StorageOps},
     tip_fee_manager::{
         amm::{PoolKey, TIPFeeAMM},
         bindings::{FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM},
@@ -13,12 +13,9 @@ use crate::{
     tip20::{TIP20Token, address_to_token_id_unchecked, bindings::ITIP20, is_tip20},
 };
 
-use alloy_evm::precompiles::DynPrecompile;
-
 // Re-export PoolKey for backward compatibility with tests
 use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
 use revm::{
-    context::Block,
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     precompile::PrecompileError,
     state::Bytecode,
@@ -146,7 +143,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
 
         let slot = validator_token_slot(sender);
-        self.sstore(slot, call.token.into_u256());
+        self.sstore(slot, call.token.into_u256())
+            .expect("TODO: handle error");
 
         // Emit ValidatorTokenSet event
         self.storage
@@ -176,7 +174,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
 
         let slot = user_token_slot(sender);
-        self.sstore(slot, call.token.into_u256());
+        self.sstore(slot, call.token.into_u256())
+            .expect("TODO: handle error");
 
         // Emit UserTokenSet event
         self.storage
@@ -283,7 +282,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
                 let slot = slots::token_in_fees_array_slot(&user_token);
                 if self.sload(slot).expect("TODO: handle error").is_zero() {
                     self.add_token_to_fees_array(user_token);
-                    self.sstore(slot, U256::from(true));
+                    self.sstore(slot, U256::from(true))
+                        .expect("TODO: handle error");
                 }
             }
         }

@@ -530,7 +530,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         let slot = slots::pool_slot(pool_id);
         let packed =
             U256::from(pool.reserve_user_token) | (U256::from(pool.reserve_validator_token) << 128);
-        self.sstore(slot, packed);
+        self.sstore(slot, packed).expect("TODO: handle error");
     }
 
     /// Get total supply of LP tokens for a pool
@@ -696,7 +696,8 @@ mod tests {
             // Use geometric mean for unequal amounts
             sqrt(user_amount * validator_amount)
         };
-        amm.set_total_supply(&pool_id, liquidity);
+        amm.set_total_supply(&pool_id, liquidity)
+            .expect("TODO: handle error");
 
         pool_id
     }
