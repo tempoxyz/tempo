@@ -173,7 +173,10 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 mod tests {
 
     use super::*;
-    use crate::{storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE};
+    use crate::{
+        storage::hashmap::HashMapStorageProvider,
+        tip20::{IRolesAuth, ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+    };
 
     fn transfer_test_setup(
         storage: &mut HashMapStorageProvider,
@@ -923,13 +926,9 @@ mod tests {
         linking_usd.initialize(&admin).unwrap();
 
         // Grant PAUSE_ROLE and UNPAUSE_ROLE
-        use alloy::primitives::keccak256;
-        let pause_role = keccak256(b"PAUSE_ROLE");
-        let unpause_role = keccak256(b"UNPAUSE_ROLE");
-
         let mut roles = linking_usd.get_roles_contract();
-        roles.grant_role_internal(&pauser, pause_role);
-        roles.grant_role_internal(&unpauser, unpause_role);
+        roles.grant_role_internal(&pauser, *PAUSE_ROLE);
+        roles.grant_role_internal(&unpauser, *UNPAUSE_ROLE);
         drop(roles);
 
         // Verify initial state (not paused)
@@ -960,7 +959,7 @@ mod tests {
         roles
             .grant_role(
                 &admin,
-                crate::tip20::IRolesAuth::grantRoleCall {
+                IRolesAuth::grantRoleCall {
                     role: *ISSUER_ROLE,
                     account: user,
                 },
@@ -968,7 +967,7 @@ mod tests {
             .unwrap();
 
         // Check that user has the role
-        assert!(roles.has_role(crate::tip20::IRolesAuth::hasRoleCall {
+        assert!(roles.has_role(IRolesAuth::hasRoleCall {
             role: *ISSUER_ROLE,
             account: user,
         }));
@@ -977,7 +976,7 @@ mod tests {
         roles
             .revoke_role(
                 &admin,
-                crate::tip20::IRolesAuth::revokeRoleCall {
+                IRolesAuth::revokeRoleCall {
                     role: *ISSUER_ROLE,
                     account: user,
                 },
@@ -985,7 +984,7 @@ mod tests {
             .unwrap();
 
         // Check that user no longer has the role
-        assert!(!roles.has_role(crate::tip20::IRolesAuth::hasRoleCall {
+        assert!(!roles.has_role(IRolesAuth::hasRoleCall {
             role: *ISSUER_ROLE,
             account: user,
         }));
