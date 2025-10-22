@@ -289,7 +289,7 @@ fn create_mock_aa_signature(key_type: &KeyType, key_data: Option<&Bytes>) -> AAS
             const BASE_CLIENT_JSON: &str = r#"{"type":"webauthn.get","challenge":"","origin":""}"#;
             const AUTH_DATA_SIZE: usize = 37;
             const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len(); // 87 bytes
-            const DEFAULT_WEBAUTHN_SIZE: usize = 200; // Default when no key_data provided
+            const DEFAULT_WEBAUTHN_SIZE: usize = 800; // Default when no key_data provided
 
             // Parse size from key_data, or use default
             let size = if let Some(data) = key_data {
