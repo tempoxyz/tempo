@@ -3,7 +3,7 @@ use crate::{
     linking_usd::LinkingUSD,
     metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip20::{ITIP20, TIP20Error},
+    tip20::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -31,6 +31,7 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             ITIP20::quoteTokenCall::SELECTOR => {
                 metadata::<ITIP20::quoteTokenCall>(self.quote_token())
             }
+            ITIP20::pausedCall::SELECTOR => metadata::<ITIP20::pausedCall>(self.paused()),
 
             // View functions
             ITIP20::balanceOfCall::SELECTOR => {
@@ -56,6 +57,16 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
                     self.burn(sender, call)
                 })
             }
+            ITIP20::pauseCall::SELECTOR => mutate_void::<ITIP20::pauseCall, TIP20Error>(
+                calldata,
+                msg_sender,
+                |sender, call| self.pause(sender, call),
+            ),
+            ITIP20::unpauseCall::SELECTOR => mutate_void::<ITIP20::unpauseCall, TIP20Error>(
+                calldata,
+                msg_sender,
+                |sender, call| self.unpause(sender, call),
+            ),
 
             // Transfer functions that are disabled for LinkingUSD
             ITIP20::transferCall::SELECTOR => {
@@ -80,6 +91,46 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
                     calldata,
                     msg_sender,
                     |sender, call| self.transfer_from_with_memo(sender, call),
+                )
+            }
+
+            // RolesAuth functions
+            IRolesAuth::hasRoleCall::SELECTOR => {
+                view::<IRolesAuth::hasRoleCall>(calldata, |call| {
+                    self.get_roles_contract().has_role(call)
+                })
+            }
+            IRolesAuth::getRoleAdminCall::SELECTOR => {
+                view::<IRolesAuth::getRoleAdminCall>(calldata, |call| {
+                    self.get_roles_contract().get_role_admin(call)
+                })
+            }
+            IRolesAuth::grantRoleCall::SELECTOR => {
+                mutate_void::<IRolesAuth::grantRoleCall, RolesAuthError>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.get_roles_contract().grant_role(sender, call),
+                )
+            }
+            IRolesAuth::revokeRoleCall::SELECTOR => {
+                mutate_void::<IRolesAuth::revokeRoleCall, RolesAuthError>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.get_roles_contract().revoke_role(sender, call),
+                )
+            }
+            IRolesAuth::renounceRoleCall::SELECTOR => {
+                mutate_void::<IRolesAuth::renounceRoleCall, RolesAuthError>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.get_roles_contract().renounce_role(sender, call),
+                )
+            }
+            IRolesAuth::setRoleAdminCall::SELECTOR => {
+                mutate_void::<IRolesAuth::setRoleAdminCall, RolesAuthError>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.get_roles_contract().set_role_admin(sender, call),
                 )
             }
 

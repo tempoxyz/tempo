@@ -151,6 +151,22 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     pub fn get_roles_contract(&mut self) -> RolesAuthContract<'_, S> {
         self.token.get_roles_contract()
     }
+
+    pub fn pause(&mut self, sender: &Address, call: ITIP20::pauseCall) -> Result<(), TIP20Error> {
+        self.token.pause(sender, call)
+    }
+
+    pub fn unpause(
+        &mut self,
+        sender: &Address,
+        call: ITIP20::unpauseCall,
+    ) -> Result<(), TIP20Error> {
+        self.token.unpause(sender, call)
+    }
+
+    pub fn paused(&mut self) -> bool {
+        self.token.paused()
+    }
 }
 
 #[cfg(test)]
@@ -894,5 +910,84 @@ mod tests {
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
         assert_eq!(allowance_after, allowance_before - amount);
+    }
+
+    #[test]
+    fn test_pause_and_unpause() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let pauser = Address::random();
+        let unpauser = Address::random();
+
+        linking_usd.initialize(&admin).unwrap();
+
+        // Grant PAUSE_ROLE and UNPAUSE_ROLE
+        use alloy::primitives::keccak256;
+        let pause_role = keccak256(b"PAUSE_ROLE");
+        let unpause_role = keccak256(b"UNPAUSE_ROLE");
+
+        let mut roles = linking_usd.get_roles_contract();
+        roles.grant_role_internal(&pauser, pause_role);
+        roles.grant_role_internal(&unpauser, unpause_role);
+        drop(roles);
+
+        // Verify initial state (not paused)
+        assert!(!linking_usd.paused());
+
+        // Pause the token
+        linking_usd.pause(&pauser, ITIP20::pauseCall {}).unwrap();
+        assert!(linking_usd.paused());
+
+        // Unpause the token
+        linking_usd
+            .unpause(&unpauser, ITIP20::unpauseCall {})
+            .unwrap();
+        assert!(!linking_usd.paused());
+    }
+
+    #[test]
+    fn test_role_management() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let user = Address::random();
+
+        linking_usd.initialize(&admin).unwrap();
+
+        // Grant ISSUER_ROLE to user
+        let mut roles = linking_usd.get_roles_contract();
+        roles
+            .grant_role(
+                &admin,
+                crate::tip20::IRolesAuth::grantRoleCall {
+                    role: *ISSUER_ROLE,
+                    account: user,
+                },
+            )
+            .unwrap();
+
+        // Check that user has the role
+        assert!(roles.has_role(crate::tip20::IRolesAuth::hasRoleCall {
+            role: *ISSUER_ROLE,
+            account: user,
+        }));
+
+        // Revoke the role
+        roles
+            .revoke_role(
+                &admin,
+                crate::tip20::IRolesAuth::revokeRoleCall {
+                    role: *ISSUER_ROLE,
+                    account: user,
+                },
+            )
+            .unwrap();
+
+        // Check that user no longer has the role
+        assert!(!roles.has_role(crate::tip20::IRolesAuth::hasRoleCall {
+            role: *ISSUER_ROLE,
+            account: user,
+        }));
     }
 }
