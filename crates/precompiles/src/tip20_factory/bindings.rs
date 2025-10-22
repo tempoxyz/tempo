@@ -18,4 +18,3 @@ sol! {
         function tokenIdCounter() external view returns (uint256);
     }
 }
-

@@ -29,4 +29,3 @@ sol! {
         error InvalidNonceKey();
     }
 }
-

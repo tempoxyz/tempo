@@ -2,7 +2,6 @@ pub mod evm;
 pub mod hashmap;
 pub mod slots;
 
-
 use alloy::primitives::{Address, LogData, U256};
 use revm::{
     precompile::PrecompileError,

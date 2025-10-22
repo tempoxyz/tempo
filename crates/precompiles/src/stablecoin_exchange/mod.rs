@@ -20,20 +20,14 @@ use crate::{
         bindings::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents},
         orderbook::{compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick},
     },
-    storage::{
-        PrecompileStorageProvider, StorageOps,
-        slots::mapping_slot,
-    },
+    storage::{PrecompileStorageProvider, StorageOps, slots::mapping_slot},
     tip20::{
         TIP20Token, address_to_token_id_unchecked,
         bindings::{ITIP20, TIP20Error},
     },
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
-use revm::{
-    precompile::PrecompileError,
-    state::Bytecode,
-};
+use revm::{precompile::PrecompileError, state::Bytecode};
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
@@ -92,8 +86,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Set active order ID
     fn set_active_order_id(&mut self, order_id: u128) -> Result<(), PrecompileError> {
-        self
-            .storage
+        self.storage
             .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))
     }
 
@@ -140,10 +133,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
 
-        self
-        .storage
-        .sstore(self.address, balance_slot, U256::from(amount))
-        .expect("TODO: handle error");
+        self.storage
+            .sstore(self.address, balance_slot, U256::from(amount))
+            .expect("TODO: handle error");
         Ok(())
     }
 
@@ -957,8 +949,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>();
 
         if order.order_id() > next_order_id {
-            self.cancel_pending_order(order)} else {
-            self.cancel_active_order(order)}
+            self.cancel_pending_order(order)
+        } else {
+            self.cancel_active_order(order)
+        }
     }
 
     /// Cancel a pending order (not yet in the active orderbook)

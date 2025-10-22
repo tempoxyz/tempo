@@ -3,7 +3,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
-    storage::PrecompileStorageProvider, 
+    storage::PrecompileStorageProvider,
     tip20_factory::{TIP20Factory, bindings::ITIP20Factory},
 };
 

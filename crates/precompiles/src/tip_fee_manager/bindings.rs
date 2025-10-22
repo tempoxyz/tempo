@@ -277,4 +277,3 @@ impl From<TIPFeeAMMError> for PrecompileError {
         Self::Other(format!("{:?}", value.selector()))
     }
 }
-
