@@ -1044,7 +1044,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     use sha2::{Digest, Sha256};
-    use tempo_precompiles::tip20::bindings::ITIP20;
+    use tempo_contracts::precompiles::ITIP20;
 
     reth_tracing::init_test_tracing();
 

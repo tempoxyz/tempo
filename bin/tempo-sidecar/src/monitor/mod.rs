@@ -8,9 +8,9 @@ use reqwest::Url;
 use std::collections::HashMap;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip_fee_manager::bindings::ITIPFeeAMM::{self, ITIPFeeAMMInstance, Pool},
-    tip20::{bindings::ITIP20, token_id_to_address},
-    tip20_factory::bindings::ITIP20Factory,
+    tip_fee_manager::ITIPFeeAMM::{self, ITIPFeeAMMInstance, Pool},
+    tip20::{ITIP20, token_id_to_address},
+    tip20_factory::ITIP20Factory,
 };
 use tracing::{debug, error, info, instrument};
 

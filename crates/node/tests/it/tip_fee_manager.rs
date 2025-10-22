@@ -12,10 +12,11 @@ use alloy_network::{AnyReceiptEnvelope, EthereumWallet, TxSignerSync};
 use alloy_primitives::{Address, Signature, U256};
 use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use std::env;
+use tempo_contracts::precompiles::{
+    IFeeManager, ITIPFeeAMM, ITIP20,
+};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    tip_fee_manager::bindings::{IFeeManager, ITIPFeeAMM},
-    tip20::bindings::ITIP20,
 };
 use tempo_primitives::TxFeeToken;
 

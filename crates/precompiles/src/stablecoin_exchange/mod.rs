@@ -6,7 +6,9 @@ pub mod order;
 pub mod orderbook;
 pub mod slots;
 
-pub use tempo_contracts::precompiles::{IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents};
+pub use tempo_contracts::precompiles::{
+    IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents,
+};
 
 pub use order::Order;
 pub use orderbook::{
@@ -17,12 +19,11 @@ pub use orderbook::{
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     linking_usd::LinkingUSD,
-    stablecoin_exchange::orderbook::{compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick},
-    storage::{PrecompileStorageProvider, StorageOps, slots::mapping_slot},
-    tip20::{
-        TIP20Token, address_to_token_id_unchecked,
-        ITIP20, TIP20Error,
+    stablecoin_exchange::orderbook::{
+        compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
     },
+    storage::{PrecompileStorageProvider, StorageOps, slots::mapping_slot},
+    tip20::{ITIP20, TIP20Error, TIP20Token, address_to_token_id_unchecked},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::{precompile::PrecompileError, state::Bytecode};

@@ -6,10 +6,12 @@ use alloy::{
 };
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_contracts::precompiles::{
+    ITIP20, ITIP20Factory,
+};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip20::{bindings::ITIP20, token_id_to_address},
-    tip20_factory::bindings::ITIP20Factory,
+    tip20::token_id_to_address,
 };
 
 #[tokio::test(flavor = "multi_thread")]

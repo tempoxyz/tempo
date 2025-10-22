@@ -12,14 +12,15 @@ use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::transaction::TransactionTestContext;
 use tempo_node::node::TempoNode;
+use tempo_contracts::precompiles::{
+    IRolesAuth, ITIP20, ITIP20Factory,
+};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip20::{
         ISSUER_ROLE,
-        bindings::{IRolesAuth, ITIP20},
         token_id_to_address,
     },
-    tip20_factory::ITIP20Factory,
 };
 use tempo_primitives::TempoTxEnvelope;
 

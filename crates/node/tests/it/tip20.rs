@@ -7,10 +7,11 @@ use alloy::{
 use futures::future::try_join_all;
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_contracts::precompiles::{
+    ITIP20, TIP20Error, ITIP403Registry,
+};
 use tempo_precompiles::{
     TIP403_REGISTRY_ADDRESS,
-    tip20::bindings::{ITIP20, TIP20Error},
-    tip403_registry::bindings::ITIP403Registry,
 };
 
 use crate::utils::setup_test_token;

@@ -26,17 +26,17 @@ use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
 use tempo_payload_types::TempoPayloadBuilderAttributes;
+use tempo_contracts::precompiles::{
+    IRolesAuth,
+    ITIP20::{self, ITIP20Instance},
+    ITIP20Factory,
+};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip20::{
         ISSUER_ROLE,
-        bindings::{
-            IRolesAuth,
-            ITIP20::{self, ITIP20Instance},
-        },
         token_id_to_address,
     },
-    tip20_factory::bindings::ITIP20Factory,
 };
 
 /// Creates a test TIP20 token with issuer role granted to the caller
