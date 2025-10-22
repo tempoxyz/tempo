@@ -7,7 +7,7 @@ use alloy::{
 };
 use alloy_eips::Typed2718;
 use alloy_network::TxSigner;
-use alloy_primitives::{Address, Signature};
+use alloy_primitives::{Address, Bytes, Signature};
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_evm::revm::context::CfgEnv;
 use reth_rpc_convert::{
@@ -20,6 +20,17 @@ use tempo_primitives::{
     transaction::{Call, TempoTypedTransaction},
 };
 use tempo_revm::{AATxEnv, TempoTxEnv};
+
+/// Key type for AA transaction signature verification.
+/// Used in gas estimation to calculate accurate signature verification costs.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+// TODO: Check if this can be unified
+pub enum KeyType {
+    Secp256k1,
+    P256,
+    WebAuthn,
+}
 
 /// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -35,6 +46,14 @@ pub struct TempoTransactionRequest {
     /// Optional calls array, for AA transactions.
     #[serde(default)]
     pub calls: Vec<Call>,
+
+    /// Optional key type for gas estimation of AA transactions.
+    /// Specifies the signature verification algorithm to calculate accurate gas costs.
+    pub key_type: Option<KeyType>,
+
+    /// Optional key-specific data for gas estimation (e.g., webauthn authenticator data).
+    /// Required when key_type is WebAuthn to calculate calldata gas costs.
+    pub key_data: Option<Bytes>,
 }
 
 impl TempoTransactionRequest {
@@ -163,6 +182,8 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                 inner,
                 fee_token,
                 calls,
+                key_type,
+                key_data,
             } = self;
             let envelope =
                 match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(inner.clone())
@@ -173,6 +194,8 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             inner,
                             fee_token,
                             calls,
+                            key_type,
+                            key_data,
                         }));
                     }
                 };
@@ -184,6 +207,8 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                         inner,
                         fee_token,
                         calls,
+                        key_type,
+                        key_data,
                     })
                 })?)
         }
@@ -202,6 +227,8 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             inner,
             fee_token,
             calls,
+            key_type,
+            key_data,
         } = self;
         Ok(TempoTxEnv {
             inner: inner.try_into_tx_env(cfg_env, &block_env.inner)?,
@@ -209,12 +236,68 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             is_system_tx: false,
             fee_payer: None,
             aa_tx_env: (!calls.is_empty()).then(|| {
+                // Create mock signature for gas estimation
+                // If key_type is not provided, default to secp256k1
+                let mock_signature = key_type
+                    .as_ref()
+                    .map(|kt| create_mock_aa_signature(kt, key_data.as_ref()))
+                    .unwrap_or_else(|| create_mock_aa_signature(&KeyType::Secp256k1, None));
+
                 Box::new(AATxEnv {
                     aa_calls: calls,
+                    signature: mock_signature,
                     ..Default::default()
                 })
             }),
         })
+    }
+}
+
+/// Creates a mock AA signature for gas estimation based on key type hints
+fn create_mock_aa_signature(key_type: &KeyType, key_data: Option<&Bytes>) -> AASignature {
+    use tempo_primitives::transaction::aa_signature::{
+        AASignature, P256SignatureWithPreHash, WebAuthnSignature,
+    };
+
+    match key_type {
+        KeyType::Secp256k1 => {
+            // Create a dummy secp256k1 signature (65 bytes)
+            AASignature::Secp256k1(Signature::new(
+                alloy_primitives::U256::ZERO,
+                alloy_primitives::U256::ZERO,
+                false,
+            ))
+        }
+        KeyType::P256 => {
+            // Create a dummy P256 signature
+            AASignature::P256(P256SignatureWithPreHash {
+                r: alloy_primitives::B256::ZERO,
+                s: alloy_primitives::B256::ZERO,
+                pub_key_x: alloy_primitives::B256::ZERO,
+                pub_key_y: alloy_primitives::B256::ZERO,
+                pre_hash: false,
+            })
+        }
+        KeyType::WebAuthn => {
+            // Create a dummy WebAuthn signature with the provided keyData or minimal data
+            let webauthn_data = key_data.cloned().unwrap_or_else(|| {
+                // Minimum valid WebAuthn data: 37 bytes authenticatorData + minimal clientDataJSON
+                let mut data = vec![0u8; 37];
+                data[32] = 0x01; // UP flag
+                let client_json =
+                    r#"{"type":"webauthn.get","challenge":"","origin":"https://example.com"}"#;
+                data.extend_from_slice(client_json.as_bytes());
+                Bytes::from(data)
+            });
+
+            AASignature::WebAuthn(WebAuthnSignature {
+                webauthn_data,
+                r: alloy_primitives::B256::ZERO,
+                s: alloy_primitives::B256::ZERO,
+                pub_key_x: alloy_primitives::B256::ZERO,
+                pub_key_y: alloy_primitives::B256::ZERO,
+            })
+        }
     }
 }
 
@@ -245,6 +328,8 @@ impl From<TransactionRequest> for TempoTransactionRequest {
             inner: value,
             fee_token: None,
             calls: vec![],
+            key_type: None,
+            key_data: None,
         }
     }
 }
@@ -314,6 +399,8 @@ impl<T: TransactionTrait + FeeToken> From<Signed<T>> for TempoTransactionRequest
             fee_token: value.tx().fee_token(),
             inner: TransactionRequest::from_transaction(value),
             calls: vec![],
+            key_type: None,
+            key_data: None,
         }
     }
 }
@@ -342,6 +429,8 @@ impl From<tempo_primitives::AASigned> for TempoTransactionRequest {
                 transaction_type: Some(tx.ty()),
             },
             calls: tx.calls,
+            key_type: None,
+            key_data: None,
         }
     }
 }
@@ -353,26 +442,36 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
                 inner: tx.into(),
                 fee_token: None,
                 calls: vec![],
+                key_type: None,
+                key_data: None,
             },
             TempoTypedTransaction::Eip2930(tx) => Self {
                 inner: tx.into(),
                 fee_token: None,
                 calls: vec![],
+                key_type: None,
+                key_data: None,
             },
             TempoTypedTransaction::Eip1559(tx) => Self {
                 inner: tx.into(),
                 fee_token: None,
                 calls: vec![],
+                key_type: None,
+                key_data: None,
             },
             TempoTypedTransaction::Eip7702(tx) => Self {
                 inner: tx.into(),
                 fee_token: None,
                 calls: vec![],
+                key_type: None,
+                key_data: None,
             },
             TempoTypedTransaction::FeeToken(tx) => Self {
                 fee_token: tx.fee_token,
                 inner: TransactionRequest::from_transaction(tx),
                 calls: vec![],
+                key_type: None,
+                key_data: None,
             },
             TempoTypedTransaction::AA(tx) => tx.into(),
         }
