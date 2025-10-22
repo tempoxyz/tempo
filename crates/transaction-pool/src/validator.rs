@@ -8,7 +8,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator,
 };
-use tempo_precompiles::contracts::provider::TIPFeeStateProviderExt;
+use tempo_precompiles::provider::TIPFeeStateProviderExt;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -163,7 +163,9 @@ mod tests {
     };
     use tempo_precompiles::{
         TIP_FEE_MANAGER_ADDRESS,
-        contracts::{storage::slots::mapping_slot, tip_fee_manager, tip20, token_id_to_address},
+        storage::slots::mapping_slot,
+        tip_fee_manager,
+        tip20::{self, token_id_to_address},
     };
     use tempo_primitives::TempoTxEnvelope;
 

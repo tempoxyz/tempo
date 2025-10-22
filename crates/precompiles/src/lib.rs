@@ -4,6 +4,7 @@
 
 pub mod linking_usd;
 pub mod nonce;
+pub mod provider;
 pub mod stablecoin_exchange;
 pub mod storage;
 pub mod tip20;

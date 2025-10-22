@@ -4,12 +4,8 @@ use reth_storage_api::{StateProvider, errors::ProviderResult};
 use revm::{Database, interpreter::instructions::utility::IntoAddress};
 
 use crate::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        storage::slots::mapping_slot,
-        tip_fee_manager::{self},
-        tip20,
-    },
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, storage::slots::mapping_slot, tip_fee_manager,
+    tip20,
 };
 
 /// Trait to provide [`StateProvider`] access to TIPFeeManager storage to fetch fee token data and balances
@@ -24,10 +20,14 @@ pub trait TIPFeeStateProviderExt: StateProvider {
         fee_payer: Address,
         tx_fee_token: Option<Address>,
     ) -> ProviderResult<U256> {
+        use crate::{storage::slots::mapping_slot, tip20};
+
         let fee_token = if let Some(fee_token) = tx_fee_token {
             fee_token
         } else {
             // Look up user's configured fee token in TIPFeeManager storage
+
+            use crate::tip_fee_manager;
             let user_token_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
             let fee_token = self
                 .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot.into())?
