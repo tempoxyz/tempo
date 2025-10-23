@@ -1,11 +1,49 @@
 //! Epoch aware schemes and peers.
 
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
-use commonware_consensus::{marshal, simplex::signing_scheme::bls12381_threshold};
+use commonware_consensus::{
+    marshal, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
+};
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_resolver::p2p;
 use commonware_utils::set::Set;
+
+#[derive(Clone)]
+pub(crate) struct SchemeProvider {
+    inner: Arc<Mutex<HashMap<Epoch, Arc<Scheme<MinSig>>>>>,
+}
+
+impl SchemeProvider {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Default::default(),
+        }
+    }
+
+    pub(crate) fn register(&self, epoch: Epoch, scheme: Scheme<MinSig>) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .insert(epoch, Arc::new(scheme))
+            .is_none()
+    }
+
+    pub(crate) fn delete(&self, epoch: &Epoch) -> bool {
+        self.inner.lock().unwrap().remove(epoch).is_some()
+    }
+}
+
+impl marshal::SchemeProvider for SchemeProvider {
+    type Scheme = Scheme<MinSig>;
+
+    fn scheme(&self, epoch: Epoch) -> Option<Arc<Self::Scheme>> {
+        self.inner.lock().unwrap().get(&epoch).cloned()
+    }
+}
 
 /// Implements trait `[p2p::Cordinatoor]` and is passed to the marshal actor.
 #[derive(Clone)]

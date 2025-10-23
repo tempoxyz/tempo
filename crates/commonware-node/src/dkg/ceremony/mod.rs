@@ -1,6 +1,6 @@
 //! An actively running DKG ceremony.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use bytes::{Buf, BufMut};
 use commonware_codec::{
@@ -16,13 +16,16 @@ use commonware_cryptography::{
     },
     ed25519::{PrivateKey, PublicKey, Signature},
 };
-use commonware_p2p::{Receiver, Sender};
+use commonware_p2p::{
+    Receiver, Sender,
+    utils::mux::{MuxHandle, SubReceiver, SubSender},
+};
 use commonware_p2p::{Recipients, utils::mux};
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::{max_faults, quorum, sequence::U64, set::Set, union};
 use eyre::{Error, WrapErr as _, bail, ensure, eyre};
-use futures::FutureExt as _;
+use futures::{FutureExt as _, lock::Mutex};
 use governor::{Quota, RateLimiter, middleware::NoOpMiddleware, state::keyed::HashMapStateStore};
 use indexmap::{IndexMap, IndexSet};
 use rand_core::CryptoRngCore;
@@ -37,17 +40,11 @@ const OUTCOME_NAMESPACE: &[u8] = b"_DKG_OUTCOME";
 /// 1 thread for now.
 const WEIGHT_RECOVERY_CONCURRENCY: usize = 1;
 
-pub(super) struct Config<TReceiver, TSender>
-where
-    TReceiver: Receiver,
-    TSender: Sender,
-{
+pub(super) struct Config {
     /// Prefix all signed messages to prevent replay attacks.
     pub(super) namespace: Vec<u8>,
 
     pub(super) me: PrivateKey,
-
-    pub(super) partition_prefix: String,
 
     /// The previous public polynomial.
     //
@@ -56,10 +53,7 @@ where
     pub(super) public: Public<MinSig>,
 
     /// Our previous share of the private polynomial.
-    //
-    // TODO(janis): make this optional for those cases where we don't have a
-    // public polynomial yet.
-    pub(super) share: group::Share,
+    pub(super) share: Option<group::Share>,
 
     /// The current epoch.
     pub(super) epoch: Epoch,
@@ -71,9 +65,6 @@ where
     pub(super) players: Set<PublicKey>,
 
     pub(super) send_rate_limit: Quota,
-
-    pub(super) receiver: mux::SubReceiver<TReceiver>,
-    pub(super) sender: mux::SubSender<TSender>,
 }
 
 pub(super) struct Ceremony<TContext, TReceiver, TSender>
@@ -83,7 +74,7 @@ where
     TReceiver: Receiver,
     TSender: Sender,
 {
-    config: Config<TReceiver, TSender>,
+    config: Config,
 
     /// The previous group polynomial and (if dealing) share.
     previous: RoundResult,
@@ -115,8 +106,9 @@ where
     /// The local [Arbiter] for this round.
     arbiter: Arbiter<PublicKey, MinSig>,
 
-    /// The [Metadata] store used for persisting round state.
-    round_metadata: Metadata<TContext, U64, RoundInfo>,
+    ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, RoundInfo>>>,
+    receiver: SubReceiver<TReceiver>,
+    sender: SubSender<TSender>,
 }
 
 impl<TContext, TReceiver, TSender> Ceremony<TContext, TReceiver, TSender>
@@ -128,26 +120,14 @@ where
     /// Initialize a DKG ceremony.
     pub(super) async fn init(
         context: &mut TContext,
-        config: Config<TReceiver, TSender>,
+        mux: &mut MuxHandle<TSender, TReceiver>,
+        ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, RoundInfo>>>,
+        config: Config,
     ) -> eyre::Result<Self> {
-        // XXX: this information must be per-round since the codec-config is
-        // dictated by the number of dealers (FIXME: players?).
-        //
-        let round_metadata: Metadata<_, U64, RoundInfo> = Metadata::init(
-            context.with_label("round_metadata"),
-            commonware_storage::metadata::Config {
-                // TODO: should we provide a prefix on the partition?
-                partition: config.partition_prefix.clone(),
-                // XXX: commonware's suggestion: use usize::MAX and don't worry
-                // about this
-                // TODO(janis): check if this really does not matter.
-                // Metadata::init alls Metadata::load, which does a V::read_cfg,
-                // passing config.codec_config to it.
-                codec_config: usize::MAX,
-            },
-        )
-        .await
-        .expect("failed to initialize dkg round metadata");
+        let (sender, receiver) = mux
+            .register(config.epoch as u32)
+            .await
+            .wrap_err("mux subchannel already running for epoch; this is a problem")?;
 
         let players_indexed: IndexSet<_> = config.players.iter().cloned().collect();
         let mut player_me = players_indexed.get(&config.me.public_key()).map(|_| {
@@ -168,7 +148,9 @@ where
         );
 
         // TODO(janis): move this "recovery" logic to a function.
-        let dealer_meta = if let Some(meta) = round_metadata.get(&config.epoch.into()) {
+        let dealer_meta = if let Some(meta) =
+            ceremony_metadata.lock().await.get(&config.epoch.into())
+        {
             for outcome in &meta.outcomes {
                 let ack_indices = outcome
                     .acks
@@ -221,7 +203,7 @@ where
                 );
             };
             let (mut dealer, _, _) =
-                Dealer::new(context, Some(config.share.clone()), config.players.clone());
+                Dealer::new(context, config.share.clone(), config.players.clone());
             for ack in acks.values() {
                 dealer.ack(ack.player.clone()).wrap_err_with(|| {
                     format!(
@@ -240,7 +222,7 @@ where
             }
         } else {
             let (dealer, commitment, shares) =
-                Dealer::new(context, Some(config.share.clone()), config.players.clone());
+                Dealer::new(context, config.share.clone(), config.players.clone());
             let shares = config
                 .players
                 .iter()
@@ -258,10 +240,15 @@ where
 
         let rate_limiter = RateLimiter::hashmap_with_clock(config.send_rate_limit, &*context);
 
-        let previous = RoundResult::Output(Output {
-            public: config.public.clone(),
-            share: config.share.clone(),
-        });
+        let previous = config.share.clone().map_or_else(
+            || RoundResult::Polynomial(config.public.clone()),
+            |share| {
+                RoundResult::Output(Output {
+                    public: config.public.clone(),
+                    share,
+                })
+            },
+        );
         Ok(Self {
             config,
             previous,
@@ -270,7 +257,9 @@ where
             player_me,
             players_indexed,
             arbiter,
-            round_metadata,
+            ceremony_metadata,
+            receiver,
+            sender,
         })
     }
 
@@ -327,8 +316,10 @@ where
                     .acks
                     .insert(self.config.me.public_key(), ack.clone());
 
-                self.round_metadata
-                    .upsert_sync(self.config.epoch.into(), |meta| {
+                self.ceremony_metadata
+                    .lock()
+                    .await
+                    .upsert_sync(self.epoch().into(), |meta| {
                         if let Some(Deal { acks, .. }) = &mut meta.deal {
                             acks.insert(self.config.me.public_key(), ack);
                         } else {
@@ -355,7 +346,6 @@ where
             }
             .into();
             let success = self
-                .config
                 .sender
                 .send(
                     Recipients::One(player.clone()),
@@ -384,7 +374,7 @@ where
     /// yields back to the caller.
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
     pub(super) async fn process_messages(&mut self) -> eyre::Result<()> {
-        while let Some(msg) = self.config.receiver.recv().now_or_never() {
+        while let Some(msg) = self.receiver.recv().now_or_never() {
             let (peer, mut msg) = msg.wrap_err("receiver p2p channel was closed")?;
 
             let msg = Dkg::decode_cfg(&mut msg, &(self.config.players.len() as u32))
@@ -448,7 +438,9 @@ where
 
                     self.dealer_meta.acks.insert(peer.clone(), ack.clone());
 
-                    self.round_metadata
+                    self.ceremony_metadata
+                        .lock()
+                        .await
                         .upsert_sync(self.epoch().into(), |meta| {
                             if let Some(Deal { acks, .. }) = &mut meta.deal {
                                 acks.insert(peer.clone(), ack);
@@ -481,7 +473,9 @@ where
                     }
 
                     // Persist the share to storage.
-                    self.round_metadata
+                    self.ceremony_metadata
+                        .lock()
+                        .await
                         .upsert_sync(self.epoch().into(), |meta| {
                             meta.received_shares
                                 .push((peer.clone(), commitment.clone(), share));
@@ -499,8 +493,7 @@ where
                         &commitment,
                     )
                     .into();
-                    self.config
-                        .sender
+                    self.sender
                         .send(
                             Recipients::One(peer.clone()),
                             Dkg {
@@ -586,7 +579,9 @@ where
             .wrap_err("failed to track dealer outcome in arbiter")?;
 
         let block_dealer = block_outcome.dealer.clone();
-        self.round_metadata
+        self.ceremony_metadata
+            .lock()
+            .await
             .upsert_sync(self.epoch().into(), |meta| {
                 if let Some(pos) = meta
                     .outcomes
@@ -637,7 +632,9 @@ where
             reveals,
         ));
 
-        self.round_metadata
+        self.ceremony_metadata
+            .lock()
+            .await
             .upsert_sync(self.epoch().into(), |meta| {
                 meta.local_outcome = local_outcome.clone();
             })
@@ -723,6 +720,10 @@ where
 
     pub(super) fn deal_outcome(&self) -> Option<&DealOutcome> {
         self.dealer_meta.outcome.as_ref()
+    }
+
+    pub(super) fn config(&self) -> &Config {
+        &self.config
     }
 }
 
@@ -1169,5 +1170,38 @@ impl Read for Dkg {
 impl EncodeSize for Dkg {
     fn encode_size(&self) -> usize {
         UInt(self.epoch).encode_size() + self.payload.encode_size()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicOutcome {
+    pub(crate) participants: Set<PublicKey>,
+    pub(crate) public: Public<MinSig>,
+}
+
+impl Write for PublicOutcome {
+    fn write(&self, buf: &mut impl BufMut) {
+        self.participants.write(buf);
+        self.public.write(buf);
+    }
+}
+
+impl Read for PublicOutcome {
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
+        let participants = Set::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
+        let public =
+            Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
+        Ok(Self {
+            participants,
+            public,
+        })
+    }
+}
+
+impl EncodeSize for PublicOutcome {
+    fn encode_size(&self) -> usize {
+        self.participants.encode_size() + self.public.encode_size()
     }
 }

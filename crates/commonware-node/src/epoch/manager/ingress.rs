@@ -1,9 +1,12 @@
-use commonware_consensus::{Block as _, Reporter};
+use commonware_consensus::{Reporter, types::Epoch};
+use commonware_cryptography::{
+    bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
+    ed25519::PublicKey,
+};
+use commonware_utils::set::Set;
 use eyre::WrapErr as _;
-use futures::channel::{mpsc, oneshot};
+use futures::channel::mpsc;
 use tracing::{Span, warn};
-
-use crate::consensus::{Digest, block::Block};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -18,41 +21,57 @@ impl Mailbox {
 
 pub(super) struct Message {
     pub(super) cause: Span,
-    pub(super) finalized: Finalized,
+    pub(super) activity: Activity,
 }
 
 impl Message {
-    fn in_current_span(finalized: Finalized) -> Self {
+    fn in_current_span(activity: impl Into<Activity>) -> Self {
         Self {
             cause: Span::current(),
-            finalized,
+            activity: activity.into(),
         }
     }
 }
 
-pub(super) struct Finalized {
-    pub(super) digest: Digest,
-    pub(super) height: u64,
-    pub(super) response: oneshot::Sender<()>,
+pub(crate) enum Activity {
+    Enter(Enter),
+    Exit(Exit),
+}
+
+impl From<Enter> for Activity {
+    fn from(value: Enter) -> Self {
+        Self::Enter(value)
+    }
+}
+
+impl From<Exit> for Activity {
+    fn from(value: Exit) -> Self {
+        Self::Exit(value)
+    }
+}
+
+pub(crate) struct Enter {
+    pub(crate) epoch: Epoch,
+    pub(crate) public: Public<MinSig>,
+    pub(crate) share: Option<Share>,
+    pub(crate) participants: Set<PublicKey>,
+}
+
+pub(crate) struct Exit {
+    pub(crate) epoch: Epoch,
 }
 
 impl Reporter for Mailbox {
-    type Activity = Block;
+    type Activity = Activity;
 
-    async fn report(&mut self, block: Self::Activity) {
-        let (response, rx) = oneshot::channel();
+    async fn report(&mut self, command: Self::Activity) {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         if let Err(error) = self
             .inner
-            .unbounded_send(Message::in_current_span(Finalized {
-                digest: block.digest(),
-                height: block.height(),
-                response,
-            }))
+            .unbounded_send(Message::in_current_span(command))
             .wrap_err("epoch manager no longer running")
         {
-            warn!(%error, "failed to report finalized block to epoch manager")
+            warn!(%error, "failed to report epoch event to epoch manager")
         }
-        let _ = rx.await;
     }
 }

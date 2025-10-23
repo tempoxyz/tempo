@@ -1,25 +1,16 @@
-use std::sync::{Arc, Mutex};
-
-use commonware_consensus::{
-    Reporter, marshal::SchemeProvider, simplex::signing_scheme::bls12381_threshold, types::Epoch,
-};
-use commonware_cryptography::bls12381::primitives::variant::MinSig;
+use commonware_consensus::{Reporter, types::Epoch};
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
 use tracing::{Span, warn};
 
-use crate::{consensus::block::Block, dkg::ceremony::DealOutcome};
+use crate::{
+    consensus::block::Block,
+    dkg::ceremony::{DealOutcome, PublicOutcome},
+};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
     pub(super) inner: mpsc::UnboundedSender<Message>,
-
-    // TODO(janis): unclear if this is a good idea providing the scheme via mutex.
-    //
-    // This is done in this way because marshal requires a S: SchemeProvider.
-    // On the other hand in the epoch manager we should be able to just await?
-    pub(super) per_epoch_schemes:
-        Arc<Mutex<std::collections::HashMap<Epoch, Arc<bls12381_threshold::Scheme<MinSig>>>>>,
 }
 
 impl Mailbox {
@@ -38,31 +29,19 @@ impl Mailbox {
             .wrap_err("actor dropped channel before responding with ceremony deal outcome")
     }
 
-    pub(crate) async fn get_ceremony_outcome(
+    pub(crate) async fn get_public_ceremony_outcome(
         &self,
         epoch: Epoch,
-    ) -> eyre::Result<Option<DealOutcome>> {
+    ) -> eyre::Result<Option<PublicOutcome>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(GetCeremonyOutcome {
+            .unbounded_send(Message::in_current_span(GetPublicCeremonyOutcome {
                 epoch,
                 response,
             }))
             .wrap_err("failed sending message to actor")?;
         rx.await
             .wrap_err("actor dropped channel before responding with ceremony deal outcome")
-    }
-
-    pub(crate) async fn get_scheme(
-        &self,
-        epoch: Epoch,
-    ) -> eyre::Result<Arc<bls12381_threshold::Scheme<MinSig>>> {
-        let (response, rx) = oneshot::channel();
-        self.inner
-            .unbounded_send(Message::in_current_span(GetScheme { epoch, response }))
-            .wrap_err("failed sending message to actor")?;
-        rx.await
-            .wrap_err("actor dropped channel before responding with scheme")
     }
 }
 
@@ -83,19 +62,12 @@ impl Message {
 pub(super) enum Command {
     Finalize(Finalize),
     GetCeremonyDeal(GetCeremonyDeal),
-    GetCeremonyOutcome(GetCeremonyOutcome),
-    GetScheme(GetScheme),
+    GetCeremonyOutcome(GetPublicCeremonyOutcome),
 }
 
 impl From<Finalize> for Command {
     fn from(value: Finalize) -> Self {
         Self::Finalize(value)
-    }
-}
-
-impl From<GetScheme> for Command {
-    fn from(value: GetScheme) -> Self {
-        Self::GetScheme(value)
     }
 }
 
@@ -105,8 +77,8 @@ impl From<GetCeremonyDeal> for Command {
     }
 }
 
-impl From<GetCeremonyOutcome> for Command {
-    fn from(value: GetCeremonyOutcome) -> Self {
+impl From<GetPublicCeremonyOutcome> for Command {
+    fn from(value: GetPublicCeremonyOutcome) -> Self {
         Self::GetCeremonyOutcome(value)
     }
 }
@@ -116,19 +88,14 @@ pub(super) struct Finalize {
     pub(super) response: oneshot::Sender<()>,
 }
 
-pub(super) struct GetScheme {
-    epoch: Epoch,
-    response: oneshot::Sender<Arc<bls12381_threshold::Scheme<MinSig>>>,
-}
-
 pub(super) struct GetCeremonyDeal {
     pub(super) epoch: Epoch,
     pub(super) response: oneshot::Sender<Option<DealOutcome>>,
 }
 
-pub(super) struct GetCeremonyOutcome {
+pub(super) struct GetPublicCeremonyOutcome {
     pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<Option<DealOutcome>>,
+    pub(super) response: oneshot::Sender<Option<PublicOutcome>>,
 }
 
 impl Reporter for Mailbox {
@@ -145,17 +112,5 @@ impl Reporter for Mailbox {
             warn!(%error, "failed to report finalized block to dkg manager")
         }
         let _ = rx.await;
-    }
-}
-
-impl SchemeProvider for Mailbox {
-    type Scheme = bls12381_threshold::Scheme<MinSig>;
-
-    fn scheme(&self, epoch: Epoch) -> Option<std::sync::Arc<Self::Scheme>> {
-        self.per_epoch_schemes
-            .lock()
-            .expect("locks must not be held such that they can panick")
-            .get(&epoch)
-            .cloned()
     }
 }

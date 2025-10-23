@@ -31,7 +31,7 @@ use tempo_node::TempoFullNode;
 use crate::{
     config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
     dkg,
-    epoch::{self, Coordinator},
+    epoch::{self, Coordinator, SchemeProvider},
 };
 
 use super::block::Block;
@@ -118,21 +118,6 @@ where
 
         let coordinator = Coordinator::new(self.participants.clone());
 
-        let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
-            self.context.with_label("dkg"),
-            dkg::manager::Config {
-                heights_per_epoch: self.heights_per_epoch,
-                participants: self.participants.clone(),
-                public: self.polynomial.clone(),
-                share: self.share.clone(),
-                namespace: crate::config::NAMESPACE.to_vec(),
-                me: self.signer.clone(),
-                partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
-                // TODO(janis): reasonable to just reuse this here? Probably define a custom const for this.
-                rate_limit: BACKFILL_QUOTA,
-            },
-        );
-
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
@@ -156,10 +141,11 @@ where
             priority_requests: false,
             priority_responses: false,
         };
+        let scheme_provider = SchemeProvider::new();
         let (marshal, marshal_mailbox) = marshal::Actor::init(
             self.context.with_label("sync"),
             marshal::Config {
-                scheme_provider: dkg_manager_mailbox.clone(),
+                scheme_provider: scheme_provider.clone(),
                 epoch_length: self.heights_per_epoch,
                 // identity: *self.polynomial.constant(),
                 partition_prefix: self.partition_prefix.clone(),
@@ -207,13 +193,12 @@ where
                 application: execution_driver_mailbox.clone(),
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
-                dkg_manager: dkg_manager_mailbox.clone(),
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
-                me: self.signer,
-                participants: self.participants.clone().into(),
+                me: self.signer.clone(),
+                scheme_provider,
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
@@ -223,6 +208,24 @@ where
             },
             self.context.with_label("epoch_manager"),
         );
+
+        let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
+            self.context.with_label("dkg"),
+            dkg::manager::Config {
+                epoch_manager: epoch_manager_mailbox,
+                heights_per_epoch: self.heights_per_epoch,
+                initial_participants: self.participants.clone(),
+                initial_public: self.polynomial.clone(),
+                initial_share: Some(self.share.clone()),
+                mailbox_size: self.mailbox_size,
+                namespace: crate::config::NAMESPACE.to_vec(),
+                me: self.signer.clone(),
+                partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
+                // TODO(janis): reasonable to just reuse this here? Probably define a custom const for this.
+                rate_limit: BACKFILL_QUOTA,
+            },
+        )
+        .await;
 
         Ok(Engine {
             context: self.context,
@@ -240,7 +243,6 @@ where
             marshal,
 
             epoch_manager,
-            epoch_manager_mailbox,
         })
     }
 }
@@ -283,7 +285,6 @@ where
     marshal: crate::alias::marshal::Actor<TContext>,
 
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
-    epoch_manager_mailbox: epoch::manager::Mailbox,
 }
 
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
@@ -360,16 +361,15 @@ where
         ),
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_network);
-        let execution_driver = self.execution_driver.start();
+        let execution_driver = self
+            .execution_driver
+            .start(self.dkg_manager_mailbox.clone());
 
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
 
         let syncer = self.marshal.start(
-            Reporters::from((
-                self.execution_driver_mailbox,
-                Reporters::from((self.epoch_manager_mailbox, self.dkg_manager_mailbox)),
-            )),
+            Reporters::from((self.execution_driver_mailbox, self.dkg_manager_mailbox)),
             self.broadcast_mailbox,
             resolver,
         );

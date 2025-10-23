@@ -12,7 +12,10 @@ use eyre::WrapErr as _;
 use reth_node_core::primitives::SealedBlock;
 use tracing::{info, instrument};
 
-use crate::{consensus::Digest, dkg::DealOutcome};
+use crate::{
+    consensus::Digest,
+    dkg::{DealOutcome, PublicOutcome},
+};
 
 // use crate::consensus::{Finalization, Notarization};
 
@@ -27,6 +30,15 @@ pub(crate) struct Block(SealedBlock<tempo_primitives::Block>);
 
 impl Block {
     pub(crate) fn insert_ceremony_deal_outcome(self, deal: DealOutcome) -> Self {
+        let sealed = self.into_inner();
+        let (mut header, body) = sealed.split_header_body();
+        // XXX: extra step via vec becaused commonware writes bytes::Bytes, but
+        // alloy expects alloy_primitives::Bytes
+        header.inner.extra_data = deal.encode().freeze().to_vec().into();
+        Self(SealedBlock::seal_parts(header, body))
+    }
+
+    pub(crate) fn insert_public_ceremony_outcome(self, deal: PublicOutcome) -> Self {
         let sealed = self.into_inner();
         let (mut header, body) = sealed.split_header_body();
         // XXX: extra step via vec becaused commonware writes bytes::Bytes, but

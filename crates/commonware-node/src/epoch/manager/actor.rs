@@ -1,6 +1,9 @@
-use std::num::NonZeroUsize;
+use std::{collections::HashMap, num::NonZeroUsize};
 
-use commonware_consensus::{marshal::SchemeProvider as _, simplex, types::Epoch};
+use commonware_consensus::{
+    simplex::{self, signing_scheme::bls12381_threshold::Scheme},
+    types::Epoch,
+};
 use commonware_cryptography::{Signer as _, ed25519::PublicKey};
 use commonware_p2p::{
     Blocker, Receiver, Sender,
@@ -9,16 +12,13 @@ use commonware_p2p::{
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
 };
-use commonware_storage::metadata::{self, Metadata};
-use commonware_utils::sequence::U32;
-use eyre::{OptionExt as _, WrapErr as _, bail};
+use eyre::ensure;
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
-use tracing::{Level, Span, info, instrument, warn};
+use tracing::{Level, Span, instrument, warn};
 
-use super::ingress::Finalized;
-use crate::epoch;
+use crate::epoch::manager::ingress::{Enter, Exit};
 
 use super::ingress::Message;
 
@@ -29,12 +29,11 @@ const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("v
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 
 pub(crate) struct Actor<TBlocker, TContext> {
+    active_epochs: HashMap<Epoch, Handle<()>>,
     config: super::Config<TBlocker>,
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     metrics: Metrics,
-    active_epoch: Option<(u64, Handle<()>)>,
-    previous_epoch: Option<(u64, Handle<()>)>,
 }
 
 impl<TBlocker, TContext> Actor<TBlocker, TContext>
@@ -77,8 +76,7 @@ where
                 active_epochs,
                 latest_epoch,
             },
-            active_epoch: None,
-            previous_epoch: None,
+            active_epochs: HashMap::new(),
         }
     }
 
@@ -137,153 +135,40 @@ where
         );
         mux.start();
 
-        let mut metadata = Metadata::init(
-            self.context.with_label("metadata"),
-            metadata::Config {
-                partition: format!("{}_metadata", self.config.partition_prefix),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("failed to initialize epoch manager metadata");
-
-        let previous = metadata.get(&U32::from(PREVIOUS_EPOCH_KEY)).copied();
-        let active = metadata
-            .get(&U32::from(ACTIVE_EPOCH_KEY))
-            .copied()
-            .inspect(|epoch| info!(epoch, "recovered rising epoch from disk"))
-            .unwrap_or_else(|| {
-                info!("no rising epoch found on disk; starting from 0");
-                0
-            });
-
-        if let Some(previous) = previous {
-            info!(previous, "recovered previous epoch from disk");
-            assert!(
-                previous < active,
-                "invariant violated: active epoch `{active}` must be greater \
-                than previous epoch `{previous}`",
-            );
-            let _ = self
-                .begin_epoch::<false>(
-                    previous,
-                    &mut metadata,
-                    &mut pending_mux,
-                    &mut recovered_mux,
-                    &mut resolver_mux,
-                )
-                .await;
-        }
-        let _ = self
-            .begin_epoch::<true>(
-                active,
-                &mut metadata,
-                &mut pending_mux,
-                &mut recovered_mux,
-                &mut resolver_mux,
-            )
-            .await;
-
-        // Wait for instructions to transition epochs.
         while let Some(msg) = self.mailbox.next().await {
             let cause = msg.cause;
-            let () = self
-                .handle_finalized(
-                    cause,
-                    msg.finalized,
-                    &mut metadata,
-                    &mut pending_mux,
-                    &mut recovered_mux,
-                    &mut resolver_mux,
-                )
-                .await;
+            match msg.activity {
+                super::ingress::Activity::Enter(enter) => {
+                    let _: Result<_, _> = self
+                        .enter(
+                            cause,
+                            enter,
+                            &mut pending_mux,
+                            &mut recovered_mux,
+                            &mut resolver_mux,
+                        )
+                        .await;
+                }
+                super::ingress::Activity::Exit(exit) => self.exit(cause, exit),
+            }
         }
     }
 
     #[instrument(
+        follows_from = [cause],
         skip_all,
-        follows_from = [cause]
-        fields(
-            %digest,
-            height,
-        )
+        fields(epoch),
+        err(level = Level::WARN)
     )]
-    async fn handle_finalized(
+    async fn enter(
         &mut self,
         cause: Span,
-        Finalized {
-            digest,
-            height,
-            response,
-        }: Finalized,
-        metadata: &mut Metadata<ContextCell<TContext>, U32, Epoch>,
-        pending_mux: &mut MuxHandle<
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        >,
-        recovered_mux: &mut MuxHandle<
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        >,
-        resolver_mux: &mut MuxHandle<
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        >,
-    ) {
-        if let Some(epoch) = epoch::of_height(height, self.config.heights_per_epoch) {
-            // FIXME: is_last_height_of_epoch
-            if epoch::is_last_height_of_epoch(height, epoch, self.config.heights_per_epoch) {
-                let incoming_epoch = epoch.saturating_add(1);
-                info!(
-                    incoming_epoch,
-                    outgoing_epoch = epoch,
-                    "witnessed finalization of last block of epoch, starting next epoch",
-                );
-                let _ = self
-                    .begin_epoch::<true>(
-                        incoming_epoch,
-                        metadata,
-                        pending_mux,
-                        recovered_mux,
-                        resolver_mux,
-                    )
-                    .await;
-            }
-
-            if epoch::is_first_height_of_epoch(height, epoch, self.config.heights_per_epoch)
-                // XXX: This handles the case epoch = 0, height = 1.
-                && let Some(outgoing_epoch) = epoch.checked_sub(1)
-            {
-                info!(
-                    incoming_epoch = epoch,
-                    outgoing_epoch,
-                    "witnessed finalization of first block of epoch, stopping previous epoch",
-                );
-                let _ = self.end_epoch(outgoing_epoch, metadata).await;
-            }
-        }
-
-        let _ = response.send(());
-    }
-
-    /// Begins a new epoch by spawning a consensus engine backing it.
-    ///
-    /// Also starts the process of sunsetting the previously active epoch.
-    ///
-    /// # Note on the const generic
-    ///
-    /// The method is also used to spin up the previous epoch on startup. This
-    /// epoch must not however overwrite the active epoch written to disk.
-    /// Therefore we make use of const generic: if `IS_ACTIVE`, then the
-    /// active epoch is written to disk.
-    ///
-    /// Due to monomorphization we end up with 2 different methods: one for
-    /// startup, and one for normal operation.
-    #[instrument(skip_all, fields(epoch), err(level = Level::WARN))]
-    async fn begin_epoch<const IS_ACTIVE: bool>(
-        &mut self,
-        epoch: Epoch,
-        metadata: &mut Metadata<ContextCell<TContext>, U32, Epoch>,
+        Enter {
+            epoch,
+            public,
+            share,
+            participants,
+        }: Enter,
         pending_mux: &mut MuxHandle<
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -297,47 +182,24 @@ where
             impl Receiver<PublicKey = PublicKey>,
         >,
     ) -> eyre::Result<()> {
-        if let Some((current, engine)) = self.active_epoch.take() {
-            if epoch <= current {
-                self.active_epoch = Some((current, engine));
-                bail!(
-                    "current epoch is `{current}`, but epoch to be started is \
-                    `{epoch}`; this means it's either already started or too \
-                    old; ignoring the request",
-                );
-            }
+        ensure!(
+            !self.active_epochs.contains_key(&epoch),
+            "an engine for the entered epoch is already running; ignoring",
+        );
 
-            if let Some(old) = self.previous_epoch.replace((current, engine)) {
-                warn!(
-                    current_epoch = current,
-                    straggling_epoch = old.0,
-                    "trying to sunset current epoch but an even older epoch \
-                    was not yet completely wound down; stopping it now but \
-                    this should not happen",
-                );
-                old.1.abort();
-            }
-            metadata.put(PREVIOUS_EPOCH_KEY.into(), current);
-        }
-
-        if IS_ACTIVE {
-            metadata.put(ACTIVE_EPOCH_KEY.into(), epoch);
-        }
-        let _ = metadata.sync().await;
-
-        let scheme = (*self
-            .config
-            .dkg_manager
-            .scheme(epoch)
-            .ok_or_eyre("dkg manager did not return a scheme for the epoch")?)
-        .clone();
+        // Register the new signing scheme with the scheme provider.
+        let scheme = if let Some(share) = share {
+            Scheme::new(participants.as_ref(), &public, share)
+        } else {
+            Scheme::verifier(participants.as_ref(), &public)
+        };
+        assert!(self.config.scheme_provider.register(epoch, scheme.clone()));
 
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
             simplex::Config {
                 me: self.config.me.public_key(),
-                participants: self.config.participants.clone(),
-                // TODO(janis): suggest to commonware that Arc<impl Scheme> should impl Scheme.
+                participants,
                 scheme,
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
@@ -368,17 +230,16 @@ where
             },
         );
 
-        // Create epoch-specific subchannels
         let pending_sc = pending_mux.register(epoch as u32).await.unwrap();
         let recovered_sc = recovered_mux.register(epoch as u32).await.unwrap();
         let resolver_sc = resolver_mux.register(epoch as u32).await.unwrap();
 
         assert!(
-            self.active_epoch
-                .replace((epoch, engine.start(pending_sc, recovered_sc, resolver_sc),))
+            self.active_epochs
+                .insert(epoch, engine.start(pending_sc, recovered_sc, resolver_sc))
                 .is_none(),
-            "there must be no engine active at this point because it was made \
-            the \"previous\" above",
+            "there must be no other active engine running: this was ensured at \
+            the beginning of this method",
         );
 
         self.metrics.active_epochs.inc();
@@ -387,36 +248,23 @@ where
         Ok(())
     }
 
-    #[instrument(skip_all, fields(epoch), err(level = Level::WARN))]
-    async fn end_epoch(
-        &mut self,
-        epoch: Epoch,
-        metadata: &mut Metadata<ContextCell<TContext>, U32, Epoch>,
-    ) -> eyre::Result<()> {
-        let Some((running, engine)) = self.previous_epoch.take() else {
-            bail!(
-                "attempted to stop the engine backing the epoch before the \
-                new epoch `{epoch}`, but no engine was running; that does not \
-                affect the currently running epoch but should not happen"
-            );
-        };
-        engine.abort();
-
-        if let Some(stored) = metadata.remove(&PREVIOUS_EPOCH_KEY.into())
-            && running != stored
-        {
+    #[instrument(follows_from = [cause], skip_all, fields(epoch))]
+    fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
+        if let Some(engine) = self.active_epochs.remove(&epoch) {
+            engine.abort()
+        } else {
             warn!(
-                stored,
-                running,
-                "the outgoing epoch stored on disk did not match the one \
-                running; still deleting it from disk and stopping the engine, \
-                but this should not happen",
+                "attempted to exit unknown epoch, but epoch was not backed \
+                an active engine",
             );
         }
-        metadata
-            .sync()
-            .await
-            .wrap_err("failed deleting information on previous epoch from disk")
+
+        if !self.config.scheme_provider.delete(&epoch) {
+            warn!(
+                "attempted to delete scheme for epoch, but epoch had no scheme \
+                registered"
+            );
+        }
     }
 }
 

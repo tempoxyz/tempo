@@ -7,7 +7,7 @@ pub(crate) mod marshal {
     use crate::consensus::block::Block;
 
     pub(crate) type Actor<TContext> =
-        marshal::Actor<TContext, Block, crate::dkg::manager::Mailbox, Scheme<MinSig>>;
+        marshal::Actor<TContext, Block, crate::epoch::SchemeProvider, Scheme<MinSig>>;
 
     pub(crate) type Mailbox = marshal::Mailbox<Scheme<MinSig>, Block>;
 }

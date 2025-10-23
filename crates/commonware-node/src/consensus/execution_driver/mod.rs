@@ -12,8 +12,10 @@
 
 use std::{sync::Arc, time::Duration};
 
+use alloy_consensus::BlockHeader;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadId;
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Automaton, Block as _, Epochable, Relay, Reporter,
     marshal::ingress::mailbox::Identifier,
@@ -47,6 +49,7 @@ mod executor;
 
 use crate::{
     consensus::{Digest, execution_driver::executor::ExecutorMailbox},
+    dkg::PublicOutcome,
     epoch,
 };
 
@@ -135,7 +138,7 @@ where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Runs the execution driver until it is externally stopped.
-    async fn run_until_stopped(self) {
+    async fn run_until_stopped(self, dkg_manager: crate::dkg::manager::Mailbox) {
         let Self {
             context,
             mailbox,
@@ -143,7 +146,7 @@ where
         } = self;
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
-        let Ok(initialized) = inner.into_initialized(context.clone()).await else {
+        let Ok(initialized) = inner.into_initialized(context.clone(), dkg_manager).await else {
             // XXX: relies on into_initialized generating an error event before exit.
             return;
         };
@@ -157,8 +160,8 @@ where
         .await
     }
 
-    pub(super) fn start(mut self) -> Handle<()> {
-        spawn_cell!(self.context, self.run_until_stopped().await)
+    pub(super) fn start(mut self, dkg_manager: crate::dkg::manager::Mailbox) -> Handle<()> {
+        spawn_cell!(self.context, self.run_until_stopped(dkg_manager).await)
     }
 }
 
@@ -228,7 +231,6 @@ struct Inner<TState> {
     my_mailbox: ExecutionDriverMailbox,
 
     marshal: crate::alias::marshal::Mailbox,
-    dkg_manager: crate::dkg::manager::Mailbox,
 
     genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
@@ -347,12 +349,21 @@ impl Inner<Init> {
                 round.epoch(),
                 self.heights_per_epoch,
             ) {
-                match self
+                let outcome = self
+                    .state
                     .dkg_manager
-                    .get_ceremony_outcome(request.round.epoch())
-                    .await {}
+                    .get_public_ceremony_outcome(request.round.epoch())
+                    .await
+                    .transpose()
+                    .ok_or_eyre("public dkg ceremony outcome does not exist")
+                    .flatten()
+                    .wrap_err(
+                        "failed getting public dkg ceremony outcome; refusing to generate proposal",
+                    )?;
+                proposal = proposal.insert_public_ceremony_outcome(outcome);
             } else {
                 match self
+                    .state
                     .dkg_manager
                     .get_ceremony_deal(request.round.epoch())
                     .await
@@ -363,6 +374,7 @@ impl Inner<Init> {
                     ),
                     Ok(None) => {}
                     Ok(Some(deal_outcome)) => {
+                        info!("found ceremony deal outcome; inserting it into the proposal header");
                         proposal = proposal.insert_ceremony_deal_outcome(deal_outcome);
                     }
                 }
@@ -608,6 +620,40 @@ impl Inner<Init> {
             }
         }
 
+        if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.heights_per_epoch) {
+            let our_outcome = self
+                .state
+                .dkg_manager
+                .get_public_ceremony_outcome(round.epoch())
+                .await
+                .transpose()
+                .ok_or_eyre("public dkg ceremony outcome does not exist")
+                .flatten()
+                .wrap_err(
+                    "failed getting public dkg ceremony outcome; cannot verify end of epoch block",
+                )?;
+            let block_outcome = match PublicOutcome::decode(block.header().extra_data().as_ref()) {
+                Err(error) => {
+                    warn!(
+                        error = %eyre::Report::new(error),
+                        "cannot decode extra data header field of boundary block as public ceremony outcome; failing block",
+                    );
+                    return Ok((block, false));
+                }
+                Ok(block_outcome) => block_outcome,
+            };
+            if our_outcome != block_outcome {
+                warn!(
+                    our.participants = ?our_outcome.participants,
+                    our.public = ?our_outcome.public,
+                    block.participants = ?block_outcome.participants,
+                    block.public = ?block_outcome.public,
+                    "our public dkg ceremont outcome does not match what's stored in the block; failing block",
+                );
+                return Ok((block, false));
+            }
+        };
+
         if let Err(error) = self
             .state
             .executor_mailbox
@@ -648,6 +694,7 @@ impl Inner<Uninit> {
     async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
         mut self,
         context: TContext,
+        dkg_manager: crate::dkg::manager::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
@@ -698,6 +745,7 @@ impl Inner<Uninit> {
             execution_node: self.execution_node,
             state: Init {
                 latest_proposed_block: Arc::new(RwLock::new(None)),
+                dkg_manager,
                 executor_mailbox: executor.mailbox().clone(),
             },
         };
@@ -716,6 +764,7 @@ pub(super) struct Uninit(());
 #[derive(Clone, Debug)]
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<Block>>>,
+    dkg_manager: crate::dkg::manager::Mailbox,
     executor_mailbox: ExecutorMailbox,
 }
 
