@@ -614,22 +614,15 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
 
         // 4b. CREATE-specific costs
         if call.to.is_create() {
-            // Additional base cost for CREATE (only in Homestead+)
-            // EIP-2: Homestead Hard-fork Changes
-            // Pre-Homestead: CREATE costs same as CALL (0 additional)
-            // Homestead+: CREATE costs 32000 additional gas
-            if spec.is_enabled_in(RevmSpecId::HOMESTEAD) {
-                gas.initial_gas += CREATE; // 32000 gas
-            }
-
-            // EIP-3860: Initcode analysis gas (Shanghai+) using revm helper
-            if spec.is_enabled_in(RevmSpecId::SHANGHAI) {
-                gas.initial_gas += initcode_cost(call.input.len());
-            }
+            // CREATE costs 32000 additional gas
+            gas.initial_gas += CREATE; // 32000 gas
+            
+            // EIP-3860: Initcode analysis gas using revm helper
+            gas.initial_gas += initcode_cost(call.input.len());
         }
 
         // 4c. Value transfer cost using revm constant
-        if !call.value.is_zero() && !call.to.is_create() {
+        if !call.value.is_zero() && call.to.is_call() {
             gas.initial_gas += CALLVALUE; // 9000 gas
         }
     }
