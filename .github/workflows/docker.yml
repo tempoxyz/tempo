@@ -9,7 +9,7 @@ on:
   workflow_call:
 
 env:
-  REGISTRY: ghcr.io
+  REGISTRY: ghcr.io/tempoxyz
   IMAGE_NAME: tempo
 
 jobs:
