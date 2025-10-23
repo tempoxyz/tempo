@@ -28,7 +28,7 @@ use eyre::{WrapErr as _, bail, ensure};
 use futures::{FutureExt as _, lock::Mutex};
 use indexmap::IndexSet;
 use rand_core::CryptoRngCore;
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::consensus::block::Block;
 
@@ -51,7 +51,8 @@ pub(super) struct Config {
     // public polynomial yet.
     pub(super) public: Public<MinSig>,
 
-    /// Our previous share of the private polynomial.
+    /// Our previous share of the private polynomial. This dictates if we
+    /// become a dealer in the new round: no share -> not a dealer.
     pub(super) share: Option<group::Share>,
 
     /// The current epoch.
@@ -76,7 +77,7 @@ where
     previous: RoundResult,
 
     /// [Dealer] metadata, if this manager is also dealing.
-    dealer_me: Dealer,
+    dealer_me: Option<Dealer>,
 
     /// The local [Player] for this round, if the manager is playing.
     //
@@ -134,11 +135,18 @@ where
             WEIGHT_RECOVERY_CONCURRENCY,
         );
 
+        let mut dealer_me = None;
+
         // TODO(janis): move this "recovery" logic to a function.
-        let dealer_meta = if let Some(meta) =
-            ceremony_metadata.lock().await.get(&config.epoch.into())
-        {
-            for outcome in &meta.outcomes {
+        // Clone in order to not hold onto the lock too long.
+        let recovered = ceremony_metadata
+            .lock()
+            .await
+            .get(&config.epoch.into())
+            .cloned();
+
+        if let Some(recovered) = recovered {
+            for outcome in &recovered.outcomes {
                 let ack_indices = outcome
                     .acks
                     .iter()
@@ -147,7 +155,7 @@ where
                         if idx.is_none() {
                             warn!(
                                 player = %ack.player,
-                                "ack for player stored on disk not among players of this ceremony",
+                                "ack for player recovered from disk not among players of this ceremony",
                             );
                         }
                         idx.map(|idx| idx as u32)
@@ -165,63 +173,60 @@ where
                 {
                     warn!(
                         %error,
-                        "failed to update arbiter with stored metadata",
+                        "failed to update arbiter with metadata recovered from disk",
                     );
                 }
             }
 
             if let Some(me) = &mut player_me {
-                for (dealer, commitment, share) in meta.received_shares.clone() {
+                for (dealer, commitment, share) in recovered.received_shares.clone() {
                     me.share(dealer, commitment, share)
                         .wrap_err("failed updating my player information with stored metadata")?;
                 }
             }
 
-            let Some(Deal {
+            if let Some(Deal {
                 commitment,
                 shares,
                 acks,
-            }) = meta.deal.clone()
-            else {
-                bail!(
-                    "all players must currently be dealers, but no dealer \
-                    information was written to disk even though some round \
-                    information was; this is a problem"
-                );
-            };
-            let (mut dealer, _, _) =
-                dkg::Dealer::new(context, config.share.clone(), config.players.clone());
-            for ack in acks.values() {
-                dealer.ack(ack.player.clone()).wrap_err_with(|| {
-                    format!(
-                        "failed updating dealer information with ack for \
-                         player `{player}` recovered from disk",
-                        player = ack.player,
-                    )
-                })?;
-            }
-            Dealer {
-                inner: dealer,
-                commitment,
-                shares,
-                acks,
-                outcome: meta.local_outcome.clone(),
+            }) = recovered.deal.clone()
+            {
+                let (mut dkg_dealer, _, _) =
+                    dkg::Dealer::new(context, config.share.clone(), config.players.clone());
+                for ack in acks.values() {
+                    dkg_dealer.ack(ack.player.clone()).wrap_err_with(|| {
+                        format!(
+                            "failed updating dealer information with ack for \
+                             player `{player}` recovered from disk",
+                            player = ack.player,
+                        )
+                    })?;
+                }
+                dealer_me = Some(Dealer {
+                    inner: dkg_dealer,
+                    commitment,
+                    shares,
+                    acks,
+                    outcome: recovered.local_outcome.clone(),
+                });
             }
         } else {
-            let (dealer, commitment, shares) =
-                dkg::Dealer::new(context, config.share.clone(), config.players.clone());
-            let shares = config
-                .players
-                .iter()
-                .zip(&shares)
-                .map(|(player, share)| (player.clone(), share.clone()))
-                .collect();
-            Dealer {
-                inner: dealer,
-                commitment,
-                shares,
-                acks: BTreeMap::new(),
-                outcome: None,
+            if let Some(share) = config.share.clone() {
+                let (dkg_dealer, commitment, shares) =
+                    dkg::Dealer::new(context, Some(share), config.players.clone());
+                let shares = config
+                    .players
+                    .iter()
+                    .zip(&shares)
+                    .map(|(player, share)| (player.clone(), share.clone()))
+                    .collect();
+                dealer_me = Some(Dealer {
+                    inner: dkg_dealer,
+                    commitment,
+                    shares,
+                    acks: BTreeMap::new(),
+                    outcome: None,
+                });
             }
         };
 
@@ -237,7 +242,7 @@ where
         Ok(Self {
             config,
             previous,
-            dealer_me: dealer_meta,
+            dealer_me,
             player_me,
             players_indexed,
             arbiter,
@@ -247,17 +252,19 @@ where
         })
     }
 
+    /// Requests acknowledgments from all players that have not yet signed.
     #[instrument(skip_all, fields(epoch = self.config.epoch), err)]
     pub(super) async fn request_acks(&mut self) -> eyre::Result<()> {
-        // Request acks from all players that did not yet sign theirs.
-
+        let Some(dealer_me) = &mut self.dealer_me else {
+            debug!("not a dealer, not requesting acks");
+            return Ok(());
+        };
         for player in &self.config.players {
-            if self.dealer_me.acks.contains_key(player) {
+            if dealer_me.acks.contains_key(player) {
                 continue;
             }
 
-            let share = self
-                .dealer_me
+            let share = dealer_me
                 .shares
                 .get(player)
                 .cloned()
@@ -267,7 +274,7 @@ where
                 player
                     .share(
                         self.config.me.public_key(),
-                        self.dealer_me.commitment.clone(),
+                        dealer_me.commitment.clone(),
                         share.clone(),
                     )
                     .expect(
@@ -275,7 +282,7 @@ where
                         commmitment",
                     );
 
-                self.dealer_me
+                dealer_me
                     .inner
                     .ack(self.config.me.public_key())
                     .expect("must work: updating dealer with own player ack");
@@ -289,28 +296,28 @@ where
                     self.config.me.public_key(),
                     self.config.epoch,
                     &self.config.me.public_key(),
-                    &self.dealer_me.commitment,
+                    &dealer_me.commitment,
                 );
-                self.dealer_me
+                dealer_me
                     .acks
                     .insert(self.config.me.public_key(), ack.clone());
 
                 self.ceremony_metadata
                     .lock()
                     .await
-                    .upsert_sync(self.epoch().into(), |meta| {
+                    .upsert_sync(self.config.epoch.into(), |meta| {
                         if let Some(Deal { acks, .. }) = &mut meta.deal {
                             acks.insert(self.config.me.public_key(), ack);
                         } else {
                             meta.deal = Some(Deal {
-                                commitment: self.dealer_me.commitment.clone(),
-                                shares: self.dealer_me.shares.clone(),
+                                commitment: dealer_me.commitment.clone(),
+                                shares: dealer_me.shares.clone(),
                                 acks: BTreeMap::from([(self.config.me.public_key(), ack)]),
                             });
                         }
                         meta.received_shares.push((
                             self.config.me.public_key(),
-                            self.dealer_me.commitment.clone(),
+                            dealer_me.commitment.clone(),
                             share,
                         ));
                     })
@@ -320,7 +327,7 @@ where
             }
 
             let payload = Share {
-                commitment: self.dealer_me.commitment.clone(),
+                commitment: dealer_me.commitment.clone(),
                 share,
             }
             .into();
@@ -369,6 +376,11 @@ where
 
             match msg.payload {
                 Payload::Ack(ack) => {
+                    let Some(dealer_me) = &mut self.dealer_me else {
+                        debug!("not a dealer, dropping ack");
+                        continue;
+                    };
+
                     if ack.player != peer {
                         warn!(
                             ack.player = %ack.player,
@@ -390,9 +402,9 @@ where
                     if !ack.verify(
                         &union(&self.config.namespace, ACK_NAMESPACE),
                         &peer,
-                        self.epoch(),
+                        self.config.epoch,
                         &self.config.me.public_key(),
-                        &self.dealer_me.commitment,
+                        &dealer_me.commitment,
                     ) {
                         warn!(
                             player = %peer,
@@ -402,7 +414,7 @@ where
                     }
 
                     // Store ack
-                    if let Err(error) = self.dealer_me.inner.ack(peer.clone()) {
+                    if let Err(error) = dealer_me.inner.ack(peer.clone()) {
                         warn!(
                             player = %peer,
                             error = %eyre::Report::new(error),
@@ -415,18 +427,18 @@ where
                         "recorded ack",
                     );
 
-                    self.dealer_me.acks.insert(peer.clone(), ack.clone());
+                    dealer_me.acks.insert(peer.clone(), ack.clone());
 
                     self.ceremony_metadata
                         .lock()
                         .await
-                        .upsert_sync(self.epoch().into(), |meta| {
+                        .upsert_sync(self.config.epoch.into(), |meta| {
                             if let Some(Deal { acks, .. }) = &mut meta.deal {
                                 acks.insert(peer.clone(), ack);
                             } else {
                                 meta.deal = Some(Deal {
-                                    commitment: self.dealer_me.commitment.clone(),
-                                    shares: self.dealer_me.shares.clone(),
+                                    commitment: dealer_me.commitment.clone(),
+                                    shares: dealer_me.shares.clone(),
                                     acks: BTreeMap::from([(peer.clone(), ack)]),
                                 });
                             }
@@ -577,8 +589,10 @@ where
 
         // If the block outcome is ours, remove it. This ensures that the app
         // does not include the outcome into the block again.
-        if block_dealer == self.config.me.public_key() {
-            let _ = self.dealer_me.outcome.take();
+        if let Some(dealer_me) = &mut self.dealer_me
+            && block_dealer == self.config.me.public_key()
+        {
+            let _ = dealer_me.outcome.take();
         }
 
         Ok(())
@@ -586,13 +600,17 @@ where
 
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
     pub(super) async fn construct_deal_outcome(&mut self) -> eyre::Result<()> {
+        let Some(dealer_me) = &mut self.dealer_me else {
+            debug!("not a dealer; skipping construction of deal outcome");
+            return Ok(());
+        };
         let reveals = self
             .config
             .players
             .iter()
             .filter_map(|player| {
-                (!self.dealer_me.acks.contains_key(&player))
-                    .then(|| self.dealer_me.shares.get(&player).cloned())
+                (!dealer_me.acks.contains_key(&player))
+                    .then(|| dealer_me.shares.get(&player).cloned())
                     .flatten()
             })
             .collect::<Vec<_>>();
@@ -605,22 +623,22 @@ where
         let local_outcome = Some(DealOutcome::new(
             &self.config.me,
             &union(&self.config.namespace, OUTCOME_NAMESPACE),
-            self.epoch(),
-            self.dealer_me.commitment.clone(),
-            self.dealer_me.acks.values().cloned().collect(),
+            self.config.epoch,
+            dealer_me.commitment.clone(),
+            dealer_me.acks.values().cloned().collect(),
             reveals,
         ));
 
         self.ceremony_metadata
             .lock()
             .await
-            .upsert_sync(self.epoch().into(), |meta| {
+            .upsert_sync(self.config.epoch.into(), |meta| {
                 meta.local_outcome = local_outcome.clone();
             })
             .await
             .expect("must persist local outcome");
 
-        self.dealer_me.outcome = local_outcome;
+        dealer_me.outcome = local_outcome;
 
         Ok(())
     }
@@ -698,7 +716,8 @@ where
     }
 
     pub(super) fn deal_outcome(&self) -> Option<&DealOutcome> {
-        self.dealer_me.outcome.as_ref()
+        let dealer_me = self.dealer_me.as_ref()?;
+        dealer_me.outcome.as_ref()
     }
 
     pub(super) fn config(&self) -> &Config {
