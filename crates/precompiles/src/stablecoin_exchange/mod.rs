@@ -2421,6 +2421,27 @@ mod tests {
         assert_eq!(result, Err(StablecoinExchangeError::pair_already_exists()));
     }
 
+    /// Helper to verify a single hop in a route
+    fn verify_hop(
+        storage: &mut impl PrecompileStorageProvider,
+        exchange_addr: Address,
+        hop: (B256, bool),
+        token_in: Address,
+        token_out: Address,
+    ) {
+        let (book_key, base_for_quote) = hop;
+        let expected_book_key = compute_book_key(token_in, token_out);
+        assert_eq!(book_key, expected_book_key, "Book key should match");
+
+        let orderbook = Orderbook::from_storage(book_key, storage, exchange_addr);
+        let expected_direction = token_in == orderbook.base;
+        assert_eq!(
+            base_for_quote, expected_direction,
+            "Direction should be correct: token_in={}, base={}, base_for_quote={}",
+            token_in, orderbook.base, base_for_quote
+        );
+    }
+
     #[test]
     fn test_find_path_to_root() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -2519,16 +2540,13 @@ mod tests {
 
         // Expected: 1 hop (token -> linking_usd)
         assert_eq!(route.len(), 1, "Should have 1 hop for direct pair");
-
-        // Verify the book key and direction
-        let (book_key, base_for_quote) = route[0];
-        let expected_book_key = compute_book_key(token, linking_usd);
-        assert_eq!(book_key, expected_book_key, "Book key should match");
-
-        // When trading token -> linking_usd, token is the base, so base_for_quote should be true
-        let orderbook = Orderbook::from_storage(book_key, exchange.storage, exchange.address);
-        assert_eq!(token, orderbook.base, "Token should be the base");
-        assert!(base_for_quote, "Should be trading base for quote");
+        verify_hop(
+            exchange.storage,
+            exchange.address,
+            route[0],
+            token,
+            linking_usd,
+        );
 
         Ok(())
     }
@@ -2561,16 +2579,13 @@ mod tests {
 
         // Expected: 1 hop (linking_usd -> token)
         assert_eq!(route.len(), 1, "Should have 1 hop for reverse pair");
-
-        // Verify the book key and direction
-        let (book_key, base_for_quote) = route[0];
-        let expected_book_key = compute_book_key(linking_usd, token);
-        assert_eq!(book_key, expected_book_key, "Book key should match");
-
-        // When trading linking_usd -> token, token is the base, so base_for_quote should be false
-        let orderbook = Orderbook::from_storage(book_key, exchange.storage, exchange.address);
-        assert_eq!(token, orderbook.base, "Token should be the base");
-        assert!(!base_for_quote, "Should NOT be trading base for quote");
+        verify_hop(
+            exchange.storage,
+            exchange.address,
+            route[0],
+            linking_usd,
+            token,
+        );
 
         Ok(())
     }
@@ -2623,29 +2638,19 @@ mod tests {
 
         // Expected: 2 hops (USDC -> LinkingUSD, LinkingUSD -> EURC)
         assert_eq!(route.len(), 2, "Should have 2 hops for sibling tokens");
-
-        // Verify first hop: USDC -> LinkingUSD
-        let (book_key_1, base_for_quote_1) = route[0];
-        let expected_key_1 = compute_book_key(usdc_addr, linking_usd_addr);
-        assert_eq!(
-            book_key_1, expected_key_1,
-            "First hop book key should match"
+        verify_hop(
+            exchange.storage,
+            exchange.address,
+            route[0],
+            usdc_addr,
+            linking_usd_addr,
         );
-        assert!(
-            base_for_quote_1,
-            "First hop should trade USDC (base) for LinkingUSD (quote)"
-        );
-
-        // Verify second hop: LinkingUSD -> EURC
-        let (book_key_2, base_for_quote_2) = route[1];
-        let expected_key_2 = compute_book_key(linking_usd_addr, eurc_addr);
-        assert_eq!(
-            book_key_2, expected_key_2,
-            "Second hop book key should match"
-        );
-        assert!(
-            !base_for_quote_2,
-            "Second hop should trade LinkingUSD (quote) for EURC (base)"
+        verify_hop(
+            exchange.storage,
+            exchange.address,
+            route[1],
+            linking_usd_addr,
+            eurc_addr,
         );
 
         Ok(())
