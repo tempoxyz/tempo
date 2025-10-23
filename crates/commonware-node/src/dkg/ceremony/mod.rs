@@ -11,7 +11,7 @@ use commonware_consensus::{Block as _, types::Epoch};
 use commonware_cryptography::{
     Signer as _, Verifier as _,
     bls12381::{
-        dkg::{Arbiter, Dealer, Player, arbiter, player::Output},
+        dkg::{self, Arbiter, Player, arbiter, player::Output},
         primitives::{group, poly::Public, variant::MinSig},
     },
     ed25519::{PrivateKey, PublicKey, Signature},
@@ -76,7 +76,7 @@ where
     previous: RoundResult,
 
     /// [Dealer] metadata, if this manager is also dealing.
-    dealer_meta: DealerMetadata,
+    dealer_me: Dealer,
 
     /// The local [Player] for this round, if the manager is playing.
     //
@@ -190,7 +190,7 @@ where
                 );
             };
             let (mut dealer, _, _) =
-                Dealer::new(context, config.share.clone(), config.players.clone());
+                dkg::Dealer::new(context, config.share.clone(), config.players.clone());
             for ack in acks.values() {
                 dealer.ack(ack.player.clone()).wrap_err_with(|| {
                     format!(
@@ -200,8 +200,8 @@ where
                     )
                 })?;
             }
-            DealerMetadata {
-                dealer,
+            Dealer {
+                inner: dealer,
                 commitment,
                 shares,
                 acks,
@@ -209,15 +209,15 @@ where
             }
         } else {
             let (dealer, commitment, shares) =
-                Dealer::new(context, config.share.clone(), config.players.clone());
+                dkg::Dealer::new(context, config.share.clone(), config.players.clone());
             let shares = config
                 .players
                 .iter()
                 .zip(&shares)
                 .map(|(player, share)| (player.clone(), share.clone()))
                 .collect();
-            DealerMetadata {
-                dealer,
+            Dealer {
+                inner: dealer,
                 commitment,
                 shares,
                 acks: BTreeMap::new(),
@@ -237,7 +237,7 @@ where
         Ok(Self {
             config,
             previous,
-            dealer_meta,
+            dealer_me: dealer_meta,
             player_me,
             players_indexed,
             arbiter,
@@ -252,12 +252,12 @@ where
         // Request acks from all players that did not yet sign theirs.
 
         for player in &self.config.players {
-            if self.dealer_meta.acks.contains_key(player) {
+            if self.dealer_me.acks.contains_key(player) {
                 continue;
             }
 
             let share = self
-                .dealer_meta
+                .dealer_me
                 .shares
                 .get(player)
                 .cloned()
@@ -267,7 +267,7 @@ where
                 player
                     .share(
                         self.config.me.public_key(),
-                        self.dealer_meta.commitment.clone(),
+                        self.dealer_me.commitment.clone(),
                         share.clone(),
                     )
                     .expect(
@@ -275,8 +275,8 @@ where
                         commmitment",
                     );
 
-                self.dealer_meta
-                    .dealer
+                self.dealer_me
+                    .inner
                     .ack(self.config.me.public_key())
                     .expect("must work: updating dealer with own player ack");
 
@@ -289,9 +289,9 @@ where
                     self.config.me.public_key(),
                     self.config.epoch,
                     &self.config.me.public_key(),
-                    &self.dealer_meta.commitment,
+                    &self.dealer_me.commitment,
                 );
-                self.dealer_meta
+                self.dealer_me
                     .acks
                     .insert(self.config.me.public_key(), ack.clone());
 
@@ -303,14 +303,14 @@ where
                             acks.insert(self.config.me.public_key(), ack);
                         } else {
                             meta.deal = Some(Deal {
-                                commitment: self.dealer_meta.commitment.clone(),
-                                shares: self.dealer_meta.shares.clone(),
+                                commitment: self.dealer_me.commitment.clone(),
+                                shares: self.dealer_me.shares.clone(),
                                 acks: BTreeMap::from([(self.config.me.public_key(), ack)]),
                             });
                         }
                         meta.received_shares.push((
                             self.config.me.public_key(),
-                            self.dealer_meta.commitment.clone(),
+                            self.dealer_me.commitment.clone(),
                             share,
                         ));
                     })
@@ -320,7 +320,7 @@ where
             }
 
             let payload = Share {
-                commitment: self.dealer_meta.commitment.clone(),
+                commitment: self.dealer_me.commitment.clone(),
                 share,
             }
             .into();
@@ -392,7 +392,7 @@ where
                         &peer,
                         self.epoch(),
                         &self.config.me.public_key(),
-                        &self.dealer_meta.commitment,
+                        &self.dealer_me.commitment,
                     ) {
                         warn!(
                             player = %peer,
@@ -402,7 +402,7 @@ where
                     }
 
                     // Store ack
-                    if let Err(error) = self.dealer_meta.dealer.ack(peer.clone()) {
+                    if let Err(error) = self.dealer_me.inner.ack(peer.clone()) {
                         warn!(
                             player = %peer,
                             error = %eyre::Report::new(error),
@@ -415,7 +415,7 @@ where
                         "recorded ack",
                     );
 
-                    self.dealer_meta.acks.insert(peer.clone(), ack.clone());
+                    self.dealer_me.acks.insert(peer.clone(), ack.clone());
 
                     self.ceremony_metadata
                         .lock()
@@ -425,8 +425,8 @@ where
                                 acks.insert(peer.clone(), ack);
                             } else {
                                 meta.deal = Some(Deal {
-                                    commitment: self.dealer_meta.commitment.clone(),
-                                    shares: self.dealer_meta.shares.clone(),
+                                    commitment: self.dealer_me.commitment.clone(),
+                                    shares: self.dealer_me.shares.clone(),
                                     acks: BTreeMap::from([(peer.clone(), ack)]),
                                 });
                             }
@@ -578,7 +578,7 @@ where
         // If the block outcome is ours, remove it. This ensures that the app
         // does not include the outcome into the block again.
         if block_dealer == self.config.me.public_key() {
-            let _ = self.dealer_meta.outcome.take();
+            let _ = self.dealer_me.outcome.take();
         }
 
         Ok(())
@@ -591,8 +591,8 @@ where
             .players
             .iter()
             .filter_map(|player| {
-                (!self.dealer_meta.acks.contains_key(&player))
-                    .then(|| self.dealer_meta.shares.get(&player).cloned())
+                (!self.dealer_me.acks.contains_key(&player))
+                    .then(|| self.dealer_me.shares.get(&player).cloned())
                     .flatten()
             })
             .collect::<Vec<_>>();
@@ -606,8 +606,8 @@ where
             &self.config.me,
             &union(&self.config.namespace, OUTCOME_NAMESPACE),
             self.epoch(),
-            self.dealer_meta.commitment.clone(),
-            self.dealer_meta.acks.values().cloned().collect(),
+            self.dealer_me.commitment.clone(),
+            self.dealer_me.acks.values().cloned().collect(),
             reveals,
         ));
 
@@ -620,7 +620,7 @@ where
             .await
             .expect("must persist local outcome");
 
-        self.dealer_meta.outcome = local_outcome;
+        self.dealer_me.outcome = local_outcome;
 
         Ok(())
     }
@@ -698,7 +698,7 @@ where
     }
 
     pub(super) fn deal_outcome(&self) -> Option<&DealOutcome> {
-        self.dealer_meta.outcome.as_ref()
+        self.dealer_me.outcome.as_ref()
     }
 
     pub(super) fn config(&self) -> &Config {
@@ -707,9 +707,9 @@ where
 }
 
 /// Metadata associated with a [Dealer].
-struct DealerMetadata {
+struct Dealer {
     /// The [Dealer] object.
-    dealer: Dealer<PublicKey, MinSig>,
+    inner: dkg::Dealer<PublicKey, MinSig>,
     /// The [Dealer]'s commitment.
     commitment: Public<MinSig>,
     /// The [Dealer]'s shares for all players.
@@ -1055,7 +1055,7 @@ impl Read for Share {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Payload {
+enum Payload {
     /// Message sent by a dealer node to a player node.
     ///
     /// Contains the dealer's public commitment to their polynomial and the specific
