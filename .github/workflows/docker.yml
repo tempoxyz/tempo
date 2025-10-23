@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: tempo
 
 jobs:
   build-and-push:
@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+      - uses: depot/setup-action@v1
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -37,19 +37,16 @@ jobs:
             type=edge,branch=main
             type=sha,prefix=sha-
             type=ref,event=pr
-
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and push Docker image
         uses: depot/build-push-action@v1
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
