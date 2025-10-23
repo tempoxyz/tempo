@@ -94,11 +94,11 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
                 msg_sender,
                 |sender, call| self.unpause(sender, call),
             ),
-            ITIP20::permitCall::SELECTOR => {
-                mutate_void::<ITIP20::permitCall, TIP20Error>(calldata, msg_sender, |sender, call| {
-                    self.token.permit(sender, call)
-                })
-            }
+            ITIP20::permitCall::SELECTOR => mutate_void::<ITIP20::permitCall, TIP20Error>(
+                calldata,
+                msg_sender,
+                |sender, call| self.token.permit(sender, call),
+            ),
             ITIP20::changeTransferPolicyIdCall::SELECTOR => {
                 mutate_void::<ITIP20::changeTransferPolicyIdCall, TIP20Error>(
                     calldata,

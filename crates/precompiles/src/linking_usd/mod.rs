@@ -1001,9 +1001,12 @@ mod tests {
         // Set supply cap
         linking_usd
             .token
-            .set_supply_cap(&admin, ITIP20::setSupplyCapCall {
-                newSupplyCap: supply_cap,
-            })
+            .set_supply_cap(
+                &admin,
+                ITIP20::setSupplyCapCall {
+                    newSupplyCap: supply_cap,
+                },
+            )
             .unwrap();
 
         assert_eq!(linking_usd.token.supply_cap(), supply_cap);
