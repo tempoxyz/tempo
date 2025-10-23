@@ -1569,13 +1569,12 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
     let p256_gas_u64 = u64::from_str_radix(p256_gas.trim_start_matches("0x"), 16)?;
     println!("  P256 gas: {p256_gas_u64}");
     // P256 should add approximately 5,000 gas (allow small tolerance for gas estimation variance)
-    let p256_diff = (p256_gas_u64 as i64 - baseline_gas_u64 as i64).abs() as u64;
+    let p256_diff = (p256_gas_u64 as i64 - baseline_gas_u64 as i64).unsigned_abs();
     assert!(
-        p256_diff >= 4_985 && p256_diff <= 5_015,
-        "P256 should add ~5,000 gas: actual diff {} (expected 5,000 ±15)",
-        p256_diff
+        (4_985..=5_015).contains(&p256_diff),
+        "P256 should add ~5,000 gas: actual diff {p256_diff} (expected 5,000 ±15)",
     );
-    println!("  ✓ P256 adds {} gas (expected ~5,000)", p256_diff);
+    println!("  ✓ P256 adds {p256_diff} gas (expected ~5,000)");
 
     // Test 3: Estimate gas WITH keyType="webauthn" and keyData
     println!("\nTest 3: Estimating gas WITH keyType='webauthn' and keyData");
@@ -1583,11 +1582,8 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
     // Specify WebAuthn data size (excluding 128 bytes for public keys)
     // Encoded as hex: 116 = 0x74 (1 byte) or 0x0074 (2 bytes)
     let webauthn_size = 116u16;
-    let key_data_hex = format!("0x{:04x}", webauthn_size); // 2-byte encoding: "0x0074"
-    println!(
-        "  Requesting WebAuthn data size: {} bytes (keyData: {})",
-        webauthn_size, key_data_hex
-    );
+    let key_data_hex = format!("0x{webauthn_size:04x}"); // 2-byte encoding: "0x0074"
+    println!("  Requesting WebAuthn data size: {webauthn_size} bytes (keyData: {key_data_hex})",);
 
     let mut tx_request_webauthn = tx_request.clone();
     tx_request_webauthn
