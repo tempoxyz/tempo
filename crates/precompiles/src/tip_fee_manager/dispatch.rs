@@ -107,9 +107,7 @@ mod tests {
         expect_precompile_revert,
         storage::hashmap::HashMapStorageProvider,
         tip_fee_manager::{TIPFeeAMMError, TipFeeManager, amm::PoolKey},
-        tip20::{
-            ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked, token_id_to_address,
-        },
+        tip20::{ISSUER_ROLE, ITIP20, TIP20Token, token_id_to_address},
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -123,8 +121,7 @@ mod tests {
         user: Address,
         amount: U256,
     ) {
-        let token_id = address_to_token_id_unchecked(&token);
-        let mut tip20_token = TIP20Token::new(token_id, storage);
+        let mut tip20_token = TIP20Token::from_address(token, storage);
 
         // Initialize token
         tip20_token

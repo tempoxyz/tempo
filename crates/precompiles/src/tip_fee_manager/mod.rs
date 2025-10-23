@@ -12,7 +12,7 @@ use crate::{
         amm::{PoolKey, TIPFeeAMM},
         slots::{collected_fees_slot, user_token_slot, validator_token_slot},
     },
-    tip20::{ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20},
+    tip20::{ITIP20, TIP20Token, is_tip20},
 };
 
 // Re-export PoolKey for backward compatibility with tests
@@ -224,8 +224,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             }
         }
 
-        let token_id = address_to_token_id_unchecked(&user_token);
-        let mut tip20_token = TIP20Token::new(token_id, self.storage);
+        let mut tip20_token = TIP20Token::from_address(user_token, self.storage);
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token
@@ -252,8 +251,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     ) -> Result<(), IFeeManager::IFeeManagerErrors> {
         // Refund unused tokens to user
         if !refund_amount.is_zero() {
-            let token_id = address_to_token_id_unchecked(&user_token);
-            let mut tip20_token = TIP20Token::new(token_id, self.storage);
+            let mut tip20_token = TIP20Token::from_address(user_token, self.storage);
 
             tip20_token
                 .transfer_fee_post_tx(&fee_payer, refund_amount, actual_used)
@@ -326,8 +324,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         if !collected_fees.is_zero() {
-            let token_id = address_to_token_id_unchecked(&validator_token);
-            let mut token = TIP20Token::new(token_id, self.storage);
+            let mut token = TIP20Token::from_address(validator_token, self.storage);
 
             // If FeeManager or validator are blacklisted, we are not transferring any fees
             if token.is_transfer_authorized(&self.contract_address, &self.beneficiary) {
@@ -452,8 +449,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             }
         }
 
-        let token_id = address_to_token_id_unchecked(&token);
-        let mut tip20_token = TIP20Token::new(token_id, self.storage);
+        let mut tip20_token = TIP20Token::from_address(token, self.storage);
         let token_balance = tip20_token.balance_of(ITIP20::balanceOfCall {
             account: call.sender,
         });
@@ -566,9 +562,7 @@ mod tests {
         LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         storage::hashmap::HashMapStorageProvider,
         tip_fee_manager::slots::collected_fees_slot,
-        tip20::{
-            ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked, token_id_to_address,
-        },
+        tip20::{ISSUER_ROLE, ITIP20, TIP20Token, token_id_to_address},
     };
 
     fn setup_token_with_balance(
@@ -577,8 +571,7 @@ mod tests {
         user: Address,
         amount: U256,
     ) {
-        let token_id = address_to_token_id_unchecked(&token);
-        let mut tip20_token = TIP20Token::new(token_id, storage);
+        let mut tip20_token = TIP20Token::from_address(token, storage);
 
         // Initialize token
         tip20_token
@@ -694,12 +687,11 @@ mod tests {
         let refund_amount = U256::from(4000);
 
         // Setup token with balance for fee manager
-        let token_id = address_to_token_id_unchecked(&token);
         let admin = Address::random();
 
         // Initialize token and give fee manager tokens (simulating that collect_fee_pre_tx already happened)
         {
-            let mut tip20_token = TIP20Token::new(token_id, &mut storage);
+            let mut tip20_token = TIP20Token::from_address(token, &mut storage);
             tip20_token
                 .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, &admin)
                 .unwrap();
@@ -740,7 +732,7 @@ mod tests {
 
         // Verify user got the refund
         {
-            let mut tip20_token = TIP20Token::new(token_id, &mut storage);
+            let mut tip20_token = TIP20Token::from_address(token, &mut storage);
             let balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: user });
             assert_eq!(balance, refund_amount);
         }

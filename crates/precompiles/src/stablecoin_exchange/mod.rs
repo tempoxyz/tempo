@@ -23,7 +23,7 @@ use crate::{
         compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
     },
     storage::{PrecompileStorageProvider, StorageOps, slots::mapping_slot},
-    tip20::{ITIP20, TIP20Error, TIP20Token, address_to_token_id_unchecked},
+    tip20::{ITIP20, TIP20Error, TIP20Token},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::{precompile::PrecompileError, state::Bytecode};
@@ -171,7 +171,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 },
             )?;
         } else {
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).transfer(
+            TIP20Token::from_address(token, self.storage).transfer(
                 &self.address,
                 ITIP20::transferCall {
                     to,
@@ -199,7 +199,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 },
             )?;
         } else {
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).transfer_from(
+            TIP20Token::from_address(token, self.storage).transfer_from(
                 &self.address,
                 ITIP20::transferFromCall {
                     from,
@@ -348,8 +348,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Get price level information
     pub fn get_price_level(&mut self, base: Address, tick: i16, is_bid: bool) -> PriceLevel {
-        let quote =
-            TIP20Token::new(address_to_token_id_unchecked(&base), self.storage).quote_token();
+        let quote = TIP20Token::from_address(base, self.storage).quote_token();
         let key = compute_book_key(base, quote);
         PriceLevel::from_storage(self.storage, self.address, key, tick, is_bid)
     }
@@ -371,8 +370,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     pub fn create_pair(&mut self, base: &Address) -> Result<B256, StablecoinExchangeError> {
-        let quote =
-            TIP20Token::new(address_to_token_id_unchecked(base), self.storage).quote_token();
+        let quote = TIP20Token::from_address(*base, self.storage).quote_token();
 
         let book_key = compute_book_key(*base, quote);
 
@@ -421,8 +419,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         tick: i16,
     ) -> Result<u128, StablecoinExchangeError> {
         // Lookup quote token from TIP20 token
-        let quote_token =
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
+        let quote_token = TIP20Token::from_address(token, self.storage).quote_token();
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -499,8 +496,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         flip_tick: i16,
     ) -> Result<u128, StablecoinExchangeError> {
         // Lookup quote token from TIP20 token
-        let quote_token =
-            TIP20Token::new(address_to_token_id_unchecked(&token), self.storage).quote_token();
+        let quote_token = TIP20Token::from_address(token, self.storage).quote_token();
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -1247,16 +1243,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Check if direct pair exists (token_in -> token_out)
-        let token_in_id = address_to_token_id_unchecked(&token_in);
-        let token_in_quote = TIP20Token::new(token_in_id, self.storage).quote_token();
+        let token_in_quote = TIP20Token::from_address(token_in, self.storage).quote_token();
 
         if token_in_quote == token_out {
             return self.validate_and_build_route(&[token_in, token_out]);
         }
 
         // Check if reverse pair exists (token_out -> token_in)
-        let token_out_id = address_to_token_id_unchecked(&token_out);
-        let token_out_quote = TIP20Token::new(token_out_id, self.storage).quote_token();
+        let token_out_quote = TIP20Token::from_address(token_out, self.storage).quote_token();
 
         if token_out_quote == token_in {
             return self.validate_and_build_route(&[token_in, token_out]);
@@ -1348,8 +1342,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             }
 
             // Get the quote token for the current token
-            let token_id = address_to_token_id_unchecked(&current);
-            let quote_token = TIP20Token::new(token_id, self.storage).quote_token();
+            let quote_token = TIP20Token::from_address(current, self.storage).quote_token();
 
             // Move to the parent (quote token)
             current = quote_token;
@@ -1652,10 +1645,7 @@ mod tests {
 
         // Verify balance was reduced by the escrow amount
         {
-            let mut quote_tip20 = TIP20Token::new(
-                address_to_token_id_unchecked(&quote_token),
-                exchange.storage,
-            );
+            let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
             let remaining_balance =
                 quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice });
             assert_eq!(remaining_balance, U256::ZERO);
@@ -1717,8 +1707,7 @@ mod tests {
 
         // Verify balance was reduced by the escrow amount
         {
-            let mut base_tip20 =
-                TIP20Token::new(address_to_token_id_unchecked(&base_token), exchange.storage);
+            let mut base_tip20 = TIP20Token::from_address(base_token, exchange.storage);
             let remaining_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: alice });
             assert_eq!(remaining_balance, U256::ZERO); // All tokens should be escrowed
 
@@ -1790,10 +1779,7 @@ mod tests {
 
         // Verify balance was reduced by the escrow amount
         {
-            let mut quote_tip20 = TIP20Token::new(
-                address_to_token_id_unchecked(&quote_token),
-                exchange.storage,
-            );
+            let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
             let remaining_balance =
                 quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice });
             assert_eq!(remaining_balance, U256::ZERO);
@@ -1845,10 +1831,7 @@ mod tests {
         assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
 
         let (alice_balance_before, exchange_balance_before) = {
-            let mut quote_tip20 = TIP20Token::new(
-                address_to_token_id_unchecked(&quote_token),
-                exchange.storage,
-            );
+            let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
 
             (
                 quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice }),
@@ -2015,10 +1998,7 @@ mod tests {
         assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
 
         // Verify wallet balances changed correctly
-        let mut quote_tip20 = TIP20Token::new(
-            address_to_token_id_unchecked(&quote_token),
-            exchange.storage,
-        );
+        let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
 
         assert_eq!(
             quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice }),
@@ -2229,8 +2209,7 @@ mod tests {
             .swap_exact_amount_out(&bob, quote_token, base_token, amount_out, max_amount_in)
             .expect("Swap should succeed");
 
-        let mut base_tip20 =
-            TIP20Token::new(address_to_token_id_unchecked(&base_token), exchange.storage);
+        let mut base_tip20 = TIP20Token::from_address(base_token, exchange.storage);
         let bob_base_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: bob });
         assert_eq!(bob_base_balance, U256::from(amount_out));
 
@@ -2283,10 +2262,7 @@ mod tests {
             .swap_exact_amount_in(&bob, base_token, quote_token, amount_in, min_amount_out)
             .expect("Swap should succeed");
 
-        let mut quote_tip20 = TIP20Token::new(
-            address_to_token_id_unchecked(&quote_token),
-            exchange.storage,
-        );
+        let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
         let bob_quote_balance = quote_tip20.balance_of(ITIP20::balanceOfCall { account: bob });
         assert_eq!(bob_quote_balance, U256::from(amount_out));
 

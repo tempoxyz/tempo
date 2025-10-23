@@ -1,7 +1,7 @@
 use crate::{
     storage::{PrecompileStorageProvider, StorageOps},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
-    tip20::{ITIP20, TIP20Token, address_to_token_id_unchecked},
+    tip20::{ITIP20, TIP20Token},
 };
 use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
@@ -213,15 +213,13 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
 
         self.set_pool(&pool_id, &pool);
 
-        let validator_token_id = address_to_token_id_unchecked(&validator_token);
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
-        TIP20Token::new(validator_token_id, self.storage)
+        TIP20Token::from_address(validator_token, self.storage)
             .system_transfer_from(msg_sender, self.contract_address, amount_in)
             .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
-        let user_token_id = address_to_token_id_unchecked(&user_token);
-        TIP20Token::new(user_token_id, self.storage)
+        TIP20Token::from_address(user_token, self.storage)
             .transfer(
                 &self.contract_address,
                 ITIP20::transferCall {
@@ -296,13 +294,11 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         }
 
         // Transfer tokens from user to contract
-        let user_token_id = address_to_token_id_unchecked(&user_token);
-        let _ = TIP20Token::new(user_token_id, self.storage)
+        let _ = TIP20Token::from_address(user_token, self.storage)
             .system_transfer_from(msg_sender, self.contract_address, amount_user_token)
             .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
-        let validator_token_id = address_to_token_id_unchecked(&validator_token);
-        let _ = TIP20Token::new(validator_token_id, self.storage)
+        let _ = TIP20Token::from_address(validator_token, self.storage)
             .system_transfer_from(msg_sender, self.contract_address, amount_validator_token)
             .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
@@ -407,8 +403,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         self.set_pool(&pool_id, &pool);
 
         // Transfer tokens to user
-        let user_token_id = address_to_token_id_unchecked(&user_token);
-        let _ = TIP20Token::new(user_token_id, self.storage)
+        let _ = TIP20Token::from_address(user_token, self.storage)
             .transfer(
                 &self.contract_address,
                 ITIP20::transferCall {
@@ -418,8 +413,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             )
             .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
 
-        let validator_token_id = address_to_token_id_unchecked(&validator_token);
-        let _ = TIP20Token::new(validator_token_id, self.storage)
+        let _ = TIP20Token::from_address(validator_token, self.storage)
             .transfer(
                 &self.contract_address,
                 ITIP20::transferCall {

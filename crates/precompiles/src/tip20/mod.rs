@@ -343,8 +343,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 return Err(TIP20Error::invalid_quote_token());
             }
 
-            let token_id = address_to_token_id_unchecked(&current);
-            current = TIP20Token::new(token_id, self.storage).quote_token();
+            current = TIP20Token::from_address(current, self.storage).quote_token();
         }
 
         // Update the quote token
@@ -754,6 +753,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             token_address,
             storage,
         }
+    }
+
+    /// Create a TIP20Token from an address
+    pub fn from_address(address: Address, storage: &'a mut S) -> Self {
+        let token_id = address_to_token_id_unchecked(&address);
+        Self::new(token_id, storage)
     }
 
     /// Only called internally from the factory, which won't try to re-initialize a token.
@@ -1972,5 +1977,35 @@ mod tests {
         // Payment prefix should start with token prefix
         assert_eq!(&TIP20_PAYMENT_PREFIX[..12], &TIP20_TOKEN_PREFIX);
         assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..14], &TIP20_PAYMENT_PREFIX);
+    }
+
+    #[test]
+    fn test_from_address() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        // Create a token to get a valid address
+        let token_id = setup_factory_with_token(&mut storage, &admin, "TEST", "TST");
+        let token_address = token_id_to_address(token_id);
+
+        // Test from_address creates same instance as new()
+        let addr_via_new = {
+            let token = TIP20Token::new(token_id, &mut storage);
+            token.token_address
+        };
+
+        let addr_via_from_address = {
+            let token = TIP20Token::from_address(token_address, &mut storage);
+            token.token_address
+        };
+
+        assert_eq!(
+            addr_via_new, addr_via_from_address,
+            "Both methods should create token with same address"
+        );
+        assert_eq!(
+            addr_via_from_address, token_address,
+            "from_address should use the provided address"
+        );
     }
 }
