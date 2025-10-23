@@ -1,5 +1,5 @@
 mod ceremony;
-pub(crate) use ceremony::DealOutcome;
+pub(crate) use ceremony::LocalOutcome;
 pub(crate) use ceremony::PublicOutcome;
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt};
 use commonware_cryptography::{

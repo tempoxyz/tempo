@@ -617,7 +617,7 @@ where
             "too many reveals; skipping deal outcome construction",
         );
 
-        let local_outcome = Some(DealOutcome::new(
+        let local_outcome = Some(LocalOutcome::new(
             &self.config.me,
             &union(&self.config.namespace, OUTCOME_NAMESPACE),
             self.config.epoch,
@@ -720,7 +720,7 @@ where
         self.config.epoch
     }
 
-    pub(super) fn deal_outcome(&self) -> Option<&DealOutcome> {
+    pub(super) fn deal_outcome(&self) -> Option<&LocalOutcome> {
         let dealer_me = self.dealer_me.as_ref()?;
         dealer_me.outcome.as_ref()
     }
@@ -742,14 +742,15 @@ struct Dealer {
     /// Signed acknowledgements from contributors.
     acks: BTreeMap<PublicKey, Ack>,
     /// The constructed dealing for inclusion in a block, if any.
-    outcome: Option<DealOutcome>,
+    outcome: Option<LocalOutcome>,
 }
 
-/// The result of a resharing operation from the local [Dealer].
+/// The local outcome of a dealer's dealings.
 ///
-/// [Dealer]: commonware_cryptography::bls12381::dkg::Dealer
+/// This is the collection of dealer's generated commitment, as well as acks
+/// it collected for its shares and revealed shares for those without acks.
 #[derive(Clone)]
-pub(crate) struct DealOutcome {
+pub(crate) struct LocalOutcome {
     /// The public key of the dealer.
     dealer: PublicKey,
 
@@ -769,9 +770,9 @@ pub(crate) struct DealOutcome {
     reveals: Vec<group::Share>,
 }
 
-impl DealOutcome {
+impl LocalOutcome {
     /// Creates a new [DealOutcome], signing its inner payload with the [commonware_cryptography::bls12381::dkg::Dealer]'s [Signer].
-    pub(super) fn new(
+    fn new(
         dealer_signer: &PrivateKey,
         namespace: &[u8],
         epoch: Epoch,
@@ -826,7 +827,7 @@ impl DealOutcome {
     }
 }
 
-impl Write for DealOutcome {
+impl Write for LocalOutcome {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         self.dealer.write(buf);
         self.dealer_signature.write(buf);
@@ -837,7 +838,7 @@ impl Write for DealOutcome {
     }
 }
 
-impl EncodeSize for DealOutcome {
+impl EncodeSize for LocalOutcome {
     fn encode_size(&self) -> usize {
         self.dealer.encode_size()
             + self.dealer_signature.encode_size()
@@ -848,7 +849,7 @@ impl EncodeSize for DealOutcome {
     }
 }
 
-impl Read for DealOutcome {
+impl Read for LocalOutcome {
     type Cfg = usize;
 
     fn read_cfg(
@@ -1179,8 +1180,8 @@ pub(super) struct State {
     /// Tracks the shares received from other dealers, if we are a player.
     received_shares: Vec<(PublicKey, Public<MinSig>, group::Share)>,
 
-    local_outcome: Option<DealOutcome>,
-    outcomes: Vec<DealOutcome>,
+    local_outcome: Option<LocalOutcome>,
+    outcomes: Vec<LocalOutcome>,
 }
 
 impl Write for State {
@@ -1215,8 +1216,8 @@ impl Read for State {
                 buf,
                 &(RangeCfg::from(0..usize::MAX), ((), *cfg, ())),
             )?,
-            local_outcome: Option::<DealOutcome>::read_cfg(buf, cfg)?,
-            outcomes: Vec::<DealOutcome>::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), *cfg))?,
+            local_outcome: Option::<LocalOutcome>::read_cfg(buf, cfg)?,
+            outcomes: Vec::<LocalOutcome>::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), *cfg))?,
         })
     }
 }

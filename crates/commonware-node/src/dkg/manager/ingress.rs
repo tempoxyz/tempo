@@ -5,7 +5,7 @@ use tracing::{Span, warn};
 
 use crate::{
     consensus::block::Block,
-    dkg::ceremony::{DealOutcome, PublicOutcome},
+    dkg::ceremony::{LocalOutcome, PublicOutcome},
 };
 
 #[derive(Clone, Debug)]
@@ -17,7 +17,7 @@ impl Mailbox {
     pub(crate) async fn get_ceremony_deal(
         &self,
         epoch: Epoch,
-    ) -> eyre::Result<Option<DealOutcome>> {
+    ) -> eyre::Result<Option<LocalOutcome>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(GetCeremonyDeal {
@@ -90,7 +90,7 @@ pub(super) struct Finalize {
 
 pub(super) struct GetCeremonyDeal {
     pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<Option<DealOutcome>>,
+    pub(super) response: oneshot::Sender<Option<LocalOutcome>>,
 }
 
 pub(super) struct GetPublicCeremonyOutcome {
