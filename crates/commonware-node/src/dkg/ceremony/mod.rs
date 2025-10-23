@@ -28,7 +28,7 @@ use eyre::{WrapErr as _, bail, ensure};
 use futures::{FutureExt as _, lock::Mutex};
 use indexmap::IndexSet;
 use rand_core::CryptoRngCore;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{Level, debug, error, info, instrument, warn};
 
 use crate::consensus::block::Block;
 
@@ -252,7 +252,7 @@ where
         })
     }
 
-    /// Requests acknowledgments from all players that have not yet signed.
+    /// Requests players to sign acks.
     #[instrument(skip_all, fields(epoch = self.config.epoch), err)]
     pub(super) async fn request_acks(&mut self) -> eyre::Result<()> {
         let Some(dealer_me) = &mut self.dealer_me else {
@@ -371,139 +371,141 @@ where
                     msg.epoch = msg.epoch,
                     "ignoring message for different round"
                 );
-                return Ok(());
+                continue;
             }
 
             match msg.payload {
                 Payload::Ack(ack) => {
-                    let Some(dealer_me) = &mut self.dealer_me else {
-                        debug!("not a dealer, dropping ack");
-                        continue;
-                    };
-
-                    if ack.player != peer {
-                        warn!(
-                            ack.player = %ack.player,
-                            %peer,
-                            "player recorded in ack does not match peer that sent it; dropping ack",
-                        );
-                        continue;
-                    }
-
-                    if !self.players_indexed.contains(&peer) {
-                        warn!(
-                            player = %peer,
-                            "player recorded in ack not known; dropping ack",
-                        );
-                        continue;
-                    }
-
-                    // Verify signature on incoming ack
-                    if !ack.verify(
-                        &union(&self.config.namespace, ACK_NAMESPACE),
-                        &peer,
-                        self.config.epoch,
-                        &self.config.me.public_key(),
-                        &dealer_me.commitment,
-                    ) {
-                        warn!(
-                            player = %peer,
-                            "signature of ack received from player is not valid"
-                        );
-                        continue;
-                    }
-
-                    // Store ack
-                    if let Err(error) = dealer_me.inner.ack(peer.clone()) {
-                        warn!(
-                            player = %peer,
-                            error = %eyre::Report::new(error),
-                            "failed to record ack",
-                        );
-                        continue;
-                    }
-                    info!(
-                        player = %peer,
-                        "recorded ack",
-                    );
-
-                    dealer_me.acks.insert(peer.clone(), ack.clone());
-
-                    self.ceremony_metadata
-                        .lock()
-                        .await
-                        .upsert_sync(self.config.epoch.into(), |meta| {
-                            if let Some(Deal { acks, .. }) = &mut meta.deal {
-                                acks.insert(peer.clone(), ack);
-                            } else {
-                                meta.deal = Some(Deal {
-                                    commitment: dealer_me.commitment.clone(),
-                                    shares: dealer_me.shares.clone(),
-                                    acks: BTreeMap::from([(peer.clone(), ack)]),
-                                });
-                            }
-                        })
-                        .await
-                        .expect("must persist ack");
+                    let _: Result<_, _> = self.process_ack(peer, ack).await;
                 }
-                Payload::Share(Share { commitment, share }) => {
-                    let Some(player_me) = &mut self.player_me else {
-                        warn!("ignoring share; not a player");
-                        continue;
-                    };
-
-                    // Store share
-                    if let Err(error) =
-                        player_me.share(peer.clone(), commitment.clone(), share.clone())
-                    {
-                        warn!(
-                            error = %eyre::Report::new(error),
-                            "failed to record share",
-                        );
-                        continue;
-                    }
-
-                    // Persist the share to storage.
-                    self.ceremony_metadata
-                        .lock()
-                        .await
-                        .upsert_sync(self.epoch().into(), |meta| {
-                            meta.received_shares
-                                .push((peer.clone(), commitment.clone(), share));
-                        })
-                        .await
-                        .expect("must be able to persists shares");
-
-                    // Send ack
-                    let payload = Ack::new(
-                        &union(&self.config.namespace, ACK_NAMESPACE),
-                        self.config.me.clone(),
-                        self.config.me.public_key(),
-                        self.epoch(),
-                        &peer,
-                        &commitment,
-                    )
-                    .into();
-                    self.sender
-                        .send(
-                            Recipients::One(peer.clone()),
-                            Dkg {
-                                epoch: self.epoch(),
-                                payload,
-                            }
-                            .encode()
-                            .freeze(),
-                            true,
-                        )
-                        .await
-                        .wrap_err("unable to forward ack to p2p network")?;
-
-                    info!(dealer = %peer, "returned ack to dealer");
+                Payload::Share(share) => {
+                    let _: Result<_, _> = self.process_share(peer, share).await;
                 }
             }
         }
 
         Ok(())
+    }
+
+    #[instrument(
+        skip_all,
+        fields(
+            epoch = %self.epoch(),
+            %peer,
+            player = %ack.player,
+        ),
+        err(level = Level::WARN),
+        ret,
+    )]
+    async fn process_ack(&mut self, peer: PublicKey, ack: Ack) -> eyre::Result<&'static str> {
+        let Some(dealer_me) = &mut self.dealer_me else {
+            return Ok("not a dealer, dropping ack");
+        };
+
+        ensure!(
+            ack.player == peer,
+            "player recorded in ack does not match peer that sent it; dropping ack",
+        );
+
+        ensure!(
+            self.players_indexed.contains(&peer),
+            "peer not among players for this ceremony; dropping ack",
+        );
+
+        ensure!(
+            ack.verify(
+                &union(&self.config.namespace, ACK_NAMESPACE),
+                &peer,
+                self.config.epoch,
+                &self.config.me.public_key(),
+                &dealer_me.commitment,
+            ),
+            "failed verifying ack signature against peer",
+        );
+
+        dealer_me
+            .inner
+            .ack(peer.clone())
+            .wrap_err("failed to track and record ack")?;
+        dealer_me.acks.insert(peer.clone(), ack.clone());
+
+        self.ceremony_metadata
+            .lock()
+            .await
+            .upsert_sync(self.config.epoch.into(), |meta| {
+                if let Some(Deal { acks, .. }) = &mut meta.deal {
+                    acks.insert(peer.clone(), ack);
+                } else {
+                    meta.deal = Some(Deal {
+                        commitment: dealer_me.commitment.clone(),
+                        shares: dealer_me.shares.clone(),
+                        acks: BTreeMap::from([(peer.clone(), ack)]),
+                    });
+                }
+            })
+            .await
+            .expect("must always be able to persist tracked acks to disk");
+
+        Ok("ack recorded")
+    }
+
+    #[instrument(
+        skip_all,
+        fields(
+            epoch = %self.epoch(),
+            %peer,
+        ),
+        err(level = Level::WARN),
+        ret,
+    )]
+    async fn process_share(
+        &mut self,
+        peer: PublicKey,
+        Share { commitment, share }: Share,
+    ) -> eyre::Result<&'static str> {
+        let Some(player_me) = &mut self.player_me else {
+            return Ok("not a player, dropping share");
+        };
+
+        // This also checks peer is the correct dealer.
+        player_me
+            .share(peer.clone(), commitment.clone(), share.clone())
+            .wrap_err("failed to record and track share")?;
+
+        self.ceremony_metadata
+            .lock()
+            .await
+            .upsert_sync(self.epoch().into(), |meta| {
+                meta.received_shares
+                    .push((peer.clone(), commitment.clone(), share));
+            })
+            .await
+            .expect("must always be able to persist tracked shares to disk");
+
+        let payload = Ack::new(
+            &union(&self.config.namespace, ACK_NAMESPACE),
+            self.config.me.clone(),
+            self.config.me.public_key(),
+            self.epoch(),
+            &peer,
+            &commitment,
+        )
+        .into();
+        self.sender
+            .send(
+                Recipients::One(peer.clone()),
+                Dkg {
+                    epoch: self.epoch(),
+                    payload,
+                }
+                .encode()
+                .freeze(),
+                true,
+            )
+            .await
+            .wrap_err("failed returning ack to peer")?;
+
+        Ok("recorded share and returned signed ack to peer")
     }
 
     /// Processes a [Block] that may contain a [DealOutcome], tracking it with the [Arbiter] if
