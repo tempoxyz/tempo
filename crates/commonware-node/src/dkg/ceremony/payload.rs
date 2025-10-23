@@ -95,8 +95,8 @@ impl Read for Payload {
     fn read_cfg(buf: &mut impl Buf, p: &u32) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(buf)?;
         let result = match tag {
-            SHARE_TAG => Payload::Share(Share::read_cfg(buf, p)?),
-            ACK_TAG => Payload::Ack(Ack::read(buf)?.into()),
+            SHARE_TAG => Self::Share(Share::read_cfg(buf, p)?),
+            ACK_TAG => Self::Ack(Ack::read(buf)?.into()),
             _ => return Err(commonware_codec::Error::InvalidEnum(tag)),
         };
         Ok(result)
@@ -122,19 +122,15 @@ impl EncodeSize for Payload {
 /// share message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Ack {
-    /// The public key identifier of the [Player] sending the acknowledgment.
-    ///
-    /// [Player]: crate::bls12381::dkg::Player
+    /// The public key identifier of the player sending the acknowledgment.
     pub(super) player: PublicKey,
-    /// A signature covering the DKG round, dealer ID, and the [Dealer]'s commitment.
+    /// A signature covering the DKG round, dealer ID, and the dealer's commitment.
     /// This confirms the player received and validated the correct share.
-    ///
-    /// [Dealer]: crate::bls12381::dkg::Dealer
     pub(super) signature: Signature,
 }
 
 impl Ack {
-    /// Create a new [Ack] message, constructing and signing the payload with the provided [Signer].
+    /// Create a new acknowledgment signed by `signer`.
     pub(super) fn new(
         namespace: &[u8],
         signer: PrivateKey,

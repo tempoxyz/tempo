@@ -95,7 +95,7 @@ where
     /// list of unique playes, players_indexed is an actual set data structure
     /// that allows O(1) lookup of both keys and indices.
     ///
-    /// It is an invariant that players_indexed.get_index_of(players[i]) == i.
+    /// It is an invariant that `players_indexed.get_index_of(players[i]) == i`.
     players_indexed: IndexSet<PublicKey>,
 
     /// The local [Arbiter] for this round.
@@ -508,8 +508,10 @@ where
         Ok("recorded share and returned signed ack to peer")
     }
 
-    /// Processes a [Block] that may contain a [DealOutcome], tracking it with the [Arbiter] if
-    /// all acknowledgement signatures are valid.
+    /// Process `block` by reading [`DealingOutcome`] from its header.
+    ///
+    /// If the block contains this outcome, the ceremony will verify it and
+    /// track it in its arbiter.
     #[instrument(skip_all, fields(epoch = self.epoch(), block.height = block.height()), err)]
     pub(super) async fn process_block(&mut self, block: &Block) -> eyre::Result<()> {
         let Some(block_outcome) = block.try_read_ceremony_deal_outcome() else {
@@ -727,7 +729,7 @@ where
                 share: output.share,
             }
         } else {
-            Role::Verifier { public: public }
+            Role::Verifier { public }
         };
 
         Ok(PrivateOutcome {
