@@ -30,8 +30,13 @@ use tracing::{Level, debug, error, info, instrument, warn};
 use crate::consensus::block::Block;
 
 mod payload;
+mod persisted;
+
 pub(crate) use payload::DealingOutcome;
+pub(super) use persisted::State;
+
 use payload::{Ack, Message, Payload, Share};
+use persisted::Dealing;
 
 const ACK_NAMESPACE: &[u8] = b"_DKG_ACK";
 const OUTCOME_NAMESPACE: &[u8] = b"_DKG_OUTCOME";
@@ -768,46 +773,6 @@ pub(super) enum RoundResult {
     },
 }
 
-/// The local dealing of the current ceremony.
-///
-/// Here, the dealer tracks its generated commmitment and shares, as well
-/// as the acknowledgments it received for its shares.
-#[derive(Clone)]
-struct Dealing {
-    commitment: Public<MinSig>,
-    shares: BTreeMap<PublicKey, group::Share>,
-    acks: BTreeMap<PublicKey, Ack>,
-}
-
-impl EncodeSize for Dealing {
-    fn encode_size(&self) -> usize {
-        self.commitment.encode_size() + self.shares.encode_size() + self.acks.encode_size()
-    }
-}
-
-impl Read for Dealing {
-    type Cfg = usize;
-
-    fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-        let commitment = Public::<MinSig>::read_cfg(buf, cfg)?;
-        let shares = BTreeMap::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), ((), ())))?;
-        let acks = BTreeMap::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), ((), ())))?;
-        Ok(Self {
-            commitment,
-            shares,
-            acks,
-        })
-    }
-}
-
-impl Write for Dealing {
-    fn write(&self, buf: &mut impl bytes::BufMut) {
-        self.commitment.write(buf);
-        self.shares.write(buf);
-        self.acks.write(buf);
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PublicOutcome {
     pub(crate) participants: Set<PublicKey>,
@@ -838,57 +803,5 @@ impl Read for PublicOutcome {
 impl EncodeSize for PublicOutcome {
     fn encode_size(&self) -> usize {
         self.participants.encode_size() + self.public.encode_size()
-    }
-}
-
-/// Information on a ceremony that is persisted to disk.
-#[derive(Clone, Default)]
-pub(super) struct State {
-    /// Tracks the local dealing if we participate as a dealer.
-    dealing: Option<Dealing>,
-
-    /// Tracks the shares received from other dealers, if we are a player.
-    received_shares: Vec<(PublicKey, Public<MinSig>, group::Share)>,
-
-    dealing_outcome: Option<DealingOutcome>,
-
-    outcomes: Vec<DealingOutcome>,
-}
-
-impl Write for State {
-    fn write(&self, buf: &mut impl bytes::BufMut) {
-        self.dealing.write(buf);
-        self.received_shares.write(buf);
-        self.dealing_outcome.write(buf);
-        self.outcomes.write(buf);
-    }
-}
-
-impl EncodeSize for State {
-    fn encode_size(&self) -> usize {
-        self.dealing.encode_size()
-            + self.received_shares.encode_size()
-            + self.dealing_outcome.encode_size()
-            + self.outcomes.encode_size()
-    }
-}
-
-impl Read for State {
-    // The consensus quorum
-    type Cfg = usize;
-
-    fn read_cfg(
-        buf: &mut impl bytes::Buf,
-        cfg: &Self::Cfg,
-    ) -> Result<Self, commonware_codec::Error> {
-        Ok(Self {
-            dealing: Option::<Dealing>::read_cfg(buf, cfg)?,
-            received_shares: Vec::<(PublicKey, Public<MinSig>, group::Share)>::read_cfg(
-                buf,
-                &(RangeCfg::from(0..usize::MAX), ((), *cfg, ())),
-            )?,
-            dealing_outcome: Option::<DealingOutcome>::read_cfg(buf, cfg)?,
-            outcomes: Vec::<DealingOutcome>::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), *cfg))?,
-        })
     }
 }
