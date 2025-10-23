@@ -3,7 +3,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
-use commonware_utils::set::Set;
+use commonware_utils::set::Ordered;
 
 mod actor;
 mod ingress;
@@ -48,7 +48,7 @@ pub(crate) struct Config {
     /// The participants in the dkg.
     ///
     /// For now, only a fixed set is supported, with dealers == players.
-    pub(crate) initial_participants: Set<PublicKey>,
+    pub(crate) initial_participants: Ordered<PublicKey>,
 
     /// The initial bls12381 public key.
     pub(crate) initial_public: Public<MinSig>,

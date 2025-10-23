@@ -22,7 +22,7 @@ use commonware_p2p::{Blocker, Receiver, Sender};
 use commonware_runtime::{
     Clock, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
 };
-use commonware_utils::set::Set;
+use commonware_utils::set::Ordered;
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
@@ -76,7 +76,7 @@ pub struct Builder<
     pub signer: PrivateKey,
     pub polynomial: Poly<<MinSig as Variant>::Public>,
     pub share: Share,
-    pub participants: Set<PublicKey>,
+    pub participants: Ordered<PublicKey>,
     pub mailbox_size: usize,
     pub deque_size: usize,
 

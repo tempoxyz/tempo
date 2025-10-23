@@ -8,7 +8,7 @@ use commonware_cryptography::{
     bls12381::primitives::{group, poly::Public, variant::MinSig},
     ed25519::{PrivateKey, PublicKey, Signature},
 };
-use commonware_utils::{quorum, set::Set};
+use commonware_utils::{quorum, set::Ordered};
 
 use crate::dkg::ceremony::Ack;
 
@@ -18,7 +18,7 @@ use crate::dkg::ceremony::Ack;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PublicOutcome {
     pub(crate) epoch: Epoch,
-    pub(crate) participants: Set<PublicKey>,
+    pub(crate) participants: Ordered<PublicKey>,
     pub(crate) public: Public<MinSig>,
 }
 
@@ -35,7 +35,7 @@ impl Read for PublicOutcome {
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         let epoch = UInt::read(buf)?.into();
-        let participants = Set::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
+        let participants = Ordered::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
         Ok(Self {

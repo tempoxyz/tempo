@@ -18,7 +18,7 @@ use commonware_p2p::{
 };
 use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::metadata::Metadata;
-use commonware_utils::{max_faults, sequence::U64, set::Set, union};
+use commonware_utils::{max_faults, sequence::U64, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::{FutureExt as _, lock::Mutex};
 use indexmap::IndexSet;
@@ -61,10 +61,10 @@ pub(super) struct Config {
     pub(super) epoch: Epoch,
 
     /// The dealers in the round.
-    pub(super) dealers: Set<PublicKey>,
+    pub(super) dealers: Ordered<PublicKey>,
 
     /// The players in the round.
-    pub(super) players: Set<PublicKey>,
+    pub(super) players: Ordered<PublicKey>,
 }
 
 pub(super) struct Ceremony<TContext, TReceiver, TSender>
@@ -117,7 +117,7 @@ where
         config: Config,
     ) -> eyre::Result<Self> {
         let (sender, receiver) = mux
-            .register(config.epoch as u32)
+            .register(config.epoch)
             .await
             .wrap_err("mux subchannel already running for epoch; this is a problem")?;
 
@@ -774,7 +774,7 @@ struct Dealer {
 pub(super) struct PrivateOutcome {
     /// The participants of the new epoch. If successful, this will the players
     /// in the ceremony. If not successful, these are the dealers.
-    pub(super) participants: Set<PublicKey>,
+    pub(super) participants: Ordered<PublicKey>,
 
     /// The role the node will have in the next epoch.
     pub(super) role: Role,

@@ -5,7 +5,7 @@ use commonware_cryptography::{
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::PublicKey,
 };
-use commonware_utils::{quorum, set::Set};
+use commonware_utils::{quorum, set::Ordered};
 pub(crate) mod manager;
 
 use ceremony::State as CeremonyState;
@@ -14,7 +14,7 @@ use ceremony::State as CeremonyState;
 #[derive(Clone)]
 struct EpochState {
     epoch: u64,
-    participants: Set<PublicKey>,
+    participants: Ordered<PublicKey>,
     public: Public<MinSig>,
     share: Option<Share>,
 }
@@ -45,7 +45,7 @@ impl Read for EpochState {
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let epoch = UInt::read(buf)?.into();
-        let participants = Set::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
+        let participants = Ordered::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
         let share = Option::<Share>::read_cfg(buf, &())?;

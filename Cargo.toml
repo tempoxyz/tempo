@@ -246,13 +246,13 @@ vergen = "9"
 vergen-git2 = "1"
 
 [patch.crates-io]
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "24ddee3862645dfbe9db67d8b2c1d0c6770978c9" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }

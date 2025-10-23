@@ -227,9 +227,9 @@ where
             },
         );
 
-        let pending_sc = pending_mux.register(epoch as u32).await.unwrap();
-        let recovered_sc = recovered_mux.register(epoch as u32).await.unwrap();
-        let resolver_sc = resolver_mux.register(epoch as u32).await.unwrap();
+        let pending_sc = pending_mux.register(epoch).await.unwrap();
+        let recovered_sc = recovered_mux.register(epoch).await.unwrap();
+        let resolver_sc = resolver_mux.register(epoch).await.unwrap();
 
         assert!(
             self.active_epochs

@@ -3,7 +3,7 @@ use commonware_cryptography::{
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::PublicKey,
 };
-use commonware_utils::set::Set;
+use commonware_utils::set::Ordered;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use tracing::{Span, warn};
@@ -54,7 +54,7 @@ pub(crate) struct Enter {
     pub(crate) epoch: Epoch,
     pub(crate) public: Public<MinSig>,
     pub(crate) share: Option<Share>,
-    pub(crate) participants: Set<PublicKey>,
+    pub(crate) participants: Ordered<PublicKey>,
 }
 
 pub(crate) struct Exit {

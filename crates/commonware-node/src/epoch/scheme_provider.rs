@@ -10,7 +10,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_resolver::p2p;
-use commonware_utils::set::Set;
+use commonware_utils::set::Ordered;
 
 #[derive(Clone)]
 pub(crate) struct SchemeProvider {
@@ -48,11 +48,11 @@ impl marshal::SchemeProvider for SchemeProvider {
 /// Implements trait `[p2p::Cordinatoor]` and is passed to the marshal actor.
 #[derive(Clone)]
 pub(crate) struct Coordinator {
-    static_peers: Set<PublicKey>,
+    static_peers: Ordered<PublicKey>,
 }
 
 impl Coordinator {
-    pub(crate) fn new(static_peers: Set<PublicKey>) -> Self {
+    pub(crate) fn new(static_peers: Ordered<PublicKey>) -> Self {
         Self { static_peers }
     }
 }
