@@ -16,21 +16,10 @@ use reth_rpc_convert::{
 use serde::{Deserialize, Serialize};
 use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{
-    AASignature, TempoTxEnvelope, TxAA, TxFeeToken,
+    AASignature, SignatureType, TempoTxEnvelope, TxAA, TxFeeToken,
     transaction::{Call, TempoTypedTransaction},
 };
 use tempo_revm::{AATxEnv, TempoTxEnv};
-
-/// Key type for AA transaction signature verification.
-/// Used in gas estimation to calculate accurate signature verification costs.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-// TODO: Check if this can be unified
-pub enum KeyType {
-    Secp256k1,
-    P256,
-    WebAuthn,
-}
 
 /// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -49,7 +38,7 @@ pub struct TempoTransactionRequest {
 
     /// Optional key type for gas estimation of AA transactions.
     /// Specifies the signature verification algorithm to calculate accurate gas costs.
-    pub key_type: Option<KeyType>,
+    pub key_type: Option<SignatureType>,
 
     /// Optional key-specific data for gas estimation (e.g., webauthn authenticator data).
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
@@ -241,7 +230,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 let mock_signature = key_type
                     .as_ref()
                     .map(|kt| create_mock_aa_signature(kt, key_data.as_ref()))
-                    .unwrap_or_else(|| create_mock_aa_signature(&KeyType::Secp256k1, None));
+                    .unwrap_or_else(|| create_mock_aa_signature(&SignatureType::Secp256k1, None));
 
                 Box::new(AATxEnv {
                     aa_calls: calls,
@@ -254,13 +243,13 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints
-fn create_mock_aa_signature(key_type: &KeyType, key_data: Option<&Bytes>) -> AASignature {
+fn create_mock_aa_signature(key_type: &SignatureType, key_data: Option<&Bytes>) -> AASignature {
     use tempo_primitives::transaction::aa_signature::{
         AASignature, P256SignatureWithPreHash, WebAuthnSignature,
     };
 
     match key_type {
-        KeyType::Secp256k1 => {
+        SignatureType::Secp256k1 => {
             // Create a dummy secp256k1 signature (65 bytes)
             AASignature::Secp256k1(Signature::new(
                 alloy_primitives::U256::ZERO,
@@ -268,7 +257,7 @@ fn create_mock_aa_signature(key_type: &KeyType, key_data: Option<&Bytes>) -> AAS
                 false,
             ))
         }
-        KeyType::P256 => {
+        SignatureType::P256 => {
             // Create a dummy P256 signature
             AASignature::P256(P256SignatureWithPreHash {
                 r: alloy_primitives::B256::ZERO,
@@ -278,7 +267,7 @@ fn create_mock_aa_signature(key_type: &KeyType, key_data: Option<&Bytes>) -> AAS
                 pre_hash: false,
             })
         }
-        KeyType::WebAuthn => {
+        SignatureType::WebAuthn => {
             // Create a dummy WebAuthn signature with the specified size
             // key_data contains the total size of webauthn_data (excluding 128 bytes for public keys)
             // Default: 200 bytes if no key_data provided

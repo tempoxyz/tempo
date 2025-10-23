@@ -1,6 +1,6 @@
 mod request;
 
-pub use request::{KeyType, TempoTransactionRequest};
+pub use request::TempoTransactionRequest;
 use tempo_revm::TempoTxEnv;
 
 use crate::{TempoNetwork, node::TempoNode};

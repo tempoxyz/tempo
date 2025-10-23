@@ -18,7 +18,9 @@ pub const P256_SIGNATURE_LENGTH: usize = 129;
 pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
 
 /// Signature type enumeration
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum SignatureType {
     Secp256k1,
     P256,
