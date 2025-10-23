@@ -267,6 +267,7 @@ where
         skip_all,
         fields(
             derived_epoch = epoch::of_height(block.height(), self.config.heights_per_epoch),
+            block.height = block.height(),
         ),
     )]
     async fn handle_finalize<TReceiver, TSender>(
@@ -322,6 +323,8 @@ where
             block.height().saturating_add(1),
             self.config.heights_per_epoch,
         ) {
+            info!("on pre-to-last height of epoch; finalizing ceremony");
+
             let next_epoch = this_ceremony.epoch().saturating_add(1);
 
             let ceremony_outcome = match this_ceremony.finalize() {
@@ -392,7 +395,10 @@ where
             this_ceremony
         };
 
-        ceremony.replace(new_ceremony);
+        assert!(
+            ceremony.replace(new_ceremony).is_none(),
+            "ceremony was moved out of option at the start of this method"
+        );
 
         if let Err(()) = response.send(()) {
             warn!("could not confirm finalization because recipient already went away");
