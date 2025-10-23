@@ -102,7 +102,7 @@ pub(crate) fn contains_height(height: u64, epoch: Epoch, heights_per_epoch: u64)
 }
 
 pub(crate) fn is_last_height(height: u64, heights_per_epoch: u64) -> bool {
-    (height % heights_per_epoch) == 0
+    height.is_multiple_of(heights_per_epoch)
 }
 
 pub(crate) fn is_last_height_of_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {

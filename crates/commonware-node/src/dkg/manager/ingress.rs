@@ -85,7 +85,7 @@ impl From<GetOutcome> for Command {
 }
 
 pub(super) struct Finalize {
-    pub(super) block: Block,
+    pub(super) block: Box<Block>,
     pub(super) response: oneshot::Sender<()>,
 }
 
@@ -107,7 +107,10 @@ impl Reporter for Mailbox {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         if let Err(error) = self
             .inner
-            .unbounded_send(Message::in_current_span(Finalize { block, response }))
+            .unbounded_send(Message::in_current_span(Finalize {
+                block: block.into(),
+                response,
+            }))
             .wrap_err("dkg manager no longer running")
         {
             warn!(%error, "failed to report finalized block to dkg manager")

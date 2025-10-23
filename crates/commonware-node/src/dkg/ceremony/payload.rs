@@ -56,29 +56,29 @@ pub(super) enum Payload {
     ///
     /// Contains a signature of dealer and commitment to authenticate the
     /// acknowledged.
-    Ack(Ack),
+    Ack(Box<Ack>),
 }
 
 impl From<Ack> for Payload {
     fn from(value: Ack) -> Self {
-        Payload::Ack(value)
+        Self::Ack(value.into())
     }
 }
 
 impl From<Share> for Payload {
     fn from(value: Share) -> Self {
-        Payload::Share(value)
+        Self::Share(value)
     }
 }
 
 impl Write for Payload {
     fn write(&self, buf: &mut impl BufMut) {
         match self {
-            Payload::Share(inner) => {
+            Self::Share(inner) => {
                 buf.put_u8(SHARE_TAG);
                 inner.write(buf);
             }
-            Payload::Ack(inner) => {
+            Self::Ack(inner) => {
                 buf.put_u8(ACK_TAG);
                 inner.write(buf);
             }
@@ -96,7 +96,7 @@ impl Read for Payload {
         let tag = u8::read(buf)?;
         let result = match tag {
             SHARE_TAG => Payload::Share(Share::read_cfg(buf, p)?),
-            ACK_TAG => Payload::Ack(Ack::read(buf)?),
+            ACK_TAG => Payload::Ack(Ack::read(buf)?.into()),
             _ => return Err(commonware_codec::Error::InvalidEnum(tag)),
         };
         Ok(result)
@@ -107,8 +107,8 @@ impl EncodeSize for Payload {
     fn encode_size(&self) -> usize {
         u8::SIZE
             + match self {
-                Payload::Share(inner) => inner.encode_size(),
-                Payload::Ack(inner) => inner.encode_size(),
+                Self::Share(inner) => inner.encode_size(),
+                Self::Ack(inner) => inner.encode_size(),
             }
     }
 }

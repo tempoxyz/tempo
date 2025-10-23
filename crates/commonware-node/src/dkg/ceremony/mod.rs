@@ -209,27 +209,25 @@ where
                     commitment: dealing.commitment,
                     shares: dealing.shares,
                     acks: dealing.acks,
-                    outcome: recovered.dealing_outcome.clone(),
+                    outcome: recovered.dealing_outcome,
                 });
             }
-        } else {
-            if let Some(share) = config.share.clone() {
-                let (dkg_dealer, commitment, shares) =
-                    dkg::Dealer::new(context, Some(share), config.players.clone());
-                let shares = config
-                    .players
-                    .iter()
-                    .zip(&shares)
-                    .map(|(player, share)| (player.clone(), share.clone()))
-                    .collect();
-                dealer_me = Some(Dealer {
-                    inner: dkg_dealer,
-                    commitment,
-                    shares,
-                    acks: BTreeMap::new(),
-                    outcome: None,
-                });
-            }
+        } else if let Some(share) = config.share.clone() {
+            let (dkg_dealer, commitment, shares) =
+                dkg::Dealer::new(context, Some(share), config.players.clone());
+            let shares = config
+                .players
+                .iter()
+                .zip(&shares)
+                .map(|(player, share)| (player.clone(), share.clone()))
+                .collect();
+            dealer_me = Some(Dealer {
+                inner: dkg_dealer,
+                commitment,
+                shares,
+                acks: BTreeMap::new(),
+                outcome: None,
+            });
         };
 
         let previous = config.share.clone().map_or_else(
@@ -378,7 +376,7 @@ where
 
             match msg.payload {
                 Payload::Ack(ack) => {
-                    let _: Result<_, _> = self.process_ack(peer, ack).await;
+                    let _: Result<_, _> = self.process_ack(peer, *ack).await;
                 }
                 Payload::Share(share) => {
                     let _: Result<_, _> = self.process_share(peer, share).await;
@@ -622,8 +620,8 @@ where
             .players
             .iter()
             .filter_map(|player| {
-                (!dealer_me.acks.contains_key(&player))
-                    .then(|| dealer_me.shares.get(&player).cloned())
+                (!dealer_me.acks.contains_key(player))
+                    .then(|| dealer_me.shares.get(player).cloned())
                     .flatten()
             })
             .collect::<Vec<_>>();
@@ -799,11 +797,11 @@ impl Role {
     /// If a signer, the share will not be unset.
     pub(super) fn into_key_pair(self) -> (Public<MinSig>, Option<group::Share>) {
         match self {
-            Role::Signer {
+            Self::Signer {
                 public: polynomial,
                 share,
             } => (polynomial, Some(share)),
-            Role::Verifier { public: polynomial } => (polynomial, None),
+            Self::Verifier { public: polynomial } => (polynomial, None),
         }
     }
 }
