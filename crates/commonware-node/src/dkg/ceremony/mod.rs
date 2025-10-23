@@ -51,9 +51,6 @@ pub(super) struct Config {
     pub(super) me: PrivateKey,
 
     /// The previous public polynomial.
-    //
-    // TODO(janis): make this optional for those cases where we don't have a
-    // public polynomial yet.
     pub(super) public: Public<MinSig>,
 
     /// Our previous share of the private polynomial. This dictates if we
@@ -270,8 +267,10 @@ where
                 .cloned()
                 .expect("invariant violated: all players must have an entry in the shares map");
 
-            if let Some(player) = &mut self.player_me {
-                player
+            if let Some(player_me) = &mut self.player_me
+                && player == &self.config.me.public_key()
+            {
+                player_me
                     .share(
                         self.config.me.public_key(),
                         dealer_me.commitment.clone(),
@@ -349,7 +348,7 @@ where
             if success.is_empty() {
                 warn!(%player, "failed to send share to player");
             } else {
-                info!(%player, "send share to player");
+                info!(%player, "sent share to player");
             }
         }
         Ok(())
