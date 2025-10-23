@@ -336,11 +336,13 @@ where
 
             let (next_participants, next_public, next_share, success) =
                 match this_ceremony.finalize().await {
-                    (next_participants, RoundResult::Output(Output { public, share }), success) => {
-                        (next_participants, public, Some(share), success)
-                    }
-                    (next_participants, RoundResult::Polynomial(public), success) => {
-                        (next_participants, public, None, success)
+                    (
+                        next_participants,
+                        RoundResult::PolynomialAndShare { polynomial, share },
+                        success,
+                    ) => (next_participants, polynomial, Some(share), success),
+                    (next_participants, RoundResult::Polynomial { polynomial }, success) => {
+                        (next_participants, polynomial, None, success)
                     }
                 };
 

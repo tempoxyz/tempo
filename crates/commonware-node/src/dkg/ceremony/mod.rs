@@ -11,7 +11,7 @@ use commonware_consensus::{Block as _, types::Epoch};
 use commonware_cryptography::{
     Signer as _, Verifier as _,
     bls12381::{
-        dkg::{self, Arbiter, Player, arbiter, player::Output},
+        dkg::{self, Arbiter, Player, arbiter},
         primitives::{group, poly::Public, variant::MinSig},
     },
     ed25519::{PrivateKey, PublicKey, Signature},
@@ -231,12 +231,12 @@ where
         };
 
         let previous = config.share.clone().map_or_else(
-            || RoundResult::Polynomial(config.public.clone()),
-            |share| {
-                RoundResult::Output(Output {
-                    public: config.public.clone(),
-                    share,
-                })
+            || RoundResult::Polynomial {
+                polynomial: config.public.clone(),
+            },
+            |share| RoundResult::PolynomialAndShare {
+                polynomial: config.public.clone(),
+                share,
             },
         );
         Ok(Self {
@@ -707,9 +707,17 @@ where
                     players and commitment"
             );
 
-            (self.config.players, RoundResult::Output(output), true)
+            let round_result = RoundResult::PolynomialAndShare {
+                polynomial: output.public,
+                share: output.share,
+            };
+            (self.config.players, round_result, true)
         } else {
-            (self.config.players, RoundResult::Polynomial(public), true)
+            (
+                self.config.players,
+                RoundResult::Polynomial { polynomial: public },
+                true,
+            )
         }
     }
 
@@ -951,9 +959,12 @@ impl Read for Ack {
 /// A result of a DKG/reshare round.
 pub(super) enum RoundResult {
     /// The new group polynomial, if the manager is not a [Player].
-    Polynomial(Public<MinSig>),
+    Polynomial { polynomial: Public<MinSig> },
     /// The new group polynomial and the local share, if the manager is a [Player].
-    Output(Output<MinSig>),
+    PolynomialAndShare {
+        polynomial: Public<MinSig>,
+        share: group::Share,
+    },
 }
 
 #[derive(Clone)]
