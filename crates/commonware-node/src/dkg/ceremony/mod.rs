@@ -12,9 +12,8 @@ use commonware_cryptography::{
     },
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::Recipients;
 use commonware_p2p::{
-    Receiver, Sender,
+    Receiver, Recipients, Sender,
     utils::mux::{MuxHandle, SubReceiver, SubSender},
 };
 use commonware_runtime::{Clock, Metrics, Storage};
@@ -32,8 +31,7 @@ mod on_chain;
 mod payload;
 mod persisted;
 
-pub(crate) use on_chain::DealingOutcome;
-pub(crate) use on_chain::PublicOutcome;
+pub(crate) use on_chain::{DealingOutcome, PublicOutcome};
 pub(super) use persisted::State;
 
 use payload::{Ack, Message, Payload, Share};
@@ -771,12 +769,12 @@ struct Dealer {
     outcome: Option<DealingOutcome>,
 }
 
-/// The outcome of the cermony for the local node.
+/// The outcome of the ceremony for the local node.
 ///
 /// Called private because it potentially contains the private key share.
 pub(super) struct PrivateOutcome {
     /// The participants of the new epoch. If successful, this will the players
-    /// in the ceremony. If not succesful, these are the dealers.
+    /// in the ceremony. If not successful, these are the dealers.
     pub(super) participants: Set<PublicKey>,
 
     /// The role the node will have in the next epoch.

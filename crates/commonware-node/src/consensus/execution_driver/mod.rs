@@ -370,7 +370,7 @@ impl Inner<Init> {
                 {
                     Err(error) => warn!(
                         %error,
-                        "failed getting ceremony deal for current epoch becasue DKG manager went away",
+                        "failed getting ceremony deal for current epoch because DKG manager went away",
                     ),
                     Ok(None) => {}
                     Ok(Some(deal_outcome)) => {

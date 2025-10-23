@@ -11,10 +11,8 @@ use commonware_consensus::types::Epoch;
 pub(crate) mod manager;
 mod scheme_provider;
 
-pub(crate) use manager::ingress::Enter;
-pub(crate) use manager::ingress::Exit;
-pub(crate) use scheme_provider::Coordinator;
-pub(crate) use scheme_provider::SchemeProvider;
+pub(crate) use manager::ingress::{Enter, Exit};
+pub(crate) use scheme_provider::{Coordinator, SchemeProvider};
 
 /// Returns the first height of `epoch` given `heights_per_epoch`.
 pub(crate) fn first_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {

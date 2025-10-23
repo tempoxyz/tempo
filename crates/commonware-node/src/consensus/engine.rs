@@ -126,7 +126,7 @@ where
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            // FIXME(janis): this information should probably be flow from the DKG mananger, since
+            // FIXME(janis): this information should probably be flow from the DKG manager, since
             // the players in epoch E are the peers in epoch E+1. But `Coordinator::peers -> &[PubKey]`,
             // and so we can't pass it a mailbox.
             coordinator,

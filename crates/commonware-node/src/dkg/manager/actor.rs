@@ -1,28 +1,25 @@
 use std::sync::Arc;
 
-use commonware_consensus::Block as _;
-use commonware_consensus::Reporter;
+use commonware_consensus::{Block as _, Reporter};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_p2p::utils::mux::MuxHandle;
-use commonware_p2p::{Receiver, Sender, utils::mux};
+use commonware_p2p::{
+    Receiver, Sender,
+    utils::{mux, mux::MuxHandle},
+};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::sequence::U64;
 use eyre::eyre;
-use futures::lock::Mutex;
-use futures::{StreamExt as _, channel::mpsc};
+use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
 use rand_core::CryptoRngCore;
-use tracing::info;
-use tracing::{Span, instrument, warn};
+use tracing::{Span, info, instrument, warn};
 
-use crate::dkg::CeremonyState;
-use crate::dkg::EpochState;
-use crate::dkg::ceremony;
-use crate::dkg::ceremony::PublicOutcome;
-use crate::dkg::manager::ingress::GetIntermediateDealing;
-use crate::dkg::manager::ingress::GetOutcome;
 use crate::{
-    dkg::{ceremony::Ceremony, manager::ingress::Finalize},
+    dkg::{
+        CeremonyState, EpochState, ceremony,
+        ceremony::{Ceremony, PublicOutcome},
+        manager::ingress::{Finalize, GetIntermediateDealing, GetOutcome},
+    },
     epoch,
 };
 
