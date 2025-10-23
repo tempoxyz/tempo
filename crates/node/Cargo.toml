@@ -51,6 +51,7 @@ clap.workspace = true
 eyre.workspace = true
 tokio.workspace = true
 serde.workspace = true
+jsonrpsee.workspace = true
 
 [dev-dependencies]
 tempo-precompiles.workspace = true
@@ -62,10 +63,10 @@ serde_json.workspace = true
 tempo-contracts.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 alloy = { workspace = true, features = [
-  "full",
-  "providers",
-  "signers",
-  "signer-mnemonic-all-languages",
+    "full",
+    "providers",
+    "signers",
+    "signer-mnemonic-all-languages",
 ] }
 rand = "0.9.2"
 futures = "0.3"
@@ -81,8 +82,8 @@ vergen-git2.workspace = true
 [features]
 default = []
 asm-keccak = [
-  "alloy/asm-keccak",
-  "alloy-primitives/asm-keccak",
-  "reth-node-core/asm-keccak",
-  "reth-node-ethereum/asm-keccak",
+    "alloy/asm-keccak",
+    "alloy-primitives/asm-keccak",
+    "reth-node-core/asm-keccak",
+    "reth-node-ethereum/asm-keccak",
 ]
