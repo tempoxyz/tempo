@@ -616,7 +616,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
         if call.to.is_create() {
             // CREATE costs 32000 additional gas
             gas.initial_gas += CREATE; // 32000 gas
-            
+
             // EIP-3860: Initcode analysis gas using revm helper
             gas.initial_gas += initcode_cost(call.input.len());
         }
@@ -642,10 +642,8 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
         gas.initial_gas += storages * ACCESS_LIST_STORAGE_KEY; // 1900 per storage
     }
 
-    // 6. Floor gas (EIP-7623, Prague+) using revm helper
-    if spec.is_enabled_in(RevmSpecId::PRAGUE) {
-        gas.floor_gas = calc_tx_floor_cost(total_tokens); // tokens * 10 + 21000
-    }
+    // 6. Floor gas  using revm helper
+    gas.floor_gas = calc_tx_floor_cost(total_tokens); // tokens * 10 + 21000
 
     // TODO: Add 7702 gas costs here, once we implement it.
 
@@ -707,10 +705,7 @@ where
     }
 
     // Validate floor gas (Prague+)
-    if spec.is_enabled_in(RevmSpecId::PRAGUE)
-        && !evm.ctx.cfg.is_eip7623_disabled()
-        && gas_limit < batch_gas.floor_gas
-    {
+    if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < batch_gas.floor_gas {
         return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
             gas_limit,
             intrinsic_gas: batch_gas.floor_gas,
