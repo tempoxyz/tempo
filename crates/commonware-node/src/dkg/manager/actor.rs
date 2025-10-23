@@ -314,7 +314,7 @@ where
                 }
                 epoch::RelativePosition::Middle => {
                     let _ = this_ceremony.process_messages().await;
-                    let _ = this_ceremony.construct_deal_outcome().await;
+                    let _ = this_ceremony.construct_dealing_outcome().await;
                 }
                 epoch::RelativePosition::SecondHalf => {
                     let _ = this_ceremony.process_block(&block).await;

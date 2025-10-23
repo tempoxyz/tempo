@@ -30,7 +30,7 @@ use tracing::{Level, debug, error, info, instrument, warn};
 use crate::consensus::block::Block;
 
 mod payload;
-pub(crate) use payload::LocalOutcome;
+pub(crate) use payload::DealingOutcome;
 use payload::{Ack, Message, Payload, Share};
 
 const ACK_NAMESPACE: &[u8] = b"_DKG_ACK";
@@ -203,7 +203,7 @@ where
                     commitment: dealing.commitment,
                     shares: dealing.shares,
                     acks: dealing.acks,
-                    outcome: recovered.local_outcome.clone(),
+                    outcome: recovered.dealing_outcome.clone(),
                 });
             }
         } else {
@@ -591,13 +591,22 @@ where
             && block_dealer == self.config.me.public_key()
         {
             let _ = dealer_me.outcome.take();
+
+            self.ceremony_metadata
+                .lock()
+                .await
+                .upsert_sync(self.epoch().into(), |info| {
+                    let _ = info.dealing_outcome.take();
+                })
+                .await
+                .expect("must persist deal outcome");
         }
 
         Ok(())
     }
 
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
-    pub(super) async fn construct_deal_outcome(&mut self) -> eyre::Result<()> {
+    pub(super) async fn construct_dealing_outcome(&mut self) -> eyre::Result<()> {
         let Some(dealer_me) = &mut self.dealer_me else {
             debug!("not a dealer; skipping construction of deal outcome");
             return Ok(());
@@ -618,7 +627,7 @@ where
             "too many reveals; skipping deal outcome construction",
         );
 
-        let local_outcome = Some(LocalOutcome::new(
+        let dealing_outcome = Some(DealingOutcome::new(
             &self.config.me,
             &union(&self.config.namespace, OUTCOME_NAMESPACE),
             self.config.epoch,
@@ -631,12 +640,12 @@ where
             .lock()
             .await
             .upsert_sync(self.config.epoch.into(), |info| {
-                info.local_outcome = local_outcome.clone();
+                info.dealing_outcome = dealing_outcome.clone();
             })
             .await
             .expect("must persist local outcome");
 
-        dealer_me.outcome = local_outcome;
+        dealer_me.outcome = dealing_outcome;
 
         Ok(())
     }
@@ -721,7 +730,7 @@ where
         self.config.epoch
     }
 
-    pub(super) fn deal_outcome(&self) -> Option<&LocalOutcome> {
+    pub(super) fn deal_outcome(&self) -> Option<&DealingOutcome> {
         let dealer_me = self.dealer_me.as_ref()?;
         dealer_me.outcome.as_ref()
     }
@@ -742,8 +751,10 @@ struct Dealer {
     shares: BTreeMap<PublicKey, group::Share>,
     /// Signed acknowledgements from contributors.
     acks: BTreeMap<PublicKey, Ack>,
-    /// The constructed dealing for inclusion in a block, if any.
-    outcome: Option<LocalOutcome>,
+    /// The constructed dealing for inclusion in a block.
+    ///
+    /// This is moved out once the outcome was successfully written to chain.
+    outcome: Option<DealingOutcome>,
 }
 
 /// A result of a DKG/reshare round.
@@ -839,15 +850,16 @@ pub(super) struct State {
     /// Tracks the shares received from other dealers, if we are a player.
     received_shares: Vec<(PublicKey, Public<MinSig>, group::Share)>,
 
-    local_outcome: Option<LocalOutcome>,
-    outcomes: Vec<LocalOutcome>,
+    dealing_outcome: Option<DealingOutcome>,
+
+    outcomes: Vec<DealingOutcome>,
 }
 
 impl Write for State {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         self.dealing.write(buf);
         self.received_shares.write(buf);
-        self.local_outcome.write(buf);
+        self.dealing_outcome.write(buf);
         self.outcomes.write(buf);
     }
 }
@@ -856,7 +868,7 @@ impl EncodeSize for State {
     fn encode_size(&self) -> usize {
         self.dealing.encode_size()
             + self.received_shares.encode_size()
-            + self.local_outcome.encode_size()
+            + self.dealing_outcome.encode_size()
             + self.outcomes.encode_size()
     }
 }
@@ -875,8 +887,8 @@ impl Read for State {
                 buf,
                 &(RangeCfg::from(0..usize::MAX), ((), *cfg, ())),
             )?,
-            local_outcome: Option::<LocalOutcome>::read_cfg(buf, cfg)?,
-            outcomes: Vec::<LocalOutcome>::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), *cfg))?,
+            dealing_outcome: Option::<DealingOutcome>::read_cfg(buf, cfg)?,
+            outcomes: Vec::<DealingOutcome>::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), *cfg))?,
         })
     }
 }
