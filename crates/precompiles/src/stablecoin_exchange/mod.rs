@@ -347,6 +347,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             .to::<u128>())
     }
 
+    /// Get orderbook by pair key
+    pub fn books(&mut self, pair_key: B256) -> Orderbook {
+        Orderbook::from_storage(pair_key, self.storage, self.address)
+    }
+
     pub fn create_pair(&mut self, base: &Address) -> Result<B256, StablecoinExchangeError> {
         let quote =
             TIP20Token::new(address_to_token_id_unchecked(base), self.storage).quote_token();

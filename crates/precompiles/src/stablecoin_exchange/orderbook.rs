@@ -435,6 +435,17 @@ impl Orderbook {
     }
 }
 
+impl From<Orderbook> for IStablecoinExchange::Orderbook {
+    fn from(value: Orderbook) -> Self {
+        Self {
+            base: value.base,
+            quote: value.quote,
+            bestBidTick: value.best_bid_tick,
+            bestAskTick: value.best_ask_tick,
+        }
+    }
+}
+
 /// Tick bitmap manager for efficient price discovery
 pub struct TickBitmap<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,

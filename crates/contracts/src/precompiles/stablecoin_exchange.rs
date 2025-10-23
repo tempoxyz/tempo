@@ -71,6 +71,7 @@ sol! {
         function pairKey(address tokenA, address tokenB) external view returns (bytes32);
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
+        function books(bytes32 pairKey) external view returns (Orderbook memory);
 
         // Events
         event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
