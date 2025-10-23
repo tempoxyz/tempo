@@ -9,6 +9,9 @@ use commonware_cryptography::{
 use commonware_utils::{quorum, set::Set};
 pub(crate) mod manager;
 
+use ceremony::State as CeremonyState;
+
+/// The persisted state fo an epoch.
 #[derive(Clone)]
 struct EpochState {
     epoch: u64,

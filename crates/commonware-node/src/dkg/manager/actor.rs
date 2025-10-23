@@ -14,16 +14,14 @@ use futures::{StreamExt as _, channel::mpsc};
 use rand_core::CryptoRngCore;
 use tracing::{Span, instrument, warn};
 
+use crate::dkg::CeremonyState;
 use crate::dkg::EpochState;
-use crate::dkg::ceremony::PersistedInfo;
+use crate::dkg::ceremony;
 use crate::dkg::ceremony::{PublicOutcome, RoundResult};
 use crate::dkg::manager::ingress::GetCeremonyDeal;
 use crate::dkg::manager::ingress::GetPublicCeremonyOutcome;
 use crate::{
-    dkg::{
-        ceremony::{self, Ceremony},
-        manager::ingress::Finalize,
-    },
+    dkg::{ceremony::Ceremony, manager::ingress::Finalize},
     epoch,
 };
 
@@ -37,7 +35,7 @@ where
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
-    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, PersistedInfo>>>,
+    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, CeremonyState>>>,
     epoch_metadata: Metadata<ContextCell<TContext>, U64, EpochState>,
 }
 

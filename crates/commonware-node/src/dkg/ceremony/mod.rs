@@ -94,7 +94,7 @@ where
     /// The local [Arbiter] for this round.
     arbiter: Arbiter<PublicKey, MinSig>,
 
-    ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, PersistedInfo>>>,
+    ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
     receiver: SubReceiver<TReceiver>,
     sender: SubSender<TSender>,
 }
@@ -109,7 +109,7 @@ where
     pub(super) async fn init(
         context: &mut TContext,
         mux: &mut MuxHandle<TSender, TReceiver>,
-        ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, PersistedInfo>>>,
+        ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
         config: Config,
     ) -> eyre::Result<Self> {
         let (sender, receiver) = mux
@@ -1002,57 +1002,6 @@ impl Write for Dealing {
     }
 }
 
-/// Information on a ceremony that is persisted to disk.
-#[derive(Clone, Default)]
-pub(super) struct PersistedInfo {
-    /// Tracks the local dealing if we participate as a dealer.
-    dealing: Option<Dealing>,
-
-    /// Tracks the shares received from other dealers, if we are a player.
-    received_shares: Vec<(PublicKey, Public<MinSig>, group::Share)>,
-
-    local_outcome: Option<DealOutcome>,
-    outcomes: Vec<DealOutcome>,
-}
-
-impl Write for PersistedInfo {
-    fn write(&self, buf: &mut impl bytes::BufMut) {
-        self.dealing.write(buf);
-        self.received_shares.write(buf);
-        self.local_outcome.write(buf);
-        self.outcomes.write(buf);
-    }
-}
-
-impl EncodeSize for PersistedInfo {
-    fn encode_size(&self) -> usize {
-        self.dealing.encode_size()
-            + self.received_shares.encode_size()
-            + self.local_outcome.encode_size()
-            + self.outcomes.encode_size()
-    }
-}
-
-impl Read for PersistedInfo {
-    // The consensus quorum
-    type Cfg = usize;
-
-    fn read_cfg(
-        buf: &mut impl bytes::Buf,
-        cfg: &Self::Cfg,
-    ) -> Result<Self, commonware_codec::Error> {
-        Ok(Self {
-            dealing: Option::<Dealing>::read_cfg(buf, cfg)?,
-            received_shares: Vec::<(PublicKey, Public<MinSig>, group::Share)>::read_cfg(
-                buf,
-                &(RangeCfg::from(0..usize::MAX), ((), *cfg, ())),
-            )?,
-            local_outcome: Option::<DealOutcome>::read_cfg(buf, cfg)?,
-            outcomes: Vec::<DealOutcome>::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), *cfg))?,
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Share {
     /// The [Dealer]'s public commitment (coefficients of the polynomial).
@@ -1160,9 +1109,9 @@ impl EncodeSize for Payload {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct Dkg {
-    pub(super) epoch: Epoch,
-    pub(super) payload: Payload,
+struct Dkg {
+    epoch: Epoch,
+    payload: Payload,
 }
 
 impl Write for Dkg {
@@ -1218,5 +1167,56 @@ impl Read for PublicOutcome {
 impl EncodeSize for PublicOutcome {
     fn encode_size(&self) -> usize {
         self.participants.encode_size() + self.public.encode_size()
+    }
+}
+
+/// Information on a ceremony that is persisted to disk.
+#[derive(Clone, Default)]
+pub(super) struct State {
+    /// Tracks the local dealing if we participate as a dealer.
+    dealing: Option<Dealing>,
+
+    /// Tracks the shares received from other dealers, if we are a player.
+    received_shares: Vec<(PublicKey, Public<MinSig>, group::Share)>,
+
+    local_outcome: Option<DealOutcome>,
+    outcomes: Vec<DealOutcome>,
+}
+
+impl Write for State {
+    fn write(&self, buf: &mut impl bytes::BufMut) {
+        self.dealing.write(buf);
+        self.received_shares.write(buf);
+        self.local_outcome.write(buf);
+        self.outcomes.write(buf);
+    }
+}
+
+impl EncodeSize for State {
+    fn encode_size(&self) -> usize {
+        self.dealing.encode_size()
+            + self.received_shares.encode_size()
+            + self.local_outcome.encode_size()
+            + self.outcomes.encode_size()
+    }
+}
+
+impl Read for State {
+    // The consensus quorum
+    type Cfg = usize;
+
+    fn read_cfg(
+        buf: &mut impl bytes::Buf,
+        cfg: &Self::Cfg,
+    ) -> Result<Self, commonware_codec::Error> {
+        Ok(Self {
+            dealing: Option::<Dealing>::read_cfg(buf, cfg)?,
+            received_shares: Vec::<(PublicKey, Public<MinSig>, group::Share)>::read_cfg(
+                buf,
+                &(RangeCfg::from(0..usize::MAX), ((), *cfg, ())),
+            )?,
+            local_outcome: Option::<DealOutcome>::read_cfg(buf, cfg)?,
+            outcomes: Vec::<DealOutcome>::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), *cfg))?,
+        })
     }
 }
