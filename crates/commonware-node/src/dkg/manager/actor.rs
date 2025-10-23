@@ -30,8 +30,7 @@ use crate::{
     epoch,
 };
 
-const CEREMONY_KEY: u64 = 0;
-const EPOCH_KEY: u64 = 1;
+const EPOCH_KEY: u64 = 0;
 
 pub(crate) struct Actor<TContext>
 where
@@ -140,7 +139,6 @@ where
                 epoch: epoch_state.epoch,
                 dealers: epoch_state.participants.clone(),
                 players: epoch_state.participants.clone(),
-                send_rate_limit: self.config.rate_limit,
             };
             Some(
                 ceremony::Ceremony::init(
@@ -345,6 +343,12 @@ where
                 .await
                 .expect("must always be able to write epoch state to disk");
 
+            if let Some(epoch) = epoch_state.epoch.checked_sub(2) {
+                let mut ceremony_metadata = self.ceremony_metadata.lock().await;
+                ceremony_metadata.remove(&epoch.into());
+                ceremony_metadata.sync().await.expect("metadata must sync");
+            }
+
             self.config
                 .epoch_manager
                 .report(
@@ -373,7 +377,6 @@ where
                 epoch: epoch_state.epoch,
                 dealers: epoch_state.participants.clone(),
                 players: epoch_state.participants.clone(),
-                send_rate_limit: self.config.rate_limit,
             };
             ceremony::Ceremony::init(
                 &mut self.context,

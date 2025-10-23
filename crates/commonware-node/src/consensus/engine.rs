@@ -322,6 +322,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        dkg_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> Handle<eyre::Result<()>> {
         self.context.clone().spawn(|_| {
             self.run(
@@ -330,6 +334,7 @@ where
                 resolver_network,
                 broadcast_network,
                 backfill_network,
+                dkg_channel,
             )
         })
     }
@@ -359,6 +364,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        dkg_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_network);
         let execution_driver = self
@@ -378,11 +387,19 @@ where
             self.epoch_manager
                 .start(pending_network, recovered_network, resolver_network);
 
-        try_join_all(vec![broadcast, epoch_manager, execution_driver, syncer])
-            .await
-            .map(|_| ())
-            // TODO: look into adding error context so that we know which
-            // component failed.
-            .wrap_err("one of the consensus engine's actors failed")
+        let dkg_manager = self.dkg_manager.start(dkg_channel);
+
+        try_join_all(vec![
+            broadcast,
+            epoch_manager,
+            execution_driver,
+            syncer,
+            dkg_manager,
+        ])
+        .await
+        .map(|_| ())
+        // TODO: look into adding error context so that we know which
+        // component failed.
+        .wrap_err("one of the consensus engine's actors failed")
     }
 }

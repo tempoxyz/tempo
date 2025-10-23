@@ -11,25 +11,24 @@ use commonware_consensus::{Block as _, types::Epoch};
 use commonware_cryptography::{
     Signer as _, Verifier as _,
     bls12381::{
-        dkg::{self, Arbiter, Dealer, Player, arbiter, player::Output},
+        dkg::{Arbiter, Dealer, Player, arbiter, player::Output},
         primitives::{group, poly::Public, variant::MinSig},
     },
     ed25519::{PrivateKey, PublicKey, Signature},
 };
+use commonware_p2p::Recipients;
 use commonware_p2p::{
     Receiver, Sender,
     utils::mux::{MuxHandle, SubReceiver, SubSender},
 };
-use commonware_p2p::{Recipients, utils::mux};
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::{max_faults, quorum, sequence::U64, set::Set, union};
-use eyre::{Error, WrapErr as _, bail, ensure, eyre};
+use eyre::{WrapErr as _, bail, ensure};
 use futures::{FutureExt as _, lock::Mutex};
-use governor::{Quota, RateLimiter, middleware::NoOpMiddleware, state::keyed::HashMapStateStore};
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use rand_core::CryptoRngCore;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
 use crate::consensus::block::Block;
 
@@ -63,14 +62,11 @@ pub(super) struct Config {
 
     /// The players in the round.
     pub(super) players: Set<PublicKey>,
-
-    pub(super) send_rate_limit: Quota,
 }
 
 pub(super) struct Ceremony<TContext, TReceiver, TSender>
 where
-    // TContext: Spawner + Metrics + CryptoRngCore + Clock + governor::clock::Clock + Storage,
-    TContext: Clock + governor::clock::Clock + Metrics + Storage,
+    TContext: Clock + Metrics + Storage,
     TReceiver: Receiver,
     TSender: Sender,
 {
@@ -78,15 +74,6 @@ where
 
     /// The previous group polynomial and (if dealing) share.
     previous: RoundResult,
-
-    /// The rate limiter for sending messages.
-    #[allow(clippy::type_complexity)]
-    rate_limiter: RateLimiter<
-        PublicKey,
-        HashMapStateStore<PublicKey>,
-        TContext,
-        NoOpMiddleware<TContext::Instant>,
-    >,
 
     /// [Dealer] metadata, if this manager is also dealing.
     dealer_meta: DealerMetadata,
@@ -113,7 +100,7 @@ where
 
 impl<TContext, TReceiver, TSender> Ceremony<TContext, TReceiver, TSender>
 where
-    TContext: Spawner + Metrics + CryptoRngCore + Clock + governor::clock::Clock + Storage,
+    TContext: Clock + CryptoRngCore + Metrics + Storage,
     TReceiver: Receiver<PublicKey = PublicKey>,
     TSender: Sender<PublicKey = PublicKey>,
 {
@@ -238,8 +225,6 @@ where
             }
         };
 
-        let rate_limiter = RateLimiter::hashmap_with_clock(config.send_rate_limit, &*context);
-
         let previous = config.share.clone().map_or_else(
             || RoundResult::Polynomial(config.public.clone()),
             |share| {
@@ -252,7 +237,6 @@ where
         Ok(Self {
             config,
             previous,
-            rate_limiter,
             dealer_meta,
             player_me,
             players_indexed,
@@ -271,11 +255,6 @@ where
             if self.dealer_meta.acks.contains_key(player) {
                 continue;
             }
-            // TODO(janis): check against rate limiter
-            // if self.rate_limiter.check_key(contributor).is_err() {
-            //     debug!(round, player = ?contributor, "rate limited; skipping share send");
-            //     continue;
-            // }
 
             let share = self
                 .dealer_meta

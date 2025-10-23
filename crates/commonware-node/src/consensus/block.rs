@@ -10,7 +10,7 @@ use commonware_codec::{DecodeExt as _, Encode as _, EncodeSize, Read, Write};
 use commonware_cryptography::{Committable, Digestible};
 use eyre::WrapErr as _;
 use reth_node_core::primitives::SealedBlock;
-use tracing::{info, instrument};
+use tracing::info;
 
 use crate::{
     consensus::Digest,

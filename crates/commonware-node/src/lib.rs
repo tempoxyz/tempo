@@ -24,8 +24,8 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::config::{
-    BACKFILL_BY_DIGEST_CHANNEL_IDENTL, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT,
-    BROADCASTER_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT,
+    BACKFILL_BY_DIGEST_CHANNEL_IDENT, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
+    DKG_CHANNEL_IDENT, DKG_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT,
     RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
 };
 
@@ -51,10 +51,12 @@ pub async fn run_consensus_stack(
         message_backlog,
     );
     let backfill = network.register(
-        BACKFILL_BY_DIGEST_CHANNEL_IDENTL,
+        BACKFILL_BY_DIGEST_CHANNEL_IDENT,
         BACKFILL_QUOTA,
         message_backlog,
     );
+
+    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
 
     let consensus_engine = crate::consensus::engine::Builder {
         context: context.with_label("engine"),
@@ -88,7 +90,7 @@ pub async fn run_consensus_stack(
 
     let (network, consensus_engine) = (
         network.start(),
-        consensus_engine.start(pending, recovered, resolver, broadcaster, backfill),
+        consensus_engine.start(pending, recovered, resolver, broadcaster, backfill, dkg),
     );
 
     tokio::select! {

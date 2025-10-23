@@ -22,9 +22,6 @@ use crate::epoch::manager::ingress::{Enter, Exit};
 
 use super::ingress::Message;
 
-const ACTIVE_EPOCH_KEY: u32 = 0;
-const PREVIOUS_EPOCH_KEY: u32 = 1;
-
 const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 
