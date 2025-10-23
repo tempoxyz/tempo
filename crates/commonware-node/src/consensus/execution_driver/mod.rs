@@ -356,7 +356,8 @@ impl Inner<Init> {
                     .await
                     .transpose()
                     .ok_or_eyre("public dkg ceremony outcome does not exist")
-                    .flatten()
+                    // TODO(janis): Result::flatten once msrv is 1.89
+                    .and_then(|this| this)
                     .wrap_err(
                         "failed getting public dkg ceremony outcome; refusing to generate proposal",
                     )?;
@@ -617,7 +618,8 @@ impl Inner<Init> {
                 .await
                 .transpose()
                 .ok_or_eyre("public dkg ceremony outcome does not exist")
-                .flatten()
+                // TODO(janis): Result::flatten once msrv 1.89
+                .and_then(|this| this)
                 .wrap_err(
                     "failed getting public dkg ceremony outcome; cannot verify end of epoch block",
                 )?;
