@@ -94,7 +94,7 @@ where
     /// The local [Arbiter] for this round.
     arbiter: Arbiter<PublicKey, MinSig>,
 
-    ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, RoundInfo>>>,
+    ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, Info>>>,
     receiver: SubReceiver<TReceiver>,
     sender: SubSender<TSender>,
 }
@@ -109,7 +109,7 @@ where
     pub(super) async fn init(
         context: &mut TContext,
         mux: &mut MuxHandle<TSender, TReceiver>,
-        ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, RoundInfo>>>,
+        ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, Info>>>,
         config: Config,
     ) -> eyre::Result<Self> {
         let (sender, receiver) = mux
@@ -185,15 +185,10 @@ where
                 }
             }
 
-            if let Some(Deal {
-                commitment,
-                shares,
-                acks,
-            }) = recovered.deal.clone()
-            {
+            if let Some(dealing) = recovered.dealing.clone() {
                 let (mut dkg_dealer, _, _) =
                     dkg::Dealer::new(context, config.share.clone(), config.players.clone());
-                for ack in acks.values() {
+                for ack in dealing.acks.values() {
                     dkg_dealer.ack(ack.player.clone()).wrap_err_with(|| {
                         format!(
                             "failed updating dealer information with ack for \
@@ -204,9 +199,9 @@ where
                 }
                 dealer_me = Some(Dealer {
                     inner: dkg_dealer,
-                    commitment,
-                    shares,
-                    acks,
+                    commitment: dealing.commitment,
+                    shares: dealing.shares,
+                    acks: dealing.acks,
                     outcome: recovered.local_outcome.clone(),
                 });
             }
@@ -306,10 +301,10 @@ where
                     .lock()
                     .await
                     .upsert_sync(self.config.epoch.into(), |meta| {
-                        if let Some(Deal { acks, .. }) = &mut meta.deal {
-                            acks.insert(self.config.me.public_key(), ack);
+                        if let Some(dealing) = &mut meta.dealing {
+                            dealing.acks.insert(self.config.me.public_key(), ack);
                         } else {
-                            meta.deal = Some(Deal {
+                            meta.dealing = Some(Dealing {
                                 commitment: dealer_me.commitment.clone(),
                                 shares: dealer_me.shares.clone(),
                                 acks: BTreeMap::from([(self.config.me.public_key(), ack)]),
@@ -433,10 +428,10 @@ where
             .lock()
             .await
             .upsert_sync(self.config.epoch.into(), |meta| {
-                if let Some(Deal { acks, .. }) = &mut meta.deal {
-                    acks.insert(peer.clone(), ack);
+                if let Some(dealing) = &mut meta.dealing {
+                    dealing.acks.insert(peer.clone(), ack);
                 } else {
-                    meta.deal = Some(Deal {
+                    meta.dealing = Some(Dealing {
                         commitment: dealer_me.commitment.clone(),
                         shares: dealer_me.shares.clone(),
                         acks: BTreeMap::from([(peer.clone(), ack)]),
@@ -967,20 +962,24 @@ pub(super) enum RoundResult {
     },
 }
 
+/// The local dealing of the current ceremony.
+///
+/// Here, the dealer tracks its generated commmitment and shares, as well
+/// as the acknowledgments it received for its shares.
 #[derive(Clone)]
-struct Deal {
+struct Dealing {
     commitment: Public<MinSig>,
     shares: BTreeMap<PublicKey, group::Share>,
     acks: BTreeMap<PublicKey, Ack>,
 }
 
-impl EncodeSize for Deal {
+impl EncodeSize for Dealing {
     fn encode_size(&self) -> usize {
         self.commitment.encode_size() + self.shares.encode_size() + self.acks.encode_size()
     }
 }
 
-impl Read for Deal {
+impl Read for Dealing {
     type Cfg = usize;
 
     fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
@@ -995,7 +994,7 @@ impl Read for Deal {
     }
 }
 
-impl Write for Deal {
+impl Write for Dealing {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         self.commitment.write(buf);
         self.shares.write(buf);
@@ -1003,33 +1002,38 @@ impl Write for Deal {
     }
 }
 
+/// Information on an epoch's ceremony.
 #[derive(Clone, Default)]
-pub(super) struct RoundInfo {
-    deal: Option<Deal>,
+pub(super) struct Info {
+    /// Tracks the local dealing if we participate as a dealer.
+    dealing: Option<Dealing>,
+
+    /// Tracks the shares received from other dealers, if we are a player.
     received_shares: Vec<(PublicKey, Public<MinSig>, group::Share)>,
+
     local_outcome: Option<DealOutcome>,
     outcomes: Vec<DealOutcome>,
 }
 
-impl Write for RoundInfo {
+impl Write for Info {
     fn write(&self, buf: &mut impl bytes::BufMut) {
-        self.deal.write(buf);
+        self.dealing.write(buf);
         self.received_shares.write(buf);
         self.local_outcome.write(buf);
         self.outcomes.write(buf);
     }
 }
 
-impl EncodeSize for RoundInfo {
+impl EncodeSize for Info {
     fn encode_size(&self) -> usize {
-        self.deal.encode_size()
+        self.dealing.encode_size()
             + self.received_shares.encode_size()
             + self.local_outcome.encode_size()
             + self.outcomes.encode_size()
     }
 }
 
-impl Read for RoundInfo {
+impl Read for Info {
     // The consensus quorum
     type Cfg = usize;
 
@@ -1038,7 +1042,7 @@ impl Read for RoundInfo {
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         Ok(Self {
-            deal: Option::<Deal>::read_cfg(buf, cfg)?,
+            dealing: Option::<Dealing>::read_cfg(buf, cfg)?,
             received_shares: Vec::<(PublicKey, Public<MinSig>, group::Share)>::read_cfg(
                 buf,
                 &(RangeCfg::from(0..usize::MAX), ((), *cfg, ())),

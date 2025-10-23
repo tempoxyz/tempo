@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use commonware_consensus::Block as _;
 use commonware_consensus::Reporter;
-use commonware_cryptography::bls12381::dkg::player::Output;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::utils::mux::MuxHandle;
 use commonware_p2p::{Receiver, Sender, utils::mux};
@@ -16,7 +15,7 @@ use rand_core::CryptoRngCore;
 use tracing::{Span, instrument, warn};
 
 use crate::dkg::EpochState;
-use crate::dkg::ceremony::RoundInfo;
+use crate::dkg::ceremony::Info;
 use crate::dkg::ceremony::{PublicOutcome, RoundResult};
 use crate::dkg::manager::ingress::GetCeremonyDeal;
 use crate::dkg::manager::ingress::GetPublicCeremonyOutcome;
@@ -38,7 +37,7 @@ where
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
-    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, RoundInfo>>>,
+    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, Info>>>,
     epoch_metadata: Metadata<ContextCell<TContext>, U64, EpochState>,
 }
 
