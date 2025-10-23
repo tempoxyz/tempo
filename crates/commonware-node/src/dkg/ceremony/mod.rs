@@ -279,7 +279,7 @@ where
                     )
                     .expect(
                         "must work: updating player with own dealer \
-                        commmitment",
+                        commitment",
                     );
 
                 dealer_me

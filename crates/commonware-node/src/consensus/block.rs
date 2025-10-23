@@ -32,7 +32,7 @@ impl Block {
     pub(crate) fn insert_ceremony_deal_outcome(self, deal: DealingOutcome) -> Self {
         let sealed = self.into_inner();
         let (mut header, body) = sealed.split_header_body();
-        // XXX: extra step via vec becaused commonware writes bytes::Bytes, but
+        // XXX: extra step via vec because commonware writes bytes::Bytes, but
         // alloy expects alloy_primitives::Bytes
         header.inner.extra_data = deal.encode().freeze().to_vec().into();
         Self(SealedBlock::seal_parts(header, body))
@@ -41,7 +41,7 @@ impl Block {
     pub(crate) fn insert_public_ceremony_outcome(self, deal: PublicOutcome) -> Self {
         let sealed = self.into_inner();
         let (mut header, body) = sealed.split_header_body();
-        // XXX: extra step via vec becaused commonware writes bytes::Bytes, but
+        // XXX: extra step via vec because commonware writes bytes::Bytes, but
         // alloy expects alloy_primitives::Bytes
         header.inner.extra_data = deal.encode().freeze().to_vec().into();
         Self(SealedBlock::seal_parts(header, body))

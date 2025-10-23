@@ -121,7 +121,7 @@ mod tests {
     };
 
     #[test]
-    fn are_firsr_heights() {
+    fn are_first_heights() {
         assert!(is_first_height(1, 1000));
         assert!(is_first_height(1001, 1000));
         assert!(is_first_height(2001, 1000));

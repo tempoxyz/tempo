@@ -65,7 +65,7 @@ impl Read for State {
 
 /// The local dealing of the current ceremony.
 ///
-/// Here, the dealer tracks its generated commmitment and shares, as well
+/// Here, the dealer tracks its generated commitment and shares, as well
 /// as the acknowledgments it received for its shares.
 #[derive(Clone)]
 pub(super) struct Dealing {
