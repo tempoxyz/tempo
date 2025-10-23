@@ -996,7 +996,6 @@ mod tests {
 
         let mut roles = linking_usd.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE);
-        drop(roles);
 
         // Set supply cap
         linking_usd
