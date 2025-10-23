@@ -94,7 +94,7 @@ where
     /// The local [Arbiter] for this round.
     arbiter: Arbiter<PublicKey, MinSig>,
 
-    ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, Info>>>,
+    ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, PersistedInfo>>>,
     receiver: SubReceiver<TReceiver>,
     sender: SubSender<TSender>,
 }
@@ -109,7 +109,7 @@ where
     pub(super) async fn init(
         context: &mut TContext,
         mux: &mut MuxHandle<TSender, TReceiver>,
-        ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, Info>>>,
+        ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, PersistedInfo>>>,
         config: Config,
     ) -> eyre::Result<Self> {
         let (sender, receiver) = mux
@@ -300,17 +300,17 @@ where
                 self.ceremony_metadata
                     .lock()
                     .await
-                    .upsert_sync(self.config.epoch.into(), |meta| {
-                        if let Some(dealing) = &mut meta.dealing {
+                    .upsert_sync(self.config.epoch.into(), |info| {
+                        if let Some(dealing) = &mut info.dealing {
                             dealing.acks.insert(self.config.me.public_key(), ack);
                         } else {
-                            meta.dealing = Some(Dealing {
+                            info.dealing = Some(Dealing {
                                 commitment: dealer_me.commitment.clone(),
                                 shares: dealer_me.shares.clone(),
                                 acks: BTreeMap::from([(self.config.me.public_key(), ack)]),
                             });
                         }
-                        meta.received_shares.push((
+                        info.received_shares.push((
                             self.config.me.public_key(),
                             dealer_me.commitment.clone(),
                             share,
@@ -427,11 +427,11 @@ where
         self.ceremony_metadata
             .lock()
             .await
-            .upsert_sync(self.config.epoch.into(), |meta| {
-                if let Some(dealing) = &mut meta.dealing {
+            .upsert_sync(self.config.epoch.into(), |info| {
+                if let Some(dealing) = &mut info.dealing {
                     dealing.acks.insert(peer.clone(), ack);
                 } else {
-                    meta.dealing = Some(Dealing {
+                    info.dealing = Some(Dealing {
                         commitment: dealer_me.commitment.clone(),
                         shares: dealer_me.shares.clone(),
                         acks: BTreeMap::from([(peer.clone(), ack)]),
@@ -470,8 +470,8 @@ where
         self.ceremony_metadata
             .lock()
             .await
-            .upsert_sync(self.epoch().into(), |meta| {
-                meta.received_shares
+            .upsert_sync(self.epoch().into(), |info| {
+                info.received_shares
                     .push((peer.clone(), commitment.clone(), share));
             })
             .await
@@ -570,15 +570,15 @@ where
         self.ceremony_metadata
             .lock()
             .await
-            .upsert_sync(self.epoch().into(), |meta| {
-                if let Some(pos) = meta
+            .upsert_sync(self.epoch().into(), |info| {
+                if let Some(pos) = info
                     .outcomes
                     .iter()
                     .position(|outcome| outcome.dealer == block_outcome.dealer)
                 {
-                    meta.outcomes[pos] = block_outcome;
+                    info.outcomes[pos] = block_outcome;
                 } else {
-                    meta.outcomes.push(block_outcome);
+                    info.outcomes.push(block_outcome);
                 }
             })
             .await
@@ -629,8 +629,8 @@ where
         self.ceremony_metadata
             .lock()
             .await
-            .upsert_sync(self.config.epoch.into(), |meta| {
-                meta.local_outcome = local_outcome.clone();
+            .upsert_sync(self.config.epoch.into(), |info| {
+                info.local_outcome = local_outcome.clone();
             })
             .await
             .expect("must persist local outcome");
@@ -1002,9 +1002,9 @@ impl Write for Dealing {
     }
 }
 
-/// Information on an epoch's ceremony.
+/// Information on a ceremony that is persisted to disk.
 #[derive(Clone, Default)]
-pub(super) struct Info {
+pub(super) struct PersistedInfo {
     /// Tracks the local dealing if we participate as a dealer.
     dealing: Option<Dealing>,
 
@@ -1015,7 +1015,7 @@ pub(super) struct Info {
     outcomes: Vec<DealOutcome>,
 }
 
-impl Write for Info {
+impl Write for PersistedInfo {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         self.dealing.write(buf);
         self.received_shares.write(buf);
@@ -1024,7 +1024,7 @@ impl Write for Info {
     }
 }
 
-impl EncodeSize for Info {
+impl EncodeSize for PersistedInfo {
     fn encode_size(&self) -> usize {
         self.dealing.encode_size()
             + self.received_shares.encode_size()
@@ -1033,7 +1033,7 @@ impl EncodeSize for Info {
     }
 }
 
-impl Read for Info {
+impl Read for PersistedInfo {
     // The consensus quorum
     type Cfg = usize;
 

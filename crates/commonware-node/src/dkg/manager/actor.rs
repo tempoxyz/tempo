@@ -15,7 +15,7 @@ use rand_core::CryptoRngCore;
 use tracing::{Span, instrument, warn};
 
 use crate::dkg::EpochState;
-use crate::dkg::ceremony::Info;
+use crate::dkg::ceremony::PersistedInfo;
 use crate::dkg::ceremony::{PublicOutcome, RoundResult};
 use crate::dkg::manager::ingress::GetCeremonyDeal;
 use crate::dkg::manager::ingress::GetPublicCeremonyOutcome;
@@ -37,7 +37,7 @@ where
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
-    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, Info>>>,
+    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, PersistedInfo>>>,
     epoch_metadata: Metadata<ContextCell<TContext>, U64, EpochState>,
 }
 
