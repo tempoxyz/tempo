@@ -21,7 +21,7 @@ use commonware_p2p::{
     Receiver, Sender,
     utils::mux::{MuxHandle, SubReceiver, SubSender},
 };
-use commonware_runtime::{Clock, Metrics, Spawner, Storage};
+use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::{max_faults, quorum, sequence::U64, set::Set, union};
 use eyre::{WrapErr as _, bail, ensure};

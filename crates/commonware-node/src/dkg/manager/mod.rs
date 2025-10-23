@@ -10,7 +10,6 @@ mod ingress;
 
 pub(crate) use actor::Actor;
 use futures::channel::mpsc;
-use governor::Quota;
 pub(crate) use ingress::Mailbox;
 
 use ingress::{Command, Message};
@@ -20,7 +19,7 @@ use crate::epoch;
 
 pub(crate) async fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox)
 where
-    TContext: Clock + governor::clock::Clock + CryptoRngCore + Metrics + Spawner + Storage,
+    TContext: Clock + CryptoRngCore + Metrics + Spawner + Storage,
 {
     let (tx, rx) = mpsc::unbounded();
 
@@ -53,9 +52,6 @@ pub(crate) struct Config {
 
     /// The initial bls12381 public key.
     pub(crate) initial_public: Public<MinSig>,
-
-    /// The rate limiting to apply during a DKG ceremony.
-    pub(crate) rate_limit: Quota,
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,

@@ -204,7 +204,6 @@ where
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
                 views_to_track: self.views_to_track,
                 views_until_leader_skip: self.views_until_leader_skip,
-                heights_per_epoch: self.heights_per_epoch,
             },
             self.context.with_label("epoch_manager"),
         );
@@ -222,7 +221,6 @@ where
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
                 // TODO(janis): reasonable to just reuse this here? Probably define a custom const for this.
-                rate_limit: BACKFILL_QUOTA,
             },
         )
         .await;

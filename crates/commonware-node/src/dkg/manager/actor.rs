@@ -1,24 +1,22 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
+use commonware_consensus::Block as _;
 use commonware_consensus::Reporter;
-use commonware_consensus::{Block as _, simplex::signing_scheme::bls12381_threshold, types::Epoch};
 use commonware_cryptography::bls12381::dkg::player::Output;
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::utils::mux::MuxHandle;
 use commonware_p2p::{Receiver, Sender, utils::mux};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::sequence::U64;
-use eyre::WrapErr as _;
 use eyre::eyre;
 use futures::lock::Mutex;
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::CryptoRngCore;
-use tracing::info;
 use tracing::{Span, instrument, warn};
 
 use crate::dkg::EpochState;
-use crate::dkg::ceremony::{DealOutcome, RoundInfo};
+use crate::dkg::ceremony::RoundInfo;
 use crate::dkg::ceremony::{PublicOutcome, RoundResult};
 use crate::dkg::manager::ingress::GetCeremonyDeal;
 use crate::dkg::manager::ingress::GetPublicCeremonyOutcome;
@@ -46,7 +44,7 @@ where
 
 impl<TContext> Actor<TContext>
 where
-    TContext: Clock + governor::clock::Clock + CryptoRngCore + Metrics + Spawner + Storage,
+    TContext: Clock + CryptoRngCore + Metrics + Spawner + Storage,
 {
     pub(super) async fn init(
         config: super::Config,
@@ -295,9 +293,23 @@ where
             .take()
             .expect("there must be a ceremony active at all times");
 
-        if epoch::of_height(block.height(), self.config.heights_per_epoch)
-            == Some(this_ceremony.epoch())
+        if let Some(block_epoch) = epoch::of_height(block.height(), self.config.heights_per_epoch)
+            && block_epoch == this_ceremony.epoch()
         {
+            if epoch::is_first_height(block.height(), self.config.heights_per_epoch) {
+                // Notify the epoch manager that the first height of the new epoch
+                // was entered and the previous epoch can be exited.
+                self.config
+                    .epoch_manager
+                    .report(
+                        epoch::Exit {
+                            epoch: this_ceremony.epoch().saturating_sub(1),
+                        }
+                        .into(),
+                    )
+                    .await;
+            }
+
             match epoch::relative_position(block.height(), self.config.heights_per_epoch) {
                 epoch::RelativePosition::FirstHalf => {
                     let _ = this_ceremony.request_acks().await;
@@ -391,5 +403,9 @@ where
         };
 
         ceremony.replace(new_ceremony);
+
+        if let Err(()) = response.send(()) {
+            warn!("could not confirm finalization because recipient already went away");
+        }
     }
 }

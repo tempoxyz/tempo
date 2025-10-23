@@ -33,11 +33,6 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) partition_prefix: String,
     pub(crate) views_to_track: u64,
     pub(crate) views_until_leader_skip: u64,
-
-    /// The number of heights H in an epoch. For a given epoch E, all heights
-    /// `E*H+1` to and including `(E+1)*H` make up the epoch. The block at
-    /// `E*H` is said to be the genesis (or parent) of the epoch.
-    pub(crate) heights_per_epoch: u64,
 }
 
 pub(crate) fn init<TBlocker, TContext>(
