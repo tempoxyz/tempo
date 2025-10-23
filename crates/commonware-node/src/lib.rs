@@ -8,6 +8,7 @@ pub mod consensus;
 pub mod metrics;
 
 mod subblocks;
+mod utils;
 
 use std::net::SocketAddr;
 
@@ -22,7 +23,7 @@ use tracing::info;
 use crate::config::{
     BACKFILL_BY_DIGEST_CHANNEL_IDENT, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
     PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT,
-    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
 };
 use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
@@ -52,6 +53,7 @@ pub async fn run_consensus_stack(
         BACKFILL_QUOTA,
         message_backlog,
     );
+    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
     let consensus_engine = crate::consensus::engine::Builder {
         context: context.with_label("engine"),
@@ -84,7 +86,14 @@ pub async fn run_consensus_stack(
 
     let (network, consensus_engine) = (
         network.start(),
-        consensus_engine.start(pending, recovered, resolver, broadcaster, backfill),
+        consensus_engine.start(
+            pending,
+            recovered,
+            resolver,
+            broadcaster,
+            backfill,
+            subblocks,
+        ),
     );
 
     tokio::select! {

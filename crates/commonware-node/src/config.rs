@@ -37,5 +37,7 @@ pub(crate) const RECOVERED_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 pub(crate) const RESOLVER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
+pub(crate) const SUBBLOCKS_LIMIT: Quota =
+    Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 
 pub(crate) const NAMESPACE: &[u8] = b"TEMPO";

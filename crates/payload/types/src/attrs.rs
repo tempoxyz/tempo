@@ -8,6 +8,8 @@ use std::{
     sync::{Arc, atomic, atomic::Ordering},
 };
 
+use crate::SignedSubBlock;
+
 /// A handle for a payload interrupt flag.
 ///
 /// Can be fired using [`InterruptHandle::interrupt`].
@@ -29,6 +31,7 @@ pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
     interrupt: InterruptHandle,
     timestamp_millis_part: u64,
+    subblocks: Vec<SignedSubBlock>,
 }
 
 impl TempoPayloadBuilderAttributes {
@@ -38,6 +41,7 @@ impl TempoPayloadBuilderAttributes {
         parent: B256,
         suggested_fee_recipient: Address,
         timestamp_millis: u64,
+        subblocks: Vec<SignedSubBlock>,
     ) -> Self {
         let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
         Self {
@@ -52,6 +56,7 @@ impl TempoPayloadBuilderAttributes {
             },
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
+            subblocks,
         }
     }
 
@@ -88,6 +93,7 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
             inner: EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
+            subblocks: Vec::new(),
         })
     }
 

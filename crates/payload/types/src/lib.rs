@@ -4,8 +4,10 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 mod attrs;
+mod subblock;
 
-pub use crate::attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
+pub use attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
+pub use subblock::{SignedSubBlock, SubBlock};
 
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;

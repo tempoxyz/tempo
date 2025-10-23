@@ -119,11 +119,11 @@ pub fn run(
             .await
             .expect("must be able to initialize consensus engines to run tests");
 
-            let (pending, recovered, resolver, broadcast, backfill) = registrations
+            let (pending, recovered, resolver, broadcast, backfill, subblocks) = registrations
                 .remove(&public_key)
                 .expect("public key must have an entry in registrations map");
 
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, recovered, resolver, broadcast, backfill, subblocks);
 
             debug!(%uid, "started validator");
         }
@@ -180,6 +180,7 @@ async fn register_validators(
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
+        (Sender<PublicKey>, Receiver<PublicKey>),
     ),
 > {
     let mut registrations = HashMap::new();
@@ -194,6 +195,8 @@ async fn register_validators(
             oracle.register(validator.clone(), 3).await.unwrap();
         let (backfill_sender, backfill_receiver) =
             oracle.register(validator.clone(), 4).await.unwrap();
+        let (subblocks_sender, subblocks_receiver) =
+            oracle.register(validator.clone(), 5).await.unwrap();
         registrations.insert(
             validator.clone(),
             (
@@ -202,6 +205,7 @@ async fn register_validators(
                 (resolver_sender, resolver_receiver),
                 (broadcast_sender, broadcast_receiver),
                 (backfill_sender, backfill_receiver),
+                (subblocks_sender, subblocks_receiver),
             ),
         );
     }

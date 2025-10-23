@@ -48,7 +48,7 @@ use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 mod executor;
 
-use crate::consensus::execution_driver::executor::ExecutorMailbox;
+use crate::{consensus::execution_driver::executor::ExecutorMailbox, subblocks::SubBlocksHandle};
 
 use super::block::Block;
 
@@ -72,6 +72,9 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
 
     /// The minimum amount of time to wait before resolving a new payload from the builder
     pub(super) new_payload_wait_time: Duration,
+
+    /// A handle to the subblocks service to get subblocks for proposals.
+    pub(crate) subblocks: SubBlocksHandle,
 }
 
 impl<TContext> ExecutionDriverBuilder<TContext>
@@ -105,6 +108,7 @@ where
                 genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
 
                 execution_node: self.execution_node,
+                subblocks: self.subblocks,
 
                 state: Uninit(()),
             },
@@ -220,6 +224,7 @@ struct Inner<TState> {
 
     genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
+    subblocks: SubBlocksHandle,
 
     state: TState,
 }
@@ -427,6 +432,7 @@ impl Inner<Init> {
             parent.block_hash(),
             self.fee_recipient,
             context.current().epoch_millis(),
+            self.subblocks.get_subblocks(parent.block_hash()).await?,
         );
 
         let interrupt_handle = attrs.interrupt_handle().clone();
@@ -593,6 +599,7 @@ impl Inner<Uninit> {
                 latest_proposed_block: Arc::new(RwLock::new(None)),
                 executor_mailbox: executor.mailbox().clone(),
             },
+            subblocks: self.subblocks,
         };
 
         executor.start();

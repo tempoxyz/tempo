@@ -8,7 +8,7 @@ use std::{
 };
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{marshal, threshold_simplex};
+use commonware_consensus::{Reporters, marshal, threshold_simplex};
 use commonware_cryptography::Signer as _;
 use commonware_p2p::{Blocker, Receiver, Sender};
 use commonware_runtime::{Handle, Metrics, Pacer, Spawner, Storage, buffer::PoolRef};
@@ -20,9 +20,13 @@ use tempo_commonware_node_cryptography::{
 };
 use tempo_node::TempoFullNode;
 
-use crate::config::{
-    BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, NUMBER_CONCURRENT_FETCHES,
-    NUMBER_MAX_FETCHES, RESOLVER_LIMIT,
+use crate::{
+    config::{
+        BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, NUMBER_CONCURRENT_FETCHES,
+        NUMBER_MAX_FETCHES, RESOLVER_LIMIT,
+    },
+    subblocks::SubBlocksService,
+    utils::ChannelReporter,
 };
 
 use super::{block::Block, supervisor::Supervisor};
@@ -151,6 +155,11 @@ where
             )
             .await;
 
+        let (consensus_reporter, consenus_events) = ChannelReporter::new();
+
+        let (subblocks, subblocks_handle) =
+            SubBlocksService::new(self.signer.clone(), supervisor.clone(), consenus_events);
+
         let execution_driver = super::execution_driver::ExecutionDriverBuilder {
             context: self.context.with_label("execution_driver"),
             // TODO: pass in from the outside,
@@ -159,6 +168,7 @@ where
             syncer: syncer_mailbox.clone(),
             execution_node: self.execution_node,
             new_payload_wait_time: self.new_payload_wait_time,
+            subblocks: subblocks_handle,
             // chainspec: self.chainspec,
             // engine_handle: self.execution_engine,
             // payload_builder: self.execution_payload_builder,
@@ -179,7 +189,7 @@ where
                 automaton: execution_driver.mailbox().clone(),
                 relay: execution_driver.mailbox().clone(),
                 // XXX: this is where the `indexer` would usually go (in alto)
-                reporter: syncer_mailbox,
+                reporter: Reporters::from((syncer_mailbox, consensus_reporter)),
                 supervisor,
                 partition: format!("{}-consensus", self.partition_prefix),
                 mailbox_size: self.mailbox_size,
@@ -212,6 +222,8 @@ where
             syncer,
 
             consensus,
+
+            subblocks,
         })
     }
 }
@@ -243,6 +255,8 @@ where
     syncer: marshal::Actor<Block, TContext, BlsScheme>,
 
     consensus: crate::consensus::Consensus<TContext, TBlocker>,
+
+    subblocks: SubBlocksService,
 }
 
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
@@ -272,6 +286,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        subblocks_network: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> Handle<eyre::Result<()>> {
         self.context.clone().spawn(|_| {
             self.run(
@@ -280,6 +298,7 @@ where
                 resolver_network,
                 broadcast_network,
                 backfill_network,
+                subblocks_network,
             )
         })
     }
@@ -309,6 +328,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        subblocks_network: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_network);
         let execution_driver = self.execution_driver.start();
@@ -325,11 +348,21 @@ where
             .consensus
             .start(pending_network, recovered_network, resolver_network);
 
-        try_join_all(vec![broadcast, execution_driver, simplex, syncer])
-            .await
-            .map(|_| ())
-            // TODO: look into adding error context so that we know which
-            // component failed.
-            .wrap_err("one of the consensus engine's actors failed")
+        let subblocks = self
+            .context
+            .spawn(|_| self.subblocks.run(subblocks_network));
+
+        try_join_all(vec![
+            broadcast,
+            execution_driver,
+            simplex,
+            syncer,
+            subblocks,
+        ])
+        .await
+        .map(|_| ())
+        // TODO: look into adding error context so that we know which
+        // component failed.
+        .wrap_err("one of the consensus engine's actors failed")
     }
 }
