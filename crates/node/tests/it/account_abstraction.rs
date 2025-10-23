@@ -1589,7 +1589,7 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
     tx_request_webauthn
         .as_object_mut()
         .unwrap()
-        .insert("keyType".to_string(), serde_json::json!("webauthn"));
+        .insert("keyType".to_string(), serde_json::json!("webAuthn"));
     tx_request_webauthn
         .as_object_mut()
         .unwrap()
