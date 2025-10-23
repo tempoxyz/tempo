@@ -236,24 +236,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_out: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        // Find the trade path (may be direct or multi-hop)
-        let path = self.find_trade_path(token_in, token_out)?;
+        // Find and validate the trade route (book keys + direction for each hop)
+        let route = self.find_trade_path(token_in, token_out)?;
 
         // Execute quotes backwards from output to input
         let mut current_amount = amount_out;
-        for i in (0..path.len() - 1).rev() {
-            let hop_token_in = path[i];
-            let hop_token_out = path[i + 1];
-
-            let book_key = compute_book_key(hop_token_in, hop_token_out);
-            let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
-
-            if orderbook.base.is_zero() {
-                return Err(StablecoinExchangeError::pair_does_not_exist());
-            }
-
-            let base_for_quote = hop_token_in == orderbook.base;
-            current_amount = self.quote_exact_out(book_key, current_amount, base_for_quote)?;
+        for (book_key, base_for_quote) in route.iter().rev() {
+            current_amount = self.quote_exact_out(*book_key, current_amount, *base_for_quote)?;
         }
 
         Ok(current_amount)
@@ -265,23 +254,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_in: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        // Find the trade path (may be direct or multi-hop)
-        let path = self.find_trade_path(token_in, token_out)?;
+        // Find and validate the trade route (book keys + direction for each hop)
+        let route = self.find_trade_path(token_in, token_out)?;
 
-        // Execute quotes for each hop in the path
+        // Execute quotes for each hop using precomputed book keys and directions
         let mut current_amount = amount_in;
-        for i in 0..path.len() - 1 {
-            let hop_token_in = path[i];
-            let hop_token_out = path[i + 1];
-
-            let book_key = compute_book_key(hop_token_in, hop_token_out);
-            let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
-
-            if orderbook.base.is_zero() {
-                return Err(StablecoinExchangeError::pair_does_not_exist());
-            }
-
-            let base_for_quote = hop_token_in == orderbook.base;
+        for (book_key, base_for_quote) in route {
             current_amount = self.quote_exact_in(book_key, current_amount, base_for_quote)?;
         }
 
@@ -296,8 +274,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         amount_in: u128,
         min_amount_out: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        // Find the trade path (may be direct or multi-hop)
-        let path = self.find_trade_path(token_in, token_out)?;
+        // Find and validate the trade route (book keys + direction for each hop)
+        let route = self.find_trade_path(token_in, token_out)?;
 
         // Deduct input tokens from sender (only once, at the start)
         self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)
@@ -305,18 +283,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Execute swaps for each hop - intermediate balances are transitory
         let mut current_amount = amount_in;
-        for i in 0..path.len() - 1 {
-            let hop_token_in = path[i];
-            let hop_token_out = path[i + 1];
-
-            let book_key = compute_book_key(hop_token_in, hop_token_out);
-            let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
-
-            if orderbook.base.is_zero() {
-                return Err(StablecoinExchangeError::pair_does_not_exist());
-            }
-
-            let base_for_quote = hop_token_in == orderbook.base;
+        for (book_key, base_for_quote) in route {
             // Fill orders for this hop - no min check on intermediate hops
             current_amount =
                 self.fill_orders_exact_in(book_key, base_for_quote, current_amount, 0)?;
@@ -344,24 +311,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         amount_out: u128,
         max_amount_in: u128,
     ) -> Result<u128, StablecoinExchangeError> {
-        let path = self.find_trade_path(token_in, token_out)?;
+        // Find and validate the trade route (book keys + direction for each hop)
+        let route = self.find_trade_path(token_in, token_out)?;
 
         // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
         let mut current_amount = amount_out;
-        for i in (0..path.len() - 1).rev() {
-            let hop_token_in = path[i];
-            let hop_token_out = path[i + 1];
-            let book_key = compute_book_key(hop_token_in, hop_token_out);
-            let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
-
-            if orderbook.base.is_zero() {
-                return Err(StablecoinExchangeError::pair_does_not_exist());
-            }
-
-            let base_for_quote = hop_token_in == orderbook.base;
+        for (book_key, base_for_quote) in route.iter().rev() {
             current_amount = self.fill_orders_exact_out(
-                book_key,
-                base_for_quote,
+                *book_key,
+                *base_for_quote,
                 current_amount,
                 max_amount_in,
             )?;
@@ -1276,12 +1234,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Find the trade path between two tokens
-    /// Returns a vector of addresses representing the trading route
+    /// Returns a vector of (book_key, base_for_quote) tuples for each hop
+    /// Also validates that all pairs exist
     fn find_trade_path(
         &mut self,
         token_in: Address,
         token_out: Address,
-    ) -> Result<Vec<Address>, StablecoinExchangeError> {
+    ) -> Result<Vec<(B256, bool)>, StablecoinExchangeError> {
         // Cannot trade same token
         if token_in == token_out {
             return Err(StablecoinExchangeError::pair_does_not_exist());
@@ -1292,7 +1251,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let token_in_quote = TIP20Token::new(token_in_id, self.storage).quote_token();
 
         if token_in_quote == token_out {
-            return Ok(vec![token_in, token_out]);
+            return self.validate_and_build_route(&[token_in, token_out]);
         }
 
         // Check if reverse pair exists (token_out -> token_in)
@@ -1300,7 +1259,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let token_out_quote = TIP20Token::new(token_out_id, self.storage).quote_token();
 
         if token_out_quote == token_in {
-            return Ok(vec![token_in, token_out]);
+            return self.validate_and_build_route(&[token_in, token_out]);
         }
 
         // Multi-hop: Find LCA and build path
@@ -1339,7 +1298,35 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Reverse to get path from LCA to token_out
         trade_path.extend(lca_to_out.iter().rev());
 
-        Ok(trade_path)
+        self.validate_and_build_route(&trade_path)
+    }
+
+    /// Validates that all pairs in the path exist and returns book keys with direction info
+    fn validate_and_build_route(
+        &mut self,
+        path: &[Address],
+    ) -> Result<Vec<(B256, bool)>, StablecoinExchangeError> {
+        let mut route = Vec::new();
+
+        for i in 0..path.len() - 1 {
+            let hop_token_in = path[i];
+            let hop_token_out = path[i + 1];
+
+            let book_key = compute_book_key(hop_token_in, hop_token_out);
+            let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
+
+            // Validate pair exists
+            if orderbook.base.is_zero() {
+                return Err(StablecoinExchangeError::pair_does_not_exist());
+            }
+
+            // Determine direction
+            let base_for_quote = hop_token_in == orderbook.base;
+
+            route.push((book_key, base_for_quote));
+        }
+
+        Ok(route)
     }
 
     /// Find the path from a token to the root (LinkingUSD)
@@ -2522,15 +2509,26 @@ mod tests {
             1_000_000u128,
         );
 
+        // Create the pair first
+        exchange.create_pair(&token).expect("Failed to create pair");
+
         // Trade token -> linking_usd (direct pair)
-        let path = exchange
+        let route = exchange
             .find_trade_path(token, linking_usd)
             .expect("Should find direct pair");
 
-        // Expected: [token, linking_usd]
-        assert_eq!(path.len(), 2);
-        assert_eq!(path[0], token);
-        assert_eq!(path[1], linking_usd);
+        // Expected: 1 hop (token -> linking_usd)
+        assert_eq!(route.len(), 1, "Should have 1 hop for direct pair");
+
+        // Verify the book key and direction
+        let (book_key, base_for_quote) = route[0];
+        let expected_book_key = compute_book_key(token, linking_usd);
+        assert_eq!(book_key, expected_book_key, "Book key should match");
+
+        // When trading token -> linking_usd, token is the base, so base_for_quote should be true
+        let orderbook = Orderbook::from_storage(book_key, exchange.storage, exchange.address);
+        assert_eq!(token, orderbook.base, "Token should be the base");
+        assert!(base_for_quote, "Should be trading base for quote");
 
         Ok(())
     }
@@ -2553,15 +2551,26 @@ mod tests {
             1_000_000u128,
         );
 
+        // Create the pair first
+        exchange.create_pair(&token).expect("Failed to create pair");
+
         // Trade linking_usd -> token (reverse direction)
-        let path = exchange
+        let route = exchange
             .find_trade_path(linking_usd, token)
             .expect("Should find reverse pair");
 
-        // Expected: [linking_usd, token]
-        assert_eq!(path.len(), 2);
-        assert_eq!(path[0], linking_usd);
-        assert_eq!(path[1], token);
+        // Expected: 1 hop (linking_usd -> token)
+        assert_eq!(route.len(), 1, "Should have 1 hop for reverse pair");
+
+        // Verify the book key and direction
+        let (book_key, base_for_quote) = route[0];
+        let expected_book_key = compute_book_key(linking_usd, token);
+        assert_eq!(book_key, expected_book_key, "Book key should match");
+
+        // When trading linking_usd -> token, token is the base, so base_for_quote should be false
+        let orderbook = Orderbook::from_storage(book_key, exchange.storage, exchange.address);
+        assert_eq!(token, orderbook.base, "Token should be the base");
+        assert!(!base_for_quote, "Should NOT be trading base for quote");
 
         Ok(())
     }
@@ -2599,16 +2608,45 @@ mod tests {
             eurc.token_address
         };
 
+        // Create pairs first
+        exchange
+            .create_pair(&usdc_addr)
+            .expect("Failed to create USDC pair");
+        exchange
+            .create_pair(&eurc_addr)
+            .expect("Failed to create EURC pair");
+
         // Trade USDC -> EURC should go through LinkingUSD
-        let path = exchange
+        let route = exchange
             .find_trade_path(usdc_addr, eurc_addr)
             .expect("Should find path");
 
-        // Expected: [USDC, LinkingUSD, EURC]
-        assert_eq!(path.len(), 3);
-        assert_eq!(path[0], usdc_addr);
-        assert_eq!(path[1], linking_usd_addr);
-        assert_eq!(path[2], eurc_addr);
+        // Expected: 2 hops (USDC -> LinkingUSD, LinkingUSD -> EURC)
+        assert_eq!(route.len(), 2, "Should have 2 hops for sibling tokens");
+
+        // Verify first hop: USDC -> LinkingUSD
+        let (book_key_1, base_for_quote_1) = route[0];
+        let expected_key_1 = compute_book_key(usdc_addr, linking_usd_addr);
+        assert_eq!(
+            book_key_1, expected_key_1,
+            "First hop book key should match"
+        );
+        assert!(
+            base_for_quote_1,
+            "First hop should trade USDC (base) for LinkingUSD (quote)"
+        );
+
+        // Verify second hop: LinkingUSD -> EURC
+        let (book_key_2, base_for_quote_2) = route[1];
+        let expected_key_2 = compute_book_key(linking_usd_addr, eurc_addr);
+        assert_eq!(
+            book_key_2, expected_key_2,
+            "Second hop book key should match"
+        );
+        assert!(
+            !base_for_quote_2,
+            "Second hop should trade LinkingUSD (quote) for EURC (base)"
+        );
 
         Ok(())
     }
