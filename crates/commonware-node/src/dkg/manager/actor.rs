@@ -12,12 +12,13 @@ use eyre::eyre;
 use futures::lock::Mutex;
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::CryptoRngCore;
+use tracing::info;
 use tracing::{Span, instrument, warn};
 
 use crate::dkg::CeremonyState;
 use crate::dkg::EpochState;
 use crate::dkg::ceremony;
-use crate::dkg::ceremony::{PublicOutcome, RoundResult};
+use crate::dkg::ceremony::{PublicOutcome, Role};
 use crate::dkg::manager::ingress::GetCeremonyDeal;
 use crate::dkg::manager::ingress::GetPublicCeremonyOutcome;
 use crate::{
@@ -331,23 +332,27 @@ where
         ) {
             let next_epoch = this_ceremony.epoch().saturating_add(1);
 
-            let (next_participants, next_public, next_share, success) =
-                match this_ceremony.finalize().await {
-                    (
-                        next_participants,
-                        RoundResult::PolynomialAndShare { polynomial, share },
-                        success,
-                    ) => (next_participants, polynomial, Some(share), success),
-                    (next_participants, RoundResult::Polynomial { polynomial }, success) => {
-                        (next_participants, polynomial, None, success)
-                    }
-                };
+            let ceremony_outcome = match this_ceremony.finalize() {
+                Ok(outcome) => {
+                    info!(
+                        "ceremony was successful; using the new participants, polynomial and secret key"
+                    );
+                    outcome
+                }
+                Err(outcome) => {
+                    warn!(
+                        "ceremony was a failure; using the old participants, polynomial and secret key"
+                    );
+                    outcome
+                }
+            };
+            let (public, share) = ceremony_outcome.role.into_key_pair();
 
             let epoch_state = EpochState {
                 epoch: next_epoch,
-                participants: next_participants,
-                public: next_public,
-                share: next_share,
+                participants: ceremony_outcome.participants,
+                public,
+                share,
             };
             self.epoch_metadata
                 .put_sync(EPOCH_KEY.into(), epoch_state.clone())
@@ -372,12 +377,6 @@ where
                     .into(),
                 )
                 .await;
-
-            // TODO(janis): add metrics
-            if !success {
-                ()
-                //     self.failed_rounds.inc();
-            }
 
             // TODO(janis): prune old ceremony metadata?
             let config = ceremony::Config {

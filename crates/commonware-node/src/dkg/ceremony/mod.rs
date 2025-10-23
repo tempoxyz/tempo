@@ -79,8 +79,10 @@ where
 {
     config: Config,
 
-    /// The previous group polynomial and (if dealing) share.
-    previous: RoundResult,
+    /// The previous role of this node in the network. This contains either
+    /// the polynomial (if the node was just a verifier), or the polynomial
+    /// and share of the private key if the node was a signer.
+    previous_role: Role,
 
     /// [Dealer] metadata, if this manager is also dealing.
     dealer_me: Option<Dealer>,
@@ -232,17 +234,17 @@ where
         };
 
         let previous = config.share.clone().map_or_else(
-            || RoundResult::Polynomial {
-                polynomial: config.public.clone(),
+            || Role::Verifier {
+                public: config.public.clone(),
             },
-            |share| RoundResult::PolynomialAndShare {
-                polynomial: config.public.clone(),
+            |share| Role::Signer {
+                public: config.public.clone(),
                 share,
             },
         );
         Ok(Self {
             config,
-            previous,
+            previous_role: previous,
             dealer_me,
             player_me,
             players_indexed,
@@ -658,7 +660,7 @@ where
     // TODO(janis): find a better return value than a 3-tuple with a flag to
     // show failure/success.
     #[instrument(skip_all, fields(epoch = self.epoch()))]
-    pub(super) async fn finalize(self) -> (Set<PublicKey>, RoundResult, bool) {
+    pub(super) fn finalize(self) -> Result<Outcome, Outcome> {
         let (result, disqualified) = self.arbiter.finalize();
 
         let arbiter::Output {
@@ -674,11 +676,14 @@ where
                     "failed to finalize arbiter; aborting ceremony and \
                     returning previous dealers and commitment",
                 );
-                return (self.config.dealers, self.previous, false);
+                return Err(Outcome {
+                    participants: self.config.dealers,
+                    role: self.previous_role,
+                });
             }
         };
 
-        if let Some(player_me) = self.player_me {
+        let new_role = if let Some(player_me) = self.player_me {
             let my_index = self
                 .players_indexed
                 .get_index_of(&self.config.me.public_key())
@@ -705,7 +710,10 @@ where
                         "failed to finalize player; aborting ceremony and \
                         returning previous dealers and commitment"
                     );
-                    return (self.config.dealers, self.previous, false);
+                    return Err(Outcome {
+                        participants: self.config.dealers,
+                        role: self.previous_role,
+                    });
                 }
             };
 
@@ -717,18 +725,18 @@ where
                     players and commitment"
             );
 
-            let round_result = RoundResult::PolynomialAndShare {
-                polynomial: output.public,
+            Role::Signer {
+                public: output.public,
                 share: output.share,
-            };
-            (self.config.players, round_result, true)
+            }
         } else {
-            (
-                self.config.players,
-                RoundResult::Polynomial { polynomial: public },
-                true,
-            )
-        }
+            Role::Verifier { public: public }
+        };
+
+        Ok(Outcome {
+            participants: self.config.players,
+            role: new_role,
+        })
     }
 
     pub(super) fn epoch(&self) -> Epoch {
@@ -762,15 +770,41 @@ struct Dealer {
     outcome: Option<DealingOutcome>,
 }
 
-/// A result of a DKG/reshare round.
-pub(super) enum RoundResult {
-    /// The new group polynomial, if the manager is not a [Player].
-    Polynomial { polynomial: Public<MinSig> },
-    /// The new group polynomial and the local share, if the manager is a [Player].
-    PolynomialAndShare {
-        polynomial: Public<MinSig>,
+/// The outcome of the cermony for the local node.
+pub(super) struct Outcome {
+    /// The participants of the new epoch. If successful, this will the players
+    /// in the ceremony. If not succesful, these are the dealers.
+    pub(super) participants: Set<PublicKey>,
+
+    /// The role the node will have in the next epoch.
+    pub(super) role: Role,
+}
+
+/// The resulting keys of the round, dictating whether the node will be a
+/// signer or a verifier in the next epoch.
+pub(super) enum Role {
+    /// The new group polynomial and the local share, if the node was a player.
+    Signer {
+        public: Public<MinSig>,
         share: group::Share,
     },
+    /// If the node was not a player in the round it will be just a verifier.
+    Verifier { public: Public<MinSig> },
+}
+
+impl Role {
+    /// Splits the role into a pair of public polynomial and private share.
+    ///
+    /// If a signer, the share will not be unset.
+    pub(super) fn into_key_pair(self) -> (Public<MinSig>, Option<group::Share>) {
+        match self {
+            Role::Signer {
+                public: polynomial,
+                share,
+            } => (polynomial, Some(share)),
+            Role::Verifier { public: polynomial } => (polynomial, None),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
