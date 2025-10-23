@@ -43,9 +43,6 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::noncesCall::SELECTOR => {
                 view::<ITIP20::noncesCall>(calldata, |call| self.nonces(call))
             }
-            ITIP20::saltsCall::SELECTOR => {
-                view::<ITIP20::saltsCall>(calldata, |call| self.salts(call))
-            }
             ITIP20::quoteTokenCall::SELECTOR => {
                 view::<ITIP20::quoteTokenCall>(calldata, |_| self.quote_token())
             }
@@ -840,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nonces_and_salts() {
+    fn test_nonces() {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
@@ -858,15 +855,6 @@ mod tests {
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let nonce = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(nonce, U256::ZERO);
-
-        // Test salts (should be false for unused salt)
-        let salt = alloy::primitives::FixedBytes::<4>::from([1u8, 2u8, 3u8, 4u8]);
-        let salts_call = ITIP20::saltsCall { owner: user, salt };
-        let calldata = salts_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin).unwrap();
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
-        let is_used = bool::abi_decode(&result.bytes).unwrap();
-        assert!(!is_used);
     }
 
     #[test]

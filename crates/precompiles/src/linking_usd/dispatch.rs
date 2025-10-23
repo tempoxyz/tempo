@@ -28,10 +28,13 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
                 metadata::<ITIP20::totalSupplyCall>(self.total_supply())
             }
             ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(self.currency()),
-            ITIP20::quoteTokenCall::SELECTOR => {
-                metadata::<ITIP20::quoteTokenCall>(self.quote_token())
-            }
             ITIP20::pausedCall::SELECTOR => metadata::<ITIP20::pausedCall>(self.paused()),
+            ITIP20::supplyCapCall::SELECTOR => {
+                metadata::<ITIP20::supplyCapCall>(self.token.supply_cap())
+            }
+            ITIP20::transferPolicyIdCall::SELECTOR => {
+                metadata::<ITIP20::transferPolicyIdCall>(self.token.transfer_policy_id())
+            }
 
             // View functions
             ITIP20::balanceOfCall::SELECTOR => {
@@ -39,6 +42,9 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             }
             ITIP20::allowanceCall::SELECTOR => {
                 view::<ITIP20::allowanceCall>(calldata, |call| self.allowance(call))
+            }
+            ITIP20::noncesCall::SELECTOR => {
+                view::<ITIP20::noncesCall>(calldata, |call| self.token.nonces(call))
             }
 
             // Mutating functions that work normally
@@ -52,10 +58,31 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
                     self.mint(sender, call)
                 })
             }
+            ITIP20::mintWithMemoCall::SELECTOR => {
+                mutate_void::<ITIP20::mintWithMemoCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.token.mint_with_memo(sender, call),
+                )
+            }
             ITIP20::burnCall::SELECTOR => {
                 mutate_void::<ITIP20::burnCall, TIP20Error>(calldata, msg_sender, |sender, call| {
                     self.burn(sender, call)
                 })
+            }
+            ITIP20::burnWithMemoCall::SELECTOR => {
+                mutate_void::<ITIP20::burnWithMemoCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.token.burn_with_memo(sender, call),
+                )
+            }
+            ITIP20::burnBlockedCall::SELECTOR => {
+                mutate_void::<ITIP20::burnBlockedCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.token.burn_blocked(sender, call),
+                )
             }
             ITIP20::pauseCall::SELECTOR => mutate_void::<ITIP20::pauseCall, TIP20Error>(
                 calldata,
@@ -67,6 +94,25 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
                 msg_sender,
                 |sender, call| self.unpause(sender, call),
             ),
+            ITIP20::permitCall::SELECTOR => {
+                mutate_void::<ITIP20::permitCall, TIP20Error>(calldata, msg_sender, |sender, call| {
+                    self.token.permit(sender, call)
+                })
+            }
+            ITIP20::changeTransferPolicyIdCall::SELECTOR => {
+                mutate_void::<ITIP20::changeTransferPolicyIdCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.token.change_transfer_policy_id(sender, call),
+                )
+            }
+            ITIP20::setSupplyCapCall::SELECTOR => {
+                mutate_void::<ITIP20::setSupplyCapCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.token.set_supply_cap(sender, call),
+                )
+            }
 
             // Transfer functions that are disabled for LinkingUSD
             ITIP20::transferCall::SELECTOR => {

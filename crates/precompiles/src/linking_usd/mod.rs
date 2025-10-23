@@ -112,10 +112,6 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         self.token.currency()
     }
 
-    pub fn quote_token(&mut self) -> Address {
-        self.token.quote_token()
-    }
-
     pub fn decimals(&mut self) -> u8 {
         self.token.decimals()
     }
@@ -202,7 +198,6 @@ mod tests {
         assert_eq!(linking_usd.name(), "linkingUSD");
         assert_eq!(linking_usd.symbol(), "linkingUSD");
         assert_eq!(linking_usd.currency(), "USD");
-        assert_eq!(linking_usd.quote_token(), Address::ZERO);
     }
 
     #[test]
@@ -987,5 +982,87 @@ mod tests {
             role: *ISSUER_ROLE,
             account: user,
         }));
+    }
+
+    #[test]
+    fn test_supply_cap() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let recipient = Address::random();
+        let supply_cap = U256::from(1000);
+
+        linking_usd.initialize(&admin).unwrap();
+
+        let mut roles = linking_usd.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        drop(roles);
+
+        // Set supply cap
+        linking_usd
+            .token
+            .set_supply_cap(&admin, ITIP20::setSupplyCapCall {
+                newSupplyCap: supply_cap,
+            })
+            .unwrap();
+
+        assert_eq!(linking_usd.token.supply_cap(), supply_cap);
+
+        // Try to mint more than supply cap
+        let result = linking_usd.mint(
+            &admin,
+            ITIP20::mintCall {
+                to: recipient,
+                amount: U256::from(1001),
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), TIP20Error::supply_cap_exceeded());
+    }
+
+    #[test]
+    fn test_nonces() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let user = Address::random();
+
+        linking_usd.initialize(&admin).unwrap();
+
+        // Test nonces (should start at 0)
+        let nonce = linking_usd.token.nonces(ITIP20::noncesCall { owner: user });
+        assert_eq!(nonce, U256::ZERO);
+    }
+
+    #[test]
+    fn test_change_transfer_policy_id() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let new_policy_id = 42u64;
+
+        linking_usd.initialize(&admin).unwrap();
+
+        // Admin can change transfer policy ID
+        linking_usd
+            .token
+            .change_transfer_policy_id(
+                &admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: new_policy_id,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(linking_usd.token.transfer_policy_id(), new_policy_id);
+
+        // Non-admin cannot change transfer policy ID
+        let non_admin = Address::random();
+        let result = linking_usd.token.change_transfer_policy_id(
+            &non_admin,
+            ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 },
+        );
+
+        assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids());
     }
 }
