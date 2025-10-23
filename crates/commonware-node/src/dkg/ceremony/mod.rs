@@ -2,8 +2,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use bytes::{Buf, BufMut};
-use commonware_codec::{Decode as _, Encode as _, EncodeSize, RangeCfg, Read, Write};
+use commonware_codec::{Decode as _, Encode as _};
 use commonware_consensus::{Block as _, types::Epoch};
 use commonware_cryptography::{
     Signer as _,
@@ -20,7 +19,7 @@ use commonware_p2p::{
 };
 use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::metadata::Metadata;
-use commonware_utils::{max_faults, quorum, sequence::U64, set::Set, union};
+use commonware_utils::{max_faults, sequence::U64, set::Set, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::{FutureExt as _, lock::Mutex};
 use indexmap::IndexSet;
@@ -29,10 +28,12 @@ use tracing::{Level, debug, error, info, instrument, warn};
 
 use crate::consensus::block::Block;
 
+mod on_chain;
 mod payload;
 mod persisted;
 
-pub(crate) use payload::DealingOutcome;
+pub(crate) use on_chain::DealingOutcome;
+pub(crate) use on_chain::PublicOutcome;
 pub(super) use persisted::State;
 
 use payload::{Ack, Message, Payload, Share};
@@ -660,7 +661,7 @@ where
     // TODO(janis): find a better return value than a 3-tuple with a flag to
     // show failure/success.
     #[instrument(skip_all, fields(epoch = self.epoch()))]
-    pub(super) fn finalize(self) -> Result<Outcome, Outcome> {
+    pub(super) fn finalize(self) -> Result<PrivateOutcome, PrivateOutcome> {
         let (result, disqualified) = self.arbiter.finalize();
 
         let arbiter::Output {
@@ -676,7 +677,7 @@ where
                     "failed to finalize arbiter; aborting ceremony and \
                     returning previous dealers and commitment",
                 );
-                return Err(Outcome {
+                return Err(PrivateOutcome {
                     participants: self.config.dealers,
                     role: self.previous_role,
                 });
@@ -710,7 +711,7 @@ where
                         "failed to finalize player; aborting ceremony and \
                         returning previous dealers and commitment"
                     );
-                    return Err(Outcome {
+                    return Err(PrivateOutcome {
                         participants: self.config.dealers,
                         role: self.previous_role,
                     });
@@ -733,7 +734,7 @@ where
             Role::Verifier { public: public }
         };
 
-        Ok(Outcome {
+        Ok(PrivateOutcome {
             participants: self.config.players,
             role: new_role,
         })
@@ -771,7 +772,9 @@ struct Dealer {
 }
 
 /// The outcome of the cermony for the local node.
-pub(super) struct Outcome {
+///
+/// Called private because it potentially contains the private key share.
+pub(super) struct PrivateOutcome {
     /// The participants of the new epoch. If successful, this will the players
     /// in the ceremony. If not succesful, these are the dealers.
     pub(super) participants: Set<PublicKey>,
@@ -804,38 +807,5 @@ impl Role {
             } => (polynomial, Some(share)),
             Role::Verifier { public: polynomial } => (polynomial, None),
         }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PublicOutcome {
-    pub(crate) participants: Set<PublicKey>,
-    pub(crate) public: Public<MinSig>,
-}
-
-impl Write for PublicOutcome {
-    fn write(&self, buf: &mut impl BufMut) {
-        self.participants.write(buf);
-        self.public.write(buf);
-    }
-}
-
-impl Read for PublicOutcome {
-    type Cfg = ();
-
-    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-        let participants = Set::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
-        let public =
-            Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
-        Ok(Self {
-            participants,
-            public,
-        })
-    }
-}
-
-impl EncodeSize for PublicOutcome {
-    fn encode_size(&self) -> usize {
-        self.participants.encode_size() + self.public.encode_size()
     }
 }

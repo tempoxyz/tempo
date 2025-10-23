@@ -98,11 +98,6 @@ pub(crate) fn is_first_height(height: u64, epoch_length: u64) -> bool {
     (height % epoch_length) == 1
 }
 
-/// Returns if `height` is the first height of `epoch` of `epoch_length`.
-pub(crate) fn is_first_height_of_epoch(height: u64, epoch: Epoch, epoch_length: u64) -> bool {
-    height == first_height(epoch, epoch_length)
-}
-
 /// Returns if the `height` falls inside `epoch`, given `heights_per_epoch`.
 pub(crate) fn contains_height(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
     of_height(height, heights_per_epoch).is_some_and(|calc_epoch| calc_epoch == epoch)

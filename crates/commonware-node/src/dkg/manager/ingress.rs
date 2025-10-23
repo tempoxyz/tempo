@@ -14,13 +14,17 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
-    pub(crate) async fn get_ceremony_deal(
+    /// Returns the intermediate dealing of this node's ceremony.
+    ///
+    /// Returns `None` if this node was not a dealer, or if the request is
+    /// for a different epoch than the ceremony that's currently running.
+    pub(crate) async fn get_intermediate_dealing(
         &self,
         epoch: Epoch,
     ) -> eyre::Result<Option<DealingOutcome>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(GetCeremonyDeal {
+            .unbounded_send(Message::in_current_span(GetIntermediateDealing {
                 epoch,
                 response,
             }))
@@ -35,10 +39,7 @@ impl Mailbox {
     ) -> eyre::Result<Option<PublicOutcome>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(GetPublicCeremonyOutcome {
-                epoch,
-                response,
-            }))
+            .unbounded_send(Message::in_current_span(GetOutcome { epoch, response }))
             .wrap_err("failed sending message to actor")?;
         rx.await
             .wrap_err("actor dropped channel before responding with ceremony deal outcome")
@@ -61,8 +62,8 @@ impl Message {
 
 pub(super) enum Command {
     Finalize(Finalize),
-    GetCeremonyDeal(GetCeremonyDeal),
-    GetCeremonyOutcome(GetPublicCeremonyOutcome),
+    GetIntermediateDealing(GetIntermediateDealing),
+    GetOutcome(GetOutcome),
 }
 
 impl From<Finalize> for Command {
@@ -71,15 +72,15 @@ impl From<Finalize> for Command {
     }
 }
 
-impl From<GetCeremonyDeal> for Command {
-    fn from(value: GetCeremonyDeal) -> Self {
-        Self::GetCeremonyDeal(value)
+impl From<GetIntermediateDealing> for Command {
+    fn from(value: GetIntermediateDealing) -> Self {
+        Self::GetIntermediateDealing(value)
     }
 }
 
-impl From<GetPublicCeremonyOutcome> for Command {
-    fn from(value: GetPublicCeremonyOutcome) -> Self {
-        Self::GetCeremonyOutcome(value)
+impl From<GetOutcome> for Command {
+    fn from(value: GetOutcome) -> Self {
+        Self::GetOutcome(value)
     }
 }
 
@@ -88,12 +89,12 @@ pub(super) struct Finalize {
     pub(super) response: oneshot::Sender<()>,
 }
 
-pub(super) struct GetCeremonyDeal {
+pub(super) struct GetIntermediateDealing {
     pub(super) epoch: Epoch,
     pub(super) response: oneshot::Sender<Option<DealingOutcome>>,
 }
 
-pub(super) struct GetPublicCeremonyOutcome {
+pub(super) struct GetOutcome {
     pub(super) epoch: Epoch,
     pub(super) response: oneshot::Sender<Option<PublicOutcome>>,
 }

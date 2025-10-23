@@ -365,7 +365,7 @@ impl Inner<Init> {
                 match self
                     .state
                     .dkg_manager
-                    .get_ceremony_deal(request.round.epoch())
+                    .get_intermediate_dealing(request.round.epoch())
                     .await
                 {
                     Err(error) => warn!(
@@ -550,17 +550,6 @@ impl Inner<Init> {
 
         interrupt_handle.interrupt();
 
-        // XXX: resolves to a payload with at least one transactions included.
-        //
-        // FIXME: Figure out if WaitForPending really is ok. Using
-        // WaitForPending instead of Earliest could mean that this future hangs
-        // for too long and consensus just moves past this node.
-        //
-        // Summit does not suffer from this difficulty because they don't have that
-        // granular control over the node. Instead, they hardcoded a sleep of 50ms
-        // before fetching the payload. Hard sleep is always iffy, but maybe that
-        // is a viable alternative to force normal processing to stay within
-        // proposal timings?
         let payload = self
             .execution_node
             .payload_builder_handle

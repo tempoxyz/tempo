@@ -18,9 +18,9 @@ use tracing::{Span, instrument, warn};
 use crate::dkg::CeremonyState;
 use crate::dkg::EpochState;
 use crate::dkg::ceremony;
-use crate::dkg::ceremony::{PublicOutcome, Role};
-use crate::dkg::manager::ingress::GetCeremonyDeal;
-use crate::dkg::manager::ingress::GetPublicCeremonyOutcome;
+use crate::dkg::ceremony::PublicOutcome;
+use crate::dkg::manager::ingress::GetIntermediateDealing;
+use crate::dkg::manager::ingress::GetOutcome;
 use crate::{
     dkg::{ceremony::Ceremony, manager::ingress::Finalize},
     epoch,
@@ -50,12 +50,6 @@ where
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> Self {
         let context = ContextCell::new(context);
-
-        // let initial_scheme = bls12381_threshold::Scheme::new(
-        //     config.participants.as_ref(),
-        //     &config.public,
-        //     config.share.clone(),
-        // );
 
         let ceremony_metadata = Metadata::init(
             context.with_label("ceremony_metadata"),
@@ -151,9 +145,9 @@ where
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
             match message.command {
-                super::Command::GetCeremonyDeal(get_ceremony_deal) => {
+                super::Command::GetIntermediateDealing(get_ceremony_deal) => {
                     let _: Result<_, _> = self
-                        .handle_get_ceremony_deal(
+                        .handle_get_intermediate_dealing(
                             cause,
                             get_ceremony_deal,
                             ceremony
@@ -162,9 +156,9 @@ where
                         )
                         .await;
                 }
-                super::Command::GetCeremonyOutcome(get_ceremony_outcome) => {
+                super::Command::GetOutcome(get_ceremony_outcome) => {
                     let _: Result<_, _> = self
-                        .handle_get_public_ceremony_outcome(
+                        .handle_get_outcome(
                             cause,
                             get_ceremony_outcome,
                             ceremony
@@ -199,10 +193,10 @@ where
         ),
         err,
     )]
-    async fn handle_get_ceremony_deal<TReceiver, TSender>(
+    async fn handle_get_intermediate_dealing<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        GetCeremonyDeal { epoch, response }: GetCeremonyDeal,
+        GetIntermediateDealing { epoch, response }: GetIntermediateDealing,
         ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
     ) -> eyre::Result<()>
     where
@@ -235,10 +229,10 @@ where
         ),
         err,
     )]
-    async fn handle_get_public_ceremony_outcome<TReceiver, TSender>(
+    async fn handle_get_outcome<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        GetPublicCeremonyOutcome { epoch, response }: GetPublicCeremonyOutcome,
+        GetOutcome { epoch, response }: GetOutcome,
         ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
     ) -> eyre::Result<()>
     where
@@ -260,6 +254,7 @@ where
             }
 
             outcome = Some(PublicOutcome {
+                epoch: ceremony.epoch(),
                 public: ceremony.config().public.clone(),
                 participants: ceremony.config().dealers.clone(),
             });
