@@ -84,6 +84,7 @@ sol! {
         error PairDoesNotExist();
         error PairAlreadyExists();
         error OrderDoesNotExist();
+        error IdenticalTokens();
         error TickOutOfBounds(int16 tick);
         error InvalidFlipTick();
         error InsufficientBalance();
@@ -113,6 +114,11 @@ impl StablecoinExchangeError {
     /// Creates an error when order does not exist.
     pub const fn order_does_not_exist() -> Self {
         Self::OrderDoesNotExist(IStablecoinExchange::OrderDoesNotExist {})
+    }
+
+    /// Creates an error when trying to swap identical tokens.
+    pub const fn identical_tokens() -> Self {
+        Self::IdenticalTokens(IStablecoinExchange::IdenticalTokens {})
     }
 
     /// Creates an error for tick out of bounds.

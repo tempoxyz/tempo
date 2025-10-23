@@ -1239,7 +1239,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     ) -> Result<Vec<(B256, bool)>, StablecoinExchangeError> {
         // Cannot trade same token
         if token_in == token_out {
-            return Err(StablecoinExchangeError::pair_does_not_exist());
+            return Err(StablecoinExchangeError::identical_tokens());
         }
 
         // Check if direct pair exists (token_in -> token_out)
@@ -2481,9 +2481,13 @@ mod tests {
             1_000_000u128,
         );
 
-        // Trading same token should error
+        // Trading same token should error with IdenticalTokens
         let result = exchange.find_trade_path(token, token);
-        assert!(result.is_err(), "Should error when token_in == token_out");
+        assert_eq!(
+            result,
+            Err(StablecoinExchangeError::identical_tokens()),
+            "Should return IdenticalTokens error when token_in == token_out"
+        );
 
         Ok(())
     }
