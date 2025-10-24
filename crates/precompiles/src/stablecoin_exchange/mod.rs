@@ -1234,17 +1234,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::identical_tokens());
         }
 
-        // Check if direct pair exists (token_in -> token_out)
-        let token_in_quote = TIP20Token::from_address(token_in, self.storage).quote_token();
+        // Check if direct or reverse pair exists
+        let in_quote = TIP20Token::from_address(token_in, self.storage).quote_token();
+        let out_quote = TIP20Token::from_address(token_out, self.storage).quote_token();
 
-        if token_in_quote == token_out {
-            return self.validate_and_build_route(&[token_in, token_out]);
-        }
-
-        // Check if reverse pair exists (token_out -> token_in)
-        let token_out_quote = TIP20Token::from_address(token_out, self.storage).quote_token();
-
-        if token_out_quote == token_in {
+        if in_quote == token_out || out_quote == token_in {
             return self.validate_and_build_route(&[token_in, token_out]);
         }
 
