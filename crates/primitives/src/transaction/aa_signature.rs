@@ -78,7 +78,7 @@ impl Encodable for AASignature {
 impl Decodable for AASignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let bytes: Bytes = Decodable::decode(buf)?;
-        Self::from_bytes(&bytes).map_err(|e| alloy_rlp::Error::Custom(e.into()))
+        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
