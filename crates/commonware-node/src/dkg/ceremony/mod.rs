@@ -31,7 +31,7 @@ mod on_chain;
 mod payload;
 mod persisted;
 
-pub(crate) use on_chain::{DealingOutcome, PublicOutcome};
+pub(crate) use on_chain::{IntermediateOutcome, PublicOutcome};
 pub(super) use persisted::State;
 
 use payload::{Ack, Message, Payload, Share};
@@ -525,14 +525,14 @@ where
         Ok("recorded share and returned signed ack to peer")
     }
 
-    /// Process `block` by reading [`DealingOutcome`] from its header.
+    /// Process `block` by reading [`IntermediateOutcome`] from its header.
     ///
     /// If the block contains this outcome, the ceremony will verify it and
     /// track it in its arbiter.
     #[instrument(skip_all, fields(epoch = self.epoch(), block.height = block.height()), err)]
-    pub(super) async fn process_block(&mut self, block: &Block) -> eyre::Result<()> {
+    pub(super) async fn process_dealings_in_block(&mut self, block: &Block) -> eyre::Result<()> {
         let Some(block_outcome) = block.try_read_ceremony_deal_outcome() else {
-            info!("block contained no usable deal outcome");
+            info!("block contained no usable intermediate deal outcome");
             return Ok(());
         };
 
@@ -608,8 +608,6 @@ where
             .await
             .expect("must persist deal outcome");
 
-        // If the block outcome is ours, remove it. This ensures that the app
-        // does not include the outcome into the block again.
         if let Some(dealer_me) = &mut self.dealer_me
             && block_dealer == self.config.me.public_key()
         {
@@ -623,13 +621,21 @@ where
                 })
                 .await
                 .expect("must persist deal outcome");
+
+            info!(
+                "found own dealing in a block; removed it from ceremony to \
+                not include it again"
+            );
         }
 
         Ok(())
     }
 
+    /// Constructs and stores the intermediate ceremony outcome.
+    ///
+    /// If the node is not a dealer, then this is a no-op.
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
-    pub(super) async fn construct_dealing_outcome(&mut self) -> eyre::Result<()> {
+    pub(super) async fn construct_intermediate_outcome(&mut self) -> eyre::Result<()> {
         let Some(dealer_me) = &mut self.dealer_me else {
             debug!("not a dealer; skipping construction of deal outcome");
             return Ok(());
@@ -650,7 +656,8 @@ where
             "too many reveals; skipping deal outcome construction",
         );
 
-        let dealing_outcome = Some(DealingOutcome::new(
+        let dealing_outcome = Some(IntermediateOutcome::new(
+            self.config.players.len() as u64,
             &self.config.me,
             &union(&self.config.namespace, OUTCOME_NAMESPACE),
             self.config.epoch,
@@ -673,8 +680,16 @@ where
         Ok(())
     }
 
-    // TODO(janis): find a better return value than a 3-tuple with a flag to
-    // show failure/success.
+    /// Finalizes the ceremony, returning the participants and key pair for the
+    /// next epoch.
+    ///
+    /// If the ceremony was successful, the players of the ceremony and the new
+    /// public key will be returned in Ok-position. If this node was a player,
+    /// it will also contain its private share.
+    ///
+    /// If the ceremony failed, the dealers of the ceremony and the old public
+    /// key will be returned in Err-position. If this node was a dealer, this
+    /// will include its old private share.
     #[instrument(skip_all, fields(epoch = self.epoch()))]
     pub(super) fn finalize(self) -> Result<PrivateOutcome, PrivateOutcome> {
         let (result, disqualified) = self.arbiter.finalize();
@@ -755,17 +770,17 @@ where
         })
     }
 
+    pub(super) fn config(&self) -> &Config {
+        &self.config
+    }
+
     pub(super) fn epoch(&self) -> Epoch {
         self.config.epoch
     }
 
-    pub(super) fn deal_outcome(&self) -> Option<&DealingOutcome> {
+    pub(super) fn deal_outcome(&self) -> Option<&IntermediateOutcome> {
         let dealer_me = self.dealer_me.as_ref()?;
         dealer_me.outcome.as_ref()
-    }
-
-    pub(super) fn config(&self) -> &Config {
-        &self.config
     }
 }
 
@@ -783,7 +798,7 @@ struct Dealer {
     /// The constructed dealing for inclusion in a block.
     ///
     /// This is moved out once the outcome was successfully written to chain.
-    outcome: Option<DealingOutcome>,
+    outcome: Option<IntermediateOutcome>,
 }
 
 /// The outcome of the ceremony for the local node.

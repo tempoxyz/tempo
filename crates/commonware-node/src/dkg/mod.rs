@@ -1,5 +1,5 @@
 mod ceremony;
-pub(crate) use ceremony::{DealingOutcome, PublicOutcome};
+pub(crate) use ceremony::{IntermediateOutcome, PublicOutcome};
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt};
 use commonware_cryptography::{
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},

@@ -9,7 +9,7 @@ use commonware_cryptography::{
     ed25519::PublicKey,
 };
 
-use super::DealingOutcome;
+use super::IntermediateOutcome;
 
 /// Information on a ceremony that is persisted to disk.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
@@ -22,9 +22,9 @@ pub(in crate::dkg) struct State {
     /// Tracks the shares received from other dealers, if we are a player.
     pub(super) received_shares: Vec<(PublicKey, Public<MinSig>, group::Share)>,
 
-    pub(super) dealing_outcome: Option<DealingOutcome>,
+    pub(super) dealing_outcome: Option<IntermediateOutcome>,
 
-    pub(super) outcomes: Vec<DealingOutcome>,
+    pub(super) outcomes: Vec<IntermediateOutcome>,
 }
 
 impl Write for State {
@@ -66,10 +66,10 @@ impl Read for State {
                     ((), num_players as usize, ()),
                 ),
             )?,
-            dealing_outcome: Option::<DealingOutcome>::read_cfg(buf, &(num_players as usize))?,
-            outcomes: Vec::<DealingOutcome>::read_cfg(
+            dealing_outcome: Option::<IntermediateOutcome>::read_cfg(buf, &())?,
+            outcomes: Vec::<IntermediateOutcome>::read_cfg(
                 buf,
-                &(RangeCfg::from(0..usize::MAX), num_players as usize),
+                &(RangeCfg::from(0..usize::MAX), ()),
             )?,
         })
     }
@@ -119,7 +119,7 @@ impl Write for Dealing {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::dkg::DealingOutcome;
+    use crate::dkg::IntermediateOutcome;
     use crate::dkg::ceremony::{ACK_NAMESPACE, Ack, OUTCOME_NAMESPACE};
 
     use super::{Dealing, State};
@@ -200,10 +200,11 @@ mod tests {
         }
     }
 
-    fn dealing_outcome(dealer_index: usize) -> DealingOutcome {
+    fn dealing_outcome(dealer_index: usize) -> IntermediateOutcome {
         let mut dealing = dealing(dealer_index);
 
-        DealingOutcome::new(
+        IntermediateOutcome::new(
+            3,
             &three_private_keys()[0],
             &union(b"test", OUTCOME_NAMESPACE),
             42,

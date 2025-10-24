@@ -376,7 +376,7 @@ impl Inner<Init> {
                     Ok(None) => {}
                     Ok(Some(deal_outcome)) => {
                         info!("found ceremony deal outcome; inserting it into the proposal header");
-                        proposal = proposal.insert_ceremony_deal_outcome(deal_outcome);
+                        proposal = proposal.insert_intermediate_ceremony_dealing(deal_outcome);
                     }
                 }
             }
@@ -384,6 +384,11 @@ impl Inner<Init> {
 
         let proposal_digest = proposal.digest();
 
+        info!(
+            proposal.digest = %proposal_digest,
+            proposal.height = %proposal.height(),
+            "constructed proposal",
+        );
         response.send(proposal_digest).map_err(|_| {
             eyre!(
                 "failed returning proposal to consensus engine: response channel was already closed"

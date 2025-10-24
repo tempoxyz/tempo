@@ -54,13 +54,17 @@ impl EncodeSize for PublicOutcome {
 
 /// The local outcome of a dealer's dealings.
 ///
-/// This is the collection of dealer's generated commitment, as well as acks
-/// it collected for its shares and revealed shares for those without acks.
+/// This is the intermediate outcome of a ceremony, which contains a dealer's
+/// generated commitment, all acks for the shares it sent to the ceremony's
+/// players, and finally the revealed shares, for which it did not receive acks.
 ///
 /// This object is persisted on-chain. Every player collects the local outcomes
 /// of other dealers to created a global outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DealingOutcome {
+pub(crate) struct IntermediateOutcome {
+    /// The number of players in this epoch.
+    pub(super) n_players: u64,
+
     /// The public key of the dealer.
     pub(super) dealer: PublicKey,
 
@@ -80,9 +84,10 @@ pub(crate) struct DealingOutcome {
     pub(super) reveals: Vec<group::Share>,
 }
 
-impl DealingOutcome {
+impl IntermediateOutcome {
     /// Creates a new [DealOutcome], signing its inner payload with the [commonware_cryptography::bls12381::dkg::Dealer]'s [Signer].
     pub(super) fn new(
+        n_players: u64,
         dealer_signer: &PrivateKey,
         namespace: &[u8],
         epoch: Epoch,
@@ -95,6 +100,7 @@ impl DealingOutcome {
         let dealer_signature = dealer_signer.sign(Some(namespace), payload.as_ref());
 
         Self {
+            n_players,
             dealer: dealer_signer.public_key(),
             dealer_signature,
             epoch,
@@ -137,8 +143,9 @@ impl DealingOutcome {
     }
 }
 
-impl Write for DealingOutcome {
+impl Write for IntermediateOutcome {
     fn write(&self, buf: &mut impl bytes::BufMut) {
+        UInt(self.n_players).write(buf);
         self.dealer.write(buf);
         self.dealer_signature.write(buf);
         UInt(self.epoch).write(buf);
@@ -148,9 +155,10 @@ impl Write for DealingOutcome {
     }
 }
 
-impl EncodeSize for DealingOutcome {
+impl EncodeSize for IntermediateOutcome {
     fn encode_size(&self) -> usize {
-        self.dealer.encode_size()
+        UInt(self.n_players).encode_size()
+            + self.dealer.encode_size()
             + self.dealer_signature.encode_size()
             + UInt(self.epoch).encode_size()
             + self.commitment.encode_size()
@@ -159,18 +167,20 @@ impl EncodeSize for DealingOutcome {
     }
 }
 
-impl Read for DealingOutcome {
-    type Cfg = usize;
+impl Read for IntermediateOutcome {
+    type Cfg = ();
 
     fn read_cfg(
         buf: &mut impl bytes::Buf,
-        cfg: &Self::Cfg,
+        _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
+        let n_players = UInt::read(buf)?.into();
         Ok(Self {
+            n_players,
             dealer: PublicKey::read(buf)?,
             dealer_signature: Signature::read(buf)?,
             epoch: UInt::read(buf)?.into(),
-            commitment: Public::<MinSig>::read_cfg(buf, cfg)?,
+            commitment: Public::<MinSig>::read_cfg(buf, &(n_players as usize))?,
             acks: Vec::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?,
             reveals: Vec::<group::Share>::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?,
         })
@@ -179,7 +189,7 @@ impl Read for DealingOutcome {
 
 #[cfg(test)]
 mod tests {
-    use commonware_codec::{Encode as _, Read as _};
+    use commonware_codec::{DecodeExt as _, Encode as _};
     use commonware_cryptography::{
         PrivateKeyExt as _, Signer as _,
         bls12381::{dkg, primitives::variant::MinSig},
@@ -188,9 +198,12 @@ mod tests {
     use commonware_utils::{set::Ordered, union};
     use rand::{SeedableRng as _, rngs::StdRng};
 
-    use crate::dkg::ceremony::{ACK_NAMESPACE, Ack, OUTCOME_NAMESPACE};
+    use crate::dkg::{
+        PublicOutcome,
+        ceremony::{ACK_NAMESPACE, Ack, OUTCOME_NAMESPACE},
+    };
 
-    use super::DealingOutcome;
+    use super::IntermediateOutcome;
 
     fn three_private_keys() -> Ordered<PrivateKey> {
         vec![
@@ -236,7 +249,8 @@ mod tests {
             &commitment,
         ));
         let reveals = vec![shares[2].clone()];
-        let dealing_outcome = DealingOutcome::new(
+        let dealing_outcome = IntermediateOutcome::new(
+            3,
             &three_private_keys()[0],
             &union(b"test", OUTCOME_NAMESPACE),
             42,
@@ -247,8 +261,27 @@ mod tests {
 
         let bytes = dealing_outcome.encode();
         assert_eq!(
-            DealingOutcome::read_cfg(&mut bytes.as_ref(), &3).unwrap(),
+            IntermediateOutcome::decode(&mut bytes.as_ref()).unwrap(),
             dealing_outcome,
+        );
+    }
+
+    #[test]
+    fn public_outcome_roundtrip() {
+        let (_, commitment, _) = dkg::Dealer::<_, MinSig>::new(
+            &mut StdRng::from_seed([0; 32]),
+            None,
+            three_public_keys(),
+        );
+        let public_outcome = PublicOutcome {
+            epoch: 42,
+            participants: three_public_keys(),
+            public: commitment,
+        };
+        let bytes = public_outcome.encode();
+        assert_eq!(
+            PublicOutcome::decode(&mut bytes.as_ref()).unwrap(),
+            public_outcome,
         );
     }
 }

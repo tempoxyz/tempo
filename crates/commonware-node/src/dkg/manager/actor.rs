@@ -12,7 +12,7 @@ use commonware_utils::sequence::U64;
 use eyre::eyre;
 use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
 use rand_core::CryptoRngCore;
-use tracing::{Span, info, instrument, warn};
+use tracing::{Span, debug, info, instrument, warn};
 
 use crate::{
     dkg::{
@@ -291,9 +291,37 @@ where
             return;
         };
 
+        // Special case the last height of the previous epoch: remember that we
+        // can only enter the a new epoch once the last height of outgoing was
+        // reached, because that's what provides the genesis.
+        if let Some(this_ceremony) = ceremony
+            && this_ceremony.epoch().saturating_sub(1) == block_epoch
+            && epoch::is_last_height(block.height(), self.config.heights_per_epoch)
+        {
+            debug!(
+                "reached last height of outgoing epoch; reporting that a \
+                new epoch can be entered"
+            );
+            self.config
+                .epoch_manager
+                .report(
+                    epoch::Enter {
+                        epoch: this_ceremony.config().epoch,
+                        public: this_ceremony.config().public.clone(),
+                        share: this_ceremony.config().share.clone(),
+                        participants: this_ceremony.config().dealers.clone(),
+                    }
+                    .into(),
+                )
+                .await;
+        }
+
         let Some(mut this_ceremony) = ceremony.take_if(|ceremony| ceremony.epoch() == block_epoch)
         else {
-            info!("block was for a different epoch; skipping it");
+            debug!(
+                "block was for a different epoch; not including it in the \
+                ceremony"
+            );
             return;
         };
 
@@ -321,10 +349,10 @@ where
             }
             epoch::RelativePosition::Middle => {
                 let _ = this_ceremony.process_messages().await;
-                let _ = this_ceremony.construct_dealing_outcome().await;
+                let _ = this_ceremony.construct_intermediate_outcome().await;
             }
             epoch::RelativePosition::SecondHalf => {
-                let _ = this_ceremony.process_block(&block).await;
+                let _ = this_ceremony.process_dealings_in_block(&block).await;
             }
         }
 
@@ -371,19 +399,6 @@ where
                 ceremony_metadata.remove(&epoch.into());
                 ceremony_metadata.sync().await.expect("metadata must sync");
             }
-
-            self.config
-                .epoch_manager
-                .report(
-                    epoch::Enter {
-                        epoch: epoch_state.epoch,
-                        public: epoch_state.public.clone(),
-                        share: epoch_state.share.clone(),
-                        participants: epoch_state.participants.clone(),
-                    }
-                    .into(),
-                )
-                .await;
 
             // TODO(janis): prune old ceremony metadata?
             let config = ceremony::Config {

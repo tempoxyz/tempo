@@ -256,7 +256,8 @@ where
     #[instrument(follows_from = [cause], skip_all, fields(epoch))]
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
         if let Some(engine) = self.active_epochs.remove(&epoch) {
-            engine.abort()
+            engine.abort();
+            info!("stopped engine backing epoch");
         } else {
             warn!(
                 "attempted to exit unknown epoch, but epoch was not backed by \

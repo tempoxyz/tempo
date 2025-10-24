@@ -5,7 +5,7 @@ use tracing::{Span, warn};
 
 use crate::{
     consensus::block::Block,
-    dkg::ceremony::{DealingOutcome, PublicOutcome},
+    dkg::ceremony::{IntermediateOutcome, PublicOutcome},
 };
 
 #[derive(Clone, Debug)]
@@ -21,7 +21,7 @@ impl Mailbox {
     pub(crate) async fn get_intermediate_dealing(
         &self,
         epoch: Epoch,
-    ) -> eyre::Result<Option<DealingOutcome>> {
+    ) -> eyre::Result<Option<IntermediateOutcome>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(GetIntermediateDealing {
@@ -91,7 +91,7 @@ pub(super) struct Finalize {
 
 pub(super) struct GetIntermediateDealing {
     pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<Option<DealingOutcome>>,
+    pub(super) response: oneshot::Sender<Option<IntermediateOutcome>>,
 }
 
 pub(super) struct GetOutcome {

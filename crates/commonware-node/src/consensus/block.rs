@@ -14,7 +14,7 @@ use tracing::info;
 
 use crate::{
     consensus::Digest,
-    dkg::{DealingOutcome, PublicOutcome},
+    dkg::{IntermediateOutcome, PublicOutcome},
 };
 
 // use crate::consensus::{Finalization, Notarization};
@@ -29,7 +29,7 @@ use crate::{
 pub(crate) struct Block(SealedBlock<tempo_primitives::Block>);
 
 impl Block {
-    pub(crate) fn insert_ceremony_deal_outcome(self, deal: DealingOutcome) -> Self {
+    pub(crate) fn insert_intermediate_ceremony_dealing(self, deal: IntermediateOutcome) -> Self {
         let sealed = self.into_inner();
         let (mut header, body) = sealed.split_header_body();
         // XXX: extra step via vec because commonware writes bytes::Bytes, but
@@ -47,8 +47,13 @@ impl Block {
         Self(SealedBlock::seal_parts(header, body))
     }
 
-    pub(crate) fn try_read_ceremony_deal_outcome(&self) -> Option<DealingOutcome> {
-        DealingOutcome::decode(&mut self.header().extra_data().as_ref())
+    pub(crate) fn try_read_ceremony_deal_outcome(&self) -> Option<IntermediateOutcome> {
+        if self.header().extra_data().is_empty() {
+            info!("header extraData field was empty");
+            return None;
+        };
+
+        IntermediateOutcome::decode(&mut self.header().extra_data().as_ref())
             .wrap_err("failed reading ceremony deal outcome from header extra data field")
             .inspect_err(
                 |error| info!(%error, "treating decode error as deal outcome missing from block"),
