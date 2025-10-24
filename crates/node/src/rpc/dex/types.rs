@@ -8,18 +8,22 @@ pub struct OrdersParams {
     ///
     /// Defaults to first entry based on the sort and filter configuration.
     /// Use the `nextCursor` in response to get the next set of orders.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 
     /// Determines which items should be yielded in the response.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<OrdersFilters>,
 
     /// Maximum number of orders to return.
     ///
     /// Defaults to 10.
     /// Maximum is 100.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 
     /// Determines the order of the items yielded in the response.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sort: Option<OrdersSort>,
 }
 
@@ -124,5 +128,16 @@ mod tests {
         let actual_params: OrdersParams = serde_json::from_str(&json).unwrap();
 
         assert_eq!(actual_params, expected_params);
+    }
+
+    #[test_case::test_case(
+        "{}";
+        "None filled"
+    )]
+    fn test_deserialize_and_serialize_is_identical(expected_json: &str) {
+        let params: OrdersParams = serde_json::from_str(expected_json).unwrap();
+        let actual_json = serde_json::to_string(&params).unwrap();
+
+        assert_eq!(actual_json, expected_json);
     }
 }
