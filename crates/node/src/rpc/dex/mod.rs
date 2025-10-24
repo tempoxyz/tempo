@@ -1,17 +1,29 @@
+pub use books::{Orderbook, OrderbooksFilter, OrderbooksParam, OrderbooksResponse};
 pub use types::{
-    FilterRange, Order, OrdersFilters, OrdersParams, OrdersResponse, OrdersSort, OrdersSortOrder,
+    FilterRange, Order, OrdersFilters, OrdersResponse, OrdersSort, OrdersSortOrder,
+    PaginationParams,
 };
 
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::RpcNodeCore;
 
+mod books;
 pub mod types;
 
 #[rpc(server, namespace = "dex")]
 pub trait TempoDexApi {
     #[method(name = "getOrders")]
-    async fn orders(&self, params: Vec<OrdersParams>) -> RpcResult<OrdersResponse>;
+    async fn orders(
+        &self,
+        params: Vec<PaginationParams<OrdersFilters>>,
+    ) -> RpcResult<OrdersResponse>;
+
+    #[method(name = "getOrderbooks")]
+    async fn orderbooks(
+        &self,
+        params: Vec<PaginationParams<OrderbooksFilter>>,
+    ) -> RpcResult<OrderbooksResponse>;
 }
 
 /// The JSON-RPC handlers for the `dex_` namespace.
@@ -28,7 +40,17 @@ impl<EthApi> TempoDex<EthApi> {
 
 #[async_trait::async_trait]
 impl<EthApi: RpcNodeCore> TempoDexApiServer for TempoDex<EthApi> {
-    async fn orders(&self, _params: Vec<OrdersParams>) -> RpcResult<OrdersResponse> {
+    async fn orders(
+        &self,
+        _params: Vec<PaginationParams<OrdersFilters>>,
+    ) -> RpcResult<OrdersResponse> {
+        Err(internal_rpc_err("unimplemented"))
+    }
+
+    async fn orderbooks(
+        &self,
+        _params: Vec<PaginationParams<OrderbooksFilter>>,
+    ) -> RpcResult<OrderbooksResponse> {
         Err(internal_rpc_err("unimplemented"))
     }
 }

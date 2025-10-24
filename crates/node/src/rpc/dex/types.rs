@@ -1,9 +1,12 @@
 use alloy::primitives::{Address, B256};
 use serde::{Deserialize, Serialize};
 
+pub type OrdersParams = PaginationParams<OrdersFilters>;
+pub type Tick = i16;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OrdersParams {
+pub struct PaginationParams<Filters> {
     /// Cursor for pagination. Based on orderId.
     ///
     /// Defaults to first entry based on the sort and filter configuration.
@@ -13,7 +16,7 @@ pub struct OrdersParams {
 
     /// Determines which items should be yielded in the response.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub filters: Option<OrdersFilters>,
+    pub filters: Option<Filters>,
 
     /// Maximum number of orders to return.
     ///
@@ -65,7 +68,7 @@ pub struct OrdersFilters {
     /// Remaining amount in range
     pub remaining: Option<FilterRange<u128>>,
     /// Tick in range (from -2000 to 2000)
-    pub tick: Option<FilterRange<i16>>,
+    pub tick: Option<FilterRange<Tick>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
