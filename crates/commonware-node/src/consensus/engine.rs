@@ -143,7 +143,7 @@ where
         };
         let scheme_provider = SchemeProvider::new();
         let (marshal, marshal_mailbox) = marshal::Actor::init(
-            self.context.with_label("sync"),
+            self.context.with_label("marshal"),
             marshal::Config {
                 scheme_provider: scheme_provider.clone(),
                 epoch_length: self.heights_per_epoch,
@@ -209,7 +209,7 @@ where
         );
 
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
-            self.context.with_label("dkg"),
+            self.context.with_label("dkg_manager"),
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox,
                 heights_per_epoch: self.heights_per_epoch,

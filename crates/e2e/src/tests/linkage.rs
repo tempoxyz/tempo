@@ -35,7 +35,7 @@ fn only_good_links() {
         let _first = run(setup.clone(), |metric, value| {
             // // TODO(janis): commonware calls this marshal, we call this sync.
             // // We should rename this to marshal (the actor, that is).
-            if metric.ends_with("_sync_processed_height") {
+            if metric.ends_with("_marshal_processed_height") {
                 let value = value.parse::<u64>().unwrap();
                 value >= 5
             } else {
@@ -49,7 +49,7 @@ fn only_good_links() {
         // let first = run(setup.clone(), |metric, value| {
         //     // // TODO(janis): commonware calls this marshal, we call this sync.
         //     // // We should rename this to marshal (the actor, that is).
-        //     if metric.ends_with("_sync_processed_height") {
+        //     if metric.ends_with("_marshal_processed_height") {
         //         let value = value.parse::<u64>().unwrap();
         //         value >= 5
         //     } else {
@@ -62,7 +62,7 @@ fn only_good_links() {
         // let second = run(setup.clone(), |metric, value| {
         //     // // TODO(janis): commonware calls this marshal, we call this sync.
         //     // // We should rename this to marshal (the actor, that is).
-        //     if metric.ends_with("_sync_processed_height") {
+        //     if metric.ends_with("_marshal_processed_height") {
         //         let value = value.parse::<u64>().unwrap();
         //         value >= 5
         //     } else {
@@ -103,7 +103,7 @@ fn many_bad_links() {
         let _first = run(setup.clone(), |metric, value| {
             // // TODO(janis): commonware calls this marshal, we call this sync.
             // // We should rename this to marshal (the actor, that is).
-            if metric.ends_with("_sync_processed_height") {
+            if metric.ends_with("_marshal_processed_height") {
                 let value = value.parse::<u64>().unwrap();
                 value >= 5
             } else {
@@ -144,7 +144,7 @@ fn reach_height_20_with_a_few_bad_links() {
     let _first = run(setup, |metric, value| {
         // // TODO(janis): commonware calls this marshal, we call this sync.
         // // We should rename this to marshal (the actor, that is).
-        if metric.ends_with("_sync_processed_height") {
+        if metric.ends_with("_marshal_processed_height") {
             let value = value.parse::<u64>().unwrap();
             value >= 20
         } else {
