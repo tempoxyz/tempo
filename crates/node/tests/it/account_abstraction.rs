@@ -404,15 +404,13 @@ fn verify_delegation_code(code: &Bytes, expected_delegate: Address, authority_na
     assert_eq!(
         code.len(),
         23,
-        "{} should have EIP-7702 delegation code (23 bytes), got {} bytes",
-        authority_name,
+        "{authority_name} should have EIP-7702 delegation code (23 bytes), got {} bytes",
         code.len()
     );
     assert_eq!(
         &code[0..3],
         &[0xef, 0x01, 0x00],
-        "{} should have correct EIP-7702 magic bytes [0xef, 0x01, 0x00], got [{:02x}, {:02x}, {:02x}]",
-        authority_name,
+        "{authority_name} should have correct EIP-7702 magic bytes [0xef, 0x01, 0x00], got [{:02x}, {:02x}, {:02x}]",
         code[0],
         code[1],
         code[2]
@@ -420,9 +418,7 @@ fn verify_delegation_code(code: &Bytes, expected_delegate: Address, authority_na
     assert_eq!(
         &code[3..23],
         expected_delegate.as_slice(),
-        "{} should delegate to correct address {}",
-        authority_name,
-        expected_delegate
+        "{authority_name} should delegate to correct address {expected_delegate}"
     );
 }
 
