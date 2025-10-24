@@ -1319,25 +1319,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Returns a vector of addresses starting with the token and ending with LinkingUSD
     fn find_path_to_root(
         &mut self,
-        token: Address,
+        mut token: Address,
     ) -> Result<Vec<Address>, StablecoinExchangeError> {
-        let mut path = Vec::new();
-        let mut current = token;
+        let mut path = vec![token];
 
-        // Walk up the tree until we reach LinkingUSD (which has quote_token == Address::ZERO)
-        loop {
-            path.push(current);
-
-            // Check if we've reached LinkingUSD
-            if current == LINKING_USD_ADDRESS {
-                break;
-            }
-
-            // Get the quote token for the current token
-            let quote_token = TIP20Token::from_address(current, self.storage).quote_token();
-
-            // Move to the parent (quote token)
-            current = quote_token;
+        while token != LINKING_USD_ADDRESS {
+            token = TIP20Token::from_address(token, self.storage).quote_token();
+            path.push(token);
         }
 
         Ok(path)
