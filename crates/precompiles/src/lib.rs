@@ -16,6 +16,7 @@ pub mod tip403_registry;
 pub mod tip4217_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
+pub mod validator_config;
 
 use crate::{
     error::IntoPrecompileResult,

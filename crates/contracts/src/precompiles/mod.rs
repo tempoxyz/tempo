@@ -7,6 +7,7 @@ pub mod tip403_registry;
 pub mod tip4217_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
+pub mod validator_config;
 
 pub use nonce::*;
 pub use stablecoin_exchange::*;
@@ -17,3 +18,4 @@ pub use tip20_factory::*;
 pub use tip20_rewards_registry::*;
 pub use tip403_registry::*;
 pub use tip4217_registry::*;
+pub use validator_config::*;

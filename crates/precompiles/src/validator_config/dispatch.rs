@@ -1,0 +1,183 @@
+use super::{IValidatorConfig, ValidatorConfig, ValidatorConfigError};
+use crate::{Precompile, mutate_void, storage::PrecompileStorageProvider, view, view_result};
+use alloy::{primitives::Address, sol_types::SolCall};
+use revm::precompile::{PrecompileError, PrecompileResult};
+
+impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
+    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
+        let selector: [u8; 4] = calldata
+            .get(..4)
+            .ok_or_else(|| {
+                PrecompileError::Other("Invalid input: missing function selector".to_string())
+            })?
+            .try_into()
+            .unwrap();
+
+        match selector {
+            // View functions
+            IValidatorConfig::ownerCall::SELECTOR => {
+                view::<IValidatorConfig::ownerCall>(calldata, |_call| self.owner())
+            }
+            IValidatorConfig::getValidatorsCall::SELECTOR => {
+                view_result::<IValidatorConfig::getValidatorsCall, ValidatorConfigError>(
+                    calldata,
+                    |call| self.get_validators(call),
+                )
+            }
+
+            // Mutate functions
+            IValidatorConfig::addValidatorCall::SELECTOR => {
+                mutate_void::<IValidatorConfig::addValidatorCall, ValidatorConfigError>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.add_validator(s, call),
+                )
+            }
+            IValidatorConfig::updateValidatorCall::SELECTOR => {
+                mutate_void::<IValidatorConfig::updateValidatorCall, ValidatorConfigError>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.update_validator(s, call),
+                )
+            }
+            IValidatorConfig::changeValidatorStatusCall::SELECTOR => {
+                mutate_void::<IValidatorConfig::changeValidatorStatusCall, ValidatorConfigError>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.change_validator_status(s, call),
+                )
+            }
+            IValidatorConfig::changeOwnerCall::SELECTOR => {
+                mutate_void::<IValidatorConfig::changeOwnerCall, ValidatorConfigError>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.change_owner(s, call),
+                )
+            }
+
+            _ => Err(PrecompileError::Other(
+                "Unknown function selector".to_string(),
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert,
+        storage::hashmap::HashMapStorageProvider,
+    };
+    use alloy::{
+        primitives::{Bytes, FixedBytes},
+        sol_types::SolValue,
+    };
+
+    #[test]
+    fn test_function_selector_dispatch() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let precompile_address = Address::from([0xAA; 20]);
+        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        let sender = Address::from([1u8; 20]);
+
+        // Initialize with owner
+        let owner = Address::from([0u8; 20]);
+        validator_config.initialize(owner);
+
+        // Test invalid selector
+        let result = validator_config.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), &sender);
+        assert!(matches!(result, Err(PrecompileError::Other(_))));
+
+        // Test insufficient calldata
+        let result = validator_config.call(&Bytes::from([0x12, 0x34]), &sender);
+        assert!(matches!(result, Err(PrecompileError::Other(_))));
+    }
+
+    #[test]
+    fn test_owner_view_dispatch() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let precompile_address = Address::from([0xAA; 20]);
+        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        let sender = Address::from([1u8; 20]);
+
+        // Initialize with owner
+        let owner = Address::from([0u8; 20]);
+        validator_config.initialize(owner);
+
+        // Call owner() via dispatch
+        let owner_call = IValidatorConfig::ownerCall {};
+        let calldata = owner_call.abi_encode();
+
+        let result = validator_config
+            .call(&Bytes::from(calldata), &sender)
+            .unwrap();
+        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+
+        // Verify we get the correct owner
+        let decoded = Address::abi_decode(&result.bytes).unwrap();
+        assert_eq!(decoded, owner);
+    }
+
+    #[test]
+    fn test_add_validator_dispatch() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let precompile_address = Address::from([0xAA; 20]);
+        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+
+        // Initialize with owner
+        let owner = Address::from([0u8; 20]);
+        validator_config.initialize(owner);
+
+        // Add validator via dispatch
+        let validator_addr = Address::from([1u8; 20]);
+        let key = FixedBytes::<32>::from([0x42; 32]);
+        let add_call = IValidatorConfig::addValidatorCall {
+            newValidatorAddress: validator_addr,
+            key,
+            active: true,
+            ipAddressOrDns: "192.168.1.1".to_string(),
+        };
+        let calldata = add_call.abi_encode();
+
+        let result = validator_config
+            .call(&Bytes::from(calldata), &owner)
+            .unwrap();
+        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        // Verify validator was added by calling getValidators
+        let get_call = IValidatorConfig::getValidatorsCall {};
+        let validators = validator_config.get_validators(get_call).unwrap();
+        assert_eq!(validators.len(), 1);
+        assert_eq!(validators[0].validatorAddress, validator_addr);
+        assert_eq!(validators[0].key, key);
+        assert_eq!(validators[0].ipAddressOrDns, "192.168.1.1");
+        assert!(validators[0].active);
+    }
+
+    #[test]
+    fn test_unauthorized_add_validator_dispatch() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let precompile_address = Address::from([0xAA; 20]);
+        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+
+        // Initialize with owner
+        let owner = Address::from([0u8; 20]);
+        validator_config.initialize(owner);
+
+        // Try to add validator as non-owner
+        let non_owner = Address::from([1u8; 20]);
+        let validator_addr = Address::from([2u8; 20]);
+        let key = FixedBytes::<32>::from([0x42; 32]);
+        let add_call = IValidatorConfig::addValidatorCall {
+            newValidatorAddress: validator_addr,
+            key,
+            active: true,
+            ipAddressOrDns: "192.168.1.1".to_string(),
+        };
+        let calldata = add_call.abi_encode();
+
+        let result = validator_config.call(&Bytes::from(calldata), &non_owner);
+        expect_precompile_revert(&result, ValidatorConfigError::unauthorized());
+    }
+}
