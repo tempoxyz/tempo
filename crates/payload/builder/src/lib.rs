@@ -23,7 +23,9 @@ use reth_evm::{
 };
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::PayloadBuilderAttributes;
-use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
+use reth_primitives_traits::{
+    Recovered, SignedTransaction, transaction::error::InvalidTransactionError,
+};
 use reth_revm::{
     State,
     context::{Block, BlockEnv},
@@ -36,7 +38,7 @@ use reth_transaction_pool::{
 };
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
-use tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
+use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
@@ -220,7 +222,9 @@ where
             .with_bundle_update()
             .build();
 
-        let general_gas_limit = parent_header.gas_limit() / TEMPO_GENERAL_GAS_DIVISOR;
+        let shared_gas_limit = parent_header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR;
+        let general_gas_limit =
+            (parent_header.gas_limit() - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
 
         let mut builder = self
             .evm_config
@@ -237,6 +241,7 @@ where
                         withdrawals: Some(attributes.withdrawals().clone()),
                     },
                     general_gas_limit,
+                    shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
                 },
             )
@@ -377,6 +382,17 @@ where
                 effective_tip_per_gas.expect("fee is always valid; execution succeeded");
             total_fees += U256::from(miner_fee) * U256::from(gas_used);
             cumulative_gas_used += gas_used;
+        }
+
+        'subblocks: for subblock in attributes.subblocks() {
+            for tx in &subblock.transactions {
+                let Ok(tx) = tx.try_clone_into_recovered() else {
+                    continue 'subblocks;
+                };
+                let gas_used = builder
+                    .execute_transaction(tx)
+                    .map_err(PayloadBuilderError::evm)?;
+            }
         }
 
         let execution_elapsed = execution_start.elapsed();

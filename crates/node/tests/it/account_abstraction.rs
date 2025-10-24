@@ -50,8 +50,7 @@ async fn fund_address_with_fee_tokens(
         fee_token: None,
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
+        ..Default::default()
     };
 
     // Sign and send the funding transaction
@@ -337,8 +336,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
         fee_token: None, // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
+        ..Default::default()
     };
 
     println!("Created AA transaction with secp256k1 signature");
@@ -423,8 +421,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         fee_token: None,
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
+        ..Default::default()
     };
 
     // Sign and encode transaction
@@ -473,8 +470,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         fee_token: None,
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
+        ..Default::default()
     };
 
     // Sign and encode transaction
@@ -565,8 +561,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         fee_token: None, // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
+        ..Default::default()
     };
 
     println!("Created AA transaction for WebAuthn signature");
@@ -755,8 +750,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         fee_token: None,
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
+        ..Default::default()
     };
 
     // ===========================================
@@ -1114,8 +1108,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         fee_token: None,
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
+        ..Default::default()
     };
 
     // Sign with P256
@@ -1340,8 +1333,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
         fee_token: None, // Use DEFAULT_FEE_TOKEN
         fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)), // Placeholder
         valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
+        ..Default::default()
     };
 
     println!("Created AA transaction with fee payer placeholder");
@@ -1468,8 +1460,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
         fee_token: None,
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
+        ..Default::default()
     };
 
     println!("Created AA transaction with empty call batch");

@@ -54,6 +54,9 @@ pub struct TempoTxEnv {
 
     /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
     pub aa_tx_env: Option<Box<AATxEnv>>,
+
+    /// Whether the transaction is a subblock transaction.
+    pub subblock_transaction: bool,
 }
 
 impl TempoTxEnv {
@@ -72,10 +75,7 @@ impl From<TxEnv> for TempoTxEnv {
     fn from(inner: TxEnv) -> Self {
         Self {
             inner,
-            fee_token: None,
-            is_system_tx: false,
-            fee_payer: None,
-            aa_tx_env: None,
+            ..Default::default()
         }
     }
 }
@@ -232,6 +232,7 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
                     .ok()
             }),
             aa_tx_env: None, // Non-AA transaction
+            subblock_transaction: false,
         }
     }
 }
@@ -255,6 +256,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_payer_signature,
             valid_before,
             valid_after,
+            proposer,
         } = tx;
 
         // Extract to/value/input from calls (use first call or defaults)
@@ -298,6 +300,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_after: *valid_after,
                 aa_calls: calls.clone(),
             })),
+            subblock_transaction: proposer.is_some(),
         }
     }
 }
@@ -311,6 +314,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 is_system_tx: tx.is_system_tx(),
                 fee_payer: None,
                 aa_tx_env: None, // Non-AA transaction
+                subblock_transaction: false,
             },
             TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
@@ -366,6 +370,7 @@ impl reth_rpc_convert::transaction::TryIntoTxEnv<TempoTxEnv>
             is_system_tx: false,
             fee_payer: None,
             aa_tx_env: None, // RPC transactions are not AA transactions
+            subblock_transaction: false,
         })
     }
 }

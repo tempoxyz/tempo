@@ -126,3 +126,6 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
 
 /// Divisor for calculating non-payment gas limit.
 pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;
+
+/// Divisor for calculating non-payment gas limit.
+pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;

@@ -167,6 +167,11 @@ pub struct TxAA {
     /// Transaction can only be included in a block after this timestamp
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub valid_after: Option<u64>,
+
+    /// Address of the proposer of the transaction.
+    ///
+    /// If specified, transaction can only be included as part of a subblock.
+    pub proposer: Option<B256>,
 }
 
 impl TxAA {
@@ -271,14 +276,10 @@ impl TxAA {
             self.max_priority_fee_per_gas.length() +
             self.max_fee_per_gas.length() +
             self.gas_limit.length() +
-            // calls (vector of Call structs)
             self.calls.length() +
             self.access_list.length() +
-            // nonce_key
             self.nonce_key.length() +
-            // nonce
             self.nonce.length() +
-            // valid_before
             if let Some(valid_before) = self.valid_before {
                 valid_before.length()
             } else {
@@ -296,6 +297,11 @@ impl TxAA {
             } else {
                 1 // EMPTY_STRING_CODE
             } +
+            if let Some(proposer) = self.proposer {
+                proposer.length()
+            } else {
+                1 // EMPTY_STRING_CODE
+            } +
             signature_length(&self.fee_payer_signature)
     }
 
@@ -309,39 +315,31 @@ impl TxAA {
         self.max_priority_fee_per_gas.encode(out);
         self.max_fee_per_gas.encode(out);
         self.gas_limit.encode(out);
-
-        // Encode calls vector
         self.calls.encode(out);
-
         self.access_list.encode(out);
-
-        // Encode nonce_key
         self.nonce_key.encode(out);
-
-        // Encode nonce
         self.nonce.encode(out);
 
-        // Encode valid_before
         if let Some(valid_before) = self.valid_before {
             valid_before.encode(out);
         } else {
             out.put_u8(EMPTY_STRING_CODE);
         }
 
-        // Encode valid_after
         if let Some(valid_after) = self.valid_after {
             valid_after.encode(out);
         } else {
             out.put_u8(EMPTY_STRING_CODE);
         }
 
-        // Encode fee_token (skip if requested)
-        if !skip_fee_token {
-            if let Some(addr) = self.fee_token {
-                addr.encode(out);
-            } else {
-                out.put_u8(EMPTY_STRING_CODE);
-            }
+        if !skip_fee_token && let Some(addr) = self.fee_token {
+            addr.encode(out);
+        } else {
+            out.put_u8(EMPTY_STRING_CODE);
+        }
+
+        if let Some(proposer) = self.proposer {
+            proposer.encode(out);
         } else {
             out.put_u8(EMPTY_STRING_CODE);
         }
@@ -422,6 +420,17 @@ impl TxAA {
             return Err(alloy_rlp::Error::InputTooShort);
         };
 
+        let proposer = if let Some(first) = buf.first() {
+            if *first == EMPTY_STRING_CODE {
+                buf.advance(1);
+                None
+            } else {
+                Some(Decodable::decode(buf)?)
+            }
+        } else {
+            return Err(alloy_rlp::Error::InputTooShort);
+        };
+
         let fee_payer_signature = if let Some(first) = buf.first() {
             if *first == EMPTY_STRING_CODE {
                 buf.advance(1);
@@ -453,6 +462,7 @@ impl TxAA {
             fee_payer_signature,
             valid_before,
             valid_after,
+            proposer,
         };
 
         // Validate the transaction
@@ -712,6 +722,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             fee_payer_signature,
             valid_before,
             valid_after,
+            proposer: u.arbitrary()?,
         })
     }
 }
@@ -865,6 +876,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
             valid_after: Some(500000),
+            proposer: None,
         };
 
         // Encode
@@ -915,6 +927,7 @@ mod tests {
             fee_payer_signature: None,
             valid_before: Some(1000),
             valid_after: None,
+            proposer: None,
         };
 
         // Encode
@@ -1068,7 +1081,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
             valid_after: None,
-            access_list: Default::default(),
+            ..Default::default()
         };
 
         // Transaction with fee_token = token1
@@ -1144,8 +1157,7 @@ mod tests {
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
-            valid_after: None,
-            access_list: Default::default(),
+            ..Default::default()
         };
 
         // The fee_payer_signature_hash should start with the magic byte
@@ -1188,6 +1200,7 @@ mod tests {
             valid_before: Some(1000),
             valid_after: None,
             access_list: Default::default(),
+            proposer: None,
         };
 
         // Transaction WITHOUT fee_payer, fee_token = token1
@@ -1248,6 +1261,7 @@ mod tests {
             valid_before: Some(1000),
             valid_after: None,
             access_list: Default::default(),
+            proposer: None,
         };
 
         // Transaction without fee_token
@@ -1310,6 +1324,7 @@ mod tests {
             valid_before: Some(1000),
             valid_after: None,
             access_list: Default::default(),
+            proposer: None,
         };
 
         // Scenario 2: No fee payer, with token
@@ -1406,6 +1421,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
             valid_after: Some(500000),
+            proposer: None,
         };
 
         // Encode the transaction normally

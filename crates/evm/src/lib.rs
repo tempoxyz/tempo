@@ -170,6 +170,8 @@ impl ConfigureEvm for TempoEvmConfig {
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
             },
             general_gas_limit: block.header().general_gas_limit,
+            shared_gas_limit: block.header().gas_limit()
+                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
         })
     }
 
@@ -186,6 +188,8 @@ impl ConfigureEvm for TempoEvmConfig {
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
             },
             general_gas_limit: attributes.general_gas_limit,
+            shared_gas_limit: attributes.inner.gas_limit
+                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
         })
     }
 }

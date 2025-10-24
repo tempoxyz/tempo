@@ -110,6 +110,10 @@ pub enum TempoInvalidTransaction {
         /// The calculated intrinsic gas required.
         intrinsic_gas: u64,
     },
+
+    /// Subblock transaction must have zero fee.
+    #[error("subblock transaction must have zero fee")]
+    SubblockTransactionMustHaveZeroFee,
 }
 
 impl InvalidTxError for TempoInvalidTransaction {

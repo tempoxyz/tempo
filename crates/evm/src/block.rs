@@ -1,6 +1,6 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
-use alloy_primitives::Bytes;
+use alloy_primitives::{B256, Bytes, TxHash};
 use alloy_sol_types::SolCall;
 use reth_evm::{
     Database, Evm, OnStateHook,
@@ -13,7 +13,10 @@ use reth_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use reth_revm::{Inspector, State, context::result::ResultAndState};
+use reth_revm::{
+    Inspector, State,
+    context::result::{ExecutionResult, Output, ResultAndState, SuccessReason},
+};
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -22,6 +25,23 @@ use tempo_precompiles::{
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_revm::evm::TempoContext;
 use tracing::trace;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BlockSection {
+    /// Basic section of the block. Includes arbitrary transactions chosen by the proposer.
+    ///
+    /// Must use at most `non_shared_gas_left` gas.
+    NonShared,
+    /// Subblock authored by the given validator.
+    SubBlock { proposer: B256 },
+    /// Gas incentive transaction.
+    GasIncentive,
+    /// System transactions.
+    System {
+        seen_fee_manager: bool,
+        seen_stablecoin_dex: bool,
+    },
+}
 
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -62,10 +82,12 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
         TempoReceiptBuilder,
     >,
 
-    general_gas_left: u64,
+    section: BlockSection,
+    seen_subblocks: Vec<(B256, Vec<TxHash>)>,
 
-    seen_fee_manager_system_tx: bool,
-    seen_stablecoin_dex_system_tx: bool,
+    non_shared_gas_left: u64,
+    non_payment_gas_left: u64,
+    shared_gas_left: u64,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -79,20 +101,51 @@ where
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         Self {
-            general_gas_left: ctx.general_gas_limit,
+            non_payment_gas_left: ctx.general_gas_limit,
+            shared_gas_left: ctx.shared_gas_limit,
+            non_shared_gas_left: evm.block().gas_limit - ctx.general_gas_limit,
             inner: EthBlockExecutor::new(
                 evm,
                 ctx.inner,
                 chain_spec,
                 TempoReceiptBuilder::default(),
             ),
-            seen_fee_manager_system_tx: false,
-            seen_stablecoin_dex_system_tx: false,
+            section: BlockSection::NonShared,
+            seen_subblocks: Vec::new(),
         }
     }
 
     /// Validates a system transaction.
-    fn validate_system_tx(&self, tx: &TempoTxEnvelope) -> Result<(), BlockValidationError> {
+    fn validate_system_tx(
+        &self,
+        tx: &TempoTxEnvelope,
+    ) -> Result<BlockSection, BlockValidationError> {
+        let (mut seen_fee_manager, mut seen_stablecoin_dex) = match self.section {
+            BlockSection::System {
+                seen_fee_manager,
+                seen_stablecoin_dex,
+            } => (seen_fee_manager, seen_stablecoin_dex),
+            _ => (false, false),
+        };
+
+        if tx.to() == Some(TIP_FEE_MANAGER_ADDRESS) {
+            if seen_fee_manager {
+                return Err(BlockValidationError::msg(
+                    "duplicate fee manager system transaction",
+                ));
+            } else {
+                seen_fee_manager = true;
+            }
+        } else if tx.to() == Some(STABLECOIN_EXCHANGE_ADDRESS) {
+            if seen_stablecoin_dex {
+                return Err(BlockValidationError::msg(
+                    "duplicate stablecoin DEX system transaction",
+                ));
+            } else {
+                seen_stablecoin_dex = true;
+            }
+        }
+
         let block = self.evm().block().number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
         if to == TIP_FEE_MANAGER_ADDRESS {
@@ -101,12 +154,12 @@ where
                 .into_iter()
                 .chain(block)
                 .collect::<Bytes>();
-            if *tx.input() == fee_input && self.seen_fee_manager_system_tx {
-                Err(BlockValidationError::msg(
+            if *tx.input() == fee_input && seen_fee_manager {
+                return Err(BlockValidationError::msg(
                     "duplicate fee manager system transaction",
-                ))
+                ));
             } else {
-                Ok(())
+                seen_fee_manager = true
             }
         } else if to == STABLECOIN_EXCHANGE_ADDRESS {
             let dex_input = IStablecoinExchange::executeBlockCall {}
@@ -114,15 +167,85 @@ where
                 .into_iter()
                 .chain(block)
                 .collect::<Bytes>();
-            if *tx.input() == dex_input && self.seen_stablecoin_dex_system_tx {
-                Err(BlockValidationError::msg(
+            if *tx.input() == dex_input && seen_stablecoin_dex {
+                return Err(BlockValidationError::msg(
                     "duplicate stablecoin DEX system transaction",
-                ))
+                ));
             } else {
-                Ok(())
+                seen_stablecoin_dex = true;
             }
         } else {
-            Err(BlockValidationError::msg("invalid system transaction"))
+            return Err(BlockValidationError::msg("invalid system transaction"));
+        }
+
+        Ok(BlockSection::System {
+            seen_fee_manager,
+            seen_stablecoin_dex,
+        })
+    }
+
+    fn validate_tx(&self, tx: &TempoTxEnvelope) -> Result<BlockSection, BlockValidationError> {
+        // Start with processing of transaction kinds that requre specific sections.
+        if tx.is_system_tx() {
+            self.validate_system_tx(tx)
+        } else if let Some(tx_proposer) = tx.subblock_proposer() {
+            match self.section {
+                BlockSection::GasIncentive | BlockSection::System { .. } => {
+                    Err(BlockValidationError::msg("subblock section already passed"))
+                }
+                BlockSection::NonShared => Ok(BlockSection::SubBlock {
+                    proposer: tx_proposer,
+                }),
+                BlockSection::SubBlock { proposer } => {
+                    if proposer == tx_proposer
+                        || !self.seen_subblocks.iter().any(|(p, _)| *p == tx_proposer)
+                    {
+                        Ok(BlockSection::SubBlock { proposer })
+                    } else {
+                        Err(BlockValidationError::msg(
+                            "proposer's subblock already processed",
+                        ))
+                    }
+                }
+            }
+        } else {
+            match self.section {
+                BlockSection::NonShared => {
+                    if tx.gas_limit() > self.non_shared_gas_left {
+                        Err(BlockValidationError::msg(
+                            "transaction gas limit exceeds available non-shared gas",
+                        ))
+                    } else if !tx.is_payment() && tx.gas_limit() > self.non_payment_gas_left {
+                        Err(BlockValidationError::msg(
+                            "transaction gas limit exceeds non-payment gas limit",
+                        ))
+                    } else {
+                        Ok(BlockSection::NonShared)
+                    }
+                }
+                BlockSection::SubBlock { .. } => {
+                    // If we were just processing a subblock, assume that this transaction wants to make
+                    // use of gas incentive section, thus concluding subblocks execution.
+                    if tx.gas_limit() <= self.shared_gas_left {
+                        Ok(BlockSection::GasIncentive)
+                    } else {
+                        Err(BlockValidationError::msg("not enough shared gas"))
+                    }
+                }
+                BlockSection::GasIncentive => {
+                    if tx.gas_limit() <= self.shared_gas_left {
+                        Ok(BlockSection::GasIncentive)
+                    } else {
+                        Err(BlockValidationError::msg("not enough incentive gas"))
+                    }
+                }
+                BlockSection::System { .. } => {
+                    trace!(target: "tempo::block", tx_hash = ?*tx.tx_hash(), "Rejecting: regular transaction after system transaction");
+                    Err(BlockValidationError::msg(
+                        "regular transaction can't follow system transaction",
+                    ))
+                }
+            }
         }
     }
 }
@@ -144,33 +267,49 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<ResultAndState, BlockExecutionError> {
-        let is_payment = tx.tx().is_payment();
-        let is_system = tx.tx().is_system_tx();
-        let gas_limit = tx.tx().gas_limit();
+        self.validate_tx(tx.tx())?;
 
-        if is_system {
-            self.validate_system_tx(tx.tx())?;
-        } else if self.seen_fee_manager_system_tx || self.seen_stablecoin_dex_system_tx {
-            trace!(target: "tempo::block", tx_hash = ?tx.tx().tx_hash(), "Rejecting: regular transaction after system transaction");
-            return Err(BlockValidationError::msg(
-                "regular transaction can't follow system transaction",
-            )
-            .into());
-        } else if !is_payment && gas_limit > self.general_gas_left {
-            trace!(
-                target: "tempo::block",
-                gas_limit = gas_limit,
-                tx_hash = ?tx.tx().tx_hash(),
-                general_gas_left = self.general_gas_left,
-                "Rejecting: non-payment gas limit exceeded"
-            );
-            return Err(BlockValidationError::msg(
-                "transaction gas limit exceeds non-payment gas limit",
-            )
-            .into());
+        let err = match self.inner.execute_transaction_without_commit(&tx) {
+            Ok(result) => return Ok(result),
+            Err(err) => err,
+        };
+
+        // Allow subblock transactions to fail with nonce too low if their nonce was valid at the top of the block.
+        if tx.tx().subblock_proposer().is_some() {
+            if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                error, ..
+            }) = &err
+            {
+                if error.is_nonce_too_low() {
+                    let nonce_before_block = self
+                        .evm_mut()
+                        .db_mut()
+                        .transition_state
+                        .as_ref()
+                        .ok_or(BlockExecutionError::msg("missing transition state"))?
+                        .transitions
+                        .get(tx.signer())
+                        .and_then(|acc| acc.previous_info.as_ref())
+                        .map(|info| info.nonce)
+                        .unwrap_or_default();
+
+                    if nonce_before_block < tx.tx().nonce() {
+                        return Ok(ResultAndState {
+                            result: ExecutionResult::Success {
+                                reason: SuccessReason::Stop,
+                                gas_used: Default::default(),
+                                gas_refunded: Default::default(),
+                                logs: Default::default(),
+                                output: Output::Call(Default::default()),
+                            },
+                            state: Default::default(),
+                        });
+                    }
+                }
+            }
         }
 
-        self.inner.execute_transaction_without_commit(tx)
+        Err(err)
     }
 
     fn commit_transaction(
@@ -180,20 +319,40 @@ where
     ) -> Result<u64, BlockExecutionError> {
         let gas_used = self.inner.commit_transaction(output, &tx)?;
 
-        let inner_tx = tx.tx();
-        if inner_tx.is_system_tx() {
-            match inner_tx.to() {
-                Some(addr) if addr == TIP_FEE_MANAGER_ADDRESS => {
-                    self.seen_fee_manager_system_tx = true;
+        self.section = self.validate_tx(tx.tx())?;
+
+        match self.section {
+            BlockSection::NonShared => {
+                self.non_shared_gas_left -= gas_used;
+                if !tx.tx().is_payment() {
+                    self.non_payment_gas_left -= gas_used;
                 }
-                Some(addr) if addr == STABLECOIN_EXCHANGE_ADDRESS => {
-                    self.seen_stablecoin_dex_system_tx = true;
-                }
-                _ => {}
+            }
+            BlockSection::SubBlock { proposer } => {
+                // subtract transaction gas limit from the shared gas
+                self.shared_gas_left -= tx.tx().gas_limit();
+
+                // record subblock transactions to verify later
+                let last_subblock = if let Some(last) = self
+                    .seen_subblocks
+                    .last_mut()
+                    .filter(|(p, _)| *p == proposer)
+                {
+                    last
+                } else {
+                    self.seen_subblocks.push((proposer, vec![]));
+                    self.seen_subblocks.last_mut().unwrap()
+                };
+
+                last_subblock.1.push(*tx.tx().tx_hash());
+            }
+            BlockSection::GasIncentive => {
+                self.shared_gas_left -= gas_used;
+            }
+            BlockSection::System { .. } => {
+                // no gas spending
             }
         }
-
-        self.general_gas_left = self.general_gas_left.saturating_sub(gas_used);
 
         Ok(gas_used)
     }
@@ -201,17 +360,13 @@ where
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        if !self.seen_fee_manager_system_tx {
-            return Err(BlockValidationError::msg(
-                "fee manager system transaction not seen in block",
-            )
-            .into());
-        }
-        if !self.seen_stablecoin_dex_system_tx {
-            return Err(BlockValidationError::msg(
-                "stablecoin DEX system transaction not seen in block",
-            )
-            .into());
+        if self.section
+            != (BlockSection::System {
+                seen_fee_manager: true,
+                seen_stablecoin_dex: true,
+            })
+        {
+            return Err(BlockValidationError::msg("system transactions not seen in block").into());
         }
         self.inner.finish()
     }

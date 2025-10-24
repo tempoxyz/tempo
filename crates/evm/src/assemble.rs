@@ -39,6 +39,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                 TempoBlockExecutionCtx {
                     inner,
                     general_gas_limit,
+                    shared_gas_limit,
                 },
             parent,
             transactions,

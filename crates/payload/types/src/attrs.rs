@@ -75,6 +75,11 @@ impl TempoPayloadBuilderAttributes {
     pub fn timestamp_millis_part(&self) -> u64 {
         self.timestamp_millis_part
     }
+
+    /// Returns the subblocks.
+    pub fn subblocks(&self) -> &[SignedSubBlock] {
+        &self.subblocks
+    }
 }
 
 impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {

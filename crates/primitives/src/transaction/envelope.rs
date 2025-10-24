@@ -168,6 +168,14 @@ impl TempoTxEnvelope {
         }
         false
     }
+
+    /// Returns the proposer of the subblock if this is a subblock transaction.
+    pub fn subblock_proposer(&self) -> Option<B256> {
+        match self {
+            Self::AA(tx) => tx.tx().proposer,
+            _ => None,
+        }
+    }
 }
 
 impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
