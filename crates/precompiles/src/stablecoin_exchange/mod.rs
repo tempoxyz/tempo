@@ -282,25 +282,22 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             .expect("Failed to decrement balance or transfer from sender");
 
         // Execute swaps for each hop - intermediate balances are transitory
-        let mut current_amount = amount_in;
+        let mut amount = amount_in;
         for (book_key, base_for_quote) in route {
             // Fill orders for this hop - no min check on intermediate hops
-            current_amount =
-                self.fill_orders_exact_in(book_key, base_for_quote, current_amount, 0)?;
+            amount = self.fill_orders_exact_in(book_key, base_for_quote, amount, 0)?;
         }
 
-        let amount_out = current_amount;
-
         // Check final output meets minimum requirement
-        if amount_out < min_amount_out {
+        if amount < min_amount_out {
             return Err(StablecoinExchangeError::insufficient_output());
         }
 
         // Transfer only the final output token to sender (only once, at the end)
-        self.transfer(token_out, *sender, amount_out)
+        self.transfer(token_out, *sender, amount)
             .expect("Failed to transfer tokens to sender");
 
-        Ok(amount_out)
+        Ok(amount)
     }
 
     pub fn swap_exact_amount_out(
@@ -315,30 +312,25 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let route = self.find_trade_path(token_in, token_out)?;
 
         // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
-        let mut current_amount = amount_out;
+        let mut amount = amount_out;
         for (book_key, base_for_quote) in route.iter().rev() {
-            current_amount = self.fill_orders_exact_out(
-                *book_key,
-                *base_for_quote,
-                current_amount,
-                max_amount_in,
-            )?;
+            amount =
+                self.fill_orders_exact_out(*book_key, *base_for_quote, amount, max_amount_in)?;
         }
 
-        let amount_in = current_amount;
-        if amount_in > max_amount_in {
+        if amount > max_amount_in {
             return Err(StablecoinExchangeError::max_input_exceeded());
         }
 
         // Deduct input tokens ONCE at end
-        self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)
+        self.decrement_balance_or_transfer_from(*sender, token_in, amount)
             .expect("Failed to decrement balance or transfer from sender");
 
         // Transfer only final output ONCE at end
         self.transfer(token_out, *sender, amount_out)
             .expect("Failed to transfer tokens to sender");
 
-        Ok(amount_in)
+        Ok(amount)
     }
 
     /// Generate deterministic key for token pair
