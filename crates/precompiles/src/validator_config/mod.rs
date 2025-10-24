@@ -4,8 +4,7 @@ pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 
 use crate::storage::PrecompileStorageProvider;
 use alloy::primitives::{Address, Bytes, FixedBytes, U256};
-use revm::interpreter::instructions::utility::IntoAddress;
-use revm::state::Bytecode;
+use revm::{interpreter::instructions::utility::IntoAddress, state::Bytecode};
 use tracing::trace;
 
 /// Storage slots for ValidatorConfig precompile

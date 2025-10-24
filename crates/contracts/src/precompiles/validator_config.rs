@@ -1,5 +1,4 @@
-use alloy::sol;
-use alloy::sol_types::SolInterface;
+use alloy::{sol, sol_types::SolInterface};
 use revm::precompile::PrecompileError;
 
 pub use IValidatorConfig::IValidatorConfigErrors as ValidatorConfigError;
