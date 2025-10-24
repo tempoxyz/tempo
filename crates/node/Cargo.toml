@@ -47,6 +47,7 @@ alloy.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true
 
+async-trait.workspace = true
 clap.workspace = true
 eyre.workspace = true
 tokio.workspace = true
