@@ -233,3 +233,51 @@ impl Read for Share {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use commonware_codec::{Encode as _, Read as _};
+    use commonware_cryptography::{
+        PrivateKeyExt as _, Signer as _,
+        bls12381::{dkg, primitives::variant::MinSig},
+        ed25519::{PrivateKey, PublicKey},
+    };
+    use commonware_utils::{set::Ordered, union};
+    use rand::{SeedableRng as _, rngs::StdRng};
+
+    use crate::dkg::ceremony::ACK_NAMESPACE;
+
+    use super::Ack;
+
+    fn three_public_keys() -> Ordered<PublicKey> {
+        vec![
+            PrivateKey::from_seed(0).public_key(),
+            PrivateKey::from_seed(1).public_key(),
+            PrivateKey::from_seed(2).public_key(),
+        ]
+        .into()
+    }
+
+    #[test]
+    fn roundtrip_ack() {
+        let (_, commitment, _) = dkg::Dealer::<_, MinSig>::new(
+            &mut StdRng::from_seed([0; 32]),
+            None,
+            three_public_keys(),
+        );
+        let player = PrivateKey::from_seed(0);
+        let dealer = PrivateKey::from_seed(1).public_key();
+        let ack = Ack::new(
+            &union(b"test", ACK_NAMESPACE),
+            player.clone(),
+            player.public_key(),
+            42,
+            &dealer,
+            &commitment,
+        );
+
+        let bytes = ack.encode();
+
+        assert_eq!(Ack::read_cfg(&mut bytes.as_ref(), &()).unwrap(), ack);
+    }
+}

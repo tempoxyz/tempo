@@ -59,7 +59,7 @@ impl EncodeSize for PublicOutcome {
 ///
 /// This object is persisted on-chain. Every player collects the local outcomes
 /// of other dealers to created a global outcome.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DealingOutcome {
     /// The public key of the dealer.
     pub(super) dealer: PublicKey,
@@ -174,5 +174,81 @@ impl Read for DealingOutcome {
             acks: Vec::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?,
             reveals: Vec::<group::Share>::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use commonware_codec::{Encode as _, Read as _};
+    use commonware_cryptography::{
+        PrivateKeyExt as _, Signer as _,
+        bls12381::{dkg, primitives::variant::MinSig},
+        ed25519::{PrivateKey, PublicKey},
+    };
+    use commonware_utils::{set::Ordered, union};
+    use rand::{SeedableRng as _, rngs::StdRng};
+
+    use crate::dkg::ceremony::{ACK_NAMESPACE, Ack, OUTCOME_NAMESPACE};
+
+    use super::DealingOutcome;
+
+    fn three_private_keys() -> Ordered<PrivateKey> {
+        vec![
+            PrivateKey::from_seed(0),
+            PrivateKey::from_seed(1),
+            PrivateKey::from_seed(2),
+        ]
+        .into()
+    }
+
+    fn three_public_keys() -> Ordered<PublicKey> {
+        vec![
+            PrivateKey::from_seed(0).public_key(),
+            PrivateKey::from_seed(1).public_key(),
+            PrivateKey::from_seed(2).public_key(),
+        ]
+        .into()
+    }
+
+    #[test]
+    fn dealing_outcome_roundtrip() {
+        let (_, commitment, shares) = dkg::Dealer::<_, MinSig>::new(
+            &mut StdRng::from_seed([0; 32]),
+            None,
+            three_public_keys(),
+        );
+
+        let mut acks = vec![];
+        acks.push(Ack::new(
+            &union(b"test", ACK_NAMESPACE),
+            three_private_keys()[0].clone(),
+            three_public_keys()[0].clone(),
+            42,
+            &three_public_keys()[0],
+            &commitment,
+        ));
+        acks.push(Ack::new(
+            &union(b"test", ACK_NAMESPACE),
+            three_private_keys()[1].clone(),
+            three_public_keys()[1].clone(),
+            42,
+            &three_public_keys()[0],
+            &commitment,
+        ));
+        let reveals = vec![shares[2].clone()];
+        let dealing_outcome = DealingOutcome::new(
+            &three_private_keys()[0],
+            &union(b"test", OUTCOME_NAMESPACE),
+            42,
+            commitment,
+            acks,
+            reveals,
+        );
+
+        let bytes = dealing_outcome.encode();
+        assert_eq!(
+            DealingOutcome::read_cfg(&mut bytes.as_ref(), &3).unwrap(),
+            dealing_outcome,
+        );
     }
 }

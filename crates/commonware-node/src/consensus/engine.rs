@@ -220,7 +220,6 @@ where
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
-                // TODO(janis): reasonable to just reuse this here? Probably define a custom const for this.
             },
         )
         .await;

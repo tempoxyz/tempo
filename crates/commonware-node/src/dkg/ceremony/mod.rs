@@ -150,6 +150,7 @@ where
             .cloned();
 
         if let Some(recovered) = recovered {
+            info!("found a previous ceremony state written to disk; recovering it");
             for outcome in &recovered.outcomes {
                 let ack_indices = outcome
                     .acks
@@ -210,6 +211,23 @@ where
                 });
             }
         } else if let Some(share) = config.share.clone() {
+            // XXX: It is critical to write the initial ceremony state with the
+            // correct number of players to disk. The upsert operations in the
+            // rest of the ceremony write the default value for the number of
+            // players, with is 0.
+            ceremony_metadata
+                .lock()
+                .await
+                .put_sync(
+                    config.epoch.into(),
+                    State {
+                        num_players: config.players.len() as u64,
+                        ..State::default()
+                    },
+                )
+                .await
+                .expect("must always be able to initialize the ceremony state to disk");
+
             let (dkg_dealer, commitment, shares) =
                 dkg::Dealer::new(context, Some(share), config.players.clone());
             let shares = config

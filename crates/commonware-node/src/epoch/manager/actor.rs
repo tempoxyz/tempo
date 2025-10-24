@@ -1,4 +1,4 @@
-use std::{collections::HashMap, num::NonZeroUsize};
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use commonware_consensus::{
     simplex::{self, signing_scheme::bls12381_threshold::Scheme},
@@ -16,7 +16,7 @@ use eyre::ensure;
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
-use tracing::{Level, Span, instrument, warn};
+use tracing::{Level, Span, info, instrument, warn};
 
 use crate::epoch::manager::ingress::{Enter, Exit};
 
@@ -26,7 +26,7 @@ const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("v
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 
 pub(crate) struct Actor<TBlocker, TContext> {
-    active_epochs: HashMap<Epoch, Handle<()>>,
+    active_epochs: BTreeMap<Epoch, Handle<()>>,
     config: super::Config<TBlocker>,
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
@@ -73,7 +73,7 @@ where
                 active_epochs,
                 latest_epoch,
             },
-            active_epochs: HashMap::new(),
+            active_epochs: BTreeMap::new(),
         }
     }
 
@@ -154,7 +154,12 @@ where
     #[instrument(
         follows_from = [cause],
         skip_all,
-        fields(epoch),
+        fields(
+            %epoch,
+            ?public,
+            ?share,
+            ?participants,
+        ),
         err(level = Level::WARN)
     )]
     async fn enter(
@@ -238,6 +243,9 @@ where
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
         );
+        // engine.start(pending_sc, recovered_sc, resolver_sc).await;
+
+        info!("started consensus engine backing the epoch");
 
         self.metrics.active_epochs.inc();
         self.metrics.latest_epoch.set(epoch as i64);
@@ -251,7 +259,7 @@ where
             engine.abort()
         } else {
             warn!(
-                "attempted to exit unknown epoch, but epoch was not backed \
+                "attempted to exit unknown epoch, but epoch was not backed by \
                 an active engine",
             );
         }

@@ -52,8 +52,7 @@ where
             context.with_label("ceremony_metadata"),
             commonware_storage::metadata::Config {
                 partition: format!("{}_ceremony", config.partition_prefix),
-                // XXX: commonware suggested to use usize::MAX.
-                codec_config: usize::MAX,
+                codec_config: (),
             },
         )
         .await
@@ -266,8 +265,9 @@ where
         parent = cause,
         skip_all,
         fields(
-            derived_epoch = epoch::of_height(block.height(), self.config.heights_per_epoch),
+            block.derived_epoch = epoch::of_height(block.height(), self.config.heights_per_epoch),
             block.height = block.height(),
+            ceremony.epoch = ceremony.as_ref().map(Ceremony::epoch),
         ),
     )]
     async fn handle_finalize<TReceiver, TSender>(
@@ -280,39 +280,51 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let mut this_ceremony = ceremony
-            .take()
-            .expect("there must be a ceremony active at all times");
+        assert!(
+            ceremony.is_some(),
+            "there must be a ceremony active at all times"
+        );
 
-        if let Some(block_epoch) = epoch::of_height(block.height(), self.config.heights_per_epoch)
-            && block_epoch == this_ceremony.epoch()
-        {
-            if epoch::is_first_height(block.height(), self.config.heights_per_epoch) {
-                // Notify the epoch manager that the first height of the new epoch
-                // was entered and the previous epoch can be exited.
+        // Special case height == 0
+        let Some(block_epoch) = epoch::of_height(block.height(), self.config.heights_per_epoch)
+        else {
+            return;
+        };
+
+        let Some(mut this_ceremony) = ceremony.take_if(|ceremony| ceremony.epoch() == block_epoch)
+        else {
+            info!("block was for a different epoch; skipping it");
+            return;
+        };
+
+        // Notify the epoch manager that the first height of the new epoch
+        // was entered and the previous epoch can be exited.
+        if epoch::is_first_height(block.height(), self.config.heights_per_epoch) {
+            // Special case epoch == 0
+            if let Some(previous_epoch) = this_ceremony.epoch().checked_sub(1) {
                 self.config
                     .epoch_manager
                     .report(
                         epoch::Exit {
-                            epoch: this_ceremony.epoch().saturating_sub(1),
+                            epoch: previous_epoch,
                         }
                         .into(),
                     )
                     .await;
             }
+        }
 
-            match epoch::relative_position(block.height(), self.config.heights_per_epoch) {
-                epoch::RelativePosition::FirstHalf => {
-                    let _ = this_ceremony.request_acks().await;
-                    let _ = this_ceremony.process_messages().await;
-                }
-                epoch::RelativePosition::Middle => {
-                    let _ = this_ceremony.process_messages().await;
-                    let _ = this_ceremony.construct_dealing_outcome().await;
-                }
-                epoch::RelativePosition::SecondHalf => {
-                    let _ = this_ceremony.process_block(&block).await;
-                }
+        match epoch::relative_position(block.height(), self.config.heights_per_epoch) {
+            epoch::RelativePosition::FirstHalf => {
+                let _ = this_ceremony.request_acks().await;
+                let _ = this_ceremony.process_messages().await;
+            }
+            epoch::RelativePosition::Middle => {
+                let _ = this_ceremony.process_messages().await;
+                let _ = this_ceremony.construct_dealing_outcome().await;
+            }
+            epoch::RelativePosition::SecondHalf => {
+                let _ = this_ceremony.process_block(&block).await;
             }
         }
 

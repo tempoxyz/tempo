@@ -19,6 +19,7 @@ impl Mailbox {
     }
 }
 
+#[derive(Debug)]
 pub(super) struct Message {
     pub(super) cause: Span,
     pub(super) activity: Activity,
@@ -33,6 +34,7 @@ impl Message {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum Activity {
     Enter(Enter),
     Exit(Exit),
@@ -50,6 +52,7 @@ impl From<Exit> for Activity {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Enter {
     pub(crate) epoch: Epoch,
     pub(crate) public: Public<MinSig>,
@@ -57,6 +60,7 @@ pub(crate) struct Enter {
     pub(crate) participants: Ordered<PublicKey>,
 }
 
+#[derive(Debug)]
 pub(crate) struct Exit {
     pub(crate) epoch: Epoch,
 }
