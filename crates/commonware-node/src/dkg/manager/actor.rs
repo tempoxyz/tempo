@@ -6,11 +6,12 @@ use commonware_p2p::{
     Receiver, Sender,
     utils::{mux, mux::MuxHandle},
 };
-use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
+use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::sequence::U64;
 use eyre::eyre;
 use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
+use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tracing::{Span, debug, info, instrument, warn};
 
@@ -27,7 +28,7 @@ const EPOCH_KEY: u64 = 0;
 
 pub(crate) struct Actor<TContext>
 where
-    TContext: Clock + Metrics + Storage,
+    TContext: Clock + commonware_runtime::Metrics + Storage,
 {
     config: super::Config,
     context: ContextCell<TContext>,
@@ -35,11 +36,13 @@ where
 
     ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, CeremonyState>>>,
     epoch_metadata: Metadata<ContextCell<TContext>, U64, EpochState>,
+
+    metrics: Metrics,
 }
 
 impl<TContext> Actor<TContext>
 where
-    TContext: Clock + CryptoRngCore + Metrics + Spawner + Storage,
+    TContext: Clock + CryptoRngCore + commonware_runtime::Metrics + Spawner + Storage,
 {
     pub(super) async fn init(
         config: super::Config,
@@ -68,12 +71,47 @@ where
         .await
         .expect("must be able to initialize metadata on disk to function");
 
+        let ceremony_failures = Counter::default();
+        let ceremony_successes = Counter::default();
+
+        let ceremony_dealers = Gauge::default();
+        let ceremony_players = Gauge::default();
+
+        context.register(
+            "ceremony_failures",
+            "the number of failed ceremonies a node participated in",
+            ceremony_failures.clone(),
+        );
+        context.register(
+            "ceremony_successes",
+            "the number of successful ceremonies a node participated in",
+            ceremony_successes.clone(),
+        );
+        context.register(
+            "ceremony_dealers",
+            "the number of dealers in the currently running ceremony",
+            ceremony_dealers.clone(),
+        );
+        context.register(
+            "ceremony_players",
+            "the number of players in the currently running ceremony",
+            ceremony_players.clone(),
+        );
+
+        let metrics = Metrics {
+            ceremony_failures,
+            ceremony_successes,
+            ceremony_dealers,
+            ceremony_players,
+        };
+
         Self {
             config,
             context,
             mailbox,
             ceremony_metadata: Arc::new(Mutex::new(ceremony_metadata)),
             epoch_metadata,
+            metrics,
         }
     }
 
@@ -126,6 +164,12 @@ where
                 dealers: epoch_state.participants.clone(),
                 players: epoch_state.participants.clone(),
             };
+            self.metrics
+                .ceremony_dealers
+                .set(epoch_state.participants.len() as i64);
+            self.metrics
+                .ceremony_players
+                .set(epoch_state.participants.len() as i64);
             Some(
                 ceremony::Ceremony::init(
                     &mut self.context,
@@ -369,12 +413,14 @@ where
 
             let ceremony_outcome = match this_ceremony.finalize() {
                 Ok(outcome) => {
+                    self.metrics.ceremony_successes.inc();
                     info!(
                         "ceremony was successful; using the new participants, polynomial and secret key"
                     );
                     outcome
                 }
                 Err(outcome) => {
+                    self.metrics.ceremony_failures.inc();
                     warn!(
                         "ceremony was a failure; using the old participants, polynomial and secret key"
                     );
@@ -410,6 +456,13 @@ where
                 dealers: epoch_state.participants.clone(),
                 players: epoch_state.participants.clone(),
             };
+            self.metrics
+                .ceremony_dealers
+                .set(epoch_state.participants.len() as i64);
+            self.metrics
+                .ceremony_players
+                .set(epoch_state.participants.len() as i64);
+
             ceremony::Ceremony::init(
                 &mut self.context,
                 ceremony_mux,
@@ -431,4 +484,12 @@ where
             warn!("could not confirm finalization because recipient already went away");
         }
     }
+}
+
+#[derive(Clone)]
+struct Metrics {
+    ceremony_failures: Counter,
+    ceremony_successes: Counter,
+    ceremony_dealers: Gauge,
+    ceremony_players: Gauge,
 }

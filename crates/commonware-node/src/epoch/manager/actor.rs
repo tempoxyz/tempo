@@ -53,6 +53,7 @@ where
     ) -> Self {
         let active_epochs = Gauge::default();
         let latest_epoch = Gauge::default();
+        let latest_participants = Gauge::default();
 
         context.register(
             "active_epochs",
@@ -64,6 +65,11 @@ where
             "the latest epoch managed by this epoch manager",
             latest_epoch.clone(),
         );
+        context.register(
+            "latest_participants",
+            "the number of participants in the most recently started epoch",
+            latest_participants.clone(),
+        );
 
         Self {
             config,
@@ -72,6 +78,7 @@ where
             metrics: Metrics {
                 active_epochs,
                 latest_epoch,
+                latest_participants,
             },
             active_epochs: BTreeMap::new(),
         }
@@ -197,6 +204,9 @@ where
         };
         assert!(self.config.scheme_provider.register(epoch, scheme.clone()));
 
+        self.metrics
+            .latest_participants
+            .set(participants.len() as i64);
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
             simplex::Config {
@@ -243,7 +253,6 @@ where
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
         );
-        // engine.start(pending_sc, recovered_sc, resolver_sc).await;
 
         info!("started consensus engine backing the epoch");
 
@@ -277,4 +286,5 @@ where
 struct Metrics {
     active_epochs: Gauge,
     latest_epoch: Gauge,
+    latest_participants: Gauge,
 }
