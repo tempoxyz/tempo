@@ -1,3 +1,4 @@
+use crate::hardfork::{TempoChainHardforks, TempoHardfork, TempoHardforks};
 use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
@@ -69,6 +70,7 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
             timestamp_millis_part: 0,
             inner,
         }),
+        tempo_hardforks: TempoChainHardforks::adagio_at_genesis(),
     }
     .into()
 });
@@ -78,6 +80,8 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 pub struct TempoChainSpec {
     /// [`ChainSpec`].
     pub inner: ChainSpec<TempoHeader>,
+    /// Tempo-specific hardfork configuration
+    pub tempo_hardforks: TempoChainHardforks,
 }
 
 impl TempoChainSpec {
@@ -89,6 +93,7 @@ impl TempoChainSpec {
                 timestamp_millis_part: inner.timestamp * 1000,
                 inner,
             }),
+            tempo_hardforks: TempoChainHardforks::adagio_at_genesis(),
         }
     }
 }
@@ -103,6 +108,7 @@ impl From<ChainSpec> for TempoChainSpec {
                 timestamp_millis_part: inner.timestamp * 1000,
                 inner,
             }),
+            tempo_hardforks: TempoChainHardforks::adagio_at_genesis(),
         }
     }
 }
@@ -193,8 +199,16 @@ impl EthExecutorSpec for TempoChainSpec {
     }
 }
 
+impl TempoHardforks for TempoChainSpec {
+    fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition {
+        self.tempo_hardforks.tempo_fork_activation(fork)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::hardfork::{TempoHardfork, TempoHardforks};
+    use reth_chainspec::ForkCondition;
     use reth_cli::chainspec::ChainSpecParser as _;
 
     #[test]
@@ -207,5 +221,31 @@ mod tests {
     fn can_load_dev() {
         let _ = super::TempoChainSpecParser::parse("dev")
             .expect("the dev chainspec must always be well formed");
+    }
+
+    #[test]
+    fn test_tempo_chainspec_has_tempo_hardforks() {
+        let chainspec = super::TempoChainSpecParser::parse("adagio")
+            .expect("the adagio chainspec must always be well formed");
+
+        // Should be able to access tempo_hardforks field
+        let _tempo_hardforks = &chainspec.tempo_hardforks;
+
+        // Adagio should be active at genesis (timestamp 0)
+        assert!(chainspec.tempo_hardforks.is_adagio_active_at_timestamp(0));
+    }
+
+    #[test]
+    fn test_tempo_chainspec_implements_tempo_hardforks_trait() {
+        let chainspec = super::TempoChainSpecParser::parse("adagio")
+            .expect("the adagio chainspec must always be well formed");
+
+        // Should be able to query Tempo hardfork activation through trait
+        let activation = chainspec.tempo_fork_activation(TempoHardfork::Adagio);
+        assert_eq!(activation, ForkCondition::Timestamp(0));
+
+        // Should be able to use convenience method through trait
+        assert!(chainspec.is_adagio_active_at_timestamp(0));
+        assert!(chainspec.is_adagio_active_at_timestamp(1000));
     }
 }

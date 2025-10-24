@@ -11449,6 +11449,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-eips",
  "alloy-genesis",
+ "alloy-hardforks",
  "alloy-primitives",
  "eyre",
  "reth-chainspec",
