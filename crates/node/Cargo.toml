@@ -70,6 +70,7 @@ alloy = { workspace = true, features = [
     "signers",
     "signer-mnemonic-all-languages",
 ] }
+alloy-rlp.workspace = true
 rand = "0.9.2"
 futures = "0.3"
 test-case.workspace = true
