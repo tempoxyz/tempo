@@ -25,6 +25,9 @@ pub struct TIP20Factory<'a, S: PrecompileStorageProvider> {
 
 // Precompile functions
 impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
+    /// Creates an instance of the factory account.
+    ///
+    /// Caution: This does not initialize the account, see [`Self::initialize`].
     pub fn new(storage: &'a mut S) -> Self {
         Self { storage }
     }

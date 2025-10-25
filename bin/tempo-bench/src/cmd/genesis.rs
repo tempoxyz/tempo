@@ -29,6 +29,7 @@ use tempo_precompiles::{
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::{ITIP20Factory, TIP20Factory},
+    tip403_registry::TIP403Registry,
 };
 
 /// Generate genesis allocation file for testing
@@ -68,6 +69,10 @@ pub struct GenesisArgs {
 }
 
 impl GenesisArgs {
+    /// Generates a genesis json file.
+    ///
+    /// It creates a new genesis allocation for the configured accounts.
+    /// And creates accounts for system contracts.
     pub async fn run(self) -> eyre::Result<()> {
         println!("Generating {:?} accounts", self.accounts);
         let addresses: Vec<Address> = (0..self.accounts)
@@ -83,11 +88,17 @@ impl GenesisArgs {
             })
             .collect::<eyre::Result<Vec<Address>>>()?;
 
+        // system contracts/precompiles must be initialized bottom up, if an init function (e.g. mint_pairwise_liquidity) uses another system contract/precompiles internally (tip403 registry), the registry must be initialized first.
+
         // Deploy TestUSD fee token
         // TODO: admin should be updated to be a cli arg so we can specify that
         // linkingUSD admin for persistent testnet deployments
         let admin = addresses[0];
         let mut evm = setup_tempo_evm();
+
+        println!("Initializing registry");
+        initialize_registry(&mut evm)?;
+
         let (_, alpha_token_address) = create_and_mint_token(
             "AlphaUSD",
             "AlphaUSD",
@@ -390,6 +401,15 @@ fn initialize_fee_manager(
             },
         )
         .expect("Could not 0x00 validator fee token");
+}
+
+/// Initializes the [`TIP403Registry`] contract.
+fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    TIP403Registry::new(&mut provider).initialize().unwrap();
+    Ok(())
 }
 
 fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {

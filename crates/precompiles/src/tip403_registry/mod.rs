@@ -12,6 +12,7 @@ use crate::{
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use alloy_evm::revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use revm::state::Bytecode;
+use tempo_contracts::precompiles::TIP20Error;
 
 mod slots {
     use alloy::primitives::{U256, uint};
@@ -33,15 +34,23 @@ pub struct PolicyData {
 }
 
 impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
-    pub fn new(storage: &'a mut S) -> Self {
-        storage
+    /// Creates an instance of the precompile.
+    ///
+    /// Caution: This does not initialize the account, see [`Self::initialize`].
+    pub const fn new(storage: &'a mut S) -> Self {
+        Self { storage }
+    }
+
+    /// Initializes the registry contract.
+    pub fn initialize(&mut self) -> Result<(), TIP20Error> {
+        self.storage
             .set_code(
                 TIP403_REGISTRY_ADDRESS,
                 Bytecode::new_legacy(Bytes::from_static(&[0xef])),
             )
             .expect("TODO: handle error");
 
-        Self { storage }
+        Ok(())
     }
 
     // View functions
