@@ -27,7 +27,7 @@ use crate::{
     tip20::{ITIP20, TIP20Error, TIP20Token},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
-use revm::{precompile::PrecompileError, state::Bytecode};
+use revm::state::Bytecode;
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
@@ -221,7 +221,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token: Address,
         amount: u128,
     ) -> Result<(), TempoPrecompileError> {
-        let user_balance = self.balance_of(user, token).expect("TODO: handle error");
+        let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
             self.sub_balance(user, token, amount)
         } else {
@@ -416,7 +416,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         amount: u128,
         is_bid: bool,
         tick: i16,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         // Lookup quote token from TIP20 token
         let quote_token = TIP20Token::from_address(token, self.storage).quote_token();
 
@@ -447,9 +447,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount)?;
 
         // Create the order
-        let order_id = self
-            .increment_pending_order_id()
-            .expect("TODO: handle error");
+        let order_id = self.increment_pending_order_id()?;
         let order = if is_bid {
             Order::new_bid(order_id, *sender, book_key, amount, tick)
         } else {
@@ -528,9 +526,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         self.decrement_balance_or_transfer_from(*sender, escrow_token, escrow_amount)?;
 
         // Create the flip order
-        let order_id = self
-            .increment_pending_order_id()
-            .expect("TODO: handle error");
+        let order_id = self.increment_pending_order_id()?;
         let order = Order::new_flip(order_id, *sender, book_key, amount, tick, is_bid, flip_tick)
             .expect("Invalid flip tick");
 
@@ -560,19 +556,18 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Process all pending orders into the active orderbook
     ///
     /// Only callable by the protocol via system transaction (sender must be Address::ZERO)
-    pub fn execute_block(&mut self, sender: &Address) -> Result<(), StablecoinExchangeError> {
+    pub fn execute_block(&mut self, sender: &Address) -> Result<(), TempoPrecompileError> {
         // Only protocol can call this
         if *sender != Address::ZERO {
-            return Err(StablecoinExchangeError::unauthorized());
+            return Err(StablecoinExchangeError::unauthorized().into());
         }
 
         let next_order_id = self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .expect("TODO: handle error")
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
             .to::<u128>();
 
-        let pending_order_id = self.get_pending_order_id().expect("TODO: handle error");
+        let pending_order_id = self.get_pending_order_id()?;
 
         let mut current_order_id = next_order_id + 1;
         while current_order_id <= pending_order_id {
@@ -580,8 +575,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             current_order_id += 1;
         }
 
-        self.set_active_order_id(pending_order_id)
-            .expect("TODO: handle error");
+        self.set_active_order_id(pending_order_id)?;
 
         Ok(())
     }
@@ -655,7 +649,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         order: &mut Order,
         level: &mut PriceLevel,
         fill_amount: u128,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
         let price = tick_to_price(order.tick());
 
@@ -712,7 +706,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         book_key: B256,
         order: &mut Order,
         mut level: PriceLevel,
-    ) -> Result<(u128, Option<(PriceLevel, Order)>), StablecoinExchangeError> {
+    ) -> Result<(u128, Option<(PriceLevel, Order)>), TempoPrecompileError> {
         let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
         let price = tick_to_price(order.tick());
         let fill_amount = order.remaining();
@@ -734,18 +728,16 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         };
 
         // Emit OrderFilled event for complete fill
-        self.storage
-            .emit_event(
-                self.address,
-                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
-                    orderId: order.order_id(),
-                    maker: order.maker(),
-                    amountFilled: fill_amount,
-                    partialFill: false,
-                })
-                .into_log_data(),
-            )
-            .expect("Event emission failed");
+        self.storage.emit_event(
+            self.address,
+            StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                orderId: order.order_id(),
+                maker: order.maker(),
+                amountFilled: fill_amount,
+                partialFill: false,
+            })
+            .into_log_data(),
+        )?;
 
         if order.is_flip() {
             // Create a new flip order with flipped side and swapped ticks
@@ -827,7 +819,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         bid: bool,
         mut amount_out: u128,
         max_amount_in: u128,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = Order::from_storage(level.head, self.storage, self.address);
 
@@ -845,7 +837,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             };
 
             if total_amount_in + amount_in > max_amount_in {
-                return Err(StablecoinExchangeError::max_input_exceeded());
+                return Err(StablecoinExchangeError::max_input_exceeded().into());
             }
 
             if fill_amount < order.remaining() {
@@ -863,7 +855,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     order = new_order;
                 } else {
                     if amount_out > 0 {
-                        return Err(StablecoinExchangeError::insufficient_liquidity());
+                        return Err(StablecoinExchangeError::insufficient_liquidity().into());
                     }
                     break;
                 }
@@ -880,7 +872,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         bid: bool,
         mut amount_in: u128,
         min_amount_out: u128,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = Order::from_storage(level.head, self.storage, self.address);
 
@@ -906,7 +898,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         if total_amount_out < min_amount_out {
-            return Err(StablecoinExchangeError::insufficient_output());
+            return Err(StablecoinExchangeError::insufficient_output().into());
         }
 
         Ok(total_amount_out)
@@ -917,7 +909,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         &mut self,
         book_key: B256,
         bid: bool,
-    ) -> Result<PriceLevel, StablecoinExchangeError> {
+    ) -> Result<PriceLevel, TempoPrecompileError> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
 
         let current_tick = if bid {
@@ -1427,11 +1419,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 }
 
 impl<'a, S: PrecompileStorageProvider> StorageOps for StablecoinExchange<'a, S> {
-    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), PrecompileError> {
+    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError> {
         self.storage.sstore(self.address, slot, value)
     }
 
-    fn sload(&mut self, slot: U256) -> Result<U256, PrecompileError> {
+    fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError> {
         self.storage.sload(self.address, slot)
     }
 }

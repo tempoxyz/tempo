@@ -25,6 +25,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 }
 
 impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
+    type Error = EvmInternalsError;
+
     fn chain_id(&self) -> u64 {
         self.chain_id
     }
@@ -89,6 +91,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 }
 
+impl From<EvmInternalsError> for TempoPrecompileError {
+    fn from(value: EvmInternalsError) -> Self {
+        TempoPrecompileError::Fatal(value.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +120,7 @@ mod tests {
 
         let addr = Address::random();
         let key = U256::random();
+
         let value = U256::random();
 
         provider.sstore(addr, key, value)?;

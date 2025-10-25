@@ -5,6 +5,7 @@ use super::{
     slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS},
 };
 use crate::{
+    error::TempoPrecompileError,
     stablecoin_exchange::{IStablecoinExchange, error::OrderError},
     storage::{PrecompileStorageProvider, slots::mapping_slot},
 };
@@ -55,7 +56,7 @@ impl PriceLevel {
         book_key: B256,
         tick: i16,
         is_bid: bool,
-    ) -> Self {
+    ) -> Result<Self, TempoPrecompileError> {
         let base_slot = if is_bid {
             BID_TICK_LEVELS
         } else {
@@ -309,25 +310,22 @@ impl Orderbook {
         book_key: B256,
         storage: &mut S,
         address: Address,
-    ) -> Self {
+    ) -> Result<Self, TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
         let base = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)
-            .expect("TODO: handle error")
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?
             .into_address();
 
         let quote = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET)
-            .expect("TODO: handle error")
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET)?
             .into_address();
 
         let best_bid_tick = storage
             .sload(
                 address,
                 orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
-            )
-            .expect("TODO: handle error")
+            )?
             .to::<u16>() as i16;
 
         // `tick` is stored into the least significant 16 bits of U256.
@@ -337,54 +335,51 @@ impl Orderbook {
             .sload(
                 address,
                 orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
-            )
-            .expect("TODO: handle error")
+            )?
             .to::<u16>() as i16;
 
-        Self {
+        Ok(Self {
             base,
             quote,
             best_bid_tick,
             best_ask_tick,
-        }
+        })
     }
 
     /// Store this Orderbook to storage
-    pub fn store<S: PrecompileStorageProvider>(&self, storage: &mut S, address: Address) {
+    pub fn store<S: PrecompileStorageProvider>(
+        &self,
+        storage: &mut S,
+        address: Address,
+    ) -> Result<(), TempoPrecompileError> {
         let book_key = compute_book_key(self.base, self.quote);
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET,
-                self.base.into_u256(),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET,
+            self.base.into_u256(),
+        )?;
 
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET,
-                self.quote.into_u256(),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET,
+            self.quote.into_u256(),
+        )?;
 
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
-                U256::from(self.best_bid_tick as u16),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+            U256::from(self.best_bid_tick as u16),
+        )?;
 
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
-                U256::from(self.best_ask_tick as u16),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+            U256::from(self.best_ask_tick as u16),
+        )?;
+
+        Ok(())
     }
 
     /// Update only the best bid tick
@@ -393,15 +388,13 @@ impl Orderbook {
         address: Address,
         book_key: B256,
         new_best_bid: i16,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
-                U256::from(new_best_bid as u16),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+            U256::from(new_best_bid as u16),
+        )
     }
 
     /// Update only the best ask tick
@@ -410,15 +403,13 @@ impl Orderbook {
         address: Address,
         book_key: B256,
         new_best_ask: i16,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
-                U256::from(new_best_ask as u16),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+            U256::from(new_best_ask as u16),
+        )
     }
 
     /// Check if this orderbook exists in storage
@@ -426,12 +417,10 @@ impl Orderbook {
         book_key: B256,
         storage: &mut S,
         address: Address,
-    ) -> bool {
+    ) -> Result<bool, TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        let base = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)
-            .expect("TODO: handle error");
-        base != U256::ZERO
+        let base = storage.sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?;
+        Ok(base != U256::ZERO)
     }
 }
 
@@ -439,6 +428,7 @@ impl From<Orderbook> for IStablecoinExchange::Orderbook {
     fn from(value: Orderbook) -> Self {
         Self {
             base: value.base,
+
             quote: value.quote,
             bestBidTick: value.best_bid_tick,
             bestAskTick: value.best_ask_tick,
