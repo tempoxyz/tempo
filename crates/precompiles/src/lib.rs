@@ -200,6 +200,7 @@ fn metadata<T: SolCall>(result: T::Return) -> PrecompileResult {
 }
 
 #[inline]
+// TODO: propagate errors
 fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> T::Return) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
@@ -213,9 +214,9 @@ fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> T::Return) -> Precompi
 // NOTE: Temporary fix to dispatch view functions that return results. This should be unified with
 // `view` when precompiles are refactored
 #[inline]
-fn view_result<T: SolCall, E: SolInterface>(
+fn view_result<T: SolCall>(
     calldata: &[u8],
-    f: impl FnOnce(T) -> Result<T::Return, E>,
+    f: impl FnOnce(T) -> Result<T::Return, TempoPrecompileError>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
@@ -227,7 +228,7 @@ fn view_result<T: SolCall, E: SolInterface>(
         )),
         Err(e) => Ok(PrecompileOutput::new_reverted(
             VIEW_FUNC_GAS,
-            E::abi_encode(&e).into(),
+            e.abi_encode(),
         )),
     }
 }

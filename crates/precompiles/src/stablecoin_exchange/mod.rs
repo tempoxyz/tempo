@@ -112,19 +112,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`
-    pub fn get_order(&mut self, order_id: u128) -> Result<Order, StablecoinExchangeError> {
+    pub fn get_order(&mut self, order_id: u128) -> Result<Order, TempoPrecompileError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
 
         // If the order is not filled and currently active
-        if !order.maker().is_zero()
-            && order.order_id()
-                <= self
-                    .get_active_order_id()
-                    .expect("Failed to get active order ID")
-        {
+        if !order.maker().is_zero() && order.order_id() <= self.get_active_order_id()? {
             Ok(order)
         } else {
-            Err(StablecoinExchangeError::order_does_not_exist())
+            Err(StablecoinExchangeError::order_does_not_exist().into())
         }
     }
 
@@ -237,7 +232,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_in: Address,
         token_out: Address,
         amount_out: u128,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
@@ -255,7 +250,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_in: Address,
         token_out: Address,
         amount_in: u128,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
@@ -275,7 +270,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_in: u128,
         min_amount_out: u128,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
@@ -292,7 +287,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Check final output meets minimum requirement
         if amount < min_amount_out {
-            return Err(StablecoinExchangeError::insufficient_output());
+            return Err(StablecoinExchangeError::insufficient_output().into());
         }
 
         // Transfer only the final output token to sender (only once, at the end)
@@ -309,7 +304,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_out: u128,
         max_amount_in: u128,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
@@ -321,7 +316,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         if amount > max_amount_in {
-            return Err(StablecoinExchangeError::max_input_exceeded());
+            return Err(StablecoinExchangeError::max_input_exceeded().into());
         }
 
         // Deduct input tokens ONCE at end
@@ -368,13 +363,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         Orderbook::from_storage(pair_key, self.storage, self.address)
     }
 
-    pub fn create_pair(&mut self, base: &Address) -> Result<B256, StablecoinExchangeError> {
+    pub fn create_pair(&mut self, base: &Address) -> Result<B256, TempoPrecompileError> {
         let quote = TIP20Token::from_address(*base, self.storage).quote_token();
 
         let book_key = compute_book_key(*base, quote);
 
         if Orderbook::exists(book_key, self.storage, self.address) {
-            return Err(StablecoinExchangeError::pair_already_exists());
+            return Err(StablecoinExchangeError::pair_already_exists().into());
         }
 
         let book = Orderbook::new(*base, quote);
@@ -424,19 +419,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let book_key = compute_book_key(token, quote_token);
         let book = Orderbook::from_storage(book_key, self.storage, self.address);
         if book.base.is_zero() {
-            return Err(StablecoinExchangeError::pair_does_not_exist());
+            return Err(StablecoinExchangeError::pair_does_not_exist().into());
         }
 
         // Validate tick is within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::tick_out_of_bounds(tick));
+            return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
         }
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance())?;
+                .ok_or(StablecoinExchangeError::insufficient_balance().into())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -491,7 +486,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         is_bid: bool,
         tick: i16,
         flip_tick: i16,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         // Lookup quote token from TIP20 token
         let quote_token = TIP20Token::from_address(token, self.storage).quote_token();
 
@@ -500,22 +495,22 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Validate tick and flip_tick are within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::tick_out_of_bounds(tick));
+            return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
         }
         if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
-            return Err(StablecoinExchangeError::tick_out_of_bounds(flip_tick));
+            return Err(StablecoinExchangeError::tick_out_of_bounds(flip_tick).into());
         }
 
         // Validate flip_tick relationship to tick based on order side
         if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
-            return Err(StablecoinExchangeError::invalid_flip_tick());
+            return Err(StablecoinExchangeError::invalid_flip_tick().into());
         }
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance())?;
+                .ok_or(StablecoinExchangeError::insufficient_balance().into())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -548,7 +543,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("Event emission failed");
+            .map_err(Into::into)?;
 
         Ok(order_id)
     }
@@ -564,7 +559,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let next_order_id = self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)?
+            .sload(self.address, slots::ACTIVE_ORDER_ID)
+            .map_err(Into::into)?
             .to::<u128>();
 
         let pending_order_id = self.get_pending_order_id()?;
@@ -581,22 +577,22 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Process a single pending order into the active orderbook
-    fn process_pending_order(&mut self, order_id: u128) {
+    fn process_pending_order(&mut self, order_id: u128) -> Result<(), TempoPrecompileError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
 
         // If the order is already canceled, return early
         if order.maker().is_zero() {
-            return;
+            return Ok(());
         }
 
-        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
+        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address)?;
         let mut level = PriceLevel::from_storage(
             self.storage,
             self.address,
             order.book_key(),
             order.tick(),
             order.is_bid(),
-        );
+        )?;
 
         let prev_tail = level.tail;
         if prev_tail == 0 {
@@ -650,7 +646,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         level: &mut PriceLevel,
         fill_amount: u128,
     ) -> Result<u128, TempoPrecompileError> {
-        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
+        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address)?;
         let price = tick_to_price(order.tick());
 
         // Update order remaining amount
@@ -695,7 +691,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("Event emission failed");
+            .map_err(Into::into)?;
 
         Ok(amount_out)
     }
@@ -707,7 +703,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         order: &mut Order,
         mut level: PriceLevel,
     ) -> Result<(u128, Option<(PriceLevel, Order)>), TempoPrecompileError> {
-        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
+        let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address)?;
         let price = tick_to_price(order.tick());
         let fill_amount = order.remaining();
 
@@ -728,16 +724,18 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         };
 
         // Emit OrderFilled event for complete fill
-        self.storage.emit_event(
-            self.address,
-            StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
-                orderId: order.order_id(),
-                maker: order.maker(),
-                amountFilled: fill_amount,
-                partialFill: false,
-            })
-            .into_log_data(),
-        )?;
+        self.storage
+            .emit_event(
+                self.address,
+                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                    orderId: order.order_id(),
+                    maker: order.maker(),
+                    amountFilled: fill_amount,
+                    partialFill: false,
+                })
+                .into_log_data(),
+            )
+            .map_err(Into::into)?;
 
         if order.is_flip() {
             // Create a new flip order with flipped side and swapped ticks
@@ -914,12 +912,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let current_tick = if bid {
             if orderbook.best_bid_tick == i16::MIN {
-                return Err(StablecoinExchangeError::insufficient_liquidity());
+                return Err(StablecoinExchangeError::insufficient_liquidity().into());
             }
             orderbook.best_bid_tick
         } else {
             if orderbook.best_ask_tick == i16::MAX {
-                return Err(StablecoinExchangeError::insufficient_liquidity());
+                return Err(StablecoinExchangeError::insufficient_liquidity().into());
             }
             orderbook.best_ask_tick
         };
@@ -963,7 +961,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Cancel a pending order (not yet in the active orderbook)
-    fn cancel_pending_order(&mut self, order: Order) -> Result<(), StablecoinExchangeError> {
+    fn cancel_pending_order(&mut self, order: Order) -> Result<(), TempoPrecompileError> {
         let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address);
         let token = if order.is_bid() {
             orderbook.quote
@@ -1000,7 +998,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Cancel an active order (already in the orderbook)
-    fn cancel_active_order(&mut self, order: Order) -> Result<(), StablecoinExchangeError> {
+    fn cancel_active_order(&mut self, order: Order) -> Result<(), TempoPrecompileError> {
         let mut level = PriceLevel::from_storage(
             self.storage,
             self.address,
@@ -1099,7 +1097,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         book_key: B256,
         amount_out: u128,
         is_bid: bool,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         let mut remaining_out = amount_out;
         let mut amount_in = 0u128;
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
@@ -1110,7 +1108,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             orderbook.best_ask_tick
         };
         if current_tick == i16::MIN {
-            return Err(StablecoinExchangeError::insufficient_liquidity());
+            return Err(StablecoinExchangeError::insufficient_liquidity().into());
         }
 
         while remaining_out > 0 {
@@ -1140,7 +1138,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     )
                 };
                 if !initialized {
-                    return Err(StablecoinExchangeError::insufficient_liquidity());
+                    return Err(StablecoinExchangeError::insufficient_liquidity().into());
                 }
                 current_tick = next_tick;
                 continue;
@@ -1204,7 +1202,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     )
                 };
                 if !initialized && remaining_out > 0 {
-                    return Err(StablecoinExchangeError::insufficient_liquidity());
+                    return Err(StablecoinExchangeError::insufficient_liquidity().into());
                 }
                 current_tick = next_tick;
             } else {
@@ -1222,10 +1220,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         &mut self,
         token_in: Address,
         token_out: Address,
-    ) -> Result<Vec<(B256, bool)>, StablecoinExchangeError> {
+    ) -> Result<Vec<(B256, bool)>, TempoPrecompileError> {
         // Cannot trade same token
         if token_in == token_out {
-            return Err(StablecoinExchangeError::identical_tokens());
+            return Err(StablecoinExchangeError::identical_tokens().into());
         }
 
         // Check if direct or reverse pair exists
@@ -1249,7 +1247,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             }
         }
 
-        let lca = lca.ok_or_else(StablecoinExchangeError::pair_does_not_exist)?;
+        let lca = lca.ok_or_else(|| StablecoinExchangeError::pair_does_not_exist().into())?;
 
         // Build the trade path: token_in -> ... -> LCA -> ... -> token_out
         let mut trade_path = Vec::new();
@@ -1279,7 +1277,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     fn validate_and_build_route(
         &mut self,
         path: &[Address],
-    ) -> Result<Vec<(B256, bool)>, StablecoinExchangeError> {
+    ) -> Result<Vec<(B256, bool)>, TempoPrecompileError> {
         let mut route = Vec::new();
 
         for i in 0..path.len() - 1 {
@@ -1291,7 +1289,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             // Validate pair exists
             if orderbook.base.is_zero() {
-                return Err(StablecoinExchangeError::pair_does_not_exist());
+                return Err(StablecoinExchangeError::pair_does_not_exist().into());
             }
 
             // Determine direction
@@ -1308,7 +1306,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     fn find_path_to_root(
         &mut self,
         mut token: Address,
-    ) -> Result<Vec<Address>, StablecoinExchangeError> {
+    ) -> Result<Vec<Address>, TempoPrecompileError> {
         let mut path = vec![token];
 
         while token != LINKING_USD_ADDRESS {
@@ -1325,7 +1323,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         book_key: B256,
         amount_in: u128,
         is_bid: bool,
-    ) -> Result<u128, StablecoinExchangeError> {
+    ) -> Result<u128, TempoPrecompileError> {
         let mut remaining_in = amount_in;
         let mut amount_out = 0u128;
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address);
@@ -1337,7 +1335,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         };
 
         if current_tick == i16::MIN {
-            return Err(StablecoinExchangeError::insufficient_liquidity());
+            return Err(StablecoinExchangeError::insufficient_liquidity().into());
         }
 
         while remaining_in > 0 {
@@ -1367,7 +1365,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     )
                 };
                 if !initialized {
-                    return Err(StablecoinExchangeError::insufficient_liquidity());
+                    return Err(StablecoinExchangeError::insufficient_liquidity().into());
                 }
                 current_tick = next_tick;
                 continue;
@@ -1406,7 +1404,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     )
                 };
                 if !initialized && remaining_in > 0 {
-                    return Err(StablecoinExchangeError::insufficient_liquidity());
+                    return Err(StablecoinExchangeError::insufficient_liquidity().into());
                 }
                 current_tick = next_tick;
             } else {

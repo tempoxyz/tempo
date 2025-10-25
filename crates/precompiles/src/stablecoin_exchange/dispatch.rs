@@ -141,12 +141,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
             IStablecoinExchange::executeBlockCall::SELECTOR => {
-                mutate_void::<
-                    IStablecoinExchange::executeBlockCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |_s, _call| {
-                    self.execute_block(msg_sender)
-                })
+                mutate_void::<IStablecoinExchange::executeBlockCall>(
+                    calldata,
+                    msg_sender,
+                    |_s, _call| self.execute_block(msg_sender),
+                )
             }
 
             _ => Err(PrecompileError::Other(

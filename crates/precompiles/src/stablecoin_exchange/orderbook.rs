@@ -69,12 +69,12 @@ impl PriceLevel {
         // Load each field
         let head = storage
             .sload(address, tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET)
-            .expect("TODO: handle error")
+            .map_err(Into::into)?
             .to::<u128>();
 
         let tail = storage
             .sload(address, tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET)
-            .expect("TODO: handle error")
+            .map_err(Into::into)?
             .to::<u128>();
 
         let total_liquidity = storage
@@ -82,14 +82,14 @@ impl PriceLevel {
                 address,
                 tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
             )
-            .expect("TODO: handle error")
+            .map_err(Into::into)?
             .to::<u128>();
 
-        Self {
+        Ok(Self {
             head,
             tail,
             total_liquidity,
-        }
+        })
     }
 
     /// Delete PriceLevel from storage
@@ -144,7 +144,7 @@ impl PriceLevel {
         book_key: B256,
         tick: i16,
         is_bid: bool,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let base_slot = if is_bid {
             BID_TICK_LEVELS
         } else {
@@ -155,29 +155,23 @@ impl PriceLevel {
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         // Store each field
-        storage
-            .sstore(
-                address,
-                tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
-                U256::from(self.head),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+            U256::from(self.head),
+        )?;
 
-        storage
-            .sstore(
-                address,
-                tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
-                U256::from(self.tail),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+            U256::from(self.tail),
+        )?;
 
-        storage
-            .sstore(
-                address,
-                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
-                U256::from(self.total_liquidity),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+            U256::from(self.total_liquidity),
+        )
     }
 
     /// Update only the head order ID
@@ -188,7 +182,7 @@ impl PriceLevel {
         tick: i16,
         is_bid: bool,
         new_head: u128,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let base_slot = if is_bid {
             BID_TICK_LEVELS
         } else {
@@ -197,13 +191,11 @@ impl PriceLevel {
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
-        storage
-            .sstore(
-                address,
-                tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
-                U256::from(new_head),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+            U256::from(new_head),
+        )
     }
 
     /// Update only the tail order ID
@@ -214,7 +206,7 @@ impl PriceLevel {
         tick: i16,
         is_bid: bool,
         new_tail: u128,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let base_slot = if is_bid {
             BID_TICK_LEVELS
         } else {
@@ -223,13 +215,11 @@ impl PriceLevel {
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
-        storage
-            .sstore(
-                address,
-                tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
-                U256::from(new_tail),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+            U256::from(new_tail),
+        )
     }
 
     /// Update only the total liquidity
@@ -240,7 +230,7 @@ impl PriceLevel {
         tick: i16,
         is_bid: bool,
         new_total: u128,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let base_slot = if is_bid {
             BID_TICK_LEVELS
         } else {
@@ -249,13 +239,11 @@ impl PriceLevel {
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
-        storage
-            .sstore(
-                address,
-                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
-                U256::from(new_total),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            address,
+            tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+            U256::from(new_total),
+        )
     }
 }
 
