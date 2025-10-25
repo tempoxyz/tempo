@@ -92,7 +92,7 @@ sol! {
         error InsufficientLiquidity();
         error InsufficientOutput();
         error MaxInputExceeded();
-        error Fatal(string message);
+        error InternalError(string message);
     }
 }
 
@@ -152,9 +152,9 @@ impl StablecoinExchangeError {
         Self::MaxInputExceeded(IStablecoinExchange::MaxInputExceeded {})
     }
 
-    /// Creates a fatal error with message.
-    pub fn fatal(message: String) -> Self {
-        Self::Fatal(IStablecoinExchange::Fatal { message })
+    /// Creates a internal precompile error with message.
+    pub fn internal(message: String) -> Self {
+        Self::InternalError(IStablecoinExchange::InternalError { message })
     }
 }
 

@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+pub mod error;
 pub mod linking_usd;
 pub mod nonce;
 pub mod provider;
@@ -15,6 +16,7 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use crate::{
+    error::TempoPrecompileError,
     linking_usd::LinkingUSD,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
@@ -255,10 +257,10 @@ pub fn mutate<T: SolCall, E: SolInterface>(
 }
 
 #[inline]
-fn mutate_void<T: SolCall, E: SolInterface>(
+fn mutate_void<T: SolCall>(
     calldata: &[u8],
     sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<(), E>,
+    f: impl FnOnce(&Address, T) -> Result<(), TempoPrecompileError>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(
@@ -270,7 +272,7 @@ fn mutate_void<T: SolCall, E: SolInterface>(
         Ok(()) => Ok(PrecompileOutput::new(MUTATE_FUNC_GAS, Bytes::new())),
         Err(e) => Ok(PrecompileOutput::new_reverted(
             MUTATE_FUNC_GAS,
-            E::abi_encode(&e).into(),
+            e.abi_encode(),
         )),
     }
 }

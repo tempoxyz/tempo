@@ -88,18 +88,14 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
             IStablecoinExchange::withdrawCall::SELECTOR => {
-                mutate_void::<
-                    IStablecoinExchange::withdrawCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |s, call| {
+                mutate_void::<IStablecoinExchange::withdrawCall>(calldata, msg_sender, |s, call| {
                     self.withdraw(*s, call.token, call.amount)
                 })
             }
             IStablecoinExchange::cancelCall::SELECTOR => {
-                mutate_void::<
-                    IStablecoinExchange::cancelCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |s, call| self.cancel(s, call.orderId))
+                mutate_void::<IStablecoinExchange::cancelCall>(calldata, msg_sender, |s, call| {
+                    self.cancel(s, call.orderId)
+                })
             }
             IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
                 mutate::<

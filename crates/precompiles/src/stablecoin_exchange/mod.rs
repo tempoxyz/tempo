@@ -18,6 +18,7 @@ pub use orderbook::{
 
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    error::TempoPrecompileError,
     linking_usd::LinkingUSD,
     stablecoin_exchange::orderbook::{
         compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
@@ -97,11 +98,21 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Get user's balance for a specific token
-    pub fn balance_of(&mut self, user: Address, token: Address) -> Result<u128, PrecompileError> {
+    pub fn balance_of(
+        &mut self,
+        user: Address,
+        token: Address,
+    ) -> Result<u128, StablecoinExchangeError> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
 
-        Ok(self.storage.sload(self.address, balance_slot)?.to::<u128>())
+        let balance = self
+            .storage
+            .sload(self.address, balance_slot)
+            .map_err(|e| StablecoinExchangeError::internal(e.to_string()))?
+            .to::<u128>();
+
+        Ok(balance)
     }
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
@@ -938,37 +949,34 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Cancel an order and refund tokens to maker
     /// Only the order maker can cancel their own order
-    pub fn cancel(
-        &mut self,
-        sender: &Address,
-        order_id: u128,
-    ) -> Result<(), StablecoinExchangeError> {
+    pub fn cancel(&mut self, sender: &Address, order_id: u128) -> Result<(), TempoPrecompileError> {
         let order = Order::from_storage(order_id, self.storage, self.address);
 
         if order.maker().is_zero() {
-            return Err(StablecoinExchangeError::order_does_not_exist());
+            return Err(StablecoinExchangeError::order_does_not_exist().into());
         }
 
         if order.maker() != *sender {
-            return Err(StablecoinExchangeError::unauthorized());
+            return Err(StablecoinExchangeError::unauthorized().into());
         }
 
         if order.remaining() == 0 {
-            return Err(StablecoinExchangeError::order_does_not_exist());
+            return Err(StablecoinExchangeError::order_does_not_exist().into());
         }
 
         // Check if the order is still pending (not yet in active orderbook)
         let next_order_id = self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .expect("TODO: handle error")
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
             .to::<u128>();
 
         if order.order_id() > next_order_id {
-            self.cancel_pending_order(order)
+            self.cancel_pending_order(order)?;
         } else {
-            self.cancel_active_order(order)
+            self.cancel_active_order(order)?;
         }
+
+        Ok(())
     }
 
     /// Cancel a pending order (not yet in the active orderbook)
@@ -1090,16 +1098,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         user: Address,
         token: Address,
         amount: u128,
-    ) -> Result<(), StablecoinExchangeError> {
-        let current_balance = self.balance_of(user, token).expect("TODO: handle error");
+    ) -> Result<(), TempoPrecompileError> {
+        let current_balance = self.balance_of(user, token)?;
         if current_balance < amount {
-            return Err(StablecoinExchangeError::insufficient_balance());
+            return Err(StablecoinExchangeError::insufficient_balance().into());
         }
-        self.sub_balance(user, token, amount)
-            .expect("TODO: handle error");
-
+        self.sub_balance(user, token, amount)?;
         self.transfer(token, user, amount)
-            .expect("TODO: handle error");
+            .map_err(TempoPrecompileError::from)?;
 
         Ok(())
     }

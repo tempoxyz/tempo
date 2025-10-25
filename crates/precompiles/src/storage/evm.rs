@@ -1,11 +1,8 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
-use revm::{
-    precompile::PrecompileError,
-    state::{AccountInfo, Bytecode},
-};
+use revm::state::{AccountInfo, Bytecode};
 
-use crate::storage::PrecompileStorageProvider;
+use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
@@ -36,38 +33,43 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.block_timestamp()
     }
 
-    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), PrecompileError> {
+    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         self.ensure_loaded_account(address)
-            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         self.internals.set_code(address, code);
         Ok(())
     }
 
-    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, PrecompileError> {
+    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, TempoPrecompileError> {
         self.ensure_loaded_account(address)
-            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         let account = self
             .internals
             .load_account_code(address)
-            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         Ok(account.data.info.clone())
     }
 
-    fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), PrecompileError> {
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
         self.ensure_loaded_account(address)
-            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         self.internals
             .sstore(address, key, value)
-            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         Ok(())
     }
 
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), PrecompileError> {
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.internals.log(Log {
             address,
             data: event,
@@ -76,9 +78,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, PrecompileError> {
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         self.ensure_loaded_account(address)
-            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         Ok(self
             .internals
