@@ -92,7 +92,6 @@ sol! {
         error InsufficientLiquidity();
         error InsufficientOutput();
         error MaxInputExceeded();
-        error InternalError(string message);
     }
 }
 
@@ -150,11 +149,6 @@ impl StablecoinExchangeError {
     /// Creates an error for max input exceeded.
     pub const fn max_input_exceeded() -> Self {
         Self::MaxInputExceeded(IStablecoinExchange::MaxInputExceeded {})
-    }
-
-    /// Creates a internal precompile error with message.
-    pub fn internal(message: String) -> Self {
-        Self::InternalError(IStablecoinExchange::InternalError { message })
     }
 }
 
