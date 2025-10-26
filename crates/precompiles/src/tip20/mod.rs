@@ -2,24 +2,25 @@ pub mod dispatch;
 pub mod roles;
 
 pub use tempo_contracts::precompiles::{
-    IRolesAuth, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, ITIP20,
+    IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
 
 use crate::{
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    error::TempoPrecompileError,
     storage::{
-        slots::{double_mapping_slot, mapping_slot},
         PrecompileStorageProvider,
+        slots::{double_mapping_slot, mapping_slot},
     },
-    tip20::roles::{RolesAuthContract, DEFAULT_ADMIN_ROLE},
+    tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
     tip4217_registry::{ITIP4217Registry, TIP4217Registry},
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use alloy::{
     consensus::crypto::secp256k1 as eth_secp256k1,
     hex,
-    primitives::{keccak256, Address, Bytes, IntoLogData, Signature as EthSignature, B256, U256},
+    primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
     sol_types::SolStruct,
 };
 use revm::{
@@ -54,7 +55,7 @@ pub fn address_to_token_id_unchecked(address: &Address) -> u64 {
 }
 
 pub mod slots {
-    use alloy::primitives::{uint, U256};
+    use alloy::primitives::{U256, uint};
 
     // Variables
     pub const NAME: U256 = uint!(0_U256);
@@ -111,52 +112,56 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.read_string(slots::CURRENCY)
     }
 
-    pub fn total_supply(&mut self) -> U256 {
+    pub fn total_supply(&mut self) -> Result<U256, TempoPrecompileError> {
         self.storage
             .sload(self.token_address, slots::TOTAL_SUPPLY)
-            .expect("TODO: handle error")
+            .map_err(Into::into)
     }
 
-    pub fn quote_token(&mut self) -> Address {
-        self.storage
+    pub fn quote_token(&mut self) -> Result<Address, TempoPrecompileError> {
+        Ok(self
+            .storage
             .sload(self.token_address, slots::QUOTE_TOKEN)
-            .expect("TODO: handle error")
-            .into_address()
+            .map_err(Into::into)?
+            .into_address())
     }
 
-    pub fn next_quote_token(&mut self) -> Address {
-        self.storage
+    pub fn next_quote_token(&mut self) -> Result<Address, TempoPrecompileError> {
+        Ok(self
+            .storage
             .sload(self.token_address, slots::NEXT_QUOTE_TOKEN)
-            .expect("TODO: handle error")
-            .into_address()
+            .map_err(Into::into)?
+            .into_address())
     }
 
-    pub fn supply_cap(&mut self) -> U256 {
+    pub fn supply_cap(&mut self) -> Result<U256, TempoPrecompileError> {
         self.storage
             .sload(self.token_address, slots::SUPPLY_CAP)
-            .expect("TODO: handle error")
+            .map_err(Into::into)
     }
 
-    pub fn paused(&mut self) -> bool {
-        self.storage
+    pub fn paused(&mut self) -> Result<bool, TempoPrecompileError> {
+        Ok(self
+            .storage
             .sload(self.token_address, slots::PAUSED)
-            .expect("TODO: handle error")
-            != U256::ZERO
+            .map_err(Into::into)?
+            != U256::ZERO)
     }
 
-    pub fn transfer_policy_id(&mut self) -> u64 {
-        self.storage
+    pub fn transfer_policy_id(&mut self) -> Result<u64, TempoPrecompileError> {
+        Ok(self
+            .storage
             .sload(self.token_address, slots::TRANSFER_POLICY_ID)
-            .expect("TODO: handle error")
-            .to::<u64>()
+            .map_err(Into::into)?
+            .to::<u64>())
     }
 
-    pub fn domain_separator(&mut self) -> B256 {
-        B256::from(
+    pub fn domain_separator(&mut self) -> Result<B256, TempoPrecompileError> {
+        Ok(B256::from(
             self.storage
                 .sload(self.token_address, slots::DOMAIN_SEPARATOR)
-                .expect("TODO: handle error"),
-        )
+                .map_err(Into::into)?,
+        ))
     }
 
     // View functions
@@ -168,19 +173,20 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.get_allowance(&call.owner, &call.spender)
     }
 
-    pub fn nonces(&mut self, call: ITIP20::noncesCall) -> U256 {
+    pub fn nonces(&mut self, call: ITIP20::noncesCall) -> Result<U256, TempoPrecompileError> {
         let slot = mapping_slot(call.owner, slots::NONCES);
         self.storage
             .sload(self.token_address, slot)
-            .expect("TODO: handle error")
+            .map_err(Into::into)
     }
 
-    pub fn salts(&mut self, call: ITIP20::saltsCall) -> bool {
+    pub fn salts(&mut self, call: ITIP20::saltsCall) -> Result<bool, TempoPrecompileError> {
         let slot = double_mapping_slot(call.owner, call.salt, slots::SALTS);
-        self.storage
+        let val = self
+            .storage
             .sload(self.token_address, slot)
-            .expect("TODO: handle error")
-            != U256::ZERO
+            .map_err(Into::into)?;
+        Ok(!val.is_zero())
     }
 
     // Admin functions
@@ -188,7 +194,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP20::changeTransferPolicyIdCall,
-    ) -> Result<(), TIP20Error> {
+    ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
         self.storage
             .sstore(
@@ -196,7 +202,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 slots::TRANSFER_POLICY_ID,
                 U256::from(call.newPolicyId),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         self.storage
             .emit_event(
@@ -207,7 +213,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
         Ok(())
     }
 
@@ -215,14 +221,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP20::setSupplyCapCall,
-    ) -> Result<(), TIP20Error> {
+    ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-        if call.newSupplyCap < self.total_supply() {
-            return Err(TIP20Error::supply_cap_exceeded());
+        if call.newSupplyCap < self.total_supply()? {
+            return Err(TIP20Error::supply_cap_exceeded().into());
         }
         self.storage
             .sstore(self.token_address, slots::SUPPLY_CAP, call.newSupplyCap)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         self.storage
             .emit_event(
@@ -233,7 +239,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
         Ok(())
     }
 
@@ -241,11 +247,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: &Address,
         _call: ITIP20::pauseCall,
-    ) -> Result<(), TIP20Error> {
+    ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, *PAUSE_ROLE)?;
         self.storage
             .sstore(self.token_address, slots::PAUSED, U256::ONE)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         self.storage
             .emit_event(
@@ -256,7 +262,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
         Ok(())
     }
 
@@ -264,11 +270,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: &Address,
         _call: ITIP20::unpauseCall,
-    ) -> Result<(), TIP20Error> {
+    ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, *UNPAUSE_ROLE)?;
         self.storage
             .sstore(self.token_address, slots::PAUSED, U256::ZERO)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         self.storage
             .emit_event(
@@ -279,7 +285,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
         Ok(())
     }
 
@@ -287,12 +293,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP20::updateQuoteTokenCall,
-    ) -> Result<(), TIP20Error> {
+    ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         // Verify the new quote token is a valid TIP20 token that has been deployed
         if !is_tip20(&call.newQuoteToken) {
-            return Err(TIP20Error::invalid_quote_token());
+            return Err(TIP20Error::invalid_quote_token().into());
         }
 
         let new_token_id = address_to_token_id_unchecked(&call.newQuoteToken);
@@ -302,7 +308,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         // Ensure the quote token has been deployed (token_id < counter)
         if new_token_id >= factory_token_id_counter {
-            return Err(TIP20Error::invalid_quote_token());
+            return Err(TIP20Error::invalid_quote_token().into());
         }
 
         self.storage
@@ -311,7 +317,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 slots::NEXT_QUOTE_TOKEN,
                 call.newQuoteToken.into_u256(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         self.storage
             .emit_event(
@@ -322,7 +328,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
         Ok(())
     }
 
@@ -330,20 +336,20 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: &Address,
         _call: ITIP20::finalizeQuoteTokenUpdateCall,
-    ) -> Result<(), TIP20Error> {
+    ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
-        let next_quote_token = self.next_quote_token();
+        let next_quote_token = self.next_quote_token()?;
 
         // Check that this does not create a loop
         // Loop through quote tokens until we reach the root (LinkingUSD)
         let mut current = next_quote_token;
         while current != LINKING_USD_ADDRESS {
             if current == self.token_address {
-                return Err(TIP20Error::invalid_quote_token());
+                return Err(TIP20Error::invalid_quote_token().into());
             }
 
-            current = TIP20Token::from_address(current, self.storage).quote_token();
+            current = TIP20Token::from_address(current, self.storage).quote_token()?;
         }
 
         // Update the quote token
@@ -353,7 +359,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 slots::QUOTE_TOKEN,
                 next_quote_token.into_u256(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         self.storage
             .emit_event(
@@ -364,8 +370,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
-        Ok(())
+            .map_err(Into::into)
     }
 
     // Token operations
@@ -1099,14 +1104,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{keccak256, Address, FixedBytes, U256};
+    use alloy::primitives::{Address, FixedBytes, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
     use crate::{
-        storage::hashmap::HashMapStorageProvider, tip20_factory::ITIP20Factory, DEFAULT_FEE_TOKEN,
-        LINKING_USD_ADDRESS,
+        DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider,
+        tip20_factory::ITIP20Factory,
     };
 
     /// Initialize a factory and create a single token
@@ -1959,7 +1964,9 @@ mod tests {
     fn test_tip20_token_prefix() {
         assert_eq!(
             TIP20_TOKEN_PREFIX,
-            [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            [
+                0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ]
         );
         assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..12], &TIP20_TOKEN_PREFIX);
     }
@@ -1968,7 +1975,9 @@ mod tests {
     fn test_tip20_payment_prefix() {
         assert_eq!(
             TIP20_PAYMENT_PREFIX,
-            [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            [
+                0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ]
         );
         // Payment prefix should start with token prefix
         assert_eq!(&TIP20_PAYMENT_PREFIX[..12], &TIP20_TOKEN_PREFIX);

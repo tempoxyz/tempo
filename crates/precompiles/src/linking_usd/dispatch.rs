@@ -1,5 +1,6 @@
 use crate::{
     Precompile,
+    error::TempoPrecompileError,
     linking_usd::LinkingUSD,
     metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
