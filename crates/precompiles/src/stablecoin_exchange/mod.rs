@@ -55,18 +55,20 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// This ensures the [`StablecoinExchange`] isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
         // must ensure the account is not empty, by setting some code
-        self.storage.set_code(
-            self.address,
-            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        )?;
-        Ok(())
+        self.storage
+            .set_code(
+                self.address,
+                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+            )
+            .map_err(Into::into)
     }
 
     /// Read pending order ID
     fn get_pending_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
         Ok(self
             .storage
-            .sload(self.address, slots::PENDING_ORDER_ID)?
+            .sload(self.address, slots::PENDING_ORDER_ID)
+            .map_err(Into::into)?
             .to::<u128>())
     }
 
@@ -74,13 +76,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     fn set_pending_order_id(&mut self, order_id: u128) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.address, slots::PENDING_ORDER_ID, U256::from(order_id))
+            .map_err(Into::into)
     }
 
     /// Read active order ID
     fn get_active_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
         Ok(self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)?
+            .sload(self.address, slots::ACTIVE_ORDER_ID)
+            .map_err(Into::into)?
             .to::<u128>())
     }
 
@@ -88,6 +92,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     fn set_active_order_id(&mut self, order_id: u128) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))
+            .map_err(Into::into)
     }
 
     /// Increment and return the pending order id
@@ -105,7 +110,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     ) -> Result<u128, TempoPrecompileError> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
-        let balance = self.storage.sload(self.address, balance_slot)?.to::<u128>();
+        let balance = self
+            .storage
+            .sload(self.address, balance_slot)
+            .map_err(Into::into)?
+            .to::<u128>();
 
         Ok(balance)
     }
@@ -113,7 +122,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`
     pub fn get_order(&mut self, order_id: u128) -> Result<Order, TempoPrecompileError> {
-        let order = Order::from_storage(order_id, self.storage, self.address);
+        let order = Order::from_storage(order_id, self.storage, self.address)?;
 
         // If the order is not filled and currently active
         if !order.maker().is_zero() && order.order_id() <= self.get_active_order_id()? {
@@ -134,6 +143,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
         self.storage
             .sstore(self.address, balance_slot, U256::from(amount))
+            .map_err(Into::into)
     }
 
     /// Add to user's balance
@@ -336,7 +346,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Get price level information
-    pub fn get_price_level(&mut self, base: Address, tick: i16, is_bid: bool) -> PriceLevel {
+    pub fn get_price_level(
+        &mut self,
+        base: Address,
+        tick: i16,
+        is_bid: bool,
+    ) -> Result<PriceLevel, TempoPrecompileError> {
         let quote = TIP20Token::from_address(base, self.storage).quote_token();
         let key = compute_book_key(base, quote);
         PriceLevel::from_storage(self.storage, self.address, key, tick, is_bid)
@@ -346,7 +361,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn active_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
         Ok(self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)?
+            .sload(self.address, slots::ACTIVE_ORDER_ID)
+            .map_err(Into::into)?
             .to::<u128>())
     }
 
@@ -354,12 +370,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn pending_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
         Ok(self
             .storage
-            .sload(self.address, slots::PENDING_ORDER_ID)?
+            .sload(self.address, slots::PENDING_ORDER_ID)
+            .map_err(Into::into)?
             .to::<u128>())
     }
 
     /// Get orderbook by pair key
-    pub fn books(&mut self, pair_key: B256) -> Orderbook {
+    pub fn books(&mut self, pair_key: B256) -> Result<Orderbook, TempoPrecompileError> {
         Orderbook::from_storage(pair_key, self.storage, self.address)
     }
 
@@ -368,7 +385,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let book_key = compute_book_key(*base, quote);
 
-        if Orderbook::exists(book_key, self.storage, self.address) {
+        if Orderbook::exists(book_key, self.storage, self.address)? {
             return Err(StablecoinExchangeError::pair_already_exists().into());
         }
 
@@ -386,7 +403,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("Event emission failed");
+            .map_err(Into::into)?;
 
         Ok(book_key)
     }
@@ -431,7 +448,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance().into())?;
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -578,7 +595,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Process a single pending order into the active orderbook
     fn process_pending_order(&mut self, order_id: u128) -> Result<(), TempoPrecompileError> {
-        let order = Order::from_storage(order_id, self.storage, self.address);
+        let order = Order::from_storage(order_id, self.storage, self.address)?;
 
         // If the order is already canceled, return early
         if order.maker().is_zero() {
@@ -635,7 +652,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             order.book_key(),
             order.tick(),
             order.is_bid(),
-        );
+        )
     }
 
     /// Partially fill an order with the specified amount.
