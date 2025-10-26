@@ -116,6 +116,19 @@ sol! {
     }
 }
 
+impl RolesAuthError {
+    /// Creates an error for unauthorized access.
+    pub const fn unauthorized() -> Self {
+        Self::Unauthorized(IRolesAuth::Unauthorized {})
+    }
+}
+
+impl From<RolesAuthError> for PrecompileError {
+    fn from(val: RolesAuthError) -> Self {
+        Self::Other(format!("{:?}", val.selector()))
+    }
+}
+
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
     pub const fn insufficient_balance() -> Self {

@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, B256, IntoLogData, U256};
 
 use crate::{
+    error::TempoPrecompileError,
     storage::{
         PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
@@ -44,12 +45,17 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
     }
 
     // Public functions that handle calldata and emit events
-
-    pub fn has_role(&mut self, call: IRolesAuth::hasRoleCall) -> bool {
+    pub fn has_role(
+        &mut self,
+        call: IRolesAuth::hasRoleCall,
+    ) -> Result<bool, TempoPrecompileError> {
         self.has_role_internal(&call.account, call.role)
     }
 
-    pub fn get_role_admin(&mut self, call: IRolesAuth::getRoleAdminCall) -> B256 {
+    pub fn get_role_admin(
+        &mut self,
+        call: IRolesAuth::getRoleAdminCall,
+    ) -> Result<B256, TempoPrecompileError> {
         self.get_role_admin_internal(call.role)
     }
 
@@ -57,11 +63,10 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: IRolesAuth::grantRoleCall,
-    ) -> Result<(), RolesAuthError> {
-        let admin_role = self.get_role_admin_internal(call.role);
+    ) -> Result<(), TempoPrecompileError> {
+        let admin_role = self.get_role_admin_internal(call.role)?;
         self.check_role_internal(msg_sender, admin_role)?;
-
-        self.grant_role_internal(&call.account, call.role);
+        self.grant_role_internal(&call.account, call.role)?;
 
         self.storage
             .emit_event(
@@ -74,20 +79,17 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
-
-        Ok(())
+            .map_err(Into::into)
     }
 
     pub fn revoke_role(
         &mut self,
         msg_sender: &Address,
         call: IRolesAuth::revokeRoleCall,
-    ) -> Result<(), RolesAuthError> {
-        let admin_role = self.get_role_admin_internal(call.role);
+    ) -> Result<(), TempoPrecompileError> {
+        let admin_role = self.get_role_admin_internal(call.role)?;
         self.check_role_internal(msg_sender, admin_role)?;
-
-        self.revoke_role_internal(&call.account, call.role);
+        self.revoke_role_internal(&call.account, call.role)?;
 
         self.storage
             .emit_event(
@@ -100,19 +102,16 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
-
-        Ok(())
+            .map_err(Into::into)
     }
 
     pub fn renounce_role(
         &mut self,
         msg_sender: &Address,
         call: IRolesAuth::renounceRoleCall,
-    ) -> Result<(), RolesAuthError> {
+    ) -> Result<(), TempoPrecompileError> {
         self.check_role_internal(msg_sender, call.role)?;
-
-        self.revoke_role_internal(msg_sender, call.role);
+        self.revoke_role_internal(msg_sender, call.role)?;
 
         self.storage
             .emit_event(
@@ -125,17 +124,15 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
-
-        Ok(())
+            .map_err(Into::into)
     }
 
     pub fn set_role_admin(
         &mut self,
         msg_sender: &Address,
         call: IRolesAuth::setRoleAdminCall,
-    ) -> Result<(), RolesAuthError> {
-        let current_admin_role = self.get_role_admin_internal(call.role);
+    ) -> Result<(), TempoPrecompileError> {
+        let current_admin_role = self.get_role_admin_internal(call.role)?;
         self.check_role_internal(msg_sender, current_admin_role)?;
 
         self.set_role_admin_internal(call.role, call.adminRole);
@@ -150,49 +147,68 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
-
-        Ok(())
+            .map_err(Into::into)
     }
 
     // Utility functions for checking roles without calldata
-    pub fn check_role(&mut self, account: &Address, role: B256) -> Result<(), RolesAuthError> {
+    pub fn check_role(
+        &mut self,
+        account: &Address,
+        role: B256,
+    ) -> Result<(), TempoPrecompileError> {
         self.check_role_internal(account, role)
     }
 
     // Internal implementation functions
-    pub fn has_role_internal(&mut self, account: &Address, role: B256) -> bool {
+    pub fn has_role_internal(
+        &mut self,
+        account: &Address,
+        role: B256,
+    ) -> Result<bool, TempoPrecompileError> {
         let slot = double_mapping_slot(account, role, self.roles_slot);
-        self.storage
+        let value = self
+            .storage
             .sload(self.parent_contract_address, slot)
-            .expect("TODO: handle error")
-            != U256::ZERO
+            .map_err(Into::into)?;
+        Ok(value != U256::ZERO)
     }
 
-    pub fn grant_role_internal(&mut self, account: &Address, role: B256) {
+    pub fn grant_role_internal(
+        &mut self,
+        account: &Address,
+        role: B256,
+    ) -> Result<(), TempoPrecompileError> {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         self.storage
             .sstore(self.parent_contract_address, slot, U256::ONE)
-            .expect("TODO: handle error");
+            .map_err(Into::into)
     }
 
-    fn revoke_role_internal(&mut self, account: &Address, role: B256) {
+    fn revoke_role_internal(
+        &mut self,
+        account: &Address,
+        role: B256,
+    ) -> Result<(), TempoPrecompileError> {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         self.storage
             .sstore(self.parent_contract_address, slot, U256::ZERO)
-            .expect("TODO: handle error");
+            .map_err(Into::into)
     }
 
-    fn get_role_admin_internal(&mut self, role: B256) -> B256 {
+    fn get_role_admin_internal(&mut self, role: B256) -> Result<B256, TempoPrecompileError> {
         let slot = mapping_slot(role, self.role_admin_slot);
         let admin = self
             .storage
             .sload(self.parent_contract_address, slot)
-            .expect("TODO: handle error");
-        B256::from(admin) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
+            .map_err(Into::into)?;
+        Ok(B256::from(admin)) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     }
 
-    fn set_role_admin_internal(&mut self, role: B256, admin_role: B256) {
+    fn set_role_admin_internal(
+        &mut self,
+        role: B256,
+        admin_role: B256,
+    ) -> Result<(), TempoPrecompileError> {
         let slot = mapping_slot(role, self.role_admin_slot);
         self.storage
             .sstore(
@@ -200,12 +216,18 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
                 slot,
                 U256::from_be_bytes(admin_role.0),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)
     }
 
-    fn check_role_internal(&mut self, account: &Address, role: B256) -> Result<(), RolesAuthError> {
-        if !self.has_role_internal(account, role) {
-            return Err(RolesAuthError::Unauthorized(IRolesAuth::Unauthorized {}));
+    fn check_role_internal(
+        &mut self,
+        account: &Address,
+        role: B256,
+    ) -> Result<(), TempoPrecompileError> {
+        if !self.has_role_internal(account, role)? {
+            return Err(TempoPrecompileError::RolesAuthError(
+                RolesAuthError::unauthorized(),
+            ));
         }
         Ok(())
     }
@@ -235,10 +257,12 @@ mod tests {
         roles.grant_default_admin(&admin);
 
         // Test hasRole
-        let has_admin = roles.has_role(IRolesAuth::hasRoleCall {
-            account: admin,
-            role: DEFAULT_ADMIN_ROLE,
-        });
+        let has_admin = roles
+            .has_role(IRolesAuth::hasRoleCall {
+                account: admin,
+                role: DEFAULT_ADMIN_ROLE,
+            })
+            .expect("Should have admin");
         assert!(has_admin);
 
         // Grant custom role
@@ -253,10 +277,12 @@ mod tests {
             .unwrap();
 
         // Check custom role
-        let has_custom = roles.has_role(IRolesAuth::hasRoleCall {
-            account: user,
-            role: custom_role,
-        });
+        let has_custom = roles
+            .has_role(IRolesAuth::hasRoleCall {
+                account: user,
+                role: custom_role,
+            })
+            .expect("Should have role");
         assert!(has_custom);
 
         // Verify events were emitted
@@ -288,8 +314,9 @@ mod tests {
             .unwrap();
 
         // Check role admin
-        let retrieved_admin =
-            roles.get_role_admin(IRolesAuth::getRoleAdminCall { role: custom_role });
+        let retrieved_admin = roles
+            .get_role_admin(IRolesAuth::getRoleAdminCall { role: custom_role })
+            .expect("Should have admin");
         assert_eq!(retrieved_admin, admin_role);
     }
 
@@ -311,7 +338,11 @@ mod tests {
             .unwrap();
 
         // Check role is removed
-        assert!(!roles.has_role_internal(&user, custom_role));
+        assert!(
+            !roles
+                .has_role_internal(&user, custom_role)
+                .expect("Could not get role")
+        );
     }
 
     #[test]
@@ -337,7 +368,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(RolesAuthError::Unauthorized(IRolesAuth::Unauthorized {}))
+            Err(TempoPrecompileError::RolesAuthError(
+                RolesAuthError::Unauthorized(IRolesAuth::Unauthorized {})
+            ))
         ));
     }
 }

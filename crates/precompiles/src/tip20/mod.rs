@@ -907,7 +907,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .map_err(|_| TIP20Error::policy_forbids())
     }
 
-    pub fn has_role(&mut self, account: &Address, role: B256) -> bool {
+    pub fn has_role(
+        &mut self,
+        account: &Address,
+        role: B256,
+    ) -> Result<bool, TempoPrecompileError> {
         let mut roles = self.get_roles_contract();
         roles.has_role_internal(account, role)
     }

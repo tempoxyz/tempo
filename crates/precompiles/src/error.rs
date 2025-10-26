@@ -1,6 +1,6 @@
 use crate::tip20::TIP20Error;
 use alloy::{primitives::Bytes, sol_types::SolInterface};
-use tempo_contracts::precompiles::StablecoinExchangeError;
+use tempo_contracts::precompiles::{RolesAuthError, StablecoinExchangeError};
 
 /// Top-level error type for all Tempo precompile operations
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -12,6 +12,10 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 token operations
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
+
+    /// Error from roles auth operations
+    #[error("Roles auth error: {0:?}")]
+    RolesAuthError(RolesAuthError),
 
     #[error("Fatal precompile error: {0:?}")]
     Fatal(String),
@@ -34,6 +38,10 @@ impl TempoPrecompileError {
         match self {
             TempoPrecompileError::StablecoinExchange(err) => err.abi_encode().into(),
             TempoPrecompileError::TIP20(err) => err.abi_encode().into(),
+            TempoPrecompileError::RolesAuthError(err) => err.abi_encode().into(),
+            TempoPrecompileError::Fatal(e) => {
+                todo!()
+            }
         }
     }
 }
