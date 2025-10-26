@@ -2,11 +2,13 @@ pub mod dispatch;
 
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
+    error::TempoPrecompileError,
     storage::PrecompileStorageProvider,
-    tip20::{ITIP20, TIP20Error, TIP20Token, roles::RolesAuthContract},
+    tip20::{ITIP20, TIP20Token, roles::RolesAuthContract},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::sync::LazyLock;
+use tempo_contracts::precompiles::TIP20Error;
 
 pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));
 pub static RECEIVE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"RECEIVE_ROLE"));
@@ -26,15 +28,21 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         }
     }
 
-    pub fn initialize(&mut self, admin: &Address) -> Result<(), TIP20Error> {
+    pub fn initialize(&mut self, admin: &Address) -> Result<(), TempoPrecompileError> {
         self.token
             .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
     }
 
-    fn is_transfer_authorized(&mut self, sender: &Address, recipient: &Address) -> bool {
-        *sender == STABLECOIN_EXCHANGE_ADDRESS
-            || self.token.has_role(sender, *TRANSFER_ROLE)
-            || self.token.has_role(recipient, *RECEIVE_ROLE)
+    fn is_transfer_authorized(
+        &mut self,
+        sender: &Address,
+        recipient: &Address,
+    ) -> Result<bool, TempoPrecompileError> {
+        let authorized = *sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role(sender, *TRANSFER_ROLE)?
+            || self.token.has_role(recipient, *RECEIVE_ROLE)?;
+
+        Ok(authorized)
     }
 
     fn is_transfer_from_authorized(
@@ -42,21 +50,23 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         sender: &Address,
         from: &Address,
         recipient: &Address,
-    ) -> bool {
-        *sender == STABLECOIN_EXCHANGE_ADDRESS
-            || self.token.has_role(from, *TRANSFER_ROLE)
-            || self.token.has_role(recipient, *RECEIVE_ROLE)
+    ) -> Result<bool, TempoPrecompileError> {
+        let authorized = *sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role(from, *TRANSFER_ROLE)?
+            || self.token.has_role(recipient, *RECEIVE_ROLE)?;
+
+        Ok(authorized)
     }
 
     pub fn transfer(
         &mut self,
         msg_sender: &Address,
         call: ITIP20::transferCall,
-    ) -> Result<bool, TIP20Error> {
-        if self.is_transfer_authorized(msg_sender, &call.to) {
+    ) -> Result<bool, TempoPrecompileError> {
+        if self.is_transfer_authorized(msg_sender, &call.to)? {
             self.token.transfer(msg_sender, call)
         } else {
-            Err(TIP20Error::transfers_disabled())
+            Err(TIP20Error::transfers_disabled().into())
         }
     }
 
@@ -64,13 +74,13 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP20::transferFromCall,
-    ) -> Result<bool, TIP20Error> {
-        if self.is_transfer_from_authorized(msg_sender, &call.from, &call.to)
+    ) -> Result<bool, TempoPrecompileError> {
+        if self.is_transfer_from_authorized(msg_sender, &call.from, &call.to)?
             || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from(msg_sender, call)
         } else {
-            Err(TIP20Error::transfers_disabled())
+            Err(TIP20Error::transfers_disabled().into())
         }
     }
 
@@ -78,11 +88,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP20::transferWithMemoCall,
-    ) -> Result<(), TIP20Error> {
-        if self.is_transfer_authorized(msg_sender, &call.to) {
+    ) -> Result<(), TempoPrecompileError> {
+        if self.is_transfer_authorized(msg_sender, &call.to)? {
             self.token.transfer_with_memo(msg_sender, call)
         } else {
-            Err(TIP20Error::transfers_disabled())
+            Err(TIP20Error::transfers_disabled().into())
         }
     }
 
@@ -90,41 +100,44 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP20::transferFromWithMemoCall,
-    ) -> Result<bool, TIP20Error> {
-        if self.is_transfer_from_authorized(msg_sender, &call.from, &call.to)
+    ) -> Result<bool, TempoPrecompileError> {
+        if self.is_transfer_from_authorized(msg_sender, &call.from, &call.to)?
             || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from_with_memo(msg_sender, call)
         } else {
-            Err(TIP20Error::transfers_disabled())
+            Err(TIP20Error::transfers_disabled().into())
         }
     }
 
-    pub fn name(&mut self) -> String {
+    pub fn name(&mut self) -> Result<String, TempoPrecompileError> {
         self.token.name()
     }
 
-    pub fn symbol(&mut self) -> String {
+    pub fn symbol(&mut self) -> Result<String, TempoPrecompileError> {
         self.token.symbol()
     }
 
-    pub fn currency(&mut self) -> String {
+    pub fn currency(&mut self) -> Result<String, TempoPrecompileError> {
         self.token.currency()
     }
 
-    pub fn decimals(&mut self) -> u8 {
+    pub fn decimals(&mut self) -> Result<u8, TempoPrecompileError> {
         self.token.decimals()
     }
 
-    pub fn total_supply(&mut self) -> U256 {
+    pub fn total_supply(&mut self) -> Result<U256, TempoPrecompileError> {
         self.token.total_supply()
     }
 
-    pub fn balance_of(&mut self, call: ITIP20::balanceOfCall) -> U256 {
+    pub fn balance_of(
+        &mut self,
+        call: ITIP20::balanceOfCall,
+    ) -> Result<U256, TempoPrecompileError> {
         self.token.balance_of(call)
     }
 
-    pub fn allowance(&mut self, call: ITIP20::allowanceCall) -> U256 {
+    pub fn allowance(&mut self, call: ITIP20::allowanceCall) -> Result<U256, TempoPrecompileError> {
         self.token.allowance(call)
     }
 
@@ -132,15 +145,23 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         &mut self,
         sender: &Address,
         call: ITIP20::approveCall,
-    ) -> Result<bool, TIP20Error> {
+    ) -> Result<bool, TempoPrecompileError> {
         self.token.approve(sender, call)
     }
 
-    pub fn mint(&mut self, sender: &Address, call: ITIP20::mintCall) -> Result<(), TIP20Error> {
+    pub fn mint(
+        &mut self,
+        sender: &Address,
+        call: ITIP20::mintCall,
+    ) -> Result<(), TempoPrecompileError> {
         self.token.mint(sender, call)
     }
 
-    pub fn burn(&mut self, sender: &Address, call: ITIP20::burnCall) -> Result<(), TIP20Error> {
+    pub fn burn(
+        &mut self,
+        sender: &Address,
+        call: ITIP20::burnCall,
+    ) -> Result<(), TempoPrecompileError> {
         self.token.burn(sender, call)
     }
 
@@ -148,7 +169,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         self.token.get_roles_contract()
     }
 
-    pub fn pause(&mut self, sender: &Address, call: ITIP20::pauseCall) -> Result<(), TIP20Error> {
+    pub fn pause(
+        &mut self,
+        sender: &Address,
+        call: ITIP20::pauseCall,
+    ) -> Result<(), TempoPrecompileError> {
         self.token.pause(sender, call)
     }
 
@@ -156,11 +181,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         &mut self,
         sender: &Address,
         call: ITIP20::unpauseCall,
-    ) -> Result<(), TIP20Error> {
+    ) -> Result<(), TempoPrecompileError> {
         self.token.unpause(sender, call)
     }
 
-    pub fn paused(&mut self) -> bool {
+    pub fn paused(&mut self) -> Result<bool, TempoPrecompileError> {
         self.token.paused()
     }
 }
@@ -195,9 +220,9 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
-        assert_eq!(linking_usd.name(), "linkingUSD");
-        assert_eq!(linking_usd.symbol(), "linkingUSD");
-        assert_eq!(linking_usd.currency(), "USD");
+        assert_eq!(linking_usd.name().unwrap(), "linkingUSD");
+        assert_eq!(linking_usd.symbol().unwrap(), "linkingUSD");
+        assert_eq!(linking_usd.currency().unwrap(), "USD");
     }
 
     #[test]
@@ -213,7 +238,10 @@ mod tests {
             },
         );
 
-        assert_eq!(result.unwrap_err(), TIP20Error::transfers_disabled());
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::transfers_disabled())
+        );
     }
 
     #[test]
@@ -229,7 +257,10 @@ mod tests {
                 amount: U256::random(),
             },
         );
-        assert_eq!(result.unwrap_err(), TIP20Error::transfers_disabled());
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::transfers_disabled())
+        );
     }
 
     #[test]
@@ -245,7 +276,10 @@ mod tests {
                 memo: [0u8; 32].into(),
             },
         );
-        assert_eq!(result.unwrap_err(), TIP20Error::transfers_disabled());
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::transfers_disabled())
+        );
     }
 
     #[test]
@@ -262,7 +296,10 @@ mod tests {
                 memo: [0u8; 32].into(),
             },
         );
-        assert_eq!(result.unwrap_err(), TIP20Error::transfers_disabled());
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::transfers_disabled())
+        );
     }
 
     #[test]
@@ -272,7 +309,9 @@ mod tests {
         let recipient = Address::random();
         let amount = U256::from(1000);
 
-        let balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .unwrap();
 
         linking_usd
             .mint(
@@ -284,7 +323,9 @@ mod tests {
             )
             .expect("Mint should succeed");
 
-        let balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .unwrap();
 
         assert_eq!(balance_after, balance_before + amount);
     }
@@ -306,13 +347,17 @@ mod tests {
             .mint(&admin, ITIP20::mintCall { to: admin, amount })
             .expect("Mint should succeed");
 
-        let balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: admin });
+        let balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: admin })
+            .unwrap();
 
         linking_usd
             .burn(&admin, ITIP20::burnCall { amount })
             .expect("Burn should succeed");
 
-        let balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: admin });
+        let balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: admin })
+            .unwrap();
         assert_eq!(balance_after, balance_before - amount);
     }
 
@@ -335,7 +380,9 @@ mod tests {
 
         assert!(result);
 
-        let allowance = linking_usd.allowance(ITIP20::allowanceCall { owner, spender });
+        let allowance = linking_usd
+            .allowance(ITIP20::allowanceCall { owner, spender })
+            .expect("Could not get allowance");
         assert_eq!(allowance, amount);
     }
 
@@ -363,11 +410,15 @@ mod tests {
             )
             .expect("Mint should succeed");
 
-        let dex_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall {
-            account: STABLECOIN_EXCHANGE_ADDRESS,
-        });
-        let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let dex_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall {
+                account: STABLECOIN_EXCHANGE_ADDRESS,
+            })
+            .expect("Could not get balance");
+
+        let recipient_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         let result = linking_usd
             .transfer(
@@ -380,11 +431,15 @@ mod tests {
             .expect("Transfer should succeed");
         assert!(result);
 
-        let dex_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall {
-            account: STABLECOIN_EXCHANGE_ADDRESS,
-        });
-        let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let dex_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall {
+                account: STABLECOIN_EXCHANGE_ADDRESS,
+            })
+            .expect("Could not get balance");
+
+        let recipient_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         assert_eq!(dex_balance_after, dex_balance_before - amount);
         assert_eq!(recipient_balance_after, recipient_balance_before + amount);
@@ -419,12 +474,20 @@ mod tests {
             )
             .expect("Approve should succeed");
 
-        let from_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender: STABLECOIN_EXCHANGE_ADDRESS,
-        });
+        let from_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+
+        let to_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+
+        let allowance_before = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender: STABLECOIN_EXCHANGE_ADDRESS,
+            })
+            .expect("Could not get allowance");
 
         let result = linking_usd
             .transfer_from(
@@ -435,12 +498,20 @@ mod tests {
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender: STABLECOIN_EXCHANGE_ADDRESS,
-        });
+        let from_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+
+        let to_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+
+        let allowance_after = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender: STABLECOIN_EXCHANGE_ADDRESS,
+            })
+            .expect("Could not get allowance");
 
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
@@ -467,10 +538,13 @@ mod tests {
             .mint(&admin, ITIP20::mintCall { to: sender, amount })
             .expect("Mint should succeed");
 
-        let sender_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender });
-        let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let sender_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: sender })
+            .expect("Could not get balance");
+
+        let recipient_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         let result = linking_usd
             .transfer(
@@ -483,10 +557,12 @@ mod tests {
             .expect("Transfer should succeed");
         assert!(result);
 
-        let sender_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender });
-        let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let sender_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: sender })
+            .expect("Could not get balance");
+        let recipient_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         assert_eq!(sender_balance_after, sender_balance_before - amount);
         assert_eq!(recipient_balance_after, recipient_balance_before + amount);
@@ -512,10 +588,13 @@ mod tests {
             .mint(&admin, ITIP20::mintCall { to: sender, amount })
             .expect("Mint should succeed");
 
-        let sender_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender });
-        let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let sender_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: sender })
+            .expect("Could not get balance");
+
+        let recipient_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         let result = linking_usd
             .transfer(
@@ -528,10 +607,12 @@ mod tests {
             .expect("Transfer should succeed");
         assert!(result);
 
-        let sender_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender });
-        let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let sender_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: sender })
+            .expect("Could not get balance");
+        let recipient_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         assert_eq!(sender_balance_after, sender_balance_before - amount);
         assert_eq!(recipient_balance_after, recipient_balance_before + amount);
@@ -562,12 +643,20 @@ mod tests {
             .approve(&from, ITIP20::approveCall { spender, amount })
             .expect("Approve should succeed");
 
-        let from_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        });
+        let from_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+
+        let to_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+
+        let allowance_before = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender,
+            })
+            .expect("Could not get allowance");
 
         let result = linking_usd
             .transfer_from(&spender, ITIP20::transferFromCall { from, to, amount })
@@ -575,12 +664,18 @@ mod tests {
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        });
+        let from_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+        let to_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+        let allowance_after = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender,
+            })
+            .expect("Could not get allowance");
 
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
@@ -612,12 +707,20 @@ mod tests {
             .approve(&from, ITIP20::approveCall { spender, amount })
             .expect("Approve should succeed");
 
-        let from_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        });
+        let from_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+
+        let to_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+
+        let allowance_before = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender,
+            })
+            .expect("Could not get allowance");
 
         let result = linking_usd
             .transfer_from(&spender, ITIP20::transferFromCall { from, to, amount })
@@ -625,12 +728,18 @@ mod tests {
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        });
+        let from_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+        let to_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+        let allowance_after = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender,
+            })
+            .expect("Could not get allowance");
 
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
@@ -658,10 +767,12 @@ mod tests {
             .mint(&admin, ITIP20::mintCall { to: sender, amount })
             .expect("Mint should succeed");
 
-        let sender_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender });
-        let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let sender_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: sender })
+            .expect("Could not get balance");
+        let recipient_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         linking_usd
             .transfer_with_memo(
@@ -674,10 +785,12 @@ mod tests {
             )
             .expect("Transfer with memo should succeed");
 
-        let sender_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender });
-        let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let sender_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: sender })
+            .expect("Could not get balance");
+        let recipient_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         assert_eq!(sender_balance_after, sender_balance_before - amount);
         assert_eq!(recipient_balance_after, recipient_balance_before + amount);
@@ -704,10 +817,12 @@ mod tests {
             .mint(&admin, ITIP20::mintCall { to: sender, amount })
             .expect("Mint should succeed");
 
-        let sender_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender });
-        let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let sender_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: sender })
+            .expect("Could not get balance");
+        let recipient_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         linking_usd
             .transfer_with_memo(
@@ -720,10 +835,12 @@ mod tests {
             )
             .expect("Transfer with memo should succeed");
 
-        let sender_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender });
-        let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let sender_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: sender })
+            .expect("Could not get balance");
+        let recipient_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: recipient })
+            .expect("Could not get balance");
 
         assert_eq!(sender_balance_after, sender_balance_before - amount);
         assert_eq!(recipient_balance_after, recipient_balance_before + amount);
@@ -759,12 +876,18 @@ mod tests {
             )
             .expect("Approve should succeed");
 
-        let from_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender: STABLECOIN_EXCHANGE_ADDRESS,
-        });
+        let from_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+        let to_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+        let allowance_before = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender: STABLECOIN_EXCHANGE_ADDRESS,
+            })
+            .expect("Could not get allowance");
 
         let result = linking_usd
             .transfer_from_with_memo(
@@ -780,12 +903,18 @@ mod tests {
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender: STABLECOIN_EXCHANGE_ADDRESS,
-        });
+        let from_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+        let to_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+        let allowance_after = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender: STABLECOIN_EXCHANGE_ADDRESS,
+            })
+            .expect("Could not get balance");
 
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
@@ -818,12 +947,18 @@ mod tests {
             .approve(&from, ITIP20::approveCall { spender, amount })
             .expect("Approve should succeed");
 
-        let from_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        });
+        let from_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+        let to_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+        let allowance_before = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender,
+            })
+            .expect("Could not get allowance");
 
         let result = linking_usd
             .transfer_from_with_memo(
@@ -839,12 +974,18 @@ mod tests {
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        });
+        let from_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+        let to_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+        let allowance_after = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender,
+            })
+            .expect("Could not get allowance");
 
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
@@ -877,12 +1018,18 @@ mod tests {
             .approve(&from, ITIP20::approveCall { spender, amount })
             .expect("Approve should succeed");
 
-        let from_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        });
+        let from_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+        let to_balance_before = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+        let allowance_before = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender,
+            })
+            .expect("Could not get allowance");
 
         let result = linking_usd
             .transfer_from_with_memo(
@@ -898,12 +1045,18 @@ mod tests {
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from });
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to });
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        });
+        let from_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: from })
+            .expect("Could not get balance");
+        let to_balance_after = linking_usd
+            .balance_of(ITIP20::balanceOfCall { account: to })
+            .expect("Could not get balance");
+        let allowance_after = linking_usd
+            .allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender,
+            })
+            .expect("Could not get allowance");
 
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
@@ -926,17 +1079,17 @@ mod tests {
         roles.grant_role_internal(&unpauser, *UNPAUSE_ROLE);
 
         // Verify initial state (not paused)
-        assert!(!linking_usd.paused());
+        assert!(!linking_usd.paused().unwrap());
 
         // Pause the token
         linking_usd.pause(&pauser, ITIP20::pauseCall {}).unwrap();
-        assert!(linking_usd.paused());
+        assert!(linking_usd.paused().unwrap());
 
         // Unpause the token
         linking_usd
             .unpause(&unpauser, ITIP20::unpauseCall {})
             .unwrap();
-        assert!(!linking_usd.paused());
+        assert!(!linking_usd.paused().unwrap());
     }
 
     #[test]
@@ -961,10 +1114,14 @@ mod tests {
             .unwrap();
 
         // Check that user has the role
-        assert!(roles.has_role(IRolesAuth::hasRoleCall {
-            role: *ISSUER_ROLE,
-            account: user,
-        }));
+        assert!(
+            roles
+                .has_role(IRolesAuth::hasRoleCall {
+                    role: *ISSUER_ROLE,
+                    account: user,
+                })
+                .expect("Could not get role")
+        );
 
         // Revoke the role
         roles
@@ -978,10 +1135,14 @@ mod tests {
             .unwrap();
 
         // Check that user no longer has the role
-        assert!(!roles.has_role(IRolesAuth::hasRoleCall {
-            role: *ISSUER_ROLE,
-            account: user,
-        }));
+        assert!(
+            !roles
+                .has_role(IRolesAuth::hasRoleCall {
+                    role: *ISSUER_ROLE,
+                    account: user,
+                })
+                .expect("Could not get role")
+        );
     }
 
     #[test]
@@ -1008,7 +1169,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(linking_usd.token.supply_cap(), supply_cap);
+        assert_eq!(linking_usd.token.supply_cap().unwrap(), supply_cap);
 
         // Try to mint more than supply cap
         let result = linking_usd.mint(
@@ -1019,7 +1180,10 @@ mod tests {
             },
         );
 
-        assert_eq!(result.unwrap_err(), TIP20Error::supply_cap_exceeded());
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::supply_cap_exceeded())
+        );
     }
 
     #[test]
@@ -1032,7 +1196,10 @@ mod tests {
         linking_usd.initialize(&admin).unwrap();
 
         // Test nonces (should start at 0)
-        let nonce = linking_usd.token.nonces(ITIP20::noncesCall { owner: user });
+        let nonce = linking_usd
+            .token
+            .nonces(ITIP20::noncesCall { owner: user })
+            .expect("Could not get nonce");
         assert_eq!(nonce, U256::ZERO);
     }
 
@@ -1056,7 +1223,13 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(linking_usd.token.transfer_policy_id(), new_policy_id);
+        assert_eq!(
+            linking_usd
+                .token
+                .transfer_policy_id()
+                .expect("Could not get policy"),
+            new_policy_id
+        );
 
         // Non-admin cannot change transfer policy ID
         let non_admin = Address::random();
@@ -1065,6 +1238,9 @@ mod tests {
             ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 },
         );
 
-        assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids());
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::policy_forbids())
+        );
     }
 }

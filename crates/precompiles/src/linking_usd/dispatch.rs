@@ -1,12 +1,12 @@
 use crate::{
     Precompile,
-    error::TempoPrecompileError,
     linking_usd::LinkingUSD,
     metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip20::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
+    tip20::{IRolesAuth, ITIP20, TIP20Error},
     view,
 };
+use crate::tip20::RolesAuthError;
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
