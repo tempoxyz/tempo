@@ -1788,7 +1788,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            Err(TempoPrecompileError::RolesAuthError(
+                RolesAuthError::Unauthorized(_)
+            ))
         ));
 
         Ok(())
@@ -1959,7 +1961,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            Err(TempoPrecompileError::RolesAuthError(
+                RolesAuthError::Unauthorized(_)
+            ))
         ));
 
         Ok(())

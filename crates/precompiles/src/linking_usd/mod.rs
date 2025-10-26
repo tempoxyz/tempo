@@ -193,6 +193,8 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 #[cfg(test)]
 mod tests {
 
+    use tempo_contracts::precompiles::RolesAuthError;
+
     use super::*;
     use crate::{
         storage::hashmap::HashMapStorageProvider,
@@ -1076,7 +1078,7 @@ mod tests {
 
         assert_eq!(
             result.unwrap_err(),
-            TempoPrecompileError::TIP20(TIP20Error::policy_forbids())
+            TempoPrecompileError::RolesAuthError(RolesAuthError::unauthorized())
         );
         Ok(())
     }

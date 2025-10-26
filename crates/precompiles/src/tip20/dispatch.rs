@@ -180,10 +180,12 @@ mod tests {
         LINKING_USD_ADDRESS, METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS,
         storage::hashmap::HashMapStorageProvider, tip20::TIP20Token,
     };
+
     use alloy::{
         primitives::{Bytes, U256, keccak256},
-        sol_types::SolValue,
+        sol_types::{SolInterface, SolValue},
     };
+    use tempo_contracts::precompiles::{RolesAuthError, TIP20Error};
 
     use super::*;
 
@@ -701,9 +703,11 @@ mod tests {
             amount: mint_amount,
         };
         let calldata = mint_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin);
-        // TODO: asssert specific error
-        assert!(result.is_err());
+        let output = token.call(&Bytes::from(calldata), &admin)?;
+        assert!(output.reverted);
+
+        let expected: Bytes = TIP20Error::supply_cap_exceeded().selector().into();
+        assert_eq!(output.bytes, expected);
 
         Ok(())
     }
@@ -761,9 +765,10 @@ mod tests {
             amount: U256::from(100),
         };
         let calldata = mint_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata.clone()), &unauthorized);
-        // TODO: asssert specific error
-        assert!(result.is_err());
+        let output = token.call(&Bytes::from(calldata.clone()), &unauthorized)?;
+        assert!(output.reverted);
+        let expected: Bytes = RolesAuthError::unauthorized().selector().into();
+        assert_eq!(output.bytes, expected);
 
         // Test authorized mint (should succeed)
         let result = token.call(&Bytes::from(calldata), &user1).unwrap();
@@ -892,9 +897,10 @@ mod tests {
         // Non-admin cannot change transfer policy ID
         let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &non_admin);
-        // TODO: asssert specific error
-        assert!(result.is_err());
+        let output = token.call(&Bytes::from(calldata), &non_admin)?;
+        assert!(output.reverted);
+        let expected: Bytes = RolesAuthError::unauthorized().selector().into();
+        assert_eq!(output.bytes, expected);
 
         Ok(())
     }
