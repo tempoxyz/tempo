@@ -169,7 +169,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Transfer tokens, accounting for linking USD
-    fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<(), TIP20Error> {
+    fn transfer(
+        &mut self,
+        token: Address,
+        to: Address,
+        amount: u128,
+    ) -> Result<(), TempoPrecompileError> {
         if token == LINKING_USD_ADDRESS {
             LinkingUSD::new(self.storage).transfer(
                 &self.address,
@@ -196,7 +201,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token: Address,
         from: Address,
         amount: u128,
-    ) -> Result<(), TIP20Error> {
+    ) -> Result<(), TempoPrecompileError> {
         if token == LINKING_USD_ADDRESS {
             LinkingUSD::new(self.storage).transfer_from(
                 &self.address,
@@ -1632,13 +1637,13 @@ mod tests {
         {
             let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
             let remaining_balance =
-                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice });
+                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
             assert_eq!(remaining_balance, U256::ZERO);
 
             // Verify exchange received the tokens
             let exchange_balance = quote_tip20.balance_of(ITIP20::balanceOfCall {
                 account: exchange.address,
-            });
+            })?;
             assert_eq!(exchange_balance, U256::from(expected_escrow));
         }
 
@@ -1693,13 +1698,14 @@ mod tests {
         // Verify balance was reduced by the escrow amount
         {
             let mut base_tip20 = TIP20Token::from_address(base_token, exchange.storage);
-            let remaining_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: alice });
+            let remaining_balance =
+                base_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
             assert_eq!(remaining_balance, U256::ZERO); // All tokens should be escrowed
 
             // Verify exchange received the base tokens
             let exchange_balance = base_tip20.balance_of(ITIP20::balanceOfCall {
                 account: exchange.address,
-            });
+            })?;
             assert_eq!(exchange_balance, U256::from(amount));
         }
 
@@ -1766,13 +1772,13 @@ mod tests {
         {
             let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
             let remaining_balance =
-                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice });
+                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
             assert_eq!(remaining_balance, U256::ZERO);
 
             // Verify exchange received the tokens
             let exchange_balance = quote_tip20.balance_of(ITIP20::balanceOfCall {
                 account: exchange.address,
-            });
+            })?;
             assert_eq!(exchange_balance, U256::from(expected_escrow));
         }
 
@@ -1819,10 +1825,10 @@ mod tests {
             let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
 
             (
-                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice }),
+                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?,
                 quote_tip20.balance_of(ITIP20::balanceOfCall {
                     account: exchange.address,
-                }),
+                })?,
             )
         };
 
@@ -1986,13 +1992,13 @@ mod tests {
         let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
 
         assert_eq!(
-            quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice }),
+            quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?,
             expected_escrow
         );
         assert_eq!(
             quote_tip20.balance_of(ITIP20::balanceOfCall {
                 account: exchange.address
-            }),
+            })?,
             0
         );
 
@@ -2198,7 +2204,7 @@ mod tests {
             .expect("Swap should succeed");
 
         let mut base_tip20 = TIP20Token::from_address(base_token, exchange.storage);
-        let bob_base_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: bob });
+        let bob_base_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: bob })?;
         assert_eq!(bob_base_balance, U256::from(amount_out));
 
         let alice_quote_exchange_balance = exchange.balance_of(alice, quote_token)?;
@@ -2251,7 +2257,7 @@ mod tests {
             .expect("Swap should succeed");
 
         let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
-        let bob_quote_balance = quote_tip20.balance_of(ITIP20::balanceOfCall { account: bob });
+        let bob_quote_balance = quote_tip20.balance_of(ITIP20::balanceOfCall { account: bob })?;
         assert_eq!(bob_quote_balance, U256::from(amount_out));
 
         let alice_base_exchange_balance = exchange.balance_of(alice, base_token)?;
@@ -3015,26 +3021,21 @@ mod tests {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
             let mut linking_usd_roles = linking_usd.get_roles_contract();
             linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE);
-            linking_usd
-                .token
-                .mint(
-                    &admin,
-                    ITIP20::mintCall {
-                        to: alice,
-                        amount: U256::from(10_000_000u128),
-                    },
-                )
-                .expect("Failed to mint LinkingUSD");
-            linking_usd
-                .token
-                .approve(
-                    &alice,
-                    ITIP20::approveCall {
-                        spender: exchange.address,
-                        amount: U256::from(10_000_000u128),
-                    },
-                )
-                .expect("Failed to approve LinkingUSD");
+            linking_usd.token.mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: U256::from(10_000_000u128),
+                },
+            )?;
+
+            linking_usd.token.approve(
+                &alice,
+                ITIP20::approveCall {
+                    spender: exchange.address,
+                    amount: U256::from(10_000_000u128),
+                },
+            )?;
         }
 
         // Setup bob as trader
@@ -3046,16 +3047,15 @@ mod tests {
                     to: bob,
                     amount: U256::from(10_000_000u128),
                 },
-            )
-            .expect("Failed to mint USDC for bob");
+            )?;
+
             usdc.approve(
                 &bob,
                 ITIP20::approveCall {
                     spender: exchange.address,
                     amount: U256::from(10_000_000u128),
                 },
-            )
-            .expect("Failed to approve USDC for bob");
+            )?;
         }
 
         // Place liquidity orders at 1:1
@@ -3072,11 +3072,11 @@ mod tests {
         // Check bob's balances before swap
         let bob_usdc_before = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.balance_of(ITIP20::balanceOfCall { account: bob })
+            usdc.balance_of(ITIP20::balanceOfCall { account: bob })?
         };
         let bob_eurc_before = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            eurc.balance_of(ITIP20::balanceOfCall { account: bob })
+            eurc.balance_of(ITIP20::balanceOfCall { account: bob })?
         };
 
         // Execute multi-hop swap: USDC -> LinkingUSD -> EURC
@@ -3090,11 +3090,11 @@ mod tests {
         // Check bob's balances after swap
         let bob_usdc_after = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.balance_of(ITIP20::balanceOfCall { account: bob })
+            usdc.balance_of(ITIP20::balanceOfCall { account: bob })?
         };
         let bob_eurc_after = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            eurc.balance_of(ITIP20::balanceOfCall { account: bob })
+            eurc.balance_of(ITIP20::balanceOfCall { account: bob })?
         };
 
         // Verify bob spent USDC and received EURC
@@ -3114,7 +3114,7 @@ mod tests {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
             linking_usd
                 .token
-                .balance_of(ITIP20::balanceOfCall { account: bob })
+                .balance_of(ITIP20::balanceOfCall { account: bob })?
         };
         assert_eq!(
             bob_linking_usd_wallet,
@@ -3279,33 +3279,31 @@ mod tests {
         // Check bob's balances before swap
         let bob_usdc_before = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.balance_of(ITIP20::balanceOfCall { account: bob })
+            usdc.balance_of(ITIP20::balanceOfCall { account: bob })?
         };
         let bob_eurc_before = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            eurc.balance_of(ITIP20::balanceOfCall { account: bob })
+            eurc.balance_of(ITIP20::balanceOfCall { account: bob })?
         };
 
         // Execute multi-hop swap: USDC -> LinkingUSD -> EURC (exact output)
         let amount_out = 90u128;
-        let amount_in = exchange
-            .swap_exact_amount_out(
-                &bob,
-                usdc_addr,
-                eurc_addr,
-                amount_out,
-                u128::MAX, // max_amount_in
-            )
-            .expect("Should execute multi-hop swap");
+        let amount_in = exchange.swap_exact_amount_out(
+            &bob,
+            usdc_addr,
+            eurc_addr,
+            amount_out,
+            u128::MAX, // max_amount_in
+        )?;
 
         // Check bob's balances after swap
         let bob_usdc_after = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.balance_of(ITIP20::balanceOfCall { account: bob })
+            usdc.balance_of(ITIP20::balanceOfCall { account: bob })?
         };
         let bob_eurc_after = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            eurc.balance_of(ITIP20::balanceOfCall { account: bob })
+            eurc.balance_of(ITIP20::balanceOfCall { account: bob })?
         };
 
         // Verify bob spent USDC and received exact EURC
@@ -3325,7 +3323,7 @@ mod tests {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
             linking_usd
                 .token
-                .balance_of(ITIP20::balanceOfCall { account: bob })
+                .balance_of(ITIP20::balanceOfCall { account: bob })?
         };
         assert_eq!(
             bob_linking_usd_wallet,

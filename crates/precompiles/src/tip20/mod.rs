@@ -500,7 +500,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         if registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: transfer_policy_id,
             user: call.from,
-        }) {
+        })? {
             // Only allow burning from addresses that are blocked from transferring
             return Err(TIP20Error::policy_forbids().into());
         }
@@ -944,13 +944,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let from_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: transfer_policy_id,
             user: *from,
-        });
+        })?;
 
         // Check if 'to' address is authorized
         let to_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: transfer_policy_id,
             user: *to,
-        });
+        })?;
 
         Ok(from_authorized && to_authorized)
     }

@@ -1,11 +1,11 @@
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageOps},
+    tip20::{TIP20Token, ITIP20},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
-    tip20::{ITIP20, TIP20Token},
 };
 use alloy::{
-    primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
+    primitives::{keccak256, uint, Address, IntoLogData, B256, U256},
     sol_types::SolValue,
 };
 use revm::precompile::PrecompileError;
@@ -58,7 +58,7 @@ impl PoolKey {
 
 /// Storage slots for FeeAMM
 pub mod slots {
-    use alloy::primitives::{Address, B256, U256, uint};
+    use alloy::primitives::{uint, Address, B256, U256};
 
     use crate::storage::slots::{double_mapping_slot, mapping_slot};
 
@@ -622,7 +622,7 @@ mod tests {
     use crate::{storage::hashmap::HashMapStorageProvider, tip20::token_id_to_address};
 
     use super::*;
-    use alloy::primitives::{Address, uint};
+    use alloy::primitives::{uint, Address};
 
     #[test]
     fn test_mint_identical_addresses() {
