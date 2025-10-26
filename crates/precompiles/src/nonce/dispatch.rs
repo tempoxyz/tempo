@@ -16,13 +16,7 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
 
         match selector {
             INonce::getNonceCall::SELECTOR => {
-                let call = INonce::getNonceCall::abi_decode(calldata)
-                    .map_err(|e| PrecompileError::Other(format!("Failed to decode input: {e}")))?;
-
-                match self.get_nonce(call) {
-                    Ok(nonce) => view::<INonce::getNonceCall>(calldata, |_| nonce),
-                    Err(e) => Err(PrecompileError::Other(e)),
-                }
+                view::<INonce::getNonceCall>(calldata, |call| self.get_nonce(call))
             }
             INonce::getActiveNonceKeyCountCall::SELECTOR => {
                 view::<INonce::getActiveNonceKeyCountCall>(calldata, |call| {

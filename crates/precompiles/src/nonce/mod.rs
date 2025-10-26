@@ -205,7 +205,7 @@ mod tests {
 
         assert_eq!(
             result.unwrap_err(),
-            TempoPrecompileError::Nonce(NonceError::protocol_nonce_not_supported())
+            TempoPrecompileError::NonceError(NonceError::protocol_nonce_not_supported())
         );
     }
 
@@ -252,26 +252,30 @@ mod tests {
         let account = address!("0x1111111111111111111111111111111111111111");
 
         // Initially, no active keys
-        let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account }).unwrap();
+        let count = nonce_mgr
+            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
+            .unwrap();
         assert_eq!(count, U256::ZERO);
 
         // Increment a nonce key - should increase active count
         nonce_mgr.increment_nonce(&account, 1).unwrap();
-        let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account }).unwrap();
+        let count = nonce_mgr
+            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
+            .unwrap();
         assert_eq!(count, U256::from(1));
 
         // Increment same key again - count should stay the same
         nonce_mgr.increment_nonce(&account, 1).unwrap();
-        let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account }).unwrap();
+        let count = nonce_mgr
+            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
+            .unwrap();
         assert_eq!(count, U256::from(1));
 
         // Increment a different key - count should increase
         nonce_mgr.increment_nonce(&account, 2).unwrap();
-        let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account }).unwrap();
+        let count = nonce_mgr
+            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
+            .unwrap();
         assert_eq!(count, U256::from(2));
     }
 
