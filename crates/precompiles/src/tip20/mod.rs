@@ -700,7 +700,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 &EthSignature::from_scalars_and_parity(call.r, call.s, v_norm == 1),
                 digest,
             )
-            .map_err(|_| TIP20Error::invalid_signature())?
+            .map_err(|_| TempoPrecompileError::from(TIP20Error::invalid_signature()))?
         };
 
         // Verify recovered address matches owner
@@ -1286,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn test_permit_rejects_invalid_signature() {
+    fn test_permit_rejects_invalid_signature() -> eyre::Result<()> {
         // Setup token
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
@@ -1328,7 +1328,7 @@ mod tests {
         }
         .eip712_hash_struct();
 
-        let domain = token.domain_separator();
+        let domain = token.domain_separator()?;
         let mut digest_data = [0u8; 66];
         digest_data[0] = 0x19;
         digest_data[1] = 0x01;
@@ -1355,11 +1355,16 @@ mod tests {
                 s: s.into(),
             },
         );
-        assert!(matches!(result, Err(TIP20Error::InvalidSignature(_))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
+        ));
+
+        Ok(())
     }
 
     #[test]
-    fn test_mint_increases_balance_and_supply() {
+    fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let addr = Address::from([1u8; 20]);
@@ -1380,8 +1385,8 @@ mod tests {
                 .mint(&admin, ITIP20::mintCall { to: addr, amount })
                 .unwrap();
 
-            assert_eq!(token.get_balance(&addr), amount);
-            assert_eq!(token.total_supply(), amount);
+            assert_eq!(token.get_balance(&addr)?, amount);
+            assert_eq!(token.total_supply()?, amount);
         }
         assert_eq!(storage.events[&token_id_to_address(token_id)].len(), 2);
         assert_eq!(
@@ -1397,10 +1402,12 @@ mod tests {
             storage.events[&token_id_to_address(token_id)][1],
             TIP20Event::Mint(ITIP20::Mint { to: addr, amount }).into_log_data()
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_transfer_moves_balance() {
+    fn test_transfer_moves_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let from = Address::from([1u8; 20]);
@@ -1422,9 +1429,9 @@ mod tests {
                 .transfer(&from, ITIP20::transferCall { to, amount })
                 .unwrap();
 
-            assert_eq!(token.get_balance(&from), U256::ZERO);
-            assert_eq!(token.get_balance(&to), amount);
-            assert_eq!(token.total_supply(), amount); // Supply unchanged
+            assert_eq!(token.get_balance(&from)?, U256::ZERO);
+            assert_eq!(token.get_balance(&to)?, amount);
+            assert_eq!(token.total_supply()?, amount); // Supply unchanged
         }
         assert_eq!(storage.events[&token_id_to_address(token_id)].len(), 3);
         assert_eq!(
@@ -1444,10 +1451,12 @@ mod tests {
             storage.events[&token_id_to_address(token_id)][2],
             TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data()
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_transfer_insufficient_balance_fails() {
+    fn test_transfer_insufficient_balance_fails() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
         let mut token = TIP20Token::new(1, &mut storage);
@@ -1459,7 +1468,14 @@ mod tests {
         let amount = U256::from(100);
 
         let result = token.transfer(&from, ITIP20::transferCall { to, amount });
-        assert!(matches!(result, Err(TIP20Error::InsufficientBalance(_))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(
+                TIP20Error::InsufficientBalance(_)
+            ))
+        ));
+
+        Ok(())
     }
 
     #[test]
@@ -1635,7 +1651,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_fee_pre_tx() {
+    fn test_transfer_fee_pre_tx() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
@@ -1658,8 +1674,10 @@ mod tests {
             .transfer_fee_pre_tx(&user, fee_amount)
             .expect("transfer failed");
 
-        assert_eq!(token.get_balance(&user), U256::from(50));
-        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS), fee_amount);
+        assert_eq!(token.get_balance(&user)?, U256::from(50));
+        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS)?, fee_amount);
+
+        Ok(())
     }
 
     #[test]
@@ -1675,11 +1693,16 @@ mod tests {
 
         let fee_amount = U256::from(50);
         let result = token.transfer_fee_pre_tx(&user, fee_amount);
-        assert_eq!(result, Err(TIP20Error::insufficient_balance()));
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::TIP20(
+                TIP20Error::insufficient_balance()
+            ))
+        );
     }
 
     #[test]
-    fn test_transfer_fee_post_tx() {
+    fn test_transfer_fee_post_tx() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
@@ -1698,8 +1721,8 @@ mod tests {
             .transfer_fee_post_tx(&user, refund_amount, gas_used)
             .expect("transfer failed");
 
-        assert_eq!(token.get_balance(&user), refund_amount);
-        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS), U256::from(70));
+        assert_eq!(token.get_balance(&user)?, refund_amount);
+        assert_eq!(token.get_balance(&TIP_FEE_MANAGER_ADDRESS)?, U256::from(70));
 
         let events = &storage.events[&token_id_to_address(token_id)];
         assert_eq!(
@@ -1711,10 +1734,12 @@ mod tests {
             })
             .into_log_data()
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_transfer_from_insufficient_allowance() {
+    fn test_transfer_from_insufficient_allowance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let from = Address::random();
@@ -1735,11 +1760,18 @@ mod tests {
             .unwrap();
 
         let result = token.transfer_from(&spender, ITIP20::transferFromCall { from, to, amount });
-        assert!(matches!(result, Err(TIP20Error::InsufficientAllowance(_))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(
+                TIP20Error::InsufficientAllowance(_)
+            ))
+        ));
+
+        Ok(())
     }
 
     #[test]
-    fn test_system_transfer_from() {
+    fn test_system_transfer_from() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let from = Address::random();
@@ -1765,10 +1797,12 @@ mod tests {
             storage.events[&token_id_to_address(token_id)].last(),
             Some(&TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data())
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_initialize_sets_next_quote_token() {
+    fn test_initialize_sets_next_quote_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1776,12 +1810,14 @@ mod tests {
         let mut token = TIP20Token::new(token_id, &mut storage);
 
         // Verify both quoteToken and nextQuoteToken are set to the same value
-        assert_eq!(token.quote_token(), LINKING_USD_ADDRESS);
-        assert_eq!(token.next_quote_token(), LINKING_USD_ADDRESS);
+        assert_eq!(token.quote_token()?, LINKING_USD_ADDRESS);
+        assert_eq!(token.next_quote_token()?, LINKING_USD_ADDRESS);
+
+        Ok(())
     }
 
     #[test]
-    fn test_update_quote_token() {
+    fn test_update_quote_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1801,7 +1837,7 @@ mod tests {
             .unwrap();
 
         // Verify next quote token was set
-        assert_eq!(token.next_quote_token(), quote_token_address);
+        assert_eq!(token.next_quote_token()?, quote_token_address);
 
         // Verify event was emitted
         let events = &storage.events[&token_id_to_address(token_id)];
@@ -1813,10 +1849,12 @@ mod tests {
             })
             .into_log_data()
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_update_quote_token_requires_admin() {
+    fn test_update_quote_token_requires_admin() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let non_admin = Address::random();
@@ -1836,11 +1874,16 @@ mod tests {
             },
         );
 
-        assert!(matches!(result, Err(TIP20Error::PolicyForbids(_))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+        ));
+
+        Ok(())
     }
 
     #[test]
-    fn test_update_quote_token_rejects_non_tip20() {
+    fn test_update_quote_token_rejects_non_tip20() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1856,11 +1899,18 @@ mod tests {
             },
         );
 
-        assert!(matches!(result, Err(TIP20Error::InvalidQuoteToken(_))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                _
+            )))
+        ));
+
+        Ok(())
     }
 
     #[test]
-    fn test_update_quote_token_rejects_undeployed_token() {
+    fn test_update_quote_token_rejects_undeployed_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1877,11 +1927,18 @@ mod tests {
             },
         );
 
-        assert!(matches!(result, Err(TIP20Error::InvalidQuoteToken(_))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                _
+            )))
+        ));
+
+        Ok(())
     }
 
     #[test]
-    fn test_finalize_quote_token_update() {
+    fn test_finalize_quote_token_update() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1906,7 +1963,7 @@ mod tests {
             .unwrap();
 
         // Verify quote token was updated
-        assert_eq!(token.quote_token(), quote_token_address);
+        assert_eq!(token.quote_token()?, quote_token_address);
 
         // Verify event was emitted
         let events = &storage.events[&token_id_to_address(token_id)];
@@ -1918,10 +1975,12 @@ mod tests {
             })
             .into_log_data()
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_finalize_quote_token_update_detects_loop() {
+    fn test_finalize_quote_token_update_detects_loop() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1953,11 +2012,18 @@ mod tests {
         let result =
             token_b.finalize_quote_token_update(&admin, ITIP20::finalizeQuoteTokenUpdateCall {});
 
-        assert!(matches!(result, Err(TIP20Error::InvalidQuoteToken(_))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                _
+            )))
+        ));
+
+        Ok(())
     }
 
     #[test]
-    fn test_finalize_quote_token_update_requires_admin() {
+    fn test_finalize_quote_token_update_requires_admin() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let non_admin = Address::random();
@@ -1968,20 +2034,23 @@ mod tests {
         let mut token = TIP20Token::new(token_id, &mut storage);
 
         // Set next quote token as admin
-        token
-            .update_quote_token(
-                &admin,
-                ITIP20::updateQuoteTokenCall {
-                    newQuoteToken: quote_token_address,
-                },
-            )
-            .unwrap();
+        token.update_quote_token(
+            &admin,
+            ITIP20::updateQuoteTokenCall {
+                newQuoteToken: quote_token_address,
+            },
+        )?;
 
         // Try to complete update as non-admin
         let result =
             token.finalize_quote_token_update(&non_admin, ITIP20::finalizeQuoteTokenUpdateCall {});
 
-        assert!(matches!(result, Err(TIP20Error::PolicyForbids(_))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+        ));
+
+        Ok(())
     }
 
     #[test]
