@@ -37,8 +37,6 @@ impl HashMapStorageProvider {
 }
 
 impl PrecompileStorageProvider for HashMapStorageProvider {
-    type Error = HashMapStorageProviderError;
-
     fn chain_id(&self) -> u64 {
         self.chain_id
     }
@@ -47,20 +45,13 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.timestamp
     }
 
-    fn set_code(
-        &mut self,
-        address: Address,
-        code: Bytecode,
-    ) -> Result<(), HashMapStorageProviderError> {
+    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let account = self.accounts.entry(address).or_default();
         account.code = Some(code);
         Ok(())
     }
 
-    fn get_account_info(
-        &mut self,
-        address: Address,
-    ) -> Result<AccountInfo, HashMapStorageProviderError> {
+    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, TempoPrecompileError> {
         Ok(self.accounts.get(&address).cloned().unwrap_or_default())
     }
 
@@ -69,33 +60,21 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         address: Address,
         key: U256,
         value: U256,
-    ) -> Result<(), HashMapStorageProviderError> {
+    ) -> Result<(), TempoPrecompileError> {
         self.internals.insert((address, key), value);
         Ok(())
     }
 
-    fn emit_event(
-        &mut self,
-        address: Address,
-        event: LogData,
-    ) -> Result<(), HashMapStorageProviderError> {
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.events.entry(address).or_default().push(event);
         Ok(())
     }
 
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, HashMapStorageProviderError> {
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         Ok(self
             .internals
             .get(&(address, key))
             .copied()
             .unwrap_or(U256::ZERO))
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum HashMapStorageProviderError {}
-impl From<HashMapStorageProviderError> for TempoPrecompileError {
-    fn from(_value: HashMapStorageProviderError) -> Self {
-        unreachable!("unreachable")
     }
 }

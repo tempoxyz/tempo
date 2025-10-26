@@ -55,20 +55,17 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// This ensures the [`StablecoinExchange`] isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
         // must ensure the account is not empty, by setting some code
-        self.storage
-            .set_code(
-                self.address,
-                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-            )
-            .map_err(Into::into)
+        self.storage.set_code(
+            self.address,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )
     }
 
     /// Read pending order ID
     fn get_pending_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
         Ok(self
             .storage
-            .sload(self.address, slots::PENDING_ORDER_ID)
-            .map_err(Into::into)?
+            .sload(self.address, slots::PENDING_ORDER_ID)?
             .to::<u128>())
     }
 
@@ -76,15 +73,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     fn set_pending_order_id(&mut self, order_id: u128) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.address, slots::PENDING_ORDER_ID, U256::from(order_id))
-            .map_err(Into::into)
     }
 
     /// Read active order ID
     fn get_active_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
         Ok(self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .map_err(Into::into)?
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
             .to::<u128>())
     }
 
@@ -92,7 +87,6 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     fn set_active_order_id(&mut self, order_id: u128) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))
-            .map_err(Into::into)
     }
 
     /// Increment and return the pending order id
@@ -110,11 +104,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     ) -> Result<u128, TempoPrecompileError> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
-        let balance = self
-            .storage
-            .sload(self.address, balance_slot)
-            .map_err(Into::into)?
-            .to::<u128>();
+        let balance = self.storage.sload(self.address, balance_slot)?.to::<u128>();
 
         Ok(balance)
     }
@@ -143,7 +133,6 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
         self.storage
             .sstore(self.address, balance_slot, U256::from(amount))
-            .map_err(Into::into)
     }
 
     /// Add to user's balance
@@ -237,7 +226,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         } else {
             self.set_balance(user, token, 0)?;
             let remaining = amount - user_balance;
-            self.transfer_from(token, user, remaining)}
+            self.transfer_from(token, user, remaining)
+        }
     }
 
     pub fn quote_swap_exact_amount_out(
@@ -364,8 +354,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn active_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
         Ok(self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .map_err(Into::into)?
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
             .to::<u128>())
     }
 
@@ -373,8 +362,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn pending_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
         Ok(self
             .storage
-            .sload(self.address, slots::PENDING_ORDER_ID)
-            .map_err(Into::into)?
+            .sload(self.address, slots::PENDING_ORDER_ID)?
             .to::<u128>())
     }
 
@@ -396,17 +384,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         book.store(self.storage, self.address);
 
         // Emit PairCreated event
-        self.storage
-            .emit_event(
-                self.address,
-                StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
-                    key: book_key,
-                    base: *base,
-                    quote,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)?;
+        self.storage.emit_event(
+            self.address,
+            StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
+                key: book_key,
+                base: *base,
+                quote,
+            })
+            .into_log_data(),
+        )?;
 
         Ok(book_key)
     }
@@ -475,20 +461,18 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         order.store(self.storage, self.address);
 
         // Emit OrderPlaced event
-        self.storage
-            .emit_event(
-                self.address,
-                StablecoinExchangeEvents::OrderPlaced(IStablecoinExchange::OrderPlaced {
-                    orderId: order_id,
-                    maker: *sender,
-                    token,
-                    amount,
-                    isBid: is_bid,
-                    tick,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)?;
+        self.storage.emit_event(
+            self.address,
+            StablecoinExchangeEvents::OrderPlaced(IStablecoinExchange::OrderPlaced {
+                orderId: order_id,
+                maker: *sender,
+                token,
+                amount,
+                isBid: is_bid,
+                tick,
+            })
+            .into_log_data(),
+        )?;
 
         Ok(order_id)
     }
@@ -549,21 +533,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         order.store(self.storage, self.address);
 
         // Emit FlipOrderPlaced event
-        self.storage
-            .emit_event(
-                self.address,
-                StablecoinExchangeEvents::FlipOrderPlaced(IStablecoinExchange::FlipOrderPlaced {
-                    orderId: order_id,
-                    maker: *sender,
-                    token,
-                    amount,
-                    isBid: is_bid,
-                    tick,
-                    flipTick: flip_tick,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)?;
+        self.storage.emit_event(
+            self.address,
+            StablecoinExchangeEvents::FlipOrderPlaced(IStablecoinExchange::FlipOrderPlaced {
+                orderId: order_id,
+                maker: *sender,
+                token,
+                amount,
+                isBid: is_bid,
+                tick,
+                flipTick: flip_tick,
+            })
+            .into_log_data(),
+        )?;
 
         Ok(order_id)
     }
@@ -579,8 +561,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let next_order_id = self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .map_err(Into::into)?
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
             .to::<u128>();
 
         let pending_order_id = self.get_pending_order_id()?;
@@ -700,18 +681,16 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         );
 
         // Emit OrderFilled event for partial fill
-        self.storage
-            .emit_event(
-                self.address,
-                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
-                    orderId: order.order_id(),
-                    maker: order.maker(),
-                    amountFilled: fill_amount,
-                    partialFill: true,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)?;
+        self.storage.emit_event(
+            self.address,
+            StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                orderId: order.order_id(),
+                maker: order.maker(),
+                amountFilled: fill_amount,
+                partialFill: true,
+            })
+            .into_log_data(),
+        )?;
 
         Ok(amount_out)
     }
@@ -744,18 +723,16 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         };
 
         // Emit OrderFilled event for complete fill
-        self.storage
-            .emit_event(
-                self.address,
-                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
-                    orderId: order.order_id(),
-                    maker: order.maker(),
-                    amountFilled: fill_amount,
-                    partialFill: false,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)?;
+        self.storage.emit_event(
+            self.address,
+            StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                orderId: order.order_id(),
+                maker: order.maker(),
+                amountFilled: fill_amount,
+                partialFill: false,
+            })
+            .into_log_data(),
+        )?;
 
         if order.is_flip() {
             // Create a new flip order with flipped side and swapped ticks
@@ -968,8 +945,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Check if the order is still pending (not yet in active orderbook)
         let next_order_id = self
             .storage
-            .sload(self.address, slots::ACTIVE_ORDER_ID)
-            .map_err(Into::into)?
+            .sload(self.address, slots::ACTIVE_ORDER_ID)?
             .to::<u128>();
 
         if order.order_id() > next_order_id {
@@ -1005,15 +981,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         order.delete(self.storage, self.address)?;
 
         // Emit OrderCancelled event
-        self.storage
-            .emit_event(
-                self.address,
-                StablecoinExchangeEvents::OrderCancelled(IStablecoinExchange::OrderCancelled {
-                    orderId: order.order_id(),
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)
+        self.storage.emit_event(
+            self.address,
+            StablecoinExchangeEvents::OrderCancelled(IStablecoinExchange::OrderCancelled {
+                orderId: order.order_id(),
+            })
+            .into_log_data(),
+        )
     }
 
     /// Cancel an active order (already in the orderbook)
@@ -1079,15 +1053,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         order.delete(self.storage, self.address)?;
 
         // Emit OrderCancelled event
-        self.storage
-            .emit_event(
-                self.address,
-                StablecoinExchangeEvents::OrderCancelled(IStablecoinExchange::OrderCancelled {
-                    orderId: order.order_id(),
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)
+        self.storage.emit_event(
+            self.address,
+            StablecoinExchangeEvents::OrderCancelled(IStablecoinExchange::OrderCancelled {
+                orderId: order.order_id(),
+            })
+            .into_log_data(),
+        )
     }
 
     /// Withdraw tokens from exchange balance
@@ -1434,13 +1406,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
 impl<'a, S: PrecompileStorageProvider> StorageOps for StablecoinExchange<'a, S> {
     fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError> {
-        self.storage
-            .sstore(self.address, slot, value)
-            .map_err(Into::into)
+        self.storage.sstore(self.address, slot, value)
     }
 
     fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError> {
-        self.storage.sload(self.address, slot).map_err(Into::into)
+        self.storage.sload(self.address, slot)
     }
 }
 

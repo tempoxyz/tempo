@@ -177,54 +177,42 @@ impl Order {
         let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
 
         let maker = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_MAKER_OFFSET)
-            .map_err(Into::into)?
+            .sload(stablecoin_exchange, order_slot + ORDER_MAKER_OFFSET)?
             .into_address();
 
-        let book_key = B256::from(
-            storage
-                .sload(stablecoin_exchange, order_slot + ORDER_BOOK_KEY_OFFSET)
-                .map_err(Into::into)?,
-        );
+        let book_key =
+            B256::from(storage.sload(stablecoin_exchange, order_slot + ORDER_BOOK_KEY_OFFSET)?);
 
         let is_bid = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_IS_BID_OFFSET)
-            .map_err(Into::into)?
+            .sload(stablecoin_exchange, order_slot + ORDER_IS_BID_OFFSET)?
             .to::<bool>();
 
         let tick = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_TICK_OFFSET)
-            .map_err(Into::into)?
+            .sload(stablecoin_exchange, order_slot + ORDER_TICK_OFFSET)?
             .to::<u16>() as i16;
 
         let amount = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_AMOUNT_OFFSET)
-            .map_err(Into::into)?
+            .sload(stablecoin_exchange, order_slot + ORDER_AMOUNT_OFFSET)?
             .to::<u128>();
 
         let remaining = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_REMAINING_OFFSET)
-            .map_err(Into::into)?
+            .sload(stablecoin_exchange, order_slot + ORDER_REMAINING_OFFSET)?
             .to::<u128>();
 
         let prev = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_PREV_OFFSET)
-            .map_err(Into::into)?
+            .sload(stablecoin_exchange, order_slot + ORDER_PREV_OFFSET)?
             .to::<u128>();
 
         let next = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_NEXT_OFFSET)
-            .map_err(Into::into)?
+            .sload(stablecoin_exchange, order_slot + ORDER_NEXT_OFFSET)?
             .to::<u128>();
 
         let is_flip = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_IS_FLIP_OFFSET)
-            .map_err(Into::into)?
+            .sload(stablecoin_exchange, order_slot + ORDER_IS_FLIP_OFFSET)?
             .to::<bool>();
 
         let flip_tick = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_FLIP_TICK_OFFSET)
-            .map_err(Into::into)?
+            .sload(stablecoin_exchange, order_slot + ORDER_FLIP_TICK_OFFSET)?
             .to::<u16>() as i16;
 
         Ok(Self {
@@ -248,76 +236,60 @@ impl Order {
         stablecoin_exchange: Address,
     ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_MAKER_OFFSET,
-                self.maker().into_u256(),
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_MAKER_OFFSET,
+            self.maker().into_u256(),
+        )?;
 
         // Store book_key
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_BOOK_KEY_OFFSET,
-                U256::from_be_bytes(self.book_key().0),
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_BOOK_KEY_OFFSET,
+            U256::from_be_bytes(self.book_key().0),
+        )?;
 
         // Store is_bid boolean
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_BID_OFFSET,
-                U256::from(self.is_bid() as u8),
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_IS_BID_OFFSET,
+            U256::from(self.is_bid() as u8),
+        )?;
 
         // Store tick
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_TICK_OFFSET,
-                U256::from(self.tick() as u16),
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_TICK_OFFSET,
+            U256::from(self.tick() as u16),
+        )?;
 
         // Store original amount
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_AMOUNT_OFFSET,
-                U256::from(self.amount()),
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_AMOUNT_OFFSET,
+            U256::from(self.amount()),
+        )?;
 
         // Store remaining amount
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_REMAINING_OFFSET,
-                U256::from(self.remaining()),
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_REMAINING_OFFSET,
+            U256::from(self.remaining()),
+        )?;
 
         // Store is_flip boolean
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_FLIP_OFFSET,
-                U256::from(self.is_flip() as u8),
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_IS_FLIP_OFFSET,
+            U256::from(self.is_flip() as u8),
+        )?;
 
         // Store flip_tick
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_FLIP_TICK_OFFSET,
-                U256::from(self.flip_tick() as u16),
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_FLIP_TICK_OFFSET,
+            U256::from(self.flip_tick() as u16),
+        )?;
 
         Ok(())
     }
@@ -329,85 +301,65 @@ impl Order {
     ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_MAKER_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_MAKER_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_BOOK_KEY_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_BOOK_KEY_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_BID_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_IS_BID_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_TICK_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_TICK_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_AMOUNT_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_AMOUNT_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_REMAINING_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_REMAINING_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_PREV_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_PREV_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_NEXT_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_NEXT_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_FLIP_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_IS_FLIP_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_FLIP_TICK_OFFSET,
-                U256::ZERO,
-            )
-            .map_err(Into::into)?;
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_FLIP_TICK_OFFSET,
+            U256::ZERO,
+        )?;
 
         Ok(())
     }
@@ -422,15 +374,11 @@ impl Order {
         self.remaining = new_remaining;
 
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_REMAINING_OFFSET,
-                U256::from(new_remaining),
-            )
-            .map_err(Into::into)?;
-
-        Ok(())
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_REMAINING_OFFSET,
+            U256::from(new_remaining),
+        )
     }
 
     pub fn update_next_order<S: PrecompileStorageProvider>(
@@ -441,15 +389,11 @@ impl Order {
     ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_NEXT_OFFSET,
-                U256::from(new_next),
-            )
-            .map_err(Into::into)?;
-
-        Ok(())
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_NEXT_OFFSET,
+            U256::from(new_next),
+        )
     }
 
     pub fn update_prev_order<S: PrecompileStorageProvider>(
@@ -460,15 +404,11 @@ impl Order {
     ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_PREV_OFFSET,
-                U256::from(new_prev),
-            )
-            .map_err(Into::into)?;
-
-        Ok(())
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_PREV_OFFSET,
+            U256::from(new_prev),
+        )
     }
 
     /// Returns the order ID.

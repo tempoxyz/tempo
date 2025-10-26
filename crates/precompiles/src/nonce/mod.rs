@@ -63,10 +63,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 
         // For user nonce keys, read from precompile storage
         let slot = slots::nonce_slot(&call.account, call.nonceKey);
-        let nonce = self
-            .storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .map_err(Into::into)?;
+        let nonce = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         Ok(nonce.to::<u64>())
     }
@@ -77,10 +74,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
         call: INonce::getActiveNonceKeyCountCall,
     ) -> Result<U256, TempoPrecompileError> {
         let slot = slots::active_key_count_slot(&call.account);
-        let count = self
-            .storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .map_err(Into::into)?;
+        let count = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         Ok(count)
     }
@@ -101,10 +95,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
         let slot = slots::nonce_slot(account, nonce_key);
 
         // If this is a new nonce key (sequence was 0), increment active key count
-        let current = self
-            .storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .map_err(Into::into)?;
+        let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         if current == U256::ZERO && nonce > 0 {
             self.increment_active_key_count(account);
@@ -127,10 +118,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
         }
 
         let slot = slots::nonce_slot(account, nonce_key);
-        let current = self
-            .storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .map_err(Into::into)?;
+        let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         // If transitioning from 0 to 1, increment active key count
         if current == U256::ZERO {
@@ -142,8 +130,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
             .ok_or_else(NonceError::nonce_overflow)?;
 
         self.storage
-            .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_nonce)
-            .map_err(Into::into)?;
+            .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_nonce)?;
 
         Ok(new_nonce.to::<u64>())
     }
@@ -154,10 +141,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
         account: &Address,
     ) -> Result<(), TempoPrecompileError> {
         let slot = slots::active_key_count_slot(account);
-        let current = self
-            .storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .map_err(Into::into)?;
+        let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         let new_count = current
             .checked_add(U256::ONE)
