@@ -109,7 +109,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 policy_type: call.policyType,
                 admin: call.admin,
             },
-        );
+        )?;
 
         // Emit events
         self.storage.emit_event(
@@ -152,11 +152,11 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         )?;
 
         // Store policy data
-        self.set_policy_data(new_policy_id, &PolicyData { policy_type, admin });
+        self.set_policy_data(new_policy_id, &PolicyData { policy_type, admin })?;
 
         // Set initial accounts
         for account in call.accounts.iter() {
-            self.set_policy_set(new_policy_id, account, true);
+            self.set_policy_set(new_policy_id, account, true)?;
 
             match policy_type {
                 ITIP403Registry::PolicyType::WHITELIST => {
@@ -232,7 +232,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 admin: call.admin,
                 ..data
             },
-        );
+        )?;
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
@@ -262,7 +262,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
-        self.set_policy_set(call.policyId, &call.account, call.allowed);
+        self.set_policy_set(call.policyId, &call.account, call.allowed)?;
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
@@ -293,7 +293,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
-        self.set_policy_set(call.policyId, &call.account, call.restricted);
+        self.set_policy_set(call.policyId, &call.account, call.restricted)?;
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,

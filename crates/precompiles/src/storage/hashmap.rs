@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use alloy::primitives::{Address, LogData, U256};
 use revm::state::{AccountInfo, Bytecode};
-use thiserror::Error;
+use std::collections::HashMap;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
