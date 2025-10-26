@@ -11,6 +11,7 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use tempo_contracts::precompiles::StablecoinExchangeError;
 
 /// Constants from Solidity implementation
 pub const MIN_TICK: i16 = -2000;
@@ -100,7 +101,7 @@ impl PriceLevel {
         book_key: B256,
         tick: i16,
         is_bid: bool,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let base_slot = if is_bid {
             BID_TICK_LEVELS
         } else {
@@ -117,7 +118,7 @@ impl PriceLevel {
                 tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
                 U256::ZERO,
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         storage
             .sstore(
@@ -125,7 +126,7 @@ impl PriceLevel {
                 tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
                 U256::ZERO,
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         storage
             .sstore(
@@ -133,7 +134,9 @@ impl PriceLevel {
                 tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
                 U256::from(self.tail),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
+
+        Ok(())
     }
 
     /// Store this PriceLevel to storage
@@ -155,23 +158,29 @@ impl PriceLevel {
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         // Store each field
-        storage.sstore(
-            address,
-            tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
-            U256::from(self.head),
-        )?;
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+                U256::from(self.head),
+            )
+            .map_err(Into::into)?;
 
-        storage.sstore(
-            address,
-            tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
-            U256::from(self.tail),
-        )?;
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+                U256::from(self.tail),
+            )
+            .map_err(Into::into)?;
 
-        storage.sstore(
-            address,
-            tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
-            U256::from(self.total_liquidity),
-        )
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+                U256::from(self.total_liquidity),
+            )
+            .map_err(Into::into)
     }
 
     /// Update only the head order ID
@@ -191,11 +200,13 @@ impl PriceLevel {
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
-        storage.sstore(
-            address,
-            tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
-            U256::from(new_head),
-        )
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+                U256::from(new_head),
+            )
+            .map_err(Into::into)
     }
 
     /// Update only the tail order ID
@@ -215,11 +226,13 @@ impl PriceLevel {
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
-        storage.sstore(
-            address,
-            tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
-            U256::from(new_tail),
-        )
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+                U256::from(new_tail),
+            )
+            .map_err(Into::into)
     }
 
     /// Update only the total liquidity
@@ -239,11 +252,13 @@ impl PriceLevel {
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
-        storage.sstore(
-            address,
-            tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
-            U256::from(new_total),
-        )
+        storage
+            .sstore(
+                address,
+                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+                U256::from(new_total),
+            )
+            .map_err(Into::into)
     }
 }
 
@@ -302,18 +317,21 @@ impl Orderbook {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
         let base = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)
+            .map_err(Into::into)?
             .into_address();
 
         let quote = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET)?
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET)
+            .map_err(Into::into)?
             .into_address();
 
         let best_bid_tick = storage
             .sload(
                 address,
                 orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
-            )?
+            )
+            .map_err(Into::into)?
             .to::<u16>() as i16;
 
         // `tick` is stored into the least significant 16 bits of U256.
@@ -323,7 +341,8 @@ impl Orderbook {
             .sload(
                 address,
                 orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
-            )?
+            )
+            .map_err(Into::into)?
             .to::<u16>() as i16;
 
         Ok(Self {
@@ -343,31 +362,37 @@ impl Orderbook {
         let book_key = compute_book_key(self.base, self.quote);
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
-        storage.sstore(
-            address,
-            orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET,
-            self.base.into_u256(),
-        )?;
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET,
+                self.base.into_u256(),
+            )
+            .map_err(Into::into)?;
 
-        storage.sstore(
-            address,
-            orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET,
-            self.quote.into_u256(),
-        )?;
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET,
+                self.quote.into_u256(),
+            )
+            .map_err(Into::into)?;
 
-        storage.sstore(
-            address,
-            orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
-            U256::from(self.best_bid_tick as u16),
-        )?;
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+                U256::from(self.best_bid_tick as u16),
+            )
+            .map_err(Into::into)?;
 
-        storage.sstore(
-            address,
-            orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
-            U256::from(self.best_ask_tick as u16),
-        )?;
-
-        Ok(())
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+                U256::from(self.best_ask_tick as u16),
+            )
+            .map_err(Into::into)
     }
 
     /// Update only the best bid tick
@@ -378,11 +403,13 @@ impl Orderbook {
         new_best_bid: i16,
     ) -> Result<(), TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        storage.sstore(
-            address,
-            orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
-            U256::from(new_best_bid as u16),
-        )
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+                U256::from(new_best_bid as u16),
+            )
+            .map_err(Into::into)
     }
 
     /// Update only the best ask tick
@@ -393,11 +420,13 @@ impl Orderbook {
         new_best_ask: i16,
     ) -> Result<(), TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        storage.sstore(
-            address,
-            orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
-            U256::from(new_best_ask as u16),
-        )
+        storage
+            .sstore(
+                address,
+                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+                U256::from(new_best_ask as u16),
+            )
+            .map_err(Into::into)
     }
 
     /// Check if this orderbook exists in storage
@@ -407,7 +436,10 @@ impl Orderbook {
         address: Address,
     ) -> Result<bool, TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        let base = storage.sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?;
+        let base = storage
+            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)
+            .map_err(Into::into)?;
+
         Ok(base != U256::ZERO)
     }
 }
@@ -441,13 +473,9 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
     }
 
     /// Set bit in bitmap to mark tick as active
-    pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<(), OrderError> {
+    pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<(), TempoPrecompileError> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(OrderError::InvalidTick {
-                tick,
-                min: MIN_TICK,
-                max: MAX_TICK,
-            });
+            return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
         let word_index = tick >> 8;
@@ -461,25 +489,21 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
         let current_word = self
             .storage
             .sload(self.address, bitmap_slot)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         // Set the bit
         let new_word = current_word | mask;
         self.storage
             .sstore(self.address, bitmap_slot, new_word)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         Ok(())
     }
 
     /// Clear bit in bitmap to mark tick as inactive and update storage
-    pub fn clear_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<(), OrderError> {
+    pub fn clear_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<(), TempoPrecompileError> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(OrderError::InvalidTick {
-                tick,
-                min: MIN_TICK,
-                max: MAX_TICK,
-            });
+            return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
         let word_index = tick >> 8;
@@ -493,25 +517,25 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
         let current_word = self
             .storage
             .sload(self.address, bitmap_slot)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         // Clear the bit
         let new_word = current_word & mask;
         self.storage
             .sstore(self.address, bitmap_slot, new_word)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         Ok(())
     }
 
     /// Check if a tick is initialized (has orders)
-    pub fn is_tick_initialized(&mut self, tick: i16, is_bid: bool) -> Result<bool, OrderError> {
+    pub fn is_tick_initialized(
+        &mut self,
+        tick: i16,
+        is_bid: bool,
+    ) -> Result<bool, TempoPrecompileError> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(OrderError::InvalidTick {
-                tick,
-                min: MIN_TICK,
-                max: MAX_TICK,
-            });
+            return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
         let word_index = tick >> 8;
@@ -524,7 +548,7 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
         let word = self
             .storage
             .sload(self.address, bitmap_slot)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         Ok((word & mask) != U256::ZERO)
     }

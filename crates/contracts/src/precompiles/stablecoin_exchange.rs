@@ -87,6 +87,7 @@ sol! {
         error OrderDoesNotExist();
         error IdenticalTokens();
         error TickOutOfBounds(int16 tick);
+        error InvalidTick();
         error InvalidFlipTick();
         error InsufficientBalance();
         error InsufficientLiquidity();
@@ -129,6 +130,11 @@ impl StablecoinExchangeError {
     /// Creates an error for invalid flip tick.
     pub const fn invalid_flip_tick() -> Self {
         Self::InvalidFlipTick(IStablecoinExchange::InvalidFlipTick {})
+    }
+
+    /// Creates an error for invalid tick.
+    pub const fn invalid_tick() -> Self {
+        Self::InvalidTick(IStablecoinExchange::InvalidTick {})
     }
 
     /// Creates an error for insufficient balance.
