@@ -32,9 +32,10 @@ use reth_evm::{
         state::Bytecode,
     },
 };
-use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::FeeManagerError};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
+    error::TempoPrecompileError,
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
     tip_fee_manager::{self, IFeeManager, TipFeeManager},
     tip20,
@@ -427,19 +428,21 @@ where
                 // indicate the transaction cannot be included (e.g., insufficient liquidity
                 // in FeeAMM pool for fee swaps)
                 match e {
-                    IFeeManager::IFeeManagerErrors::InsufficientLiquidity(_) => {
-                        EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
+                    TempoPrecompileError::FeeManagerError(
+                        FeeManagerError::InsufficientLiquidity(_),
+                    ) => EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
+                        fee: Box::new(gas_balance_spending),
+                    }),
+
+                    TempoPrecompileError::FeeManagerError(
+                        FeeManagerError::InsufficientFeeTokenBalance(_),
+                    ) => EVMError::Transaction(
+                        TempoInvalidTransaction::InsufficientFeeTokenBalance {
                             fee: Box::new(gas_balance_spending),
-                        })
-                    }
-                    IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(_) => {
-                        EVMError::Transaction(
-                            TempoInvalidTransaction::InsufficientFeeTokenBalance {
-                                fee: Box::new(gas_balance_spending),
-                                balance: Box::new(account_balance),
-                            },
-                        )
-                    }
+                            balance: Box::new(account_balance),
+                        },
+                    ),
+
                     _ => EVMError::Custom(format!("{e:?}")),
                 }
             })?;
