@@ -139,7 +139,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 
         let new_nonce = current
             .checked_add(U256::ONE)
-            .ok_or_else(|| NonceError::nonce_overflow())?;
+            .ok_or_else(NonceError::nonce_overflow)?;
 
         self.storage
             .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_nonce)
@@ -161,7 +161,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 
         let new_count = current
             .checked_add(U256::ONE)
-            .ok_or_else(|| NonceError::nonce_overflow())?;
+            .ok_or_else(NonceError::nonce_overflow)?;
 
         self.storage
             .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_count)

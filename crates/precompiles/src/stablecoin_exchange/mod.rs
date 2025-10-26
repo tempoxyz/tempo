@@ -24,7 +24,7 @@ use crate::{
         compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
     },
     storage::{PrecompileStorageProvider, StorageOps, slots::mapping_slot},
-    tip20::{ITIP20, TIP20Error, TIP20Token},
+    tip20::{ITIP20, TIP20Token},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -237,9 +237,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         } else {
             self.set_balance(user, token, 0)?;
             let remaining = amount - user_balance;
-            self.transfer_from(token, user, remaining)
-                .map_err(Into::into)
-        }
+            self.transfer_from(token, user, remaining)}
     }
 
     pub fn quote_swap_exact_amount_out(
@@ -1104,8 +1102,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::insufficient_balance().into());
         }
         self.sub_balance(user, token, amount)?;
-        self.transfer(token, user, amount)
-            .map_err(TempoPrecompileError::from)?;
+        self.transfer(token, user, amount)?;
 
         Ok(())
     }
@@ -1266,7 +1263,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             }
         }
 
-        let lca = lca.ok_or_else(|| StablecoinExchangeError::pair_does_not_exist())?;
+        let lca = lca.ok_or_else(StablecoinExchangeError::pair_does_not_exist)?;
 
         // Build the trade path: token_in -> ... -> LCA -> ... -> token_out
         let mut trade_path = Vec::new();

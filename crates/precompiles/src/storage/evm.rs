@@ -75,7 +75,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
 impl From<EvmInternalsError> for TempoPrecompileError {
     fn from(value: EvmInternalsError) -> Self {
-        TempoPrecompileError::Fatal(value.to_string())
+        Self::Fatal(value.to_string())
     }
 }
 

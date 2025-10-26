@@ -37,7 +37,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
-    tip_fee_manager::{self, IFeeManager, TipFeeManager},
+    tip_fee_manager::{self, TipFeeManager},
     tip20,
 };
 use tempo_primitives::transaction::AASignature;

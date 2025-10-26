@@ -21,7 +21,6 @@ use crate::{
 use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
-    precompile::PrecompileError,
     state::Bytecode,
 };
 

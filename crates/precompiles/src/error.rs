@@ -46,58 +46,58 @@ pub enum TempoPrecompileError {
 
 impl From<StablecoinExchangeError> for TempoPrecompileError {
     fn from(err: StablecoinExchangeError) -> Self {
-        TempoPrecompileError::StablecoinExchange(err)
+        Self::StablecoinExchange(err)
     }
 }
 
 impl From<TIP20Error> for TempoPrecompileError {
     fn from(err: TIP20Error) -> Self {
-        TempoPrecompileError::TIP20(err)
+        Self::TIP20(err)
     }
 }
 
 impl From<TIP403RegistryError> for TempoPrecompileError {
     fn from(err: TIP403RegistryError) -> Self {
-        TempoPrecompileError::TIP403RegistryError(err)
+        Self::TIP403RegistryError(err)
     }
 }
 
 impl From<FeeManagerError> for TempoPrecompileError {
     fn from(err: FeeManagerError) -> Self {
-        TempoPrecompileError::FeeManagerError(err)
+        Self::FeeManagerError(err)
     }
 }
 
 impl From<TIPFeeAMMError> for TempoPrecompileError {
     fn from(err: TIPFeeAMMError) -> Self {
-        TempoPrecompileError::TIPFeeAMMError(err)
+        Self::TIPFeeAMMError(err)
     }
 }
 
 impl From<TIPAccountRegistrarError> for TempoPrecompileError {
     fn from(err: TIPAccountRegistrarError) -> Self {
-        TempoPrecompileError::TIPAccountRegistrarError(err)
+        Self::TIPAccountRegistrarError(err)
     }
 }
 
 impl From<NonceError> for TempoPrecompileError {
     fn from(err: NonceError) -> Self {
-        TempoPrecompileError::NonceError(err)
+        Self::NonceError(err)
     }
 }
 
 impl TempoPrecompileError {
     pub fn abi_encode(&self) -> Bytes {
         match self {
-            TempoPrecompileError::StablecoinExchange(err) => err.abi_encode().into(),
-            TempoPrecompileError::TIP20(err) => err.abi_encode().into(),
-            TempoPrecompileError::RolesAuthError(err) => err.abi_encode().into(),
-            TempoPrecompileError::TIP403RegistryError(err) => err.abi_encode().into(),
-            TempoPrecompileError::TIPAccountRegistrarError(err) => err.abi_encode().into(),
-            TempoPrecompileError::FeeManagerError(err) => err.abi_encode().into(),
-            TempoPrecompileError::TIPFeeAMMError(err) => err.abi_encode().into(),
-            TempoPrecompileError::NonceError(err) => err.abi_encode().into(),
-            TempoPrecompileError::Fatal(_) => {
+            Self::StablecoinExchange(err) => err.abi_encode().into(),
+            Self::TIP20(err) => err.abi_encode().into(),
+            Self::RolesAuthError(err) => err.abi_encode().into(),
+            Self::TIP403RegistryError(err) => err.abi_encode().into(),
+            Self::TIPAccountRegistrarError(err) => err.abi_encode().into(),
+            Self::FeeManagerError(err) => err.abi_encode().into(),
+            Self::TIPFeeAMMError(err) => err.abi_encode().into(),
+            Self::NonceError(err) => err.abi_encode().into(),
+            Self::Fatal(_) => {
                 // TODO: decide what to return here
                 Bytes::new()
             }

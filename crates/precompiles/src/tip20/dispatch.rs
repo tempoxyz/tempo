@@ -1,4 +1,4 @@
-use super::{ITIP20, TIP20Error};
+use super::ITIP20;
 use crate::{
     Precompile, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
