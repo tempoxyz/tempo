@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     error::TempoPrecompileError,
-    stablecoin_exchange::{IStablecoinExchange, error::OrderError},
+    stablecoin_exchange::IStablecoinExchange,
     storage::{PrecompileStorageProvider, slots::mapping_slot},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
@@ -907,7 +907,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                OrderError::InvalidTick { .. }
+                TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
             ));
 
             // Test tick below MIN_TICK
@@ -915,7 +915,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                OrderError::InvalidTick { .. }
+                TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
             ));
         }
 
@@ -932,7 +932,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                OrderError::InvalidTick { .. }
+                TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
             ));
 
             // Test tick below MIN_TICK
@@ -940,7 +940,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                OrderError::InvalidTick { .. }
+                TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
             ));
         }
 
@@ -957,7 +957,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                OrderError::InvalidTick { .. }
+                TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
             ));
 
             // Test tick below MIN_TICK
@@ -965,7 +965,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                OrderError::InvalidTick { .. }
+                TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
             ));
         }
     }
