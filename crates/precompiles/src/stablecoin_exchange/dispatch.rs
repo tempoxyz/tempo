@@ -8,7 +8,7 @@ use crate::{
     Precompile, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
-    view, view_result,
+    view,
 };
 
 impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> {
@@ -23,18 +23,12 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
 
         match selector {
             IStablecoinExchange::placeCall::SELECTOR => {
-                mutate::<
-                    IStablecoinExchange::placeCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |s, call| {
+                mutate::<IStablecoinExchange::placeCall>(calldata, msg_sender, |s, call| {
                     self.place(s, call.token, call.amount, call.isBid, call.tick)
                 })
             }
             IStablecoinExchange::placeFlipCall::SELECTOR => {
-                mutate::<
-                    IStablecoinExchange::placeFlipCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |s, call| {
+                mutate::<IStablecoinExchange::placeFlipCall>(calldata, msg_sender, |s, call| {
                     self.place_flip(
                         s,
                         call.token,
@@ -49,41 +43,36 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             IStablecoinExchange::balanceOfCall::SELECTOR => {
                 view::<IStablecoinExchange::balanceOfCall>(calldata, |call| {
                     self.balance_of(call.user, call.token)
-                        .expect("TODO: handle error")
                 })
             }
 
-            IStablecoinExchange::getOrderCall::SELECTOR => view_result::<
-                IStablecoinExchange::getOrderCall,
-                IStablecoinExchange::IStablecoinExchangeErrors,
-            >(calldata, |call| {
-                self.get_order(call.orderId).map(|order| order.into())
-            }),
+            IStablecoinExchange::getOrderCall::SELECTOR => {
+                view::<IStablecoinExchange::getOrderCall>(calldata, |call| {
+                    self.get_order(call.orderId).map(|order| order.into())
+                })
+            }
 
             IStablecoinExchange::getPriceLevelCall::SELECTOR => {
                 view::<IStablecoinExchange::getPriceLevelCall>(calldata, |call| {
                     self.get_price_level(call.base, call.tick, call.isBid)
-                        .into()
+                        .map(Into::into)
                 })
             }
 
             IStablecoinExchange::pairKeyCall::SELECTOR => {
                 view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {
-                    self.pair_key(call.tokenA, call.tokenB)
+                    Ok(self.pair_key(call.tokenA, call.tokenB))
                 })
             }
 
             IStablecoinExchange::booksCall::SELECTOR => {
                 view::<IStablecoinExchange::booksCall>(calldata, |call| {
-                    self.books(call.pairKey).into()
+                    self.books(call.pairKey).map(Into::into)
                 })
             }
 
             IStablecoinExchange::createPairCall::SELECTOR => {
-                mutate::<
-                    IStablecoinExchange::createPairCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |_s, call| {
+                mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, |_s, call| {
                     self.create_pair(&call.base)
                 })
             }
@@ -98,45 +87,42 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
             IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
-                mutate::<
-                    IStablecoinExchange::swapExactAmountInCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |s, call| {
-                    self.swap_exact_amount_in(
-                        s,
-                        call.tokenIn,
-                        call.tokenOut,
-                        call.amountIn,
-                        call.minAmountOut,
-                    )
-                })
+                mutate::<IStablecoinExchange::swapExactAmountInCall>(
+                    calldata,
+                    msg_sender,
+                    |s, call| {
+                        self.swap_exact_amount_in(
+                            s,
+                            call.tokenIn,
+                            call.tokenOut,
+                            call.amountIn,
+                            call.minAmountOut,
+                        )
+                    },
+                )
             }
             IStablecoinExchange::swapExactAmountOutCall::SELECTOR => {
-                mutate::<
-                    IStablecoinExchange::swapExactAmountOutCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, msg_sender, |s, call| {
-                    self.swap_exact_amount_out(
-                        s,
-                        call.tokenIn,
-                        call.tokenOut,
-                        call.amountOut,
-                        call.maxAmountIn,
-                    )
+                mutate::<IStablecoinExchange::swapExactAmountOutCall>(
+                    calldata,
+                    msg_sender,
+                    |s, call| {
+                        self.swap_exact_amount_out(
+                            s,
+                            call.tokenIn,
+                            call.tokenOut,
+                            call.amountOut,
+                            call.maxAmountIn,
+                        )
+                    },
+                )
+            }
+            IStablecoinExchange::quoteSwapExactAmountInCall::SELECTOR => {
+                view::<IStablecoinExchange::quoteSwapExactAmountInCall>(calldata, |call| {
+                    self.quote_swap_exact_amount_in(call.tokenIn, call.tokenOut, call.amountIn)
                 })
             }
-            IStablecoinExchange::quoteSwapExactAmountInCall::SELECTOR => view_result::<
-                IStablecoinExchange::quoteSwapExactAmountInCall,
-                IStablecoinExchange::IStablecoinExchangeErrors,
-            >(
-                calldata,
-                |call| self.quote_swap_exact_amount_in(call.tokenIn, call.tokenOut, call.amountIn),
-            ),
             IStablecoinExchange::quoteSwapExactAmountOutCall::SELECTOR => {
-                view_result::<
-                    IStablecoinExchange::quoteSwapExactAmountOutCall,
-                    IStablecoinExchange::IStablecoinExchangeErrors,
-                >(calldata, |call| {
+                view::<IStablecoinExchange::quoteSwapExactAmountOutCall>(calldata, |call| {
                     self.quote_swap_exact_amount_out(call.tokenIn, call.tokenOut, call.amountOut)
                 })
             }
