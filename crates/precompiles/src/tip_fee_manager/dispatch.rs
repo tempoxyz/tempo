@@ -33,7 +33,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                 })
             }
             ITIPFeeAMM::getPoolIdCall::SELECTOR => {
-                view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| self.get_pool_id(call))
+                view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| Ok(self.get_pool_id(call)))
             }
             ITIPFeeAMM::getPoolCall::SELECTOR => {
                 view::<ITIPFeeAMM::getPoolCall>(calldata, |call| self.get_pool(call))
@@ -52,44 +52,32 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
 
             // State changing functions
             IFeeManager::setValidatorTokenCall::SELECTOR => {
-                mutate_void::<IFeeManager::setValidatorTokenCall, IFeeManager::IFeeManagerErrors>(
+                mutate_void::<IFeeManager::setValidatorTokenCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.set_validator_token(s, call),
                 )
             }
             IFeeManager::setUserTokenCall::SELECTOR => {
-                mutate_void::<IFeeManager::setUserTokenCall, IFeeManager::IFeeManagerErrors>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.set_user_token(s, call),
-                )
+                mutate_void::<IFeeManager::setUserTokenCall>(calldata, msg_sender, |s, call| {
+                    self.set_user_token(s, call)
+                })
             }
             IFeeManager::executeBlockCall::SELECTOR => {
-                mutate_void::<IFeeManager::executeBlockCall, IFeeManager::IFeeManagerErrors>(
-                    calldata,
-                    msg_sender,
-                    |s, _call| self.execute_block(s),
-                )
+                mutate_void::<IFeeManager::executeBlockCall>(calldata, msg_sender, |s, _call| {
+                    self.execute_block(s)
+                })
             }
-            ITIPFeeAMM::mintCall::SELECTOR => mutate::<
-                ITIPFeeAMM::mintCall,
-                ITIPFeeAMM::ITIPFeeAMMErrors,
-            >(calldata, msg_sender, |s, call| {
-                self.mint(*s, call)
-            }),
-            ITIPFeeAMM::burnCall::SELECTOR => mutate::<
-                ITIPFeeAMM::burnCall,
-                ITIPFeeAMM::ITIPFeeAMMErrors,
-            >(calldata, msg_sender, |s, call| {
-                self.burn(*s, call)
-            }),
+            ITIPFeeAMM::mintCall::SELECTOR => {
+                mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| self.mint(*s, call))
+            }
+            ITIPFeeAMM::burnCall::SELECTOR => {
+                mutate::<ITIPFeeAMM::burnCall>(calldata, msg_sender, |s, call| self.burn(*s, call))
+            }
             ITIPFeeAMM::rebalanceSwapCall::SELECTOR => {
-                mutate::<ITIPFeeAMM::rebalanceSwapCall, ITIPFeeAMM::ITIPFeeAMMErrors>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.rebalance_swap(*s, call),
-                )
+                mutate::<ITIPFeeAMM::rebalanceSwapCall>(calldata, msg_sender, |s, call| {
+                    self.rebalance_swap(*s, call)
+                })
             }
 
             _ => Err(PrecompileError::Other(
