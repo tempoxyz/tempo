@@ -203,8 +203,10 @@ mod tests {
             nonceKey: 0,
         });
 
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Protocol nonce not supported");
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::Nonce(NonceError::protocol_nonce_not_supported())
+        );
     }
 
     #[test]
@@ -215,7 +217,7 @@ mod tests {
         let account = address!("0x1111111111111111111111111111111111111111");
         let nonce_key = 5;
 
-        nonce_mgr.set_nonce(&account, nonce_key, 42);
+        nonce_mgr.set_nonce(&account, nonce_key, 42).unwrap();
 
         let nonce = nonce_mgr
             .get_nonce(INonce::getNonceCall {
@@ -235,10 +237,10 @@ mod tests {
         let account = address!("0x1111111111111111111111111111111111111111");
         let nonce_key = 5;
 
-        let new_nonce = nonce_mgr.increment_nonce(&account, nonce_key);
+        let new_nonce = nonce_mgr.increment_nonce(&account, nonce_key).unwrap();
         assert_eq!(new_nonce, 1);
 
-        let new_nonce = nonce_mgr.increment_nonce(&account, nonce_key);
+        let new_nonce = nonce_mgr.increment_nonce(&account, nonce_key).unwrap();
         assert_eq!(new_nonce, 2);
     }
 
@@ -251,25 +253,25 @@ mod tests {
 
         // Initially, no active keys
         let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account });
+            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account }).unwrap();
         assert_eq!(count, U256::ZERO);
 
         // Increment a nonce key - should increase active count
-        nonce_mgr.increment_nonce(&account, 1);
+        nonce_mgr.increment_nonce(&account, 1).unwrap();
         let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account });
+            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account }).unwrap();
         assert_eq!(count, U256::from(1));
 
         // Increment same key again - count should stay the same
-        nonce_mgr.increment_nonce(&account, 1);
+        nonce_mgr.increment_nonce(&account, 1).unwrap();
         let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account });
+            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account }).unwrap();
         assert_eq!(count, U256::from(1));
 
         // Increment a different key - count should increase
-        nonce_mgr.increment_nonce(&account, 2);
+        nonce_mgr.increment_nonce(&account, 2).unwrap();
         let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account });
+            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account }).unwrap();
         assert_eq!(count, U256::from(2));
     }
 
@@ -282,8 +284,8 @@ mod tests {
         let account2 = address!("0x2222222222222222222222222222222222222222");
         let nonce_key = 5;
 
-        nonce_mgr.set_nonce(&account1, nonce_key, 10);
-        nonce_mgr.set_nonce(&account2, nonce_key, 20);
+        nonce_mgr.set_nonce(&account1, nonce_key, 10).unwrap();
+        nonce_mgr.set_nonce(&account2, nonce_key, 20).unwrap();
 
         let nonce1 = nonce_mgr
             .get_nonce(INonce::getNonceCall {

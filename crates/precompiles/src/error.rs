@@ -1,8 +1,8 @@
 use crate::tip20::TIP20Error;
 use alloy::{primitives::Bytes, sol_types::SolInterface};
 use tempo_contracts::precompiles::{
-    NonceError, RolesAuthError, StablecoinExchangeError, TIP403RegistryError,
-    TIPAccountRegistrarError,
+    FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError, TIP403RegistryError,
+    TIPAccountRegistrarError, TIPFeeAMMError,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -23,6 +23,14 @@ pub enum TempoPrecompileError {
     /// Error from 403 registry
     #[error("Roles auth error: {0:?}")]
     TIP403RegistryError(TIP403RegistryError),
+
+    /// Error from TIP  fee manager
+    #[error("TIP fee manager error: {0:?}")]
+    FeeManagerError(FeeManagerError),
+
+    /// Error from TIP fee AMM
+    #[error("TIP fee AMM error: {0:?}")]
+    TIPFeeAMMError(TIPFeeAMMError),
 
     /// Error from TIP account registrar
     #[error("TIP account registrar error: {0:?}")]
@@ -54,6 +62,18 @@ impl From<TIP403RegistryError> for TempoPrecompileError {
     }
 }
 
+impl From<FeeManagerError> for TempoPrecompileError {
+    fn from(err: FeeManagerError) -> Self {
+        TempoPrecompileError::FeeManagerError(err)
+    }
+}
+
+impl From<TIPFeeAMMError> for TempoPrecompileError {
+    fn from(err: TIPFeeAMMError) -> Self {
+        TempoPrecompileError::TIPFeeAMMError(err)
+    }
+}
+
 impl From<TIPAccountRegistrarError> for TempoPrecompileError {
     fn from(err: TIPAccountRegistrarError) -> Self {
         TempoPrecompileError::TIPAccountRegistrarError(err)
@@ -74,6 +94,8 @@ impl TempoPrecompileError {
             TempoPrecompileError::RolesAuthError(err) => err.abi_encode().into(),
             TempoPrecompileError::TIP403RegistryError(err) => err.abi_encode().into(),
             TempoPrecompileError::TIPAccountRegistrarError(err) => err.abi_encode().into(),
+            TempoPrecompileError::FeeManagerError(err) => err.abi_encode().into(),
+            TempoPrecompileError::TIPFeeAMMError(err) => err.abi_encode().into(),
             TempoPrecompileError::NonceError(err) => err.abi_encode().into(),
             TempoPrecompileError::Fatal(_) => {
                 // TODO: decide what to return here
