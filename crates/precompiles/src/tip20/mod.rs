@@ -304,7 +304,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         let new_token_id = address_to_token_id_unchecked(&call.newQuoteToken);
         let factory_token_id_counter = TIP20Factory::new(self.storage)
-            .token_id_counter()
+            .token_id_counter()?
             .to::<u64>();
 
         // Ensure the quote token has been deployed (token_id < counter)

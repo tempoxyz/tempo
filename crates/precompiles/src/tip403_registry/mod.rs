@@ -4,6 +4,7 @@ pub use tempo_contracts::precompiles::{ITIP403Registry, TIP403RegistryError, TIP
 
 use crate::{
     TIP403_REGISTRY_ADDRESS,
+    error::TempoPrecompileError,
     storage::{
         PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
@@ -42,23 +43,24 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
     }
 
     /// Initializes the registry contract.
-    pub fn initialize(&mut self) -> Result<(), TIP20Error> {
+    pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
         self.storage
             .set_code(
                 TIP403_REGISTRY_ADDRESS,
                 Bytecode::new_legacy(Bytes::from_static(&[0xef])),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         Ok(())
     }
 
     // View functions
-    pub fn policy_id_counter(&mut self) -> u64 {
+    pub fn policy_id_counter(&mut self) -> Result<u64, TempoPrecompileError> {
         let counter_val = self
             .storage
             .sload(TIP403_REGISTRY_ADDRESS, slots::POLICY_ID_COUNTER)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
+
         // Initialize policy ID counter to 2 if it's 0 (skip special policies)
         if counter_val == U256::ZERO {
             self.storage
@@ -67,24 +69,27 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                     slots::POLICY_ID_COUNTER,
                     U256::from(2),
                 )
-                .expect("TODO: handle error");
-            return 2;
+                .map_err(Into::into)?;
+            return Ok(2);
         }
-        counter_val.to::<u64>()
+        Ok(counter_val.to::<u64>())
     }
 
     pub fn policy_data(
         &mut self,
         call: ITIP403Registry::policyDataCall,
-    ) -> ITIP403Registry::policyDataReturn {
-        let data = self.get_policy_data(call.policyId);
-        ITIP403Registry::policyDataReturn {
+    ) -> Result<ITIP403Registry::policyDataReturn, TempoPrecompileError> {
+        let data = self.get_policy_data(call.policyId)?;
+        Ok(ITIP403Registry::policyDataReturn {
             policyType: data.policy_type,
             admin: data.admin,
-        }
+        })
     }
 
-    pub fn is_authorized(&mut self, call: ITIP403Registry::isAuthorizedCall) -> bool {
+    pub fn is_authorized(
+        &mut self,
+        call: ITIP403Registry::isAuthorizedCall,
+    ) -> Result<bool, TempoPrecompileError> {
         self.is_authorized_internal(call.policyId, &call.user)
     }
 
@@ -93,8 +98,8 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP403Registry::createPolicyCall,
-    ) -> Result<u64, TIP403RegistryError> {
-        let new_policy_id = self.policy_id_counter();
+    ) -> Result<u64, TempoPrecompileError> {
+        let new_policy_id = self.policy_id_counter()?;
 
         // Increment counter
         self.storage
@@ -103,7 +108,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 slots::POLICY_ID_COUNTER,
                 U256::from(new_policy_id + 1),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         // Store policy data
         self.set_policy_data(
@@ -125,7 +130,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         self.storage
             .emit_event(
@@ -137,7 +142,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         Ok(new_policy_id)
     }
@@ -146,10 +151,10 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP403Registry::createPolicyWithAccountsCall,
-    ) -> Result<u64, TIP403RegistryError> {
+    ) -> Result<u64, TempoPrecompileError> {
         let admin = call.admin;
         let policy_type = call.policyType;
-        let new_policy_id = self.policy_id_counter();
+        let new_policy_id = self.policy_id_counter()?;
 
         // Increment counter
         self.storage
@@ -158,10 +163,9 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 slots::POLICY_ID_COUNTER,
                 U256::from(new_policy_id + 1),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         // Store policy data
-
         self.set_policy_data(new_policy_id, &PolicyData { policy_type, admin });
 
         // Set initial accounts
@@ -183,7 +187,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                             )
                             .into_log_data(),
                         )
-                        .expect("TODO: handle error");
+                        .map_err(Into::into)?;
                 }
                 ITIP403Registry::PolicyType::BLACKLIST => {
                     self.storage
@@ -199,10 +203,10 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                             )
                             .into_log_data(),
                         )
-                        .expect("TODO: handle error");
+                        .map_err(Into::into)?;
                 }
                 ITIP403Registry::PolicyType::__Invalid => {
-                    return Err(TIP403RegistryError::incompatible_policy_type());
+                    return Err(TIP403RegistryError::incompatible_policy_type().into());
                 }
             }
         }
@@ -218,7 +222,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         self.storage
             .emit_event(
@@ -230,7 +234,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         Ok(new_policy_id)
     }
@@ -239,12 +243,12 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP403Registry::setPolicyAdminCall,
-    ) -> Result<(), TIP403RegistryError> {
-        let data = self.get_policy_data(call.policyId);
+    ) -> Result<(), TempoPrecompileError> {
+        let data = self.get_policy_data(call.policyId)?;
 
         // Check authorization
         if data.admin != *msg_sender {
-            return Err(TIP403RegistryError::unauthorized());
+            return Err(TIP403RegistryError::unauthorized().into());
         }
 
         // Update admin policy ID
@@ -266,26 +270,24 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
-
-        Ok(())
+            .map_err(Into::into)
     }
 
     pub fn modify_policy_whitelist(
         &mut self,
         msg_sender: &Address,
         call: ITIP403Registry::modifyPolicyWhitelistCall,
-    ) -> Result<(), TIP403RegistryError> {
-        let data = self.get_policy_data(call.policyId);
+    ) -> Result<(), TempoPrecompileError> {
+        let data = self.get_policy_data(call.policyId)?;
 
         // Check authorization
         if data.admin != *msg_sender {
-            return Err(TIP403RegistryError::unauthorized());
+            return Err(TIP403RegistryError::unauthorized().into());
         }
 
         // Check policy type
         if data.policy_type != ITIP403Registry::PolicyType::WHITELIST {
-            return Err(TIP403RegistryError::incompatible_policy_type());
+            return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
         self.set_policy_set(call.policyId, &call.account, call.allowed);
@@ -301,26 +303,24 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
-
-        Ok(())
+            .map_err(Into::into)
     }
 
     pub fn modify_policy_blacklist(
         &mut self,
         msg_sender: &Address,
         call: ITIP403Registry::modifyPolicyBlacklistCall,
-    ) -> Result<(), TIP403RegistryError> {
-        let data = self.get_policy_data(call.policyId);
+    ) -> Result<(), TempoPrecompileError> {
+        let data = self.get_policy_data(call.policyId)?;
 
         // Check authorization
         if data.admin != *msg_sender {
-            return Err(TIP403RegistryError::unauthorized());
+            return Err(TIP403RegistryError::unauthorized().into());
         }
 
         // Check policy type
         if data.policy_type != ITIP403Registry::PolicyType::BLACKLIST {
-            return Err(TIP403RegistryError::incompatible_policy_type());
+            return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
         self.set_policy_set(call.policyId, &call.account, call.restricted);
@@ -336,30 +336,32 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
-
-        Ok(())
+            .map_err(Into::into)
     }
 
     // Internal helper functions
-    fn get_policy_data(&mut self, policy_id: u64) -> PolicyData {
+    fn get_policy_data(&mut self, policy_id: u64) -> Result<PolicyData, TempoPrecompileError> {
         let slot = mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA);
         let value = self
             .storage
             .sload(TIP403_REGISTRY_ADDRESS, slot)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         // Extract policy type (low 128 bits) and admin policy ID (high 128 bits)
         let policy_type = (value.to::<U256>() & U256::from(0xFF)).byte(0);
         let admin: U256 = value.to::<U256>() >> 8;
 
-        PolicyData {
+        Ok(PolicyData {
             policy_type: policy_type.try_into().unwrap(),
             admin: admin.into_address(),
-        }
+        })
     }
 
-    fn set_policy_data(&mut self, policy_id: u64, data: &PolicyData) {
+    fn set_policy_data(
+        &mut self,
+        policy_id: u64,
+        data: &PolicyData,
+    ) -> Result<(), TempoPrecompileError> {
         let slot = mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA);
 
         // Pack policy type and admin policy ID into single U256
@@ -367,10 +369,15 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
         self.storage
             .sstore(TIP403_REGISTRY_ADDRESS, slot, value)
-            .expect("TODO: handle error");
+            .map_err(Into::into)
     }
 
-    fn set_policy_set(&mut self, policy_id: u64, account: &Address, value: bool) {
+    fn set_policy_set(
+        &mut self,
+        policy_id: u64,
+        account: &Address,
+        value: bool,
+    ) -> Result<(), TempoPrecompileError> {
         let slot = double_mapping_slot(policy_id.to_be_bytes(), account, slots::POLICY_SET);
         self.storage
             .sstore(
@@ -378,32 +385,38 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
                 slot,
                 if value { U256::from(1) } else { U256::ZERO },
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)
     }
 
-    fn is_authorized_internal(&mut self, policy_id: u64, user: &Address) -> bool {
+    fn is_authorized_internal(
+        &mut self,
+        policy_id: u64,
+        user: &Address,
+    ) -> Result<bool, TempoPrecompileError> {
         // Special case for always-allow and always-reject policies
         if policy_id < 2 {
             // policyId == 0 is the "always-reject" policy
             // policyId == 1 is the "always-allow" policy
-            return policy_id == 1;
+            return Ok(policy_id == 1);
         }
 
-        let data = self.get_policy_data(policy_id);
+        let data = self.get_policy_data(policy_id)?;
         let is_in_set = self
             .storage
             .sload(
                 TIP403_REGISTRY_ADDRESS,
                 double_mapping_slot(policy_id.to_be_bytes(), user, slots::POLICY_SET),
             )
-            .expect("TODO: handle error")
+            .map_err(Into::into)?
             != U256::ZERO;
 
-        match data.policy_type {
+        let auth = match data.policy_type {
             ITIP403Registry::PolicyType::WHITELIST => is_in_set,
             ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
             ITIP403Registry::PolicyType::__Invalid => false,
-        }
+        };
+
+        Ok(auth)
     }
 }
 
