@@ -69,7 +69,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         address: Address,
         key: U256,
         value: U256,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<(), HashMapStorageProviderError> {
         self.internals.insert((address, key), value);
         Ok(())
     }

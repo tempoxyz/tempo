@@ -417,7 +417,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
-        let book = Orderbook::from_storage(book_key, self.storage, self.address);
+        let book = Orderbook::from_storage(book_key, self.storage, self.address)?;
         if book.base.is_zero() {
             return Err(StablecoinExchangeError::pair_does_not_exist().into());
         }
@@ -468,7 +468,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("Event emission failed");
+            .map_err(Into::into)?;
 
         Ok(order_id)
     }
@@ -510,7 +510,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance().into())?;
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
