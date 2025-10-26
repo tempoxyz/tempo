@@ -1,7 +1,8 @@
 use crate::tip20::TIP20Error;
 use alloy::{primitives::Bytes, sol_types::SolInterface};
 use tempo_contracts::precompiles::{
-    RolesAuthError, StablecoinExchangeError, TIP403RegistryError, TipAccountRegistrarError,
+    NonceError, RolesAuthError, StablecoinExchangeError, TIP403RegistryError,
+    TIPAccountRegistrarError,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -25,7 +26,11 @@ pub enum TempoPrecompileError {
 
     /// Error from TIP account registrar
     #[error("TIP account registrar error: {0:?}")]
-    TIPAccountRegistrarError(TipAccountRegistrarError),
+    TIPAccountRegistrarError(TIPAccountRegistrarError),
+
+    /// Error from native AA nonce manager
+    #[error("Native AA nonce error: {0:?}")]
+    NonceError(NonceError),
 
     #[error("Fatal precompile error: {0:?}")]
     Fatal(String),
@@ -49,9 +54,15 @@ impl From<TIP403RegistryError> for TempoPrecompileError {
     }
 }
 
-impl From<TipAccountRegistrarError> for TempoPrecompileError {
-    fn from(err: TipAccountRegistrarError) -> Self {
+impl From<TIPAccountRegistrarError> for TempoPrecompileError {
+    fn from(err: TIPAccountRegistrarError) -> Self {
         TempoPrecompileError::TIPAccountRegistrarError(err)
+    }
+}
+
+impl From<NonceError> for TempoPrecompileError {
+    fn from(err: NonceError) -> Self {
+        TempoPrecompileError::NonceError(err)
     }
 }
 
@@ -63,8 +74,10 @@ impl TempoPrecompileError {
             TempoPrecompileError::RolesAuthError(err) => err.abi_encode().into(),
             TempoPrecompileError::TIP403RegistryError(err) => err.abi_encode().into(),
             TempoPrecompileError::TIPAccountRegistrarError(err) => err.abi_encode().into(),
-            TempoPrecompileError::Fatal(e) => {
-                todo!()
+            TempoPrecompileError::NonceError(err) => err.abi_encode().into(),
+            TempoPrecompileError::Fatal(_) => {
+                // TODO: decide what to return here
+                Bytes::new()
             }
         }
     }
