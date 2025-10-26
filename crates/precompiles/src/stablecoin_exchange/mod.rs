@@ -352,7 +352,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         tick: i16,
         is_bid: bool,
     ) -> Result<PriceLevel, TempoPrecompileError> {
-        let quote = TIP20Token::from_address(base, self.storage).quote_token();
+        let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
         let key = compute_book_key(base, quote);
         PriceLevel::from_storage(self.storage, self.address, key, tick, is_bid)
     }
@@ -381,7 +381,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     pub fn create_pair(&mut self, base: &Address) -> Result<B256, TempoPrecompileError> {
-        let quote = TIP20Token::from_address(*base, self.storage).quote_token();
+        let quote = TIP20Token::from_address(*base, self.storage).quote_token()?;
 
         let book_key = compute_book_key(*base, quote);
 
@@ -430,7 +430,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         tick: i16,
     ) -> Result<u128, TempoPrecompileError> {
         // Lookup quote token from TIP20 token
-        let quote_token = TIP20Token::from_address(token, self.storage).quote_token();
+        let quote_token = TIP20Token::from_address(token, self.storage).quote_token()?;
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -505,7 +505,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         flip_tick: i16,
     ) -> Result<u128, TempoPrecompileError> {
         // Lookup quote token from TIP20 token
-        let quote_token = TIP20Token::from_address(token, self.storage).quote_token();
+        let quote_token = TIP20Token::from_address(token, self.storage).quote_token()?;
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -1241,8 +1241,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Check if direct or reverse pair exists
-        let in_quote = TIP20Token::from_address(token_in, self.storage).quote_token();
-        let out_quote = TIP20Token::from_address(token_out, self.storage).quote_token();
+        let in_quote = TIP20Token::from_address(token_in, self.storage).quote_token()?;
+        let out_quote = TIP20Token::from_address(token_out, self.storage).quote_token()?;
 
         if in_quote == token_out || out_quote == token_in {
             return self.validate_and_build_route(&[token_in, token_out]);
@@ -1324,7 +1324,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let mut path = vec![token];
 
         while token != LINKING_USD_ADDRESS {
-            token = TIP20Token::from_address(token, self.storage).quote_token();
+            token = TIP20Token::from_address(token, self.storage).quote_token()?;
             path.push(token);
         }
 
