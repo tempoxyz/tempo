@@ -98,12 +98,11 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
         let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         if current == U256::ZERO && nonce > 0 {
-            self.increment_active_key_count(account);
+            self.increment_active_key_count(account)?;
         }
 
         self.storage
             .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, U256::from(nonce))
-            .map_err(Into::into)
     }
 
     /// Internal: Increment nonce for a specific account and nonce key
@@ -122,7 +121,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 
         // If transitioning from 0 to 1, increment active key count
         if current == U256::ZERO {
-            self.increment_active_key_count(account);
+            self.increment_active_key_count(account)?;
         }
 
         let new_nonce = current
@@ -149,7 +148,6 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 
         self.storage
             .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_count)
-            .map_err(Into::into)
     }
 }
 

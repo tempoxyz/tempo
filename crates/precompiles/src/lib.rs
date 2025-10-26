@@ -29,10 +29,12 @@ use crate::{
     tip4217_registry::TIP4217Registry,
 };
 
+#[cfg(test)]
+use alloy::sol_types::SolInterface;
 use alloy::{
     primitives::{Address, Bytes, address},
     sol,
-    sol_types::{SolCall, SolError, SolInterface},
+    sol_types::{SolCall, SolError},
 };
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
@@ -200,10 +202,7 @@ fn metadata<T: SolCall>(
             METADATA_GAS,
             T::abi_encode_returns(&result).into(),
         )),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            METADATA_GAS,
-            e.abi_encode(),
-        )),
+        Err(e) => Ok(PrecompileOutput::new_reverted(METADATA_GAS, e.abi_encode())),
     }
 }
 

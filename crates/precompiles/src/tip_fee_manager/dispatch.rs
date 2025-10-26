@@ -118,7 +118,7 @@ mod tests {
 
         // Grant issuer role to user and mint tokens
         let mut roles = tip20_token.get_roles_contract();
-        roles.grant_role_internal(&user, *ISSUER_ROLE);
+        roles.grant_role_internal(&user, *ISSUER_ROLE).unwrap();
 
         tip20_token
             .mint(&user, ITIP20::mintCall { to: user, amount })

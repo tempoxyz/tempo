@@ -381,7 +381,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         let book = Orderbook::new(*base, quote);
-        book.store(self.storage, self.address);
+        book.store(self.storage, self.address)?;
 
         // Emit PairCreated event
         self.storage.emit_event(
@@ -458,7 +458,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Store in pending queue. Orders are stored as a DLL at each tick level and are initially
         // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
         // linked and then considered "active"
-        order.store(self.storage, self.address);
+        order.store(self.storage, self.address)?;
 
         // Emit OrderPlaced event
         self.storage.emit_event(
@@ -530,7 +530,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             .expect("Invalid flip tick");
 
         // Store in pending queue
-        order.store(self.storage, self.address);
+        order.store(self.storage, self.address)?;
 
         // Emit FlipOrderPlaced event
         self.storage.emit_event(
@@ -568,7 +568,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let mut current_order_id = next_order_id + 1;
         while current_order_id <= pending_order_id {
-            self.process_pending_order(current_order_id);
+            self.process_pending_order(current_order_id)?;
             current_order_id += 1;
         }
 
@@ -613,7 +613,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                         self.address,
                         order.book_key(),
                         order.tick(),
-                    );
+                    )?;
                 }
             } else if order.tick() < orderbook.best_ask_tick {
                 orderbook::Orderbook::update_best_ask_tick(
@@ -621,11 +621,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     self.address,
                     order.book_key(),
                     order.tick(),
-                );
+                )?;
             }
         } else {
-            Order::update_next_order(prev_tail, order_id, self.storage, self.address);
-            Order::update_prev_order(order_id, prev_tail, self.storage, self.address);
+            Order::update_next_order(prev_tail, order_id, self.storage, self.address)?;
+            Order::update_prev_order(order_id, prev_tail, self.storage, self.address)?;
             level.tail = order_id;
         }
 
@@ -652,7 +652,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
-        order.update_remaining(new_remaining, self.storage, self.address);
+        order.update_remaining(new_remaining, self.storage, self.address)?;
 
         if order.is_bid() {
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
@@ -678,7 +678,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             order.tick(),
             order.is_bid(),
             level.total_liquidity - fill_amount,
-        );
+        )?;
 
         // Emit OrderFilled event for partial fill
         self.storage.emit_event(
@@ -1437,8 +1437,12 @@ mod tests {
 
         // Grant issuer role to admin for quote token
         let mut quote_roles = quote.get_roles_contract();
-        quote_roles.grant_role_internal(admin, *ISSUER_ROLE);
-        quote_roles.grant_role_internal(user, *TRANSFER_ROLE);
+        quote_roles
+            .grant_role_internal(admin, *ISSUER_ROLE)
+            .unwrap();
+        quote_roles
+            .grant_role_internal(user, *TRANSFER_ROLE)
+            .unwrap();
 
         // Mint tokens to user
         quote
@@ -1468,7 +1472,7 @@ mod tests {
             .expect("Base token initialization failed");
 
         let mut base_roles = base.get_roles_contract();
-        base_roles.grant_role_internal(admin, *ISSUER_ROLE);
+        base_roles.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
 
         base.approve(
             user,
@@ -2647,7 +2651,7 @@ mod tests {
         {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             let mut usdc_roles = usdc.get_roles_contract();
-            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             usdc.mint(
                 &admin,
                 ITIP20::mintCall {
@@ -2661,7 +2665,7 @@ mod tests {
         {
             let mut eurc = TIP20Token::new(3, exchange.storage);
             let mut eurc_roles = eurc.get_roles_contract();
-            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             eurc.mint(
                 &admin,
                 ITIP20::mintCall {
@@ -2675,7 +2679,7 @@ mod tests {
         {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
             let mut linking_usd_roles = linking_usd.get_roles_contract();
-            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             linking_usd
                 .token
                 .mint(
@@ -2805,7 +2809,7 @@ mod tests {
         {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             let mut usdc_roles = usdc.get_roles_contract();
-            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             usdc.mint(
                 &admin,
                 ITIP20::mintCall {
@@ -2827,7 +2831,7 @@ mod tests {
         {
             let mut eurc = TIP20Token::new(3, exchange.storage);
             let mut eurc_roles = eurc.get_roles_contract();
-            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             eurc.mint(
                 &admin,
                 ITIP20::mintCall {
@@ -2849,7 +2853,7 @@ mod tests {
         {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
             let mut linking_usd_roles = linking_usd.get_roles_contract();
-            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             linking_usd
                 .token
                 .mint(
@@ -2943,7 +2947,7 @@ mod tests {
         {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             let mut usdc_roles = usdc.get_roles_contract();
-            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             usdc.mint(
                 &admin,
                 ITIP20::mintCall {
@@ -2965,7 +2969,7 @@ mod tests {
         {
             let mut eurc = TIP20Token::new(3, exchange.storage);
             let mut eurc_roles = eurc.get_roles_contract();
-            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             eurc.mint(
                 &admin,
                 ITIP20::mintCall {
@@ -2987,7 +2991,7 @@ mod tests {
         {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
             let mut linking_usd_roles = linking_usd.get_roles_contract();
-            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             linking_usd.token.mint(
                 &admin,
                 ITIP20::mintCall {
@@ -3144,7 +3148,7 @@ mod tests {
         {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             let mut usdc_roles = usdc.get_roles_contract();
-            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            usdc_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             usdc.mint(
                 &admin,
                 ITIP20::mintCall {
@@ -3166,7 +3170,7 @@ mod tests {
         {
             let mut eurc = TIP20Token::new(3, exchange.storage);
             let mut eurc_roles = eurc.get_roles_contract();
-            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            eurc_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             eurc.mint(
                 &admin,
                 ITIP20::mintCall {
@@ -3188,7 +3192,7 @@ mod tests {
         {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
             let mut linking_usd_roles = linking_usd.get_roles_contract();
-            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            linking_usd_roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
             linking_usd
                 .token
                 .mint(

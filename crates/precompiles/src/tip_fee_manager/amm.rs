@@ -208,7 +208,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        self.set_pool(&pool_id, &pool);
+        self.set_pool(&pool_id, &pool)?;
 
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
@@ -318,7 +318,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             .reserve_validator_token
             .checked_add(validator_amount)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
-        self.set_pool(&pool_id, &pool);
+        self.set_pool(&pool_id, &pool)?;
 
         // Mint LP tokens
         let current_total_supply = self.get_total_supply(&pool_id).expect("TODO: handle error");
@@ -393,7 +393,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             .reserve_validator_token
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
-        self.set_pool(&pool_id, &pool);
+        self.set_pool(&pool_id, &pool)?;
 
         // Transfer tokens to user
         let _ = TIP20Token::from_address(user_token, self.storage).transfer(
@@ -598,11 +598,8 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for TIPFeeAMM<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::Entry;
-
-    use crate::{storage::hashmap::HashMapStorageProvider, tip20::token_id_to_address};
-
     use super::*;
+    use crate::{storage::hashmap::HashMapStorageProvider, tip20::token_id_to_address};
     use alloy::primitives::{Address, uint};
 
     #[test]
@@ -672,7 +669,7 @@ mod tests {
             reserve_user_token: user_amount.to::<u128>(),
             reserve_validator_token: validator_amount.to::<u128>(),
         };
-        amm.set_pool(&pool_id, &pool);
+        amm.set_pool(&pool_id, &pool)?;
 
         // Set initial liquidity supply
         let liquidity = if user_amount == validator_amount {
@@ -740,7 +737,8 @@ mod tests {
             validator_token,
             small_liquidity,
             small_liquidity,
-        );
+        )
+        .unwrap();
 
         // Try to swap 201 tokens (would output ~200.7 tokens, but only 100 available)
         let too_large_amount = uint!(201_U256) * uint!(10_U256).pow(U256::from(6));

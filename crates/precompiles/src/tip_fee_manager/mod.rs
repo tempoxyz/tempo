@@ -149,16 +149,14 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         self.sstore(slot, call.token.into_u256())?;
 
         // Emit ValidatorTokenSet event
-        self.storage
-            .emit_event(
-                self.contract_address,
-                FeeManagerEvent::ValidatorTokenSet(IFeeManager::ValidatorTokenSet {
-                    validator: *sender,
-                    token: call.token,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)
+        self.storage.emit_event(
+            self.contract_address,
+            FeeManagerEvent::ValidatorTokenSet(IFeeManager::ValidatorTokenSet {
+                validator: *sender,
+                token: call.token,
+            })
+            .into_log_data(),
+        )
     }
 
     pub fn set_user_token(
@@ -177,16 +175,14 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         self.sstore(slot, call.token.into_u256())?;
 
         // Emit UserTokenSet event
-        self.storage
-            .emit_event(
-                self.contract_address,
-                FeeManagerEvent::UserTokenSet(IFeeManager::UserTokenSet {
-                    user: *sender,
-                    token: call.token,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)
+        self.storage.emit_event(
+            self.contract_address,
+            FeeManagerEvent::UserTokenSet(IFeeManager::UserTokenSet {
+                user: *sender,
+                token: call.token,
+            })
+            .into_log_data(),
+        )
     }
 
     /// Collects fees from user before transaction execution.
@@ -312,7 +308,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
                     })?;
             }
 
-            self.clear_collected_fees();
+            self.clear_collected_fees()?;
         }
 
         Ok(())
@@ -535,15 +531,11 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
 impl<'a, S: PrecompileStorageProvider> StorageOps for TipFeeManager<'a, S> {
     fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError> {
-        self.storage
-            .sstore(self.contract_address, slot, value)
-            .map_err(Into::into)
+        self.storage.sstore(self.contract_address, slot, value)
     }
 
     fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError> {
-        self.storage
-            .sload(self.contract_address, slot)
-            .map_err(Into::into)
+        self.storage.sload(self.contract_address, slot)
     }
 }
 
@@ -572,7 +564,7 @@ mod tests {
 
         // Grant issuer role to user and mint tokens
         let mut roles = tip20_token.get_roles_contract();
-        roles.grant_role_internal(&user, *ISSUER_ROLE);
+        roles.grant_role_internal(&user, *ISSUER_ROLE).unwrap();
 
         tip20_token
             .mint(&user, ITIP20::mintCall { to: user, amount })
@@ -697,7 +689,7 @@ mod tests {
                 .unwrap();
 
             let mut roles = tip20_token.get_roles_contract();
-            roles.grant_role_internal(&admin, *ISSUER_ROLE);
+            roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
 
             tip20_token
                 .mint(
