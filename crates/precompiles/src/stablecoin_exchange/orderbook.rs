@@ -337,33 +337,29 @@ impl Orderbook {
         let book_key = compute_book_key(self.base, self.quote);
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET,
-                self.base.into_u256(),
-            )?;
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET,
+            self.base.into_u256(),
+        )?;
 
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET,
-                self.quote.into_u256(),
-            )?;
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET,
+            self.quote.into_u256(),
+        )?;
 
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
-                U256::from(self.best_bid_tick as u16),
-            )?;
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+            U256::from(self.best_bid_tick as u16),
+        )?;
 
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
-                U256::from(self.best_ask_tick as u16),
-            )
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+            U256::from(self.best_ask_tick as u16),
+        )
     }
 
     /// Update only the best bid tick
@@ -374,13 +370,12 @@ impl Orderbook {
         new_best_bid: i16,
     ) -> Result<(), TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
-                U256::from(new_best_bid as u16),
-            )
-        }
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+            U256::from(new_best_bid as u16),
+        )
+    }
 
     /// Update only the best ask tick
     pub fn update_best_ask_tick<S: PrecompileStorageProvider>(
@@ -390,13 +385,12 @@ impl Orderbook {
         new_best_ask: i16,
     ) -> Result<(), TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        storage
-            .sstore(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
-                U256::from(new_best_ask as u16),
-            )
-        }
+        storage.sstore(
+            address,
+            orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+            U256::from(new_best_ask as u16),
+        )
+    }
 
     /// Check if this orderbook exists in storage
     pub fn exists<S: PrecompileStorageProvider>(
@@ -405,8 +399,7 @@ impl Orderbook {
         address: Address,
     ) -> Result<bool, TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        let base = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?;
+        let base = storage.sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?;
 
         Ok(base != U256::ZERO)
     }
@@ -454,14 +447,11 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
 
         // Get storage slot for this word in the bitmap
         let bitmap_slot = self.get_bitmap_slot(word_index, is_bid);
-        let current_word = self
-            .storage
-            .sload(self.address, bitmap_slot)?;
+        let current_word = self.storage.sload(self.address, bitmap_slot)?;
 
         // Set the bit
         let new_word = current_word | mask;
-        self.storage
-            .sstore(self.address, bitmap_slot, new_word)?;
+        self.storage.sstore(self.address, bitmap_slot, new_word)?;
 
         Ok(())
     }
@@ -480,14 +470,11 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
 
         // Get storage slot for this word in the bitmap
         let bitmap_slot = self.get_bitmap_slot(word_index, is_bid);
-        let current_word = self
-            .storage
-            .sload(self.address, bitmap_slot)?;
+        let current_word = self.storage.sload(self.address, bitmap_slot)?;
 
         // Clear the bit
         let new_word = current_word & mask;
-        self.storage
-            .sstore(self.address, bitmap_slot, new_word)?;
+        self.storage.sstore(self.address, bitmap_slot, new_word)?;
 
         Ok(())
     }
@@ -509,9 +496,7 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
         let mask = U256::from(1u8) << bit_index;
 
         let bitmap_slot = self.get_bitmap_slot(word_index, is_bid);
-        let word = self
-            .storage
-            .sload(self.address, bitmap_slot)?;
+        let word = self.storage.sload(self.address, bitmap_slot)?;
 
         Ok((word & mask) != U256::ZERO)
     }

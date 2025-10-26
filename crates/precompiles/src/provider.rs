@@ -1,11 +1,11 @@
 use alloy::primitives::{Address, U256};
 #[cfg(feature = "reth")]
-use reth_storage_api::{errors::ProviderResult, StateProvider};
-use revm::{interpreter::instructions::utility::IntoAddress, Database};
+use reth_storage_api::{StateProvider, errors::ProviderResult};
+use revm::{Database, interpreter::instructions::utility::IntoAddress};
 
 use crate::{
-    storage::slots::mapping_slot, tip20, tip_fee_manager, DEFAULT_FEE_TOKEN,
-    TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, storage::slots::mapping_slot, tip_fee_manager,
+    tip20,
 };
 
 /// Trait to provide [`StateProvider`] access to TIPFeeManager storage to fetch fee token data and balances
