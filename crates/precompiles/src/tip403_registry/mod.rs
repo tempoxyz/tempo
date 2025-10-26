@@ -427,13 +427,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_policy() {
+    fn test_create_policy() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
         let admin = Address::from([1u8; 20]);
 
         // Initial counter should be 2 (skipping special policies)
-        assert_eq!(registry.policy_id_counter(), 2);
+        assert_eq!(registry.policy_id_counter()?, 2);
 
         // Create a whitelist policy
         let result = registry.create_policy(
@@ -444,113 +444,111 @@ mod tests {
             },
         );
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 2);
+        assert_eq!(result?, 2);
 
         // Counter should be incremented
-        assert_eq!(registry.policy_id_counter(), 3);
+        assert_eq!(registry.policy_id_counter()?, 3);
 
         // Check policy data
-        let data = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 2 });
+        let data = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 2 })?;
         assert_eq!(data.policyType, ITIP403Registry::PolicyType::WHITELIST);
         assert_eq!(data.admin, admin);
+        Ok(())
     }
 
     #[test]
-    fn test_is_authorized_special_policies() {
+    fn test_is_authorized_special_policies() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
         let user = Address::from([1u8; 20]);
 
         // Policy 0 should always reject
-        assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 0, user }));
+        assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 0, user })?);
 
         // Policy 1 should always allow
-        assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 1, user }));
+        assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 1, user })?);
+        Ok(())
     }
 
     #[test]
-    fn test_whitelist_policy() {
+    fn test_whitelist_policy() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
         let admin = Address::from([1u8; 20]);
         let user = Address::from([2u8; 20]);
 
         // Create whitelist policy
-        let policy_id = registry
-            .create_policy(
-                &admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            )
-            .unwrap();
+        let policy_id = registry.create_policy(
+            &admin,
+            ITIP403Registry::createPolicyCall {
+                admin,
+                policyType: ITIP403Registry::PolicyType::WHITELIST,
+            },
+        )?;
 
         // User should not be authorized initially
         assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: policy_id,
             user,
-        }));
+        })?);
 
         // Add user to whitelist
-        registry
-            .modify_policy_whitelist(
-                &admin, // Anyone is authorized with policy 1
-                ITIP403Registry::modifyPolicyWhitelistCall {
-                    policyId: policy_id,
-                    account: user,
-                    allowed: true,
-                },
-            )
-            .unwrap();
+        registry.modify_policy_whitelist(
+            &admin, // Anyone is authorized with policy 1
+            ITIP403Registry::modifyPolicyWhitelistCall {
+                policyId: policy_id,
+                account: user,
+                allowed: true,
+            },
+        )?;
 
         // User should now be authorized
         assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: policy_id,
             user,
-        }));
+        })?);
+
+        Ok(())
     }
 
     #[test]
-    fn test_blacklist_policy() {
+    fn test_blacklist_policy() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut registry = TIP403Registry::new(&mut storage);
         let admin = Address::from([1u8; 20]);
         let user = Address::from([2u8; 20]);
 
         // Create blacklist policy
-        let policy_id = registry
-            .create_policy(
-                &admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )
-            .unwrap();
+        let policy_id = registry.create_policy(
+            &admin,
+            ITIP403Registry::createPolicyCall {
+                admin,
+                policyType: ITIP403Registry::PolicyType::BLACKLIST,
+            },
+        )?;
 
         // User should be authorized initially (not in blacklist)
         assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: policy_id,
             user,
-        }));
+        })?);
 
         // Add user to blacklist
-        registry
-            .modify_policy_blacklist(
-                &admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: user,
-                    restricted: true,
-                },
-            )
-            .unwrap();
+        registry.modify_policy_blacklist(
+            &admin,
+            ITIP403Registry::modifyPolicyBlacklistCall {
+                policyId: policy_id,
+                account: user,
+                restricted: true,
+            },
+        )?;
 
         // User should no longer be authorized
         assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: policy_id,
             user,
-        }));
+        })?);
+
+        Ok(())
     }
 }
