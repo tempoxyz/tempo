@@ -313,7 +313,7 @@ fn create_and_mint_token(
     let mut token = TIP20Token::new(token_id, &mut provider);
     token
         .get_roles_contract()
-        .grant_role_internal(&admin, *ISSUER_ROLE);
+        .grant_role_internal(&admin, *ISSUER_ROLE)?;
 
     let result = token.set_supply_cap(
         &admin,
@@ -361,7 +361,7 @@ fn initialize_linking_usd(
         .initialize(&admin)
         .expect("LinkingUSD initialization should succeed");
     let mut roles = linking_usd.get_roles_contract();
-    roles.grant_role_internal(&admin, *ISSUER_ROLE);
+    roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
 
     Ok(())
 }

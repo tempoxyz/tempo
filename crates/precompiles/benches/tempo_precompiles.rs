@@ -20,7 +20,7 @@ fn tip20_metadata(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let result = token.name();
+            let result = token.name().unwrap();
             black_box(result);
         });
     });
@@ -35,7 +35,7 @@ fn tip20_metadata(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let result = token.symbol();
+            let result = token.symbol().unwrap();
             black_box(result);
         });
     });
@@ -50,7 +50,7 @@ fn tip20_metadata(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let result = token.decimals();
+            let result = token.decimals().unwrap();
             black_box(result);
         });
     });
@@ -65,7 +65,7 @@ fn tip20_metadata(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let result = token.currency();
+            let result = token.currency().unwrap();
             black_box(result);
         });
     });
@@ -79,7 +79,7 @@ fn tip20_metadata(c: &mut Criterion) {
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
         token
             .mint(
                 &admin,
@@ -92,7 +92,7 @@ fn tip20_metadata(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let result = token.total_supply();
+            let result = token.total_supply().unwrap();
             black_box(result);
         });
     });
@@ -108,7 +108,7 @@ fn tip20_view(c: &mut Criterion) {
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
         token
             .mint(
                 &admin,
@@ -122,7 +122,7 @@ fn tip20_view(c: &mut Criterion) {
         b.iter(|| {
             let token = black_box(&mut token);
             let call = black_box(ITIP20::balanceOfCall { account: user });
-            let result = token.balance_of(call);
+            let result = token.balance_of(call).unwrap();
             black_box(result);
         });
     });
@@ -149,7 +149,7 @@ fn tip20_view(c: &mut Criterion) {
         b.iter(|| {
             let token = black_box(&mut token);
             let call = black_box(ITIP20::allowanceCall { owner, spender });
-            let result = token.allowance(call);
+            let result = token.allowance(call).unwrap();
             black_box(result);
         });
     });
@@ -166,7 +166,7 @@ fn tip20_view(c: &mut Criterion) {
         b.iter(|| {
             let token = black_box(&mut token);
             let call = black_box(ITIP20::noncesCall { owner });
-            let result = token.nonces(call);
+            let result = token.nonces(call).unwrap();
             black_box(result);
         });
     });
@@ -184,7 +184,7 @@ fn tip20_view(c: &mut Criterion) {
         b.iter(|| {
             let token = black_box(&mut token);
             let call = black_box(ITIP20::saltsCall { owner, salt });
-            let result = token.salts(call);
+            let result = token.salts(call).unwrap();
             black_box(result);
         });
     });
@@ -199,7 +199,7 @@ fn tip20_view(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let result = token.supply_cap();
+            let result = token.supply_cap().unwrap();
             black_box(result);
         });
     });
@@ -214,7 +214,7 @@ fn tip20_view(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let result = token.paused();
+            let result = token.paused().unwrap();
             black_box(result);
         });
     });
@@ -229,7 +229,7 @@ fn tip20_view(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let result = token.transfer_policy_id();
+            let result = token.transfer_policy_id().unwrap();
             black_box(result);
         });
     });
@@ -244,7 +244,7 @@ fn tip20_view(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let result = token.domain_separator();
+            let result = token.domain_separator().unwrap();
             black_box(result);
         });
     });
@@ -260,7 +260,7 @@ fn tip20_mutate(c: &mut Criterion) {
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
 
         let amount = U256::from(100);
         b.iter(|| {
@@ -279,7 +279,7 @@ fn tip20_mutate(c: &mut Criterion) {
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
         // Pre-mint tokens for burning
         token
             .mint(
@@ -330,7 +330,7 @@ fn tip20_mutate(c: &mut Criterion) {
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
         // Pre-mint tokens for transfers
         token
             .mint(
@@ -363,7 +363,7 @@ fn tip20_mutate(c: &mut Criterion) {
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
         // Pre-mint tokens and set allowance
         token
             .mint(
@@ -410,7 +410,7 @@ fn tip20_mutate(c: &mut Criterion) {
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
         // Pre-mint tokens for transfers
         token
             .mint(
@@ -439,7 +439,7 @@ fn tip20_mutate(c: &mut Criterion) {
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *PAUSE_ROLE);
+        let _ = roles.grant_role_internal(&admin, *PAUSE_ROLE);
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -457,7 +457,7 @@ fn tip20_mutate(c: &mut Criterion) {
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(&admin, *UNPAUSE_ROLE);
+        let _ = roles.grant_role_internal(&admin, *UNPAUSE_ROLE);
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -513,7 +513,7 @@ fn tip20_factory_view(c: &mut Criterion) {
 
         b.iter(|| {
             let factory = black_box(&mut factory);
-            let result = factory.token_id_counter();
+            let result = factory.token_id_counter().unwrap();
             black_box(result);
         });
     });
@@ -550,7 +550,7 @@ fn tip403_registry_view(c: &mut Criterion) {
 
         b.iter(|| {
             let registry = black_box(&mut registry);
-            let result = registry.policy_id_counter();
+            let result = registry.policy_id_counter().unwrap();
             black_box(result);
         });
     });
@@ -574,7 +574,7 @@ fn tip403_registry_view(c: &mut Criterion) {
             let call = black_box(ITIP403Registry::policyDataCall {
                 policyId: policy_id,
             });
-            let result = registry.policy_data(call);
+            let result = registry.policy_data(call).unwrap();
             black_box(result);
         });
     });
@@ -600,7 +600,7 @@ fn tip403_registry_view(c: &mut Criterion) {
                 policyId: policy_id,
                 user,
             });
-            let result = registry.is_authorized(call);
+            let result = registry.is_authorized(call).unwrap();
             black_box(result);
         });
     });
