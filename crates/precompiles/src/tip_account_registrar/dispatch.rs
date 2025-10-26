@@ -16,7 +16,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
 
         match selector {
             ITipAccountRegistrar::delegateToDefaultCall::SELECTOR => {
-                mutate::<ITipAccountRegistrar::delegateToDefaultCall, _>(
+                mutate::<ITipAccountRegistrar::delegateToDefaultCall>(
                     calldata,
                     msg_sender,
                     |_, call| self.delegate_to_default(call),

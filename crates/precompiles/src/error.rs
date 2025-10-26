@@ -1,6 +1,8 @@
 use crate::tip20::TIP20Error;
 use alloy::{primitives::Bytes, sol_types::SolInterface};
-use tempo_contracts::precompiles::{RolesAuthError, StablecoinExchangeError, TIP403RegistryError};
+use tempo_contracts::precompiles::{
+    RolesAuthError, StablecoinExchangeError, TIP403RegistryError, TipAccountRegistrarError,
+};
 
 /// Top-level error type for all Tempo precompile operations
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -20,6 +22,10 @@ pub enum TempoPrecompileError {
     /// Error from 403 registry
     #[error("Roles auth error: {0:?}")]
     TIP403RegistryError(TIP403RegistryError),
+
+    /// Error from TIP account registrar
+    #[error("TIP account registrar error: {0:?}")]
+    TIPAccountRegistrarError(TipAccountRegistrarError),
 
     #[error("Fatal precompile error: {0:?}")]
     Fatal(String),
@@ -43,6 +49,12 @@ impl From<TIP403RegistryError> for TempoPrecompileError {
     }
 }
 
+impl From<TipAccountRegistrarError> for TempoPrecompileError {
+    fn from(err: TipAccountRegistrarError) -> Self {
+        TempoPrecompileError::TIPAccountRegistrarError(err)
+    }
+}
+
 impl TempoPrecompileError {
     pub fn abi_encode(&self) -> Bytes {
         match self {
@@ -50,6 +62,7 @@ impl TempoPrecompileError {
             TempoPrecompileError::TIP20(err) => err.abi_encode().into(),
             TempoPrecompileError::RolesAuthError(err) => err.abi_encode().into(),
             TempoPrecompileError::TIP403RegistryError(err) => err.abi_encode().into(),
+            TempoPrecompileError::TIPAccountRegistrarError(err) => err.abi_encode().into(),
             TempoPrecompileError::Fatal(e) => {
                 todo!()
             }

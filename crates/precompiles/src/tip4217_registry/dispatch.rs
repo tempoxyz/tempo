@@ -17,7 +17,7 @@ impl Precompile for TIP4217Registry {
         match selector {
             ITIP4217Registry::getCurrencyDecimalsCall::SELECTOR => {
                 view::<ITIP4217Registry::getCurrencyDecimalsCall>(calldata, |call| {
-                    self.get_currency_decimals(call)
+                    Ok(self.get_currency_decimals(call))
                 })
             }
             _ => Err(PrecompileError::Other(
