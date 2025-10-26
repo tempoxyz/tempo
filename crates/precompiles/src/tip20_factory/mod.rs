@@ -5,6 +5,7 @@ pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryEvent};
 
 use crate::{
     TIP20_FACTORY_ADDRESS,
+    error::TempoPrecompileError,
     storage::PrecompileStorageProvider,
     tip20::{TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address},
 };
@@ -36,24 +37,22 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
     ///
     /// Sets the initial token counter to 1, reserving token ID 0 for the LinkingUSD precompile.
     /// Also ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
-    pub fn initialize(&mut self) -> Result<(), TIP20Error> {
+    pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
         // must ensure the account is not empty, by setting some code
         self.storage
             .set_code(
                 TIP20_FACTORY_ADDRESS,
                 Bytecode::new_legacy(Bytes::from_static(&[0xef])),
             )
-            .expect("TODO: handle error");
-
-        Ok(())
+            .map_err(Into::into)
     }
 
     pub fn create_token(
         &mut self,
         sender: &Address,
         call: ITIP20Factory::createTokenCall,
-    ) -> Result<U256, TIP20Error> {
-        let token_id = self.token_id_counter().to::<u64>();
+    ) -> Result<U256, TempoPrecompileError> {
+        let token_id = self.token_id_counter()?.to::<u64>();
         trace!(%sender, %token_id, ?call, "Create token");
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
@@ -61,7 +60,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         // token id must always be <= the current token_id
         if !is_tip20(&call.quoteToken) || address_to_token_id_unchecked(&call.quoteToken) > token_id
         {
-            return Err(TIP20Error::invalid_quote_token());
+            return Err(TIP20Error::invalid_quote_token().into());
         }
 
         TIP20Token::new(token_id, self.storage).initialize(
@@ -86,7 +85,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
                 })
                 .into_log_data(),
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         // increase the token counter
         self.storage
@@ -95,21 +94,21 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
                 slots::TOKEN_ID_COUNTER,
                 token_id + U256::ONE,
             )
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         Ok(token_id)
     }
 
-    pub fn token_id_counter(&mut self) -> U256 {
+    pub fn token_id_counter(&mut self) -> Result<U256, TempoPrecompileError> {
         let counter = self
             .storage
             .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)
-            .expect("TODO: handle error");
+            .map_err(Into::into)?;
 
         if counter.is_zero() {
-            U256::ONE
+            Ok(U256::ONE)
         } else {
-            counter
+            Ok(counter)
         }
     }
 }
@@ -192,7 +191,10 @@ mod tests {
         };
 
         let result = factory.create_token(&sender, invalid_call);
-        assert_eq!(result.unwrap_err(), TIP20Error::invalid_quote_token());
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+        );
     }
 
     #[test]
@@ -215,6 +217,9 @@ mod tests {
         };
 
         let result = factory.create_token(&sender, invalid_call);
-        assert_eq!(result.unwrap_err(), TIP20Error::invalid_quote_token());
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+        );
     }
 }
