@@ -36,7 +36,7 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
             }
         };
 
-        let account_info = self.storage.get_account_info(signer).map_err(Into::into)?;
+        let account_info = self.storage.get_account_info(signer)?;
 
         if account_info.nonce != 0 {
             return Err(TIPAccountRegistrarError::nonce_not_zero().into());
@@ -48,8 +48,7 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
 
         // Delegate the account to the default 7702 implementation
         self.storage
-            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))
-            .map_err(Into::into)?;
+            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))?;
 
         Ok(signer)
     }

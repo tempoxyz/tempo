@@ -39,12 +39,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
     /// Also ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
         // must ensure the account is not empty, by setting some code
-        self.storage
-            .set_code(
-                TIP20_FACTORY_ADDRESS,
-                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-            )
-            .map_err(Into::into)
+        self.storage.set_code(
+            TIP20_FACTORY_ADDRESS,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )
     }
 
     pub fn create_token(
@@ -72,29 +70,25 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         )?;
 
         let token_id = U256::from(token_id);
-        self.storage
-            .emit_event(
-                TIP20_FACTORY_ADDRESS,
-                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-                    token: token_id_to_address(token_id.to::<u64>()),
-                    tokenId: token_id,
-                    name: call.name,
-                    symbol: call.symbol,
-                    currency: call.currency,
-                    admin: call.admin,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)?;
+        self.storage.emit_event(
+            TIP20_FACTORY_ADDRESS,
+            TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                token: token_id_to_address(token_id.to::<u64>()),
+                tokenId: token_id,
+                name: call.name,
+                symbol: call.symbol,
+                currency: call.currency,
+                admin: call.admin,
+            })
+            .into_log_data(),
+        )?;
 
         // increase the token counter
-        self.storage
-            .sstore(
-                TIP20_FACTORY_ADDRESS,
-                slots::TOKEN_ID_COUNTER,
-                token_id + U256::ONE,
-            )
-            .map_err(Into::into)?;
+        self.storage.sstore(
+            TIP20_FACTORY_ADDRESS,
+            slots::TOKEN_ID_COUNTER,
+            token_id + U256::ONE,
+        )?;
 
         Ok(token_id)
     }
@@ -102,8 +96,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
     pub fn token_id_counter(&mut self) -> Result<U256, TempoPrecompileError> {
         let counter = self
             .storage
-            .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)
-            .map_err(Into::into)?;
+            .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)?;
 
         if counter.is_zero() {
             Ok(U256::ONE)

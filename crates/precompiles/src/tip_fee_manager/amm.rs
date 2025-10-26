@@ -212,33 +212,31 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
 
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
-        TIP20Token::from_address(validator_token, self.storage)
-            .system_transfer_from(msg_sender, self.contract_address, amount_in)
-            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
+        TIP20Token::from_address(validator_token, self.storage).system_transfer_from(
+            msg_sender,
+            self.contract_address,
+            amount_in,
+        )?;
 
-        TIP20Token::from_address(user_token, self.storage)
-            .transfer(
-                &self.contract_address,
-                ITIP20::transferCall {
-                    to,
-                    amount: amount_out,
-                },
-            )
-            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
+        TIP20Token::from_address(user_token, self.storage).transfer(
+            &self.contract_address,
+            ITIP20::transferCall {
+                to,
+                amount: amount_out,
+            },
+        )?;
 
-        self.storage
-            .emit_event(
-                self.contract_address,
-                TIPFeeAMMEvent::RebalanceSwap(ITIPFeeAMM::RebalanceSwap {
-                    userToken: user_token,
-                    validatorToken: validator_token,
-                    swapper: msg_sender,
-                    amountIn: amount_in,
-                    amountOut: amount_out,
-                })
-                .into_log_data(),
-            )
-            .map_err(|_| TIPFeeAMMError::internal_error())?;
+        self.storage.emit_event(
+            self.contract_address,
+            TIPFeeAMMEvent::RebalanceSwap(ITIPFeeAMM::RebalanceSwap {
+                userToken: user_token,
+                validatorToken: validator_token,
+                swapper: msg_sender,
+                amountIn: amount_in,
+                amountOut: amount_out,
+            })
+            .into_log_data(),
+        )?;
 
         Ok(amount_in)
     }
@@ -333,20 +331,18 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             .expect("TODO: handle error");
 
         // Emit Mint event
-        self.storage
-            .emit_event(
-                self.contract_address,
-                TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
-                    sender: msg_sender,
-                    userToken: user_token,
-                    validatorToken: validator_token,
-                    amountUserToken: amount_user_token,
-                    amountValidatorToken: amount_validator_token,
-                    liquidity,
-                })
-                .into_log_data(),
-            )
-            .map_err(|_| TIPFeeAMMError::internal_error())?;
+        self.storage.emit_event(
+            self.contract_address,
+            TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
+                sender: msg_sender,
+                userToken: user_token,
+                validatorToken: validator_token,
+                amountUserToken: amount_user_token,
+                amountValidatorToken: amount_validator_token,
+                liquidity,
+            })
+            .into_log_data(),
+        )?;
 
         Ok(liquidity)
     }
@@ -400,42 +396,36 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         self.set_pool(&pool_id, &pool);
 
         // Transfer tokens to user
-        let _ = TIP20Token::from_address(user_token, self.storage)
-            .transfer(
-                &self.contract_address,
-                ITIP20::transferCall {
-                    to,
-                    amount: amount_user_token,
-                },
-            )
-            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
+        let _ = TIP20Token::from_address(user_token, self.storage).transfer(
+            &self.contract_address,
+            ITIP20::transferCall {
+                to,
+                amount: amount_user_token,
+            },
+        )?;
 
-        let _ = TIP20Token::from_address(validator_token, self.storage)
-            .transfer(
-                &self.contract_address,
-                ITIP20::transferCall {
-                    to,
-                    amount: amount_validator_token,
-                },
-            )
-            .map_err(|_| TIPFeeAMMError::token_transfer_failed())?;
+        let _ = TIP20Token::from_address(validator_token, self.storage).transfer(
+            &self.contract_address,
+            ITIP20::transferCall {
+                to,
+                amount: amount_validator_token,
+            },
+        )?;
 
         // Emit Burn event
-        self.storage
-            .emit_event(
-                self.contract_address,
-                TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
-                    sender: msg_sender,
-                    userToken: user_token,
-                    validatorToken: validator_token,
-                    amountUserToken: amount_user_token,
-                    amountValidatorToken: amount_validator_token,
-                    liquidity,
-                    to,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into)?;
+        self.storage.emit_event(
+            self.contract_address,
+            TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
+                sender: msg_sender,
+                userToken: user_token,
+                validatorToken: validator_token,
+                amountUserToken: amount_user_token,
+                amountValidatorToken: amount_validator_token,
+                liquidity,
+                to,
+            })
+            .into_log_data(),
+        )?;
 
         Ok((amount_user_token, amount_validator_token))
     }
@@ -497,18 +487,16 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         self.set_pool(&pool_id, &pool)?;
         self.set_pending_fee_swap_in(&pool_id, U256::ZERO)?;
 
-        self.storage
-            .emit_event(
-                self.contract_address,
-                TIPFeeAMMEvent::FeeSwap(ITIPFeeAMM::FeeSwap {
-                    userToken: user_token,
-                    validatorToken: validator_token,
-                    amountIn: amount_in,
-                    amountOut: pending_out,
-                })
-                .into_log_data(),
-            )
-            .map_err(Into::into);
+        self.storage.emit_event(
+            self.contract_address,
+            TIPFeeAMMEvent::FeeSwap(ITIPFeeAMM::FeeSwap {
+                userToken: user_token,
+                validatorToken: validator_token,
+                amountIn: amount_in,
+                amountOut: pending_out,
+            })
+            .into_log_data(),
+        )?;
 
         Ok(pending_out)
     }
@@ -595,19 +583,14 @@ pub fn sqrt(x: U256) -> U256 {
 impl<'a, S: PrecompileStorageProvider> StorageOps for TIPFeeAMM<'a, S> {
     /// Store value in contract storage
     fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError> {
-        self.storage
-            .sstore(self.contract_address, slot, value)
-            .map_err(Into::into)?;
+        self.storage.sstore(self.contract_address, slot, value)?;
 
         Ok(())
     }
 
     /// Load value from contract storage
     fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError> {
-        let value = self
-            .storage
-            .sload(self.contract_address, slot)
-            .map_err(Into::into)?;
+        let value = self.storage.sload(self.contract_address, slot)?;
 
         Ok(value)
     }
