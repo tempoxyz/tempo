@@ -22,20 +22,38 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
 
         match selector {
             // Metadata
-            ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(self.name()),
-            ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(self.symbol()),
-            ITIP20::decimalsCall::SELECTOR => metadata::<ITIP20::decimalsCall>(self.decimals()),
-            ITIP20::totalSupplyCall::SELECTOR => {
-                metadata::<ITIP20::totalSupplyCall>(self.total_supply())
+            ITIP20::nameCall::SELECTOR => {
+                let result = self.name()?;
+                metadata::<ITIP20::nameCall>(result)
             }
-            ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(self.currency()),
+            ITIP20::symbolCall::SELECTOR => {
+                let result = self.symbol()?;
+                metadata::<ITIP20::symbolCall>(result)
+            }
+            ITIP20::decimalsCall::SELECTOR => {
+                let result = self.decimals()?;
+                metadata::<ITIP20::decimalsCall>(result)
+            }
+            ITIP20::totalSupplyCall::SELECTOR => {
+                let result = self.total_supply()?;
+                metadata::<ITIP20::totalSupplyCall>(result)
+            }
+            ITIP20::currencyCall::SELECTOR => {
+                let result = self.currency()?;
+                metadata::<ITIP20::currencyCall>(result)
+            }
             ITIP20::quoteTokenCall::SELECTOR => metadata::<ITIP20::quoteTokenCall>(Address::ZERO),
-            ITIP20::pausedCall::SELECTOR => metadata::<ITIP20::pausedCall>(self.paused()),
+            ITIP20::pausedCall::SELECTOR => {
+                let result = self.paused()?;
+                metadata::<ITIP20::pausedCall>(result)
+            }
             ITIP20::supplyCapCall::SELECTOR => {
-                metadata::<ITIP20::supplyCapCall>(self.token.supply_cap())
+                let result = self.token.supply_cap()?;
+                metadata::<ITIP20::supplyCapCall>(result)
             }
             ITIP20::transferPolicyIdCall::SELECTOR => {
-                metadata::<ITIP20::transferPolicyIdCall>(self.token.transfer_policy_id())
+                let result = self.token.transfer_policy_id()?;
+                metadata::<ITIP20::transferPolicyIdCall>(result)
             }
 
             // View functions

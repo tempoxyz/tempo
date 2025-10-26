@@ -192,11 +192,19 @@ impl LinkingUSDPrecompile {
 }
 
 #[inline]
-fn metadata<T: SolCall>(result: T::Return) -> PrecompileResult {
-    Ok(PrecompileOutput::new(
-        METADATA_GAS,
-        T::abi_encode_returns(&result).into(),
-    ))
+fn metadata<T: SolCall>(
+    f: impl FnOnce() -> Result<T::Return, TempoPrecompileError>,
+) -> PrecompileResult {
+    match f() {
+        Ok(result) => Ok(PrecompileOutput::new(
+            METADATA_GAS,
+            T::abi_encode_returns(&result).into(),
+        )),
+        Err(e) => Ok(PrecompileOutput::new_reverted(
+            METADATA_GAS,
+            e.abi_encode(),
+        )),
+    }
 }
 
 #[inline]
