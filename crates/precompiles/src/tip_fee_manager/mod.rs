@@ -546,12 +546,14 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 }
 
 impl<'a, S: PrecompileStorageProvider> StorageOps for TipFeeManager<'a, S> {
-    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), PrecompileError> {
+    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError> {
         self.storage.sstore(self.contract_address, slot, value)
+            .map_err(Into::into)
     }
 
-    fn sload(&mut self, slot: U256) -> Result<U256, PrecompileError> {
+    fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError> {
         self.storage.sload(self.contract_address, slot)
+            .map_err(Into::into)
     }
 }
 

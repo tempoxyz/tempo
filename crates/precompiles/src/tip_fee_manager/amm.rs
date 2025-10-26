@@ -1,4 +1,5 @@
 use crate::{
+    error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageOps},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
     tip20::{ITIP20, TIP20Token},
@@ -597,20 +598,20 @@ pub fn sqrt(x: U256) -> U256 {
 
 impl<'a, S: PrecompileStorageProvider> StorageOps for TIPFeeAMM<'a, S> {
     /// Store value in contract storage
-    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), PrecompileError> {
+    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.contract_address, slot, value)
-            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+            .map_err(Into::into)?;
 
         Ok(())
     }
 
     /// Load value from contract storage
-    fn sload(&mut self, slot: U256) -> Result<U256, PrecompileError> {
+    fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError> {
         let value = self
             .storage
             .sload(self.contract_address, slot)
-            .map_err(|e| PrecompileError::Fatal(e.to_string()))?;
+            .map_err(Into::into)?;
 
         Ok(value)
     }
