@@ -164,7 +164,7 @@ where
                         ));
                         break;
                     };
-                    let _: Result<_, _>  = self.handle_msg_for_unknown_epoch(
+                    let _: Result<_, _>  = self.handle_msg_for_unregistered_epoch(
                         &mut recovered_global_sender,
                         epoch,
                         from,
@@ -328,7 +328,7 @@ where
     /// commonware p2p muxer will send the message to the backup channel, tagged
     /// with unknown epoch.
     #[instrument(skip_all, fields(msg.epoch = epoch, msg.from = %from), err(level = Level::WARN))]
-    async fn handle_msg_for_unknown_epoch(
+    async fn handle_msg_for_unregistered_epoch(
         &mut self,
         recovered_global_sender: &mut GlobalSender<impl Sender<PublicKey = PublicKey>>,
         epoch: Epoch,
