@@ -16,6 +16,7 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 COPY bin/ ./bin/
 COPY crates/ ./crates/
+COPY xtask/ ./xtask/
 
 ARG RUST_BINARY
 ARG RUST_PROFILE
@@ -31,6 +32,9 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+ARG RUST_BINARY
+ARG RUST_PROFILE
 
 # Copy the binary
 COPY --from=builder /app/target/${RUST_PROFILE}/${RUST_BINARY} /usr/local/bin/${RUST_BINARY}
