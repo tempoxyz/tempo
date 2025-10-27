@@ -97,9 +97,9 @@ impl TempoPrecompileError {
             Self::FeeManagerError(err) => err.abi_encode().into(),
             Self::TIPFeeAMMError(err) => err.abi_encode().into(),
             Self::NonceError(err) => err.abi_encode().into(),
-            Self::Fatal(_) => {
-                // TODO: decide what to return here
-                Bytes::new()
+            Self::Fatal(err) => {
+                // should be returned as `PrecompileError::Fatal` instead
+                panic!("Fatal errors should not be ABI-encoded: {err}");
             }
         }
     }
