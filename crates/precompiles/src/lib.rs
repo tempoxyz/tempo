@@ -39,7 +39,7 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::Block,
-    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
@@ -202,8 +202,7 @@ fn metadata<T: SolCall>(
             METADATA_GAS,
             T::abi_encode_returns(&result).into(),
         )),
-        Err(TempoPrecompileError::Fatal(msg)) => Err(PrecompileError::Fatal(msg)),
-        Err(e) => Ok(PrecompileOutput::new_reverted(METADATA_GAS, e.abi_encode())),
+        Err(e) => e.into_precompile_err(METADATA_GAS),
     }
 }
 
@@ -220,11 +219,7 @@ fn view<T: SolCall>(
             VIEW_FUNC_GAS,
             T::abi_encode_returns(&result).into(),
         )),
-        Err(TempoPrecompileError::Fatal(msg)) => Err(PrecompileError::Fatal(msg)),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            VIEW_FUNC_GAS,
-            e.abi_encode(),
-        )),
+        Err(e) => e.into_precompile_err(VIEW_FUNC_GAS),
     }
 }
 
@@ -245,11 +240,7 @@ pub fn mutate<T: SolCall>(
             MUTATE_FUNC_GAS,
             T::abi_encode_returns(&result).into(),
         )),
-        Err(TempoPrecompileError::Fatal(msg)) => Err(PrecompileError::Fatal(msg)),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            e.abi_encode(),
-        )),
+        Err(e) => e.into_precompile_err(MUTATE_FUNC_GAS),
     }
 }
 
@@ -267,11 +258,7 @@ fn mutate_void<T: SolCall>(
     };
     match f(sender, call) {
         Ok(()) => Ok(PrecompileOutput::new(MUTATE_FUNC_GAS, Bytes::new())),
-        Err(TempoPrecompileError::Fatal(msg)) => Err(PrecompileError::Fatal(msg)),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            e.abi_encode(),
-        )),
+        Err(e) => e.into_precompile_err(MUTATE_FUNC_GAS),
     }
 }
 

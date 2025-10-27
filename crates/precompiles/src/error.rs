@@ -1,5 +1,6 @@
 use crate::tip20::TIP20Error;
-use alloy::{primitives::Bytes, sol_types::SolInterface};
+use alloy::sol_types::SolInterface;
+use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
     FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError, TIP403RegistryError,
     TIPAccountRegistrarError, TIPFeeAMMError,
@@ -87,8 +88,8 @@ impl From<NonceError> for TempoPrecompileError {
 }
 
 impl TempoPrecompileError {
-    pub fn abi_encode(&self) -> Bytes {
-        match self {
+    pub fn into_precompile_err(self, gas: u64) -> PrecompileResult {
+        let bytes = match self {
             Self::StablecoinExchange(err) => err.abi_encode().into(),
             Self::TIP20(err) => err.abi_encode().into(),
             Self::RolesAuthError(err) => err.abi_encode().into(),
@@ -97,10 +98,11 @@ impl TempoPrecompileError {
             Self::FeeManagerError(err) => err.abi_encode().into(),
             Self::TIPFeeAMMError(err) => err.abi_encode().into(),
             Self::NonceError(err) => err.abi_encode().into(),
-            Self::Fatal(err) => {
-                // should be returned as `PrecompileError::Fatal` instead
-                panic!("Fatal errors should not be ABI-encoded: {err}");
+            Self::Fatal(msg) => {
+                return Err(PrecompileError::Fatal(msg));
             }
-        }
+        };
+
+        Ok(PrecompileOutput::new_reverted(gas, bytes))
     }
 }
