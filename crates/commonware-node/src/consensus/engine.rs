@@ -157,8 +157,13 @@ where
 
         let (consensus_reporter, consenus_events) = ChannelReporter::new();
 
-        let (subblocks, subblocks_handle) =
-            SubBlocksService::new(self.signer.clone(), supervisor.clone(), consenus_events);
+        let (subblocks, subblocks_handle) = SubBlocksService::new(
+            self.context.clone(),
+            self.signer.clone(),
+            supervisor.clone(),
+            consenus_events,
+            self.execution_node.clone(),
+        );
 
         let execution_driver = super::execution_driver::ExecutionDriverBuilder {
             context: self.context.with_label("execution_driver"),
@@ -256,7 +261,7 @@ where
 
     consensus: crate::consensus::Consensus<TContext, TBlocker>,
 
-    subblocks: SubBlocksService,
+    subblocks: SubBlocksService<TContext>,
 }
 
 impl<TBlocker, TContext> Engine<TBlocker, TContext>

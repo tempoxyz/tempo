@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 
 /// A reporter that forwards [`Reporter::Activity`] to an [`mpsc::UnboundedSender`].
 #[derive(Debug)]
-pub struct ChannelReporter<T> {
+pub(crate) struct ChannelReporter<T> {
     tx: mpsc::UnboundedSender<T>,
 }
 
@@ -17,7 +17,7 @@ impl<T> Clone for ChannelReporter<T> {
 
 impl<T> ChannelReporter<T> {
     /// Creates a new [`ChannelReporter`] and returns a receiver for the activities.
-    pub fn new() -> (Self, mpsc::UnboundedReceiver<T>) {
+    pub(crate) fn new() -> (Self, mpsc::UnboundedReceiver<T>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Self { tx }, rx)
     }

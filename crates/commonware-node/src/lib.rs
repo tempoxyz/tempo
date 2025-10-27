@@ -7,7 +7,7 @@ pub(crate) mod config;
 pub mod consensus;
 pub mod metrics;
 
-mod subblocks;
+pub mod subblocks;
 mod utils;
 
 use std::net::SocketAddr;

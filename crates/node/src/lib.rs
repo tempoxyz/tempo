@@ -16,6 +16,7 @@ pub mod args;
 pub mod engine;
 pub mod node;
 pub mod rpc;
+pub use tempo_consensus as consensus;
 
 mod network;
 mod version;

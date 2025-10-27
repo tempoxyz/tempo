@@ -17,6 +17,7 @@ tempo-node.workspace = true
 tempo-primitives.workspace = true
 tempo-payload-types.workspace = true
 
+alloy-evm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true

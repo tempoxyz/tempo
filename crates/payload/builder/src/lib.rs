@@ -389,7 +389,7 @@ where
                 let Ok(tx) = tx.try_clone_into_recovered() else {
                     continue 'subblocks;
                 };
-                let gas_used = builder
+                builder
                     .execute_transaction(tx)
                     .map_err(PayloadBuilderError::evm)?;
             }
