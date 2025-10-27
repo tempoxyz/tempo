@@ -21,7 +21,7 @@ pub enum TempoPrecompileError {
     RolesAuthError(RolesAuthError),
 
     /// Error from 403 registry
-    #[error("Roles auth error: {0:?}")]
+    #[error("TIP403 registry error: {0:?}")]
     TIP403RegistryError(TIP403RegistryError),
 
     /// Error from TIP  fee manager
