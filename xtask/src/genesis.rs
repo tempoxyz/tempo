@@ -71,15 +71,11 @@ pub(crate) struct GenesisArgs {
 }
 
 impl GenesisArgs {
-<<<<<<< HEAD:xtask/src/genesis.rs
-    pub(crate) async fn run(self) -> eyre::Result<()> {
-=======
     /// Generates a genesis json file.
     ///
     /// It creates a new genesis allocation for the configured accounts.
     /// And creates accounts for system contracts.
-    pub async fn run(self) -> eyre::Result<()> {
->>>>>>> main:bin/tempo-bench/src/cmd/genesis.rs
+    pub(crate) async fn run(self) -> eyre::Result<()> {
         println!("Generating {:?} accounts", self.accounts);
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
