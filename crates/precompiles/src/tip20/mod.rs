@@ -974,13 +974,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::insufficient_balance());
         }
 
-        // Accrue rewards before modifying balances
+        // Accrue and handle TIP20 rewards
         self.accrue()?;
-
-        // Handle reward accounting for sender and receiver
         self.handle_sender_rewards(from, amount)?;
         self.handle_receiver_rewards(to, amount)?;
 
+        // Adjust balances
         let new_from_balance = from_balance
             .checked_sub(amount)
             .ok_or(TIP20Error::insufficient_balance())?;
@@ -1070,9 +1069,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     fn get_reward_per_token_stored(&mut self) -> U256 {
-        self.storage
+        let val = self
+            .storage
             .sload(self.token_address, slots::REWARD_PER_TOKEN_STORED)
-            .unwrap_or(U256::ZERO)
+            .expect("TODO: handle error");
+
+        val
     }
 
     fn set_reward_per_token_stored(&mut self, value: U256) {
@@ -1135,9 +1137,49 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .expect("TODO: handle error");
     }
 
-    fn update_rewards(&mut self, _recipient: &Address) -> Result<(), TIP20Error> {
-        // TODO: Implement reward update logic
+    fn update_rewards(&mut self, recipient: &Address) -> Result<(), TIP20Error> {
+        if *recipient == Address::ZERO {
+            return Ok(());
+        }
+
+        let delegated = self.get_delegated_balance(recipient);
+        let reward_per_token_stored = self.get_reward_per_token_stored();
+        let user_reward_per_token_paid = self.get_user_reward_per_token_paid(recipient);
+
+        let accrued = delegated * (reward_per_token_stored - user_reward_per_token_paid);
+
+        if accrued > U256::ZERO {
+            let contract_balance = self.get_balance(&self.token_address);
+
+            if accrued > contract_balance {
+                return Err(TIP20Error::insufficient_balance());
+            }
+
+            let new_contract_balance = contract_balance - accrued;
+            self.set_balance(&self.token_address, new_contract_balance);
+
+            let recipient_balance = self.get_balance(recipient);
+            let new_recipient_balance = recipient_balance + accrued;
+            self.set_balance(recipient, new_recipient_balance);
+
+            self.set_user_reward_per_token_paid(recipient, reward_per_token_stored);
+        }
+
         Ok(())
+    }
+
+    fn get_user_reward_per_token_paid(&mut self, account: &Address) -> U256 {
+        let slot = mapping_slot(account, slots::USER_REWARD_PER_TOKEN_PAID);
+        self.storage
+            .sload(self.token_address, slot)
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn set_user_reward_per_token_paid(&mut self, account: &Address, value: U256) {
+        let slot = mapping_slot(account, slots::USER_REWARD_PER_TOKEN_PAID);
+        self.storage
+            .sstore(self.token_address, slot, value)
+            .expect("TODO: handle error");
     }
 
     fn get_total_reward_per_second(&mut self) -> U256 {
