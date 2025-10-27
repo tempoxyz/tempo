@@ -106,3 +106,42 @@ impl TempoPrecompileError {
         Ok(PrecompileOutput::new_reverted(gas, bytes))
     }
 }
+
+/// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
+pub trait IntoPrecompileResult<T> {
+    fn into_precompile_result(
+        self,
+        gas: u64,
+        encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
+    ) -> PrecompileResult;
+}
+
+impl<T> IntoPrecompileResult<T> for Result<T, TempoPrecompileError> {
+    fn into_precompile_result(
+        self,
+        gas: u64,
+        encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
+    ) -> PrecompileResult {
+        use TempoPrecompileError as TPErr;
+
+        match self {
+            Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res))),
+            Err(err) => {
+                let bytes = match err {
+                    TPErr::StablecoinExchange(e) => e.abi_encode().into(),
+                    TPErr::TIP20(e) => e.abi_encode().into(),
+                    TPErr::RolesAuthError(e) => e.abi_encode().into(),
+                    TPErr::TIP403RegistryError(e) => e.abi_encode().into(),
+                    TPErr::TIPAccountRegistrarError(e) => e.abi_encode().into(),
+                    TPErr::FeeManagerError(e) => e.abi_encode().into(),
+                    TPErr::TIPFeeAMMError(e) => e.abi_encode().into(),
+                    TPErr::NonceError(e) => e.abi_encode().into(),
+                    TPErr::Fatal(msg) => {
+                        return Err(PrecompileError::Fatal(msg));
+                    }
+                };
+                Ok(PrecompileOutput::new_reverted(gas, bytes))
+            }
+        }
+    }
+}
