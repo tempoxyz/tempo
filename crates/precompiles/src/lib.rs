@@ -16,7 +16,7 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use crate::{
-    error::TempoPrecompileError,
+    error::{IntoPrecompileResult, TempoPrecompileError},
     linking_usd::LinkingUSD,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
@@ -197,13 +197,7 @@ impl LinkingUSDPrecompile {
 fn metadata<T: SolCall>(
     f: impl FnOnce() -> Result<T::Return, TempoPrecompileError>,
 ) -> PrecompileResult {
-    match f() {
-        Ok(result) => Ok(PrecompileOutput::new(
-            METADATA_GAS,
-            T::abi_encode_returns(&result).into(),
-        )),
-        Err(e) => Ok(PrecompileOutput::new_reverted(METADATA_GAS, e.abi_encode())),
-    }
+    f().into_precompile_result(METADATA_GAS, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
@@ -214,16 +208,7 @@ fn view<T: SolCall>(
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
     };
-    match f(call) {
-        Ok(result) => Ok(PrecompileOutput::new(
-            VIEW_FUNC_GAS,
-            T::abi_encode_returns(&result).into(),
-        )),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            VIEW_FUNC_GAS,
-            e.abi_encode(),
-        )),
-    }
+    f(call).into_precompile_result(VIEW_FUNC_GAS, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
@@ -238,16 +223,8 @@ pub fn mutate<T: SolCall>(
             Bytes::new(),
         ));
     };
-    match f(sender, call) {
-        Ok(result) => Ok(PrecompileOutput::new(
-            MUTATE_FUNC_GAS,
-            T::abi_encode_returns(&result).into(),
-        )),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            e.abi_encode(),
-        )),
-    }
+    f(sender, call)
+        .into_precompile_result(MUTATE_FUNC_GAS, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
@@ -262,13 +239,7 @@ fn mutate_void<T: SolCall>(
             Bytes::new(),
         ));
     };
-    match f(sender, call) {
-        Ok(()) => Ok(PrecompileOutput::new(MUTATE_FUNC_GAS, Bytes::new())),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            e.abi_encode(),
-        )),
-    }
+    f(sender, call).into_precompile_result(MUTATE_FUNC_GAS, |()| Bytes::new())
 }
 
 #[cfg(test)]
