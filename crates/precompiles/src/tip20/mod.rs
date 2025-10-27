@@ -2,25 +2,26 @@ pub mod dispatch;
 pub mod roles;
 
 pub use tempo_contracts::precompiles::{
-    IRolesAuth, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, ITIP20,
+    IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
 
 use crate::{
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     storage::{
-        slots::{double_mapping_slot, mapping_slot},
         PrecompileStorageProvider,
+        slots::{double_mapping_slot, mapping_slot},
     },
-    tip20::roles::{RolesAuthContract, DEFAULT_ADMIN_ROLE},
+    tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
     tip4217_registry::{ITIP4217Registry, TIP4217Registry},
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use alloy::{
     consensus::crypto::secp256k1 as eth_secp256k1,
     hex,
-    primitives::{keccak256, Address, Bytes, IntoLogData, Signature as EthSignature, B256, U256},
+    primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
     sol_types::SolStruct,
+    uint,
 };
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
@@ -54,29 +55,51 @@ pub fn address_to_token_id_unchecked(address: &Address) -> u64 {
 }
 
 pub mod slots {
-    use alloy::primitives::{uint, U256};
+    use alloy::primitives::{U256, uint};
 
-    // Variables
+    // TODO: roles policy
+    //
+    //
+    // TODO: fix slot ordering
+
+    // Roles Auth slots
+    pub const HAS_ROLE: U256 = uint!(14_U256);
+    pub const ROLE_ADMIN: U256 = uint!(14_U256);
+
+    // TIP20 variables
     pub const NAME: U256 = uint!(0_U256);
     pub const SYMBOL: U256 = uint!(1_U256);
-    pub const TOTAL_SUPPLY: U256 = uint!(3_U256);
     pub const CURRENCY: U256 = uint!(4_U256);
     pub const DOMAIN_SEPARATOR: U256 = uint!(5_U256);
-    pub const TRANSFER_POLICY_ID: U256 = uint!(6_U256);
-    pub const SUPPLY_CAP: U256 = uint!(7_U256);
-    pub const PAUSED: U256 = uint!(8_U256);
-
-    // TODO: we should unify the storage slots with the reference implementation
     pub const QUOTE_TOKEN: U256 = uint!(9_U256);
     pub const NEXT_QUOTE_TOKEN: U256 = uint!(16_U256);
-
-    // Mappings
+    pub const TRANSFER_POLICY_ID: U256 = uint!(6_U256);
+    pub const TOTAL_SUPPLY: U256 = uint!(3_U256);
+    // TODO: update to balanceOf
     pub const BALANCES: U256 = uint!(10_U256);
     pub const ALLOWANCES: U256 = uint!(11_U256);
     pub const NONCES: U256 = uint!(12_U256);
-    pub const SALTS: U256 = uint!(13_U256);
-    pub const ROLES_BASE_SLOT: U256 = uint!(14_U256); // via RolesAuthContract
-    pub const ROLE_ADMIN_BASE_SLOT: U256 = uint!(15_U256); // via RolesAuthContract
+    pub const PAUSED: U256 = uint!(8_U256);
+    pub const SUPPLY_CAP: U256 = uint!(7_U256);
+
+    // Rewards related slots
+    pub const LAST_UPDATE_TIME: U256 = uint!(18_U256);
+    pub const OPTED_IN_SUPPLY: U256 = uint!(19_U256);
+    pub const NEXT_STREAM_ID: U256 = uint!(20_U256);
+    pub const STREAMS: U256 = uint!(21_U256);
+    pub const SCHEDULED_RATE_DECREASE: U256 = uint!(21_U256);
+    pub const REWARD_RECIPIENT_OF: U256 = uint!(23_U256);
+    pub const USER_REWARD_PER_TOKEN_PAID: U256 = uint!(23_U256);
+    pub const DELEGATED_BALANCE: U256 = uint!(24_U256);
+    pub const REWARD_PER_TOKEN_STORED: U256 = uint!(17_U256);
+}
+
+#[derive(Debug, Clone)]
+pub struct RewardStream {
+    pub funder: Address,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub rate_per_second_scaled: U256,
 }
 
 #[derive(Debug)]
@@ -89,6 +112,8 @@ pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"
 pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+
+// pub static ACC_PRECISION: U256 = uint!(1000000000000000000_u128);
 
 impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn name(&mut self) -> String {
@@ -173,14 +198,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage
             .sload(self.token_address, slot)
             .expect("TODO: handle error")
-    }
-
-    pub fn salts(&mut self, call: ITIP20::saltsCall) -> bool {
-        let slot = double_mapping_slot(call.owner, call.salt, slots::SALTS);
-        self.storage
-            .sload(self.token_address, slot)
-            .expect("TODO: handle error")
-            != U256::ZERO
     }
 
     // Admin functions
@@ -843,8 +860,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         RolesAuthContract::new(
             self.storage,
             self.token_address,
-            slots::ROLES_BASE_SLOT,
-            slots::ROLE_ADMIN_BASE_SLOT,
+            slots::HAS_ROLE,
+            slots::ROLE_ADMIN,
         )
     }
 
@@ -949,6 +966,28 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::insufficient_balance());
         }
 
+        // TODO: accrue
+        // _accrue()
+        //
+        // Handle reward accounting for opted-in sender
+        // address fromRecipient = rewardRecipientOf[from];
+        // if (fromRecipient != address(0)) {
+        //     _updateRewards(fromRecipient);
+        //     delegatedBalance[fromRecipient] -= uint128(amount);
+        //     optedInSupply -= uint128(amount);
+        // }
+        //
+        // // Handle reward accounting for opted-in receiver (but not when burning)
+        // if (to != address(0)) {
+        //     address toRecipient = rewardRecipientOf[to];
+        //     if (toRecipient != address(0)) {
+        //         _updateRewards(toRecipient);
+        //         delegatedBalance[toRecipient] += uint128(amount);
+        //         optedInSupply += uint128(amount);
+        //     }
+        // }
+        //
+
         let new_from_balance = from_balance
             .checked_sub(amount)
             .ok_or(TIP20Error::insufficient_balance())?;
@@ -976,6 +1015,75 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .expect("TODO: handle error");
 
         Ok(())
+    }
+
+    fn accrue(&mut self) -> Result<(), TIP20Error> {
+        let current_time = self.storage.timestamp();
+        let last_update_time = U256::from(self.get_last_update_time());
+
+        let elapsed = if current_time > last_update_time {
+            current_time - last_update_time
+        } else {
+            return Ok(());
+        };
+
+        self.set_last_update_time(current_time.to::<u64>());
+
+        let opted_in_supply = self.get_opted_in_supply();
+        if opted_in_supply == U256::ZERO {
+            return Ok(());
+        }
+
+        let total_reward_per_second = self.get_total_reward_per_second();
+        if total_reward_per_second > U256::ZERO {
+            let delta_rpt = (total_reward_per_second * elapsed) / opted_in_supply;
+            let current_rpt = self.get_reward_per_token_stored();
+            self.set_reward_per_token_stored(current_rpt + delta_rpt);
+        }
+
+        Ok(())
+    }
+
+    fn get_reward_per_token_stored(&mut self) -> U256 {
+        self.storage
+            .sload(self.token_address, slots::REWARD_PER_TOKEN_STORED)
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn set_reward_per_token_stored(&mut self, value: U256) {
+        self.storage
+            .sstore(self.token_address, slots::REWARD_PER_TOKEN_STORED, value)
+            .expect("TODO: handle error");
+    }
+
+    fn get_last_update_time(&mut self) -> u64 {
+        self.storage
+            .sload(self.token_address, slots::LAST_UPDATE_TIME)
+            .unwrap_or(U256::ZERO)
+            .to::<u64>()
+    }
+
+    fn set_last_update_time(&mut self, value: u64) {
+        self.storage
+            .sstore(
+                self.token_address,
+                slots::LAST_UPDATE_TIME,
+                U256::from(value),
+            )
+            .expect("TODO: handle error");
+    }
+
+    fn get_opted_in_supply(&mut self) -> U256 {
+        self.storage
+            .sload(self.token_address, slots::OPTED_IN_SUPPLY)
+            .expect("TODO: handle error")
+    }
+
+    fn get_total_reward_per_second(&mut self) -> U256 {
+        self.storage
+            .sload(self.token_address, slots::OPTED_IN_SUPPLY)
+            .expect("TODO: handle error")
+        // TODO:
     }
 
     /// Transfers fee tokens from user to fee manager before transaction execution
@@ -1099,14 +1207,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{keccak256, Address, FixedBytes, U256};
+    use alloy::primitives::{Address, FixedBytes, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
     use crate::{
-        storage::hashmap::HashMapStorageProvider, tip20_factory::ITIP20Factory, DEFAULT_FEE_TOKEN,
-        LINKING_USD_ADDRESS,
+        DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider,
+        tip20_factory::ITIP20Factory,
     };
 
     /// Initialize a factory and create a single token
@@ -1959,7 +2067,9 @@ mod tests {
     fn test_tip20_token_prefix() {
         assert_eq!(
             TIP20_TOKEN_PREFIX,
-            [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            [
+                0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ]
         );
         assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..12], &TIP20_TOKEN_PREFIX);
     }
@@ -1968,7 +2078,9 @@ mod tests {
     fn test_tip20_payment_prefix() {
         assert_eq!(
             TIP20_PAYMENT_PREFIX,
-            [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            [
+                0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ]
         );
         // Payment prefix should start with token prefix
         assert_eq!(&TIP20_PAYMENT_PREFIX[..12], &TIP20_TOKEN_PREFIX);

@@ -58,7 +58,6 @@ sol! {
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
         function nonces(address owner) external view returns (uint256);
-        function salts(address owner, bytes4 salt) external view returns (bool);
         function burnBlocked(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
