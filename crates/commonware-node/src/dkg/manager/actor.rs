@@ -327,8 +327,7 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         // Special case height == 0
-        let Some(block_epoch) = epoch::of_height(block.height(), self.config.epoch_length)
-        else {
+        let Some(block_epoch) = epoch::of_height(block.height(), self.config.epoch_length) else {
             return ceremony;
         };
 
@@ -400,10 +399,7 @@ where
         // stored on chain.
         //
         // This starts a new ceremony.
-        if epoch::is_last_height(
-            block.height().saturating_add(1),
-            self.config.epoch_length,
-        ) {
+        if epoch::is_last_height(block.height().saturating_add(1), self.config.epoch_length) {
             info!("on pre-to-last height of epoch; finalizing ceremony");
 
             let next_epoch = ceremony.epoch().saturating_add(1);

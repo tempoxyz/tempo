@@ -344,11 +344,7 @@ impl Inner<Init> {
         )?;
 
         if proposal.digest() != parent_digest {
-            if epoch::is_last_height_of_epoch(
-                proposal.height(),
-                round.epoch(),
-                self.epoch_length,
-            ) {
+            if epoch::is_last_height_of_epoch(proposal.height(), round.epoch(), self.epoch_length) {
                 let outcome = self
                     .state
                     .dkg_manager
@@ -607,8 +603,7 @@ impl Inner<Init> {
         // immediately, and happen very rarely. It's better to optimize for the
         // general case.
         if payload == parent_digest {
-            if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length)
-            {
+            if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length) {
                 return Ok((block, true));
             } else {
                 return Ok((block, false));
