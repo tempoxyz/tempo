@@ -58,40 +58,36 @@ pub mod slots {
     use alloy::primitives::{U256, uint};
 
     // TODO: roles policy
-    //
-    //
-    // TODO: fix slot ordering
 
     // Roles Auth slots
-    pub const HAS_ROLE: U256 = uint!(14_U256);
-    pub const ROLE_ADMIN: U256 = uint!(14_U256);
+    pub const HAS_ROLE: U256 = uint!(0_U256);
+    pub const ROLE_ADMIN: U256 = uint!(1_U256);
 
     // TIP20 variables
-    pub const NAME: U256 = uint!(0_U256);
-    pub const SYMBOL: U256 = uint!(1_U256);
+    pub const NAME: U256 = uint!(2_U256);
+    pub const SYMBOL: U256 = uint!(3_U256);
     pub const CURRENCY: U256 = uint!(4_U256);
     pub const DOMAIN_SEPARATOR: U256 = uint!(5_U256);
-    pub const QUOTE_TOKEN: U256 = uint!(9_U256);
-    pub const NEXT_QUOTE_TOKEN: U256 = uint!(16_U256);
-    pub const TRANSFER_POLICY_ID: U256 = uint!(6_U256);
-    pub const TOTAL_SUPPLY: U256 = uint!(3_U256);
-    // TODO: update to balanceOf
+    pub const QUOTE_TOKEN: U256 = uint!(6_U256);
+    pub const NEXT_QUOTE_TOKEN: U256 = uint!(7_U256);
+    pub const TRANSFER_POLICY_ID: U256 = uint!(8_U256);
+    pub const TOTAL_SUPPLY: U256 = uint!(9_U256);
     pub const BALANCES: U256 = uint!(10_U256);
     pub const ALLOWANCES: U256 = uint!(11_U256);
     pub const NONCES: U256 = uint!(12_U256);
-    pub const PAUSED: U256 = uint!(8_U256);
-    pub const SUPPLY_CAP: U256 = uint!(7_U256);
+    pub const PAUSED: U256 = uint!(13_U256);
+    pub const SUPPLY_CAP: U256 = uint!(14_U256);
 
     // Rewards related slots
-    pub const LAST_UPDATE_TIME: U256 = uint!(18_U256);
-    pub const OPTED_IN_SUPPLY: U256 = uint!(19_U256);
-    pub const NEXT_STREAM_ID: U256 = uint!(20_U256);
-    pub const STREAMS: U256 = uint!(21_U256);
-    pub const SCHEDULED_RATE_DECREASE: U256 = uint!(21_U256);
-    pub const REWARD_RECIPIENT_OF: U256 = uint!(23_U256);
-    pub const USER_REWARD_PER_TOKEN_PAID: U256 = uint!(23_U256);
-    pub const DELEGATED_BALANCE: U256 = uint!(24_U256);
-    pub const REWARD_PER_TOKEN_STORED: U256 = uint!(17_U256);
+    pub const LAST_UPDATE_TIME: U256 = uint!(15_U256);
+    pub const OPTED_IN_SUPPLY: U256 = uint!(16_U256);
+    pub const NEXT_STREAM_ID: U256 = uint!(17_U256);
+    pub const STREAMS: U256 = uint!(18_U256);
+    pub const SCHEDULED_RATE_DECREASE: U256 = uint!(19_U256);
+    pub const REWARD_RECIPIENT_OF: U256 = uint!(20_U256);
+    pub const USER_REWARD_PER_TOKEN_PAID: U256 = uint!(21_U256);
+    pub const DELEGATED_BALANCE: U256 = uint!(22_U256);
+    pub const REWARD_PER_TOKEN_STORED: U256 = uint!(23_U256);
 }
 
 #[derive(Debug, Clone)]
