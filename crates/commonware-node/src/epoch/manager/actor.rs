@@ -1,24 +1,34 @@
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
+use commonware_codec::Encode as _;
 use commonware_consensus::{
-    simplex::{self, signing_scheme::bls12381_threshold::Scheme},
+    simplex::{self, signing_scheme::bls12381_threshold::Scheme, types::Voter},
     types::Epoch,
 };
-use commonware_cryptography::{Signer as _, ed25519::PublicKey};
+use commonware_cryptography::{
+    Signer as _, bls12381::primitives::variant::MinSig, ed25519::PublicKey,
+};
+use commonware_macros::select;
 use commonware_p2p::{
-    Blocker, Receiver, Sender,
-    utils::mux::{MuxHandle, Muxer},
+    Blocker, Receiver, Recipients, Sender,
+    utils::mux::{Builder as _, GlobalSender, MuxHandle, Muxer},
 };
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
 };
-use eyre::ensure;
+use eyre::{WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
-use tracing::{Level, Span, info, instrument, warn};
+use tracing::{Level, Span, info, instrument, warn, warn_span};
 
-use crate::epoch::manager::ingress::{Enter, Exit};
+use crate::{
+    consensus::Digest,
+    epoch::{
+        self,
+        manager::ingress::{Enter, Exit},
+    },
+};
 
 use super::ingress::Message;
 
@@ -117,20 +127,26 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let (mux, mut pending_mux) = Muxer::new(
+        let (mux, mut pending_mux, mut pending_backup) = Muxer::builder(
             self.context.with_label("pending_mux"),
             pending_sender,
             pending_receiver,
             self.config.mailbox_size,
-        );
+        )
+        .with_backup()
+        .build();
         mux.start();
-        let (mux, mut recovered_mux) = Muxer::new(
+
+        let (mux, mut recovered_mux, mut recovered_global_sender) = Muxer::builder(
             self.context.with_label("recovered_mux"),
             recovered_sender,
             recovered_receiver,
             self.config.mailbox_size,
-        );
+        )
+        .with_global_sender()
+        .build();
         mux.start();
+
         let (mux, mut resolver_mux) = Muxer::new(
             self.context.with_label("resolver_mux"),
             resolver_sender,
@@ -139,22 +155,44 @@ where
         );
         mux.start();
 
-        while let Some(msg) = self.mailbox.next().await {
-            let cause = msg.cause;
-            match msg.activity {
-                super::ingress::Activity::Enter(enter) => {
-                    let _: Result<_, _> = self
-                        .enter(
-                            cause,
-                            enter,
-                            &mut pending_mux,
-                            &mut recovered_mux,
-                            &mut resolver_mux,
-                        )
-                        .await;
-                }
-                super::ingress::Activity::Exit(exit) => self.exit(cause, exit),
-            }
+        loop {
+            select!(
+                message = pending_backup.next() => {
+                    let Some((epoch, (from, _))) = message else {
+                        warn_span!("mux channel closed").in_scope(||
+                            warn!("pending p2p mux channel closed; exiting actor"
+                        ));
+                        break;
+                    };
+                    let _: Result<_, _>  = self.handle_msg_for_unknown_epoch(
+                        &mut recovered_global_sender,
+                        epoch,
+                        from,
+                    ).await;
+                },
+
+                msg = self.mailbox.next()=>  {
+                    let Some(msg) = msg else {
+                        warn_span!("mailboxes dropped").in_scope(|| warn!("all mailboxes dropped; exiting actor"));
+                        break;
+                    };
+                    let cause = msg.cause;
+                    match msg.activity {
+                        super::ingress::Activity::Enter(enter) => {
+                            let _: Result<_, _> = self
+                                .enter(
+                                    cause,
+                                    enter,
+                                    &mut pending_mux,
+                                    &mut recovered_mux,
+                                    &mut resolver_mux,
+                                )
+                                .await;
+                        }
+                        super::ingress::Activity::Exit(exit) => self.exit(cause, exit),
+                    }
+                },
+            )
         }
     }
 
@@ -280,6 +318,60 @@ where
                 registered"
             );
         }
+    }
+
+    /// Handles messages for epochs received on un-registered sub-channels.
+    ///
+    /// This makes use of commonware's backup channels: when starting a new
+    /// engine, we register a new subchannel with the muxer and tagged with that
+    /// epoch. Upon receiving a message on an un-registered epoch, the
+    /// commonware p2p muxer will send the message to the backup channel, tagged
+    /// with unknown epoch.
+    #[instrument(skip_all, fields(msg.epoch = epoch, msg.from = %from), err(level = Level::WARN))]
+    async fn handle_msg_for_unknown_epoch(
+        &mut self,
+        recovered_global_sender: &mut GlobalSender<impl Sender<PublicKey = PublicKey>>,
+        epoch: Epoch,
+        from: PublicKey,
+    ) -> eyre::Result<()> {
+        let Some(latest_epoch) = self.active_epochs.keys().last().copied() else {
+            return Err(eyre!(
+                "received message over unregistered epoch channel, but we have no active epochs at all"
+            ));
+        };
+        ensure!(
+            epoch < latest_epoch,
+            "sender seems to be ahead of us; our latest running epoch: {latest_epoch}",
+        );
+
+        let boundary_height = epoch::last_height(epoch, self.config.epoch_length);
+        let Some(finalization) = self.config.marshal.get_finalization(boundary_height).await else {
+            return Err(eyre!(
+                "boundary height `{boundary_height}` of epoch is not locally known; peer needs to ask a nother node"
+            ));
+        };
+
+        info!(
+            boundary_height,
+            "found certificate for boundary height `{boundary_height}`, forwarding to peer"
+        );
+
+        // Forward the finalization to the sender. This operation is best-effort.
+        let message = Voter::<Scheme<MinSig>, Digest>::Finalization(finalization);
+        let res = recovered_global_sender
+            .send(
+                epoch,
+                Recipients::One(from),
+                message.encode().freeze(),
+                true,
+            )
+            .await
+            .wrap_err("failed handing finalization certificate to p2p network")?;
+        ensure!(
+            !res.is_empty(),
+            "failed forwarding finalization certificate to peer",
+        );
+        Ok(())
     }
 }
 

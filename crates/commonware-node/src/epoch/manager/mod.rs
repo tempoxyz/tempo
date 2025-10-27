@@ -22,6 +22,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) application: crate::consensus::execution_driver::ExecutionDriverMailbox,
     pub(crate) blocker: TBlocker,
     pub(crate) buffer_pool: PoolRef,
+    pub(crate) epoch_length: u64,
     pub(crate) time_for_peer_response: Duration,
     pub(crate) time_to_propose: Duration,
     pub(crate) mailbox_size: usize,
