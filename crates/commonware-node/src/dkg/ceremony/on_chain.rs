@@ -58,8 +58,8 @@ impl EncodeSize for PublicOutcome {
 /// generated commitment, all acks for the shares it sent to the ceremony's
 /// players, and finally the revealed shares, for which it did not receive acks.
 ///
-/// This object is persisted on-chain. Every player collects the local outcomes
-/// of other dealers to created a global outcome.
+/// This object is persisted on-chain. Every player collects the intermediate
+/// outcomes of the other dealers to create the overall outcome of the ceremony.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IntermediateOutcome {
     /// The number of players in this epoch.
@@ -85,7 +85,14 @@ pub(crate) struct IntermediateOutcome {
 }
 
 impl IntermediateOutcome {
-    /// Creates a new [DealOutcome], signing its inner payload with the [commonware_cryptography::bls12381::dkg::Dealer]'s [Signer].
+    /// Creates a new intermediate ceremony outcome.
+    ///
+    /// This object contains, the number of players, the epoch of the ceremony,
+    /// the dealer's commitment (public polynomial), the acks received by the
+    /// players and the revealed shares for which no acks are received.
+    ///
+    /// Finally, it also includes a signature over
+    /// `(namespace, epoch, commitment, acks, reveals)` signed by the dealer.
     pub(super) fn new(
         n_players: u64,
         dealer_signer: &PrivateKey,
@@ -110,7 +117,7 @@ impl IntermediateOutcome {
         }
     }
 
-    /// Verifies the [DealOutcome]'s signature.
+    /// Verifies the intermediate outcome's signature.
     pub(super) fn verify(&self, namespace: &[u8]) -> bool {
         let payload = Self::signature_payload_from_parts(
             self.epoch,
