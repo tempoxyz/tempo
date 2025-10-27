@@ -22,12 +22,13 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let payment_token_addr = *payment_token.address();
 
     // Get validator token address (USDC from genesis)
-    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, contracts::types::ITIPFeeAMM};
+    use tempo_contracts::precompiles::ITIPFeeAMM;
+    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
     let validator_token_addr = DEFAULT_FEE_TOKEN;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let validator_token =
-        tempo_precompiles::contracts::types::ITIP20::new(validator_token_addr, provider.clone());
+        tempo_contracts::precompiles::ITIP20::new(validator_token_addr, provider.clone());
 
     let liquidity_amount = U256::from(10_000_000);
 
@@ -66,7 +67,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     println!("FeeAMM pool created. Now draining liquidity...");
 
     // Get user's LP token balance
-    use tempo_precompiles::contracts::tip_fee_manager::amm::PoolKey;
+    use tempo_precompiles::tip_fee_manager::amm::PoolKey;
     let pool_key = PoolKey::new(payment_token_addr, validator_token_addr);
     let pool_id = pool_key.get_id();
 
@@ -109,7 +110,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // Now set the user's fee token to our custom payment token (not USDC)
     // This ensures subsequent transactions will require a swap through the drained FeeAMM
     println!("Setting user's fee token preference...");
-    use tempo_precompiles::contracts::types::IFeeManager;
+    use tempo_contracts::precompiles::IFeeManager;
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     fee_manager
         .setUserToken(payment_token_addr)

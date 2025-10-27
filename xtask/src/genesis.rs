@@ -25,11 +25,13 @@ use tempo_contracts::{
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
-        linking_usd::LinkingUSD, stablecoin_exchange::StablecoinExchange,
-        tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE, types::ITIPFeeAMM,
-    },
+    linking_usd::LinkingUSD,
+    stablecoin_exchange::StablecoinExchange,
+    storage::evm::EvmPrecompileStorageProvider,
+    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
+    tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
+    tip20_factory::{ITIP20Factory, TIP20Factory},
+    tip403_registry::TIP403Registry,
 };
 
 /// Generate genesis allocation file for testing
@@ -69,7 +71,15 @@ pub(crate) struct GenesisArgs {
 }
 
 impl GenesisArgs {
+<<<<<<< HEAD:xtask/src/genesis.rs
     pub(crate) async fn run(self) -> eyre::Result<()> {
+=======
+    /// Generates a genesis json file.
+    ///
+    /// It creates a new genesis allocation for the configured accounts.
+    /// And creates accounts for system contracts.
+    pub async fn run(self) -> eyre::Result<()> {
+>>>>>>> main:bin/tempo-bench/src/cmd/genesis.rs
         println!("Generating {:?} accounts", self.accounts);
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
@@ -84,11 +94,17 @@ impl GenesisArgs {
             })
             .collect::<eyre::Result<Vec<Address>>>()?;
 
+        // system contracts/precompiles must be initialized bottom up, if an init function (e.g. mint_pairwise_liquidity) uses another system contract/precompiles internally (tip403 registry), the registry must be initialized first.
+
         // Deploy TestUSD fee token
         // TODO: admin should be updated to be a cli arg so we can specify that
         // linkingUSD admin for persistent testnet deployments
         let admin = addresses[0];
         let mut evm = setup_tempo_evm();
+
+        println!("Initializing registry");
+        initialize_registry(&mut evm)?;
+
         let (_, alpha_token_address) = create_and_mint_token(
             "AlphaUSD",
             "AlphaUSD",
@@ -278,7 +294,7 @@ fn create_and_mint_token(
     let chain_id = evm.chain_id();
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, chain_id);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, chain_id);
 
     let token_id = {
         let mut factory = TIP20Factory::new(&mut provider);
@@ -344,7 +360,7 @@ fn initialize_linking_usd(
 ) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut linking_usd = LinkingUSD::new(&mut provider);
     linking_usd
@@ -365,7 +381,7 @@ fn initialize_fee_manager(
     let block = evm.block.clone();
 
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut fee_manager =
         TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut provider);
@@ -393,13 +409,22 @@ fn initialize_fee_manager(
         .expect("Could not 0x00 validator fee token");
 }
 
+/// Initializes the [`TIP403Registry`] contract.
+fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    TIP403Registry::new(&mut provider).initialize().unwrap();
+    Ok(())
+}
+
 fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut exchange = StablecoinExchange::new(&mut provider);
-    exchange.initialize();
+    exchange.initialize()?;
 
     Ok(())
 }
@@ -413,7 +438,7 @@ fn mint_pairwise_liquidity(
 ) {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
 

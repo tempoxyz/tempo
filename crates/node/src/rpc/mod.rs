@@ -1,7 +1,9 @@
+pub mod dex;
+
 mod request;
 
+pub use dex::TempoDexApiServer;
 pub use request::TempoTransactionRequest;
-use tempo_revm::TempoTxEnv;
 
 use crate::{TempoNetwork, node::TempoNode};
 use alloy::{consensus::TxReceipt, primitives::U256};
@@ -35,8 +37,9 @@ use reth_rpc_eth_types::{
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_evm::TempoEvmConfig;
-use tempo_precompiles::contracts::provider::TIPFeeDatabaseExt;
+use tempo_precompiles::provider::TIPFeeDatabaseExt;
 use tempo_primitives::TempoReceipt;
+use tempo_revm::TempoTxEnv;
 use tokio::sync::Mutex;
 
 /// Tempo `Eth` API implementation.

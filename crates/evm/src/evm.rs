@@ -12,7 +12,7 @@ use alloy_evm::{
 use alloy_primitives::{Address, Bytes, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
-use tempo_precompiles::precompiles::extend_tempo_precompiles;
+use tempo_precompiles::extend_tempo_precompiles;
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
 
 use crate::TempoBlockEnv;
