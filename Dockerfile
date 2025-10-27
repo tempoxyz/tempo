@@ -4,12 +4,13 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-  pkg-config \
-  libssl-dev \
-  build-essential \
-  clang \
-  libclang-dev \
-  && rm -rf /var/lib/apt/lists/*
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    clang \
+    libclang-dev \
+    just \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
@@ -19,23 +20,24 @@ COPY crates/ ./crates/
 # NOTE: Remove xtask from workspace to avoid missing dependency error for now
 RUN sed -i '/xtask/d' Cargo.toml
 
+ARG RUST_BINARY
+ARG RUST_PROFILE
+ARG RUST_FEATURES
+
 # Install nightly Rust and build the tempo binary
 RUN rustup toolchain install nightly && rustup default nightly
-RUN cargo build --bin tempo
+RUN cargo build --bin ${RUST_BINARY} --profile ${RUST_PROFILE} --features "${RUST_FEATURES}"
 
 FROM debian:bookworm-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
-  ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary
-COPY --from=builder /app/target/debug/tempo /usr/local/bin/tempo
+COPY --from=builder /app/target/${RUST_PROFILE}/${RUST_BINARY} /usr/local/bin/${RUST_BINARY}
 
 WORKDIR /data
 
-# Expose default ports
-EXPOSE 8000 8545 8546 30303 30303/udp
-
-ENTRYPOINT ["tempo"]
+ENTRYPOINT ["${RUST_BINARY}"]

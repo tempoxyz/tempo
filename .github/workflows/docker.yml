@@ -16,6 +16,9 @@ jobs:
   build-and-push:
     name: Build and Push Docker Image
     runs-on: depot-ubuntu-latest
+    strategy:
+      matrix:
+        binary: [tempo, tempo-xtask, tempo-bench, tempo-sidecar]
     permissions:
       contents: read
       packages: write
@@ -28,7 +31,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ matrix.binary }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -46,6 +49,9 @@ jobs:
       - name: Build and push Docker image
         uses: depot/build-push-action@v1
         with:
+          build-args: |
+            RUST_BINARY=${{ matrix.binary }}
+            RUST_PROFILE=release
           project: 0c6tg19qsp
           context: .
           tags: ${{ steps.meta.outputs.tags }}
