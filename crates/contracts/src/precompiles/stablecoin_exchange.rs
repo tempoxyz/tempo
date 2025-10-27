@@ -2,9 +2,8 @@ pub use IStablecoinExchange::{
     IStablecoinExchangeErrors as StablecoinExchangeError,
     IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
-use revm::precompile::PrecompileError;
 
-use alloy::{sol, sol_types::SolInterface};
+use alloy::sol;
 
 sol! {
     /// StablecoinExchange interface for managing order book based trading of stablecoins.
@@ -155,11 +154,5 @@ impl StablecoinExchangeError {
     /// Creates an error for max input exceeded.
     pub const fn max_input_exceeded() -> Self {
         Self::MaxInputExceeded(IStablecoinExchange::MaxInputExceeded {})
-    }
-}
-
-impl From<StablecoinExchangeError> for PrecompileError {
-    fn from(err: StablecoinExchangeError) -> Self {
-        Self::Other(format!("{:?}", err.selector()))
     }
 }

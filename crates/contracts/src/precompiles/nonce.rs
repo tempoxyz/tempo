@@ -1,6 +1,6 @@
 pub use INonce::INonceErrors as NonceError;
-use alloy::{sol, sol_types::SolInterface};
-use revm::precompile::PrecompileError;
+
+use alloy::sol;
 
 sol! {
     /// Nonce interface for managing 2D nonces as per the Account Abstraction spec.
@@ -47,11 +47,5 @@ impl NonceError {
     /// Creates an error for when nonce overflows
     pub const fn nonce_overflow() -> Self {
         Self::NonceOverflow(INonce::NonceOverflow)
-    }
-}
-
-impl From<NonceError> for PrecompileError {
-    fn from(val: NonceError) -> Self {
-        Self::Other(format!("{:?}", val.selector()))
     }
 }

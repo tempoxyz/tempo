@@ -1,8 +1,6 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use revm::precompile::PrecompileError;
-
-use alloy::{sol, sol_types::SolInterface};
+use alloy::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -123,12 +121,6 @@ impl RolesAuthError {
     }
 }
 
-impl From<RolesAuthError> for PrecompileError {
-    fn from(val: RolesAuthError) -> Self {
-        Self::Other(format!("{:?}", val.selector()))
-    }
-}
-
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
     pub const fn insufficient_balance() -> Self {
@@ -203,11 +195,5 @@ impl TIP20Error {
     /// Creates an error for transfers being disabled.
     pub const fn transfers_disabled() -> Self {
         Self::TransfersDisabled(ITIP20::TransfersDisabled {})
-    }
-}
-
-impl From<TIP20Error> for PrecompileError {
-    fn from(val: TIP20Error) -> Self {
-        Self::Other(format!("{:?}", val.selector()))
     }
 }

@@ -1,6 +1,5 @@
 pub use ITipAccountRegistrar::ITipAccountRegistrarErrors as TIPAccountRegistrarError;
-use alloy::{sol, sol_types::SolInterface};
-use revm::precompile::PrecompileError;
+use alloy::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -30,11 +29,5 @@ impl TIPAccountRegistrarError {
     /// Creates an error when nonce is not zero.
     pub const fn nonce_not_zero() -> Self {
         Self::NonceNotZero(ITipAccountRegistrar::NonceNotZero {})
-    }
-}
-
-impl From<TIPAccountRegistrarError> for PrecompileError {
-    fn from(val: TIPAccountRegistrarError) -> Self {
-        Self::Other(format!("{:?}", val.selector()))
     }
 }

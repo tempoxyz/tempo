@@ -1,8 +1,7 @@
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
-use revm::precompile::PrecompileError;
 
-use alloy::{sol, sol_types::SolInterface};
+use alloy::sol;
 
 sol! {
     /// FeeManager interface for managing gas fee collection and distribution.
@@ -179,12 +178,6 @@ impl FeeManagerError {
     }
 }
 
-impl From<FeeManagerError> for PrecompileError {
-    fn from(value: FeeManagerError) -> Self {
-        Self::Other(format!("{:?}", value.selector()))
-    }
-}
-
 impl TIPFeeAMMError {
     /// Creates an error for identical token addresses.
     pub const fn identical_addresses() -> Self {
@@ -269,11 +262,5 @@ impl TIPFeeAMMError {
     /// Creates an error for internal errors.
     pub const fn internal_error() -> Self {
         Self::InternalError(ITIPFeeAMM::InternalError {})
-    }
-}
-
-impl From<TIPFeeAMMError> for PrecompileError {
-    fn from(value: TIPFeeAMMError) -> Self {
-        Self::Other(format!("{:?}", value.selector()))
     }
 }

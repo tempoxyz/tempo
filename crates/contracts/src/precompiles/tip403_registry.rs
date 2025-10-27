@@ -1,9 +1,8 @@
-use alloy::{sol, sol_types::SolInterface};
+use alloy::sol;
 
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };
-use revm::precompile::PrecompileError;
 
 sol! {
    #[derive(Debug, PartialEq, Eq)]
@@ -54,11 +53,5 @@ impl TIP403RegistryError {
     /// Creates an error for incompatible policy types
     pub const fn self_owned_policy_must_be_whitelist() -> Self {
         Self::SelfOwnedPolicyMustBeWhitelist(ITIP403Registry::SelfOwnedPolicyMustBeWhitelist {})
-    }
-}
-
-impl From<TIP403RegistryError> for PrecompileError {
-    fn from(value: TIP403RegistryError) -> Self {
-        Self::Other(format!("{:?}", value.selector()))
     }
 }
