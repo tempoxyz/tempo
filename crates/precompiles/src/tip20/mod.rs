@@ -439,6 +439,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         self.set_total_supply(new_supply);
 
+        self.accrue()?;
+        self.handle_receiver_rewards(&to, amount)?;
+
         let to_balance = self.get_balance(&to);
         let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
             .checked_add(amount)
