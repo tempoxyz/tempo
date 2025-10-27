@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(validators.len(), 1, "Should have 1 validator");
         assert_eq!(validators[0].validatorAddress, validator1);
         assert_eq!(validators[0].key, key);
-        assert_eq!(validators[0].active, true, "New validator should be active");
+        assert!(validators[0].active, "New validator should be active");
 
         // Owner1 changes validator status - should succeed
         let result = validator_config.change_validator_status(
@@ -526,7 +526,7 @@ mod tests {
         let validators = validator_config
             .get_validators(IValidatorConfig::getValidatorsCall {})
             .expect("Should get validators");
-        assert_eq!(validators[0].active, false, "Validator should be inactive");
+        assert!(!validators[0].active, "Validator should be inactive");
 
         // Owner2 (non-owner) tries to add validator - should fail
         let validator2 = Address::from([0x55; 20]);
