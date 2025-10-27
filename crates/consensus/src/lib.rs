@@ -34,7 +34,7 @@ impl TempoConsensus {
         }
     }
 
-    /// This is <EthBeaconConsensus<TempoChainSpec> as EthBeaconConsensus<TempoChainSpec>>::validate_header
+    /// This is `<EthBeaconConsensus<TempoChainSpec> as EthBeaconConsensus<TempoChainSpec>>::validate_header`
     /// with the caps on the maximum extraData field removed.
     fn eth_beacon_validate_header(
         &self,
