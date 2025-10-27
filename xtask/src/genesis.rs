@@ -1,6 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, Bytes, U256, address},
+    primitives::{Address, Bytes, FixedBytes, U256, address},
     signers::{
         local::{MnemonicBuilder, coins_bip39::English},
         utils::secret_key_to_address,
@@ -14,6 +14,7 @@ use reth::revm::{
     inspector::JournalExt,
 };
 use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals};
+use serde::{Deserialize, Serialize};
 use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
@@ -24,7 +25,7 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
     linking_usd::{LinkingUSD, TRANSFER_ROLE},
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
@@ -34,7 +35,47 @@ use tempo_precompiles::{
     tip20_factory::{ITIP20Factory, TIP20Factory},
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
+    validator_config::{IValidatorConfig, ValidatorConfig},
 };
+
+/// Initial validator configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InitialValidator {
+    /// Validator address
+    pub address: Address,
+    /// Communication key (32 bytes)
+    #[serde(with = "serde_bytes_32")]
+    pub key: [u8; 32],
+    /// IP address or DNS name
+    pub ip_address_or_dns: String,
+    /// Whether validator starts active
+    pub active: bool,
+}
+
+mod serde_bytes_32 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let bytes = hex::decode(s.trim_start_matches("0x")).map_err(serde::de::Error::custom)?;
+        if bytes.len() != 32 {
+            return Err(serde::de::Error::custom("key must be 32 bytes"));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(arr)
+    }
+}
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
@@ -74,6 +115,10 @@ pub(crate) struct GenesisArgs {
     /// Adagio hardfork activation timestamp (defaults to 0 = active at genesis)
     #[arg(long, default_value_t = 0)]
     pub adagio_time: u64,
+
+    /// Path to validators config file (JSON)
+    #[arg(long)]
+    pub validators_config: Option<PathBuf>,
 }
 
 impl GenesisArgs {
@@ -83,6 +128,18 @@ impl GenesisArgs {
     /// And creates accounts for system contracts.
     pub(crate) async fn run(self) -> eyre::Result<()> {
         println!("Generating {:?} accounts", self.accounts);
+
+        // Load initial validators if config file provided
+        let initial_validators = if let Some(config_path) = &self.validators_config {
+            println!("Loading validators from {:?}", config_path);
+            let config_content = fs::read_to_string(config_path)?;
+            let validators: Vec<InitialValidator> = serde_json::from_str(&config_content)?;
+            println!("Loaded {} initial validators", validators.len());
+            validators
+        } else {
+            Vec::new()
+        };
+
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
             .tqdm()
@@ -151,6 +208,9 @@ impl GenesisArgs {
 
         println!("Initializing nonce manager");
         initialize_nonce_manager(&mut evm)?;
+        
+        println!("Initializing validator config");
+        initialize_validator_config(admin, initial_validators, &mut evm)?;
 
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
@@ -458,6 +518,36 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
     NonceManager::new(&mut provider).initialize()?;
+
+    Ok(())
+}
+
+fn initialize_validator_config(
+    owner: Address,
+    initial_validators: Vec<InitialValidator>,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+) -> eyre::Result<()> {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+
+    let mut validator_config = ValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, &mut provider);
+    validator_config.initialize(owner);
+
+    // Add initial validators
+    for validator in initial_validators.iter().tqdm() {
+        validator_config
+            .add_validator(
+                &owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator.address,
+                    key: FixedBytes::from(validator.key),
+                    active: validator.active,
+                    ipAddressOrDns: validator.ip_address_or_dns.clone(),
+                },
+            )
+            .expect("Failed to add validator");
+    }
 
     Ok(())
 }

@@ -31,6 +31,7 @@ use crate::{
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     tip4217_registry::TIP4217Registry,
+    validator_config::ValidatorConfig,
 };
 
 #[cfg(test)]
@@ -60,6 +61,8 @@ pub const STABLECOIN_EXCHANGE_ADDRESS: Address =
     address!("0xdec0000000000000000000000000000000000000");
 pub const NONCE_PRECOMPILE_ADDRESS: Address =
     address!("0x4E4F4E4345000000000000000000000000000000");
+pub const VALIDATOR_CONFIG_ADDRESS: Address =
+    address!("0xCCCCCCCC00000000000000000000000000000000");
 
 const METADATA_GAS: u64 = 50;
 const VIEW_FUNC_GAS: u64 = 100;
@@ -94,6 +97,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             Some(StablecoinExchangePrecompile::create(chain_id))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
             Some(NoncePrecompile::create(chain_id))
+        } else if *address == VALIDATOR_CONFIG_ADDRESS {
+            Some(ValidatorConfigPrecompile::create(chain_id))
         } else {
             None
         }
@@ -205,6 +210,16 @@ pub struct LinkingUSDPrecompile;
 impl LinkingUSDPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+        ))
+    }
+}
+
+pub struct ValidatorConfigPrecompile;
+impl ValidatorConfigPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("ValidatorConfig", |input| ValidatorConfig::new(
+            VALIDATOR_CONFIG_ADDRESS,
             &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
         ))
     }
