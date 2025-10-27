@@ -60,6 +60,12 @@ impl From<TIP20Error> for TempoPrecompileError {
     }
 }
 
+impl From<RolesAuthError> for TempoPrecompileError {
+    fn from(err: RolesAuthError) -> Self {
+        Self::RolesAuthError(err)
+    }
+}
+
 impl From<TIP403RegistryError> for TempoPrecompileError {
     fn from(err: TIP403RegistryError) -> Self {
         Self::TIP403RegistryError(err)
