@@ -7,5 +7,6 @@ scripts/data
 .idea
 **/.env
 **/.envrc
+localnet/**
 
 .claude/

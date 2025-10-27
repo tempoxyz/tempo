@@ -16,8 +16,8 @@ use reth_evm::{
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager::executeBlockCall, types::IStablecoinExchange},
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
+    tip_fee_manager::IFeeManager,
 };
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_revm::evm::TempoContext;
@@ -96,7 +96,7 @@ where
         let block = self.evm().block().number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
         if to == TIP_FEE_MANAGER_ADDRESS {
-            let fee_input = executeBlockCall
+            let fee_input = IFeeManager::executeBlockCall
                 .abi_encode()
                 .into_iter()
                 .chain(block)
