@@ -88,9 +88,10 @@ pub mod slots {
     pub const USER_REWARD_PER_TOKEN_PAID: U256 = uint!(21_U256);
     pub const DELEGATED_BALANCE: U256 = uint!(22_U256);
     pub const REWARD_PER_TOKEN_STORED: U256 = uint!(23_U256);
+    pub const TOTAL_REWARD_PER_SECOND: U256 = uint!(24_U256);
 
     // Salts
-    pub const SALTS: U256 = uint!(24_U256);
+    pub const SALTS: U256 = uint!(25_U256);
 }
 
 #[derive(Debug, Clone)]
@@ -1088,9 +1089,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
     fn get_total_reward_per_second(&mut self) -> U256 {
         self.storage
-            .sload(self.token_address, slots::OPTED_IN_SUPPLY)
-            .expect("TODO: handle error")
-        // TODO:
+            .sload(self.token_address, slots::TOTAL_REWARD_PER_SECOND)
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn set_total_reward_per_second(&mut self, value: U256) {
+        self.storage
+            .sstore(self.token_address, slots::TOTAL_REWARD_PER_SECOND, value)
+            .expect("TODO: handle error");
     }
 
     /// Transfers fee tokens from user to fee manager before transaction execution
