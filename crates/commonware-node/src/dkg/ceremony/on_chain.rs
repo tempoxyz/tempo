@@ -231,23 +231,24 @@ mod tests {
             three_public_keys(),
         );
 
-        let mut acks = vec![];
-        acks.push(Ack::new(
-            &union(b"test", ACK_NAMESPACE),
-            three_private_keys()[0].clone(),
-            three_public_keys()[0].clone(),
-            42,
-            &three_public_keys()[0],
-            &commitment,
-        ));
-        acks.push(Ack::new(
-            &union(b"test", ACK_NAMESPACE),
-            three_private_keys()[1].clone(),
-            three_public_keys()[1].clone(),
-            42,
-            &three_public_keys()[0],
-            &commitment,
-        ));
+        let acks = vec![
+            Ack::new(
+                &union(b"test", ACK_NAMESPACE),
+                three_private_keys()[0].clone(),
+                three_public_keys()[0].clone(),
+                42,
+                &three_public_keys()[0],
+                &commitment,
+            ),
+            Ack::new(
+                &union(b"test", ACK_NAMESPACE),
+                three_private_keys()[1].clone(),
+                three_public_keys()[1].clone(),
+                42,
+                &three_public_keys()[0],
+                &commitment,
+            ),
+        ];
         let reveals = vec![shares[2].clone()];
         let dealing_outcome = IntermediateOutcome::new(
             3,

@@ -119,19 +119,20 @@ impl Write for Dealing {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::dkg::IntermediateOutcome;
-    use crate::dkg::ceremony::{ACK_NAMESPACE, Ack, OUTCOME_NAMESPACE};
+    use crate::dkg::{
+        IntermediateOutcome,
+        ceremony::{ACK_NAMESPACE, Ack, OUTCOME_NAMESPACE},
+    };
 
     use super::{Dealing, State};
     use commonware_codec::{Decode as _, Encode as _, Read as _};
-    use commonware_cryptography::Signer;
-    use commonware_cryptography::bls12381::primitives::variant::MinSig;
-    use commonware_cryptography::ed25519::PublicKey;
-    use commonware_cryptography::{PrivateKeyExt as _, bls12381::dkg, ed25519::PrivateKey};
-    use commonware_utils::set::Ordered;
-    use commonware_utils::union;
-    use rand::SeedableRng as _;
-    use rand::rngs::StdRng;
+    use commonware_cryptography::{
+        PrivateKeyExt as _, Signer,
+        bls12381::{dkg, primitives::variant::MinSig},
+        ed25519::{PrivateKey, PublicKey},
+    };
+    use commonware_utils::{set::Ordered, union};
+    use rand::{SeedableRng as _, rngs::StdRng};
 
     fn three_private_keys() -> Ordered<PrivateKey> {
         vec![
