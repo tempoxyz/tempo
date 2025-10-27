@@ -423,8 +423,6 @@ where
         ret,
     )]
     async fn process_ack(&mut self, peer: PublicKey, ack: Ack) -> eyre::Result<&'static str> {
-        use std::collections::btree_map::Entry;
-
         let Some(dealer_me) = &mut self.dealer_me else {
             return Ok("not a dealer, dropping ack");
         };
@@ -450,10 +448,12 @@ where
             "failed verifying ack signature against peer",
         );
 
-        if let Entry::Vacant(vacant) = dealer_me.acks.entry(peer.clone()) {
+        if let std::collections::btree_map::Entry::Vacant(vacant) =
+            dealer_me.acks.entry(peer.clone())
+        {
             vacant.insert(ack.clone());
         } else {
-            bail!("duplicate ack");
+            bail!("duplicate ack for peer");
         }
 
         self.ceremony_metadata
