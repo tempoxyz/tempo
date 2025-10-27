@@ -253,6 +253,7 @@ where
         skip_all,
         fields(
             request.epoch = epoch,
+            current_ceremony.epoch = ceremony.epoch(),
         ),
         err,
     )]
@@ -266,32 +267,45 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let mut outcome = None;
-
-        'get_outcome: {
-            if epoch.saturating_add(1) != ceremony.epoch() {
-                warn!(
-                    request.epoch = epoch,
-                    ceremony.epoch = ceremony.epoch(),
-                    "current ceremony can return the outcome of its immediate \
-                    predecessor ceremony, but the requested outcome is for \
-                    another epoch",
-                );
-                break 'get_outcome;
-            }
-
-            outcome = Some(PublicOutcome {
+        let outcome = if epoch.saturating_add(1) == ceremony.epoch() {
+            Some(PublicOutcome {
                 epoch: ceremony.epoch(),
                 public: ceremony.config().public.clone(),
                 participants: ceremony.config().dealers.clone(),
-            });
-        }
+            })
+        } else {
+            warn!(
+                predecessor_ceremony.epoch = ceremony.epoch().checked_sub(1),
+                "currently active ceremony contains the outcome of its
+                predecessor ceremony, but the request was for a different
+                ceremony: cannot return the outcome of even older ceremonies,
+                nor the outcome of the currently running ceremony",
+            );
+            None
+        };
 
         response
             .send(outcome)
             .map_err(|_| eyre!("failed returning outcome because requester went away"))
     }
 
+    /// Handles a finalized block.
+    ///
+    /// Depending on which height of an epoch the block is, this method exhibits
+    /// different behavior:
+    ///
+    /// + first height of an epoch: notify the epoch manager that the previous
+    /// epoch can be shut down.
+    /// + first half of an epoch: distribute the shares generated during the
+    /// DKG ceremony and collect shares from other dealers, and acks from other
+    /// players.
+    /// + exact middle of an epoch: generate the intermediate outcome of the
+    /// ceremony.
+    /// + second half of an epoch: read intermediate outcomes from blocks.
+    /// + pre-to-last height of an epoch: generate the overall ceremony outcome,
+    /// start a new ceremony with the outcome of the last ceremony.
+    /// + last height of an epoch: notify the epoch manager that a new epoch can
+    /// be started, using the outcome of the last epoch.
     #[instrument(
         parent = cause,
         skip_all,
@@ -423,13 +437,13 @@ where
                 .await
                 .expect("must always be able to write epoch state to disk");
 
+            // Prune older ceremony.
             if let Some(epoch) = epoch_state.epoch.checked_sub(2) {
                 let mut ceremony_metadata = self.ceremony_metadata.lock().await;
                 ceremony_metadata.remove(&epoch.into());
                 ceremony_metadata.sync().await.expect("metadata must sync");
             }
 
-            // TODO(janis): prune old ceremony metadata?
             let config = ceremony::Config {
                 namespace: self.config.namespace.clone(),
                 me: self.config.me.clone(),
