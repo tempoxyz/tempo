@@ -151,7 +151,13 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.start_reward(s, call)
                 })
             }
-
+            ITIP20::setRewardRecipientCall::SELECTOR => {
+                mutate_void::<ITIP20::setRewardRecipientCall, TIP20Error>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.set_reward_recipient(s, call),
+                )
+            }
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {
                 view::<IRolesAuth::hasRoleCall>(calldata, |call| {

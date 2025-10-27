@@ -745,12 +745,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: &Address,
         call: ITIP20::startRewardCall,
-    ) -> Result<U256, TIP20Error> {
+    ) -> Result<u64, TIP20Error> {
         // Check if paused
         self.check_not_paused()?;
 
+        // Save token address to avoid borrow checker issues
+        let token_address = self.token_address;
+
         // Check if transfer is authorized
-        self.ensure_transfer_authorized(msg_sender, &self.token_address)?;
+        self.ensure_transfer_authorized(msg_sender, &token_address)?;
 
         // Validate amount
         if call.amount == U256::ZERO {
@@ -758,16 +761,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         }
 
         // Transfer tokens from sender to contract
-        self._transfer(msg_sender, &self.token_address, call.amount)?;
+        self._transfer(msg_sender, &token_address, call.amount)?;
 
-        if call.seconds_ == 0 {
+        if call.seconds == 0 {
             // Immediate payout - distribute to all opted-in users
             self.accrue()?;
 
             let opted_in_supply = self.get_opted_in_supply();
             if opted_in_supply == U256::ZERO {
                 // No one opted in, just store the balance
-                return Ok(U256::ZERO);
+                return Ok(0);
             }
 
             // Calculate immediate distribution: amount / opted_in_supply
@@ -777,16 +780,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let current_rpt = self.get_reward_per_token_stored();
             self.set_reward_per_token_stored(current_rpt + rate);
 
-            Ok(U256::ZERO)
+            Ok(0)
         } else {
             // Streaming payout - create reward stream
-            let current_time = self.storage.timestamp();
-            let end_time = current_time + U256::from(call.seconds_);
-            let rate = call.amount / U256::from(call.seconds_);
+            let current_time = self.storage.timestamp().to::<u128>();
+            let end_time = current_time + call.seconds;
+            let rate = call.amount / U256::from(call.seconds);
 
             // Get next stream ID
             let stream_id = self.get_next_stream_id();
-            self.set_next_stream_id(stream_id + U256::ONE);
+            self.set_next_stream_id(stream_id + 1);
 
             // Update total reward per second
             let current_total = self.get_total_reward_per_second();
@@ -797,15 +800,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 stream_id,
                 RewardStream {
                     funder: *msg_sender,
-                    start_time: current_time.to::<u64>(),
-                    end_time: end_time.to::<u64>(),
+                    start_time: current_time as u64,
+                    end_time: end_time as u64,
                     rate_per_second_scaled: rate,
                 },
             );
 
             // Update scheduled rate decrease
-            let current_decrease = self.get_scheduled_rate_decrease_at(&end_time);
-            self.set_scheduled_rate_decrease_at(&end_time, current_decrease + rate);
+            let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
+            self.set_scheduled_rate_decrease_at(end_time, current_decrease + rate);
 
             Ok(stream_id)
         }
@@ -1079,229 +1082,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    fn handle_sender_rewards(&mut self, from: &Address, amount: U256) -> Result<(), TIP20Error> {
-        let from_recipient = self.get_reward_recipient_of(from);
-        if from_recipient != Address::ZERO {
-            self.update_rewards(&from_recipient)?;
-            let delegated = self.get_delegated_balance(&from_recipient);
-            let amount_u128 = amount.to::<u128>();
-            let new_delegated = delegated.saturating_sub(U256::from(amount_u128));
-            self.set_delegated_balance(&from_recipient, new_delegated);
-
-            let opted_in = self.get_opted_in_supply();
-            let new_opted_in = opted_in.saturating_sub(U256::from(amount_u128));
-            self.set_opted_in_supply(new_opted_in);
-        }
-        Ok(())
-    }
-
-    fn handle_receiver_rewards(&mut self, to: &Address, amount: U256) -> Result<(), TIP20Error> {
-        let to_recipient = self.get_reward_recipient_of(to);
-        if to_recipient != Address::ZERO {
-            self.update_rewards(&to_recipient)?;
-            let delegated = self.get_delegated_balance(&to_recipient);
-            let amount_u128 = amount.to::<u128>();
-            let new_delegated = delegated.saturating_add(U256::from(amount_u128));
-            self.set_delegated_balance(&to_recipient, new_delegated);
-
-            let opted_in = self.get_opted_in_supply();
-            let new_opted_in = opted_in.saturating_add(U256::from(amount_u128));
-            self.set_opted_in_supply(new_opted_in);
-        }
-        Ok(())
-    }
-
-    fn accrue(&mut self) -> Result<(), TIP20Error> {
-        let current_time = self.storage.timestamp();
-        let last_update_time = U256::from(self.get_last_update_time());
-
-        let elapsed = if current_time > last_update_time {
-            current_time - last_update_time
-        } else {
-            return Ok(());
-        };
-
-        self.set_last_update_time(current_time);
-
-        let opted_in_supply = self.get_opted_in_supply();
-        if opted_in_supply == U256::ZERO {
-            return Ok(());
-        }
-
-        let total_reward_per_second = self.get_total_reward_per_second();
-        if total_reward_per_second > U256::ZERO {
-            let delta_rpt = (total_reward_per_second * elapsed) / opted_in_supply;
-            let current_rpt = self.get_reward_per_token_stored();
-            self.set_reward_per_token_stored(current_rpt + delta_rpt);
-        }
-
-        Ok(())
-    }
-
-    fn get_reward_per_token_stored(&mut self) -> U256 {
-        let val = self
-            .storage
-            .sload(self.token_address, slots::REWARD_PER_TOKEN_STORED)
-            .expect("TODO: handle error");
-
-        val
-    }
-
-    fn set_reward_per_token_stored(&mut self, value: U256) {
-        self.storage
-            .sstore(self.token_address, slots::REWARD_PER_TOKEN_STORED, value)
-            .expect("TODO: handle error");
-    }
-
-    fn get_last_update_time(&mut self) -> u64 {
-        self.storage
-            .sload(self.token_address, slots::LAST_UPDATE_TIME)
-            .unwrap_or(U256::ZERO)
-            .to::<u64>()
-    }
-
-    fn set_last_update_time(&mut self, value: U256) {
-        self.storage
-            .sstore(self.token_address, slots::LAST_UPDATE_TIME, value)
-            .expect("TODO: handle error");
-    }
-
-    fn get_opted_in_supply(&mut self) -> U256 {
-        self.storage
-            .sload(self.token_address, slots::OPTED_IN_SUPPLY)
-            .expect("TODO: handle error")
-    }
-
-    fn set_opted_in_supply(&mut self, value: U256) {
-        self.storage
-            .sstore(self.token_address, slots::OPTED_IN_SUPPLY, value)
-            .expect("TODO: handle error");
-    }
-
-    fn get_reward_recipient_of(&mut self, account: &Address) -> Address {
-        let slot = mapping_slot(account, slots::REWARD_RECIPIENT_OF);
-        self.storage
-            .sload(self.token_address, slot)
-            .unwrap_or(U256::ZERO)
-            .into_address()
-    }
-
-    fn set_reward_recipient_of(&mut self, account: &Address, recipient: Address) {
-        let slot = mapping_slot(account, slots::REWARD_RECIPIENT_OF);
-        self.storage
-            .sstore(self.token_address, slot, recipient.into_u256())
-            .expect("TODO: handle error");
-    }
-
-    fn get_delegated_balance(&mut self, account: &Address) -> U256 {
-        let slot = mapping_slot(account, slots::DELEGATED_BALANCE);
-        self.storage
-            .sload(self.token_address, slot)
-            .unwrap_or(U256::ZERO)
-    }
-
-    fn set_delegated_balance(&mut self, account: &Address, amount: U256) {
-        let slot = mapping_slot(account, slots::DELEGATED_BALANCE);
-        self.storage
-            .sstore(self.token_address, slot, amount)
-            .expect("TODO: handle error");
-    }
-
-    fn update_rewards(&mut self, recipient: &Address) -> Result<(), TIP20Error> {
-        if *recipient == Address::ZERO {
-            return Ok(());
-        }
-
-        let delegated = self.get_delegated_balance(recipient);
-        let reward_per_token_stored = self.get_reward_per_token_stored();
-        let user_reward_per_token_paid = self.get_user_reward_per_token_paid(recipient);
-
-        let accrued = delegated * (reward_per_token_stored - user_reward_per_token_paid);
-
-        if accrued > U256::ZERO {
-            let token_address = self.token_address;
-            let contract_balance = self.get_balance(&token_address);
-
-            if accrued > contract_balance {
-                return Err(TIP20Error::insufficient_balance());
-            }
-
-            let new_contract_balance = contract_balance - accrued;
-            self.set_balance(&token_address, new_contract_balance);
-
-            let recipient_balance = self.get_balance(recipient);
-            let new_recipient_balance = recipient_balance + accrued;
-            self.set_balance(recipient, new_recipient_balance);
-
-            self.set_user_reward_per_token_paid(recipient, reward_per_token_stored);
-        }
-
-        Ok(())
-    }
-
-    fn get_user_reward_per_token_paid(&mut self, account: &Address) -> U256 {
-        let slot = mapping_slot(account, slots::USER_REWARD_PER_TOKEN_PAID);
-        self.storage
-            .sload(self.token_address, slot)
-            .unwrap_or(U256::ZERO)
-    }
-
-    fn set_user_reward_per_token_paid(&mut self, account: &Address, value: U256) {
-        let slot = mapping_slot(account, slots::USER_REWARD_PER_TOKEN_PAID);
-        self.storage
-            .sstore(self.token_address, slot, value)
-            .expect("TODO: handle error");
-    }
-
-    fn get_next_stream_id(&mut self) -> U256 {
-        self.storage
-            .sload(self.token_address, slots::NEXT_STREAM_ID)
-            .unwrap_or(U256::ZERO)
-    }
-
-    fn set_next_stream_id(&mut self, value: U256) {
-        self.storage
-            .sstore(self.token_address, slots::NEXT_STREAM_ID, value)
-            .expect("TODO: handle error");
-    }
-
-    fn set_stream(&mut self, stream_id: U256, stream: RewardStream) {
-        let slot = mapping_slot(stream_id, slots::STREAMS);
-        // Store stream data as packed values (funder, start_time, end_time, rate)
-        // For simplicity, we'll store key fields - this would need proper encoding in production
-        let funder_val = stream.funder.into_u256();
-        self.storage
-            .sstore(self.token_address, slot, funder_val)
-            .expect("TODO: handle error");
-        // TODO: Store start_time, end_time, rate_per_second_scaled properly
-    }
-
-    fn get_scheduled_rate_decrease_at(&mut self, end_time: &U256) -> U256 {
-        let slot = mapping_slot(end_time, slots::SCHEDULED_RATE_DECREASE);
-        self.storage
-            .sload(self.token_address, slot)
-            .unwrap_or(U256::ZERO)
-    }
-
-    fn set_scheduled_rate_decrease_at(&mut self, end_time: &U256, value: U256) {
-        let slot = mapping_slot(end_time, slots::SCHEDULED_RATE_DECREASE);
-        self.storage
-            .sstore(self.token_address, slot, value)
-            .expect("TODO: handle error");
-    }
-
-    fn get_total_reward_per_second(&mut self) -> U256 {
-        self.storage
-            .sload(self.token_address, slots::TOTAL_REWARD_PER_SECOND)
-            .unwrap_or(U256::ZERO)
-    }
-
-    fn set_total_reward_per_second(&mut self, value: U256) {
-        self.storage
-            .sstore(self.token_address, slots::TOTAL_REWARD_PER_SECOND, value)
-            .expect("TODO: handle error");
-    }
-
     /// Transfers fee tokens from user to fee manager before transaction execution
     pub fn transfer_fee_pre_tx(&mut self, from: &Address, amount: U256) -> Result<(), TIP20Error> {
         let from_balance = self.get_balance(from);
@@ -1418,6 +1198,281 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         digest_data[2..34].copy_from_slice(self.domain_separator().as_slice());
         digest_data[34..66].copy_from_slice(struct_hash.as_slice());
         keccak256(digest_data)
+    }
+
+    fn handle_sender_rewards(&mut self, from: &Address, amount: U256) -> Result<(), TIP20Error> {
+        let from_recipient = self.get_reward_recipient_of(from);
+        if from_recipient != Address::ZERO {
+            self.update_rewards(&from_recipient)?;
+            let delegated = self.get_delegated_balance(&from_recipient);
+            let amount_u128 = amount.to::<u128>();
+            let new_delegated = delegated.saturating_sub(U256::from(amount_u128));
+            self.set_delegated_balance(&from_recipient, new_delegated);
+
+            let opted_in = self.get_opted_in_supply();
+            let new_opted_in = opted_in.saturating_sub(U256::from(amount_u128));
+            self.set_opted_in_supply(new_opted_in);
+        }
+        Ok(())
+    }
+
+    fn handle_receiver_rewards(&mut self, to: &Address, amount: U256) -> Result<(), TIP20Error> {
+        let to_recipient = self.get_reward_recipient_of(to);
+        if to_recipient != Address::ZERO {
+            self.update_rewards(&to_recipient)?;
+            let delegated = self.get_delegated_balance(&to_recipient);
+            let amount_u128 = amount.to::<u128>();
+            let new_delegated = delegated.saturating_add(U256::from(amount_u128));
+            self.set_delegated_balance(&to_recipient, new_delegated);
+
+            let opted_in = self.get_opted_in_supply();
+            let new_opted_in = opted_in.saturating_add(U256::from(amount_u128));
+            self.set_opted_in_supply(new_opted_in);
+        }
+        Ok(())
+    }
+
+    fn accrue(&mut self) -> Result<(), TIP20Error> {
+        let current_time = self.storage.timestamp();
+        let last_update_time = U256::from(self.get_last_update_time());
+
+        let elapsed = if current_time > last_update_time {
+            current_time - last_update_time
+        } else {
+            return Ok(());
+        };
+
+        self.set_last_update_time(current_time);
+
+        let opted_in_supply = self.get_opted_in_supply();
+        if opted_in_supply == U256::ZERO {
+            return Ok(());
+        }
+
+        let total_reward_per_second = self.get_total_reward_per_second();
+        if total_reward_per_second > U256::ZERO {
+            let delta_rpt = (total_reward_per_second * elapsed) / opted_in_supply;
+            let current_rpt = self.get_reward_per_token_stored();
+            self.set_reward_per_token_stored(current_rpt + delta_rpt);
+        }
+
+        Ok(())
+    }
+
+    fn get_reward_per_token_stored(&mut self) -> U256 {
+        self.storage
+            .sload(self.token_address, slots::REWARD_PER_TOKEN_STORED)
+            .expect("TODO: handle error")
+    }
+
+    fn set_reward_per_token_stored(&mut self, value: U256) {
+        self.storage
+            .sstore(self.token_address, slots::REWARD_PER_TOKEN_STORED, value)
+            .expect("TODO: handle error");
+    }
+
+    fn get_last_update_time(&mut self) -> u64 {
+        self.storage
+            .sload(self.token_address, slots::LAST_UPDATE_TIME)
+            .unwrap_or(U256::ZERO)
+            .to::<u64>()
+    }
+
+    fn set_last_update_time(&mut self, value: U256) {
+        self.storage
+            .sstore(self.token_address, slots::LAST_UPDATE_TIME, value)
+            .expect("TODO: handle error");
+    }
+
+    fn get_opted_in_supply(&mut self) -> U256 {
+        self.storage
+            .sload(self.token_address, slots::OPTED_IN_SUPPLY)
+            .expect("TODO: handle error")
+    }
+
+    fn set_opted_in_supply(&mut self, value: U256) {
+        self.storage
+            .sstore(self.token_address, slots::OPTED_IN_SUPPLY, value)
+            .expect("TODO: handle error");
+    }
+
+    fn get_reward_recipient_of(&mut self, account: &Address) -> Address {
+        let slot = mapping_slot(account, slots::REWARD_RECIPIENT_OF);
+        self.storage
+            .sload(self.token_address, slot)
+            .unwrap_or(U256::ZERO)
+            .into_address()
+    }
+
+    fn set_reward_recipient_of(&mut self, account: &Address, recipient: Address) {
+        let slot = mapping_slot(account, slots::REWARD_RECIPIENT_OF);
+        self.storage
+            .sstore(self.token_address, slot, recipient.into_u256())
+            .expect("TODO: handle error");
+    }
+
+    fn get_delegated_balance(&mut self, account: &Address) -> U256 {
+        let slot = mapping_slot(account, slots::DELEGATED_BALANCE);
+        self.storage
+            .sload(self.token_address, slot)
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn set_delegated_balance(&mut self, account: &Address, amount: U256) {
+        let slot = mapping_slot(account, slots::DELEGATED_BALANCE);
+        self.storage
+            .sstore(self.token_address, slot, amount)
+            .expect("TODO: handle error");
+    }
+
+    fn update_rewards(&mut self, recipient: &Address) -> Result<(), TIP20Error> {
+        if *recipient == Address::ZERO {
+            return Ok(());
+        }
+
+        let delegated = self.get_delegated_balance(recipient);
+        let reward_per_token_stored = self.get_reward_per_token_stored();
+        let user_reward_per_token_paid = self.get_user_reward_per_token_paid(recipient);
+
+        let accrued = delegated * (reward_per_token_stored - user_reward_per_token_paid);
+
+        if accrued > U256::ZERO {
+            let token_address = self.token_address;
+            let contract_balance = self.get_balance(&token_address);
+
+            if accrued > contract_balance {
+                return Err(TIP20Error::insufficient_balance());
+            }
+
+            let new_contract_balance = contract_balance - accrued;
+            self.set_balance(&token_address, new_contract_balance);
+
+            let recipient_balance = self.get_balance(recipient);
+            let new_recipient_balance = recipient_balance + accrued;
+            self.set_balance(recipient, new_recipient_balance);
+
+            self.set_user_reward_per_token_paid(recipient, reward_per_token_stored);
+        }
+
+        Ok(())
+    }
+
+    pub fn set_reward_recipient(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::setRewardRecipientCall,
+    ) -> Result<(), TIP20Error> {
+        self.check_not_paused()?;
+        if call.recipient != Address::ZERO {
+            self.ensure_transfer_authorized(msg_sender, &call.recipient)?;
+        }
+
+        self.accrue()?;
+
+        let current_recipient = self.get_reward_recipient_of(msg_sender);
+        let holder_balance = self.get_balance(msg_sender);
+
+        if call.recipient == current_recipient {
+            return Ok(());
+        }
+
+        if current_recipient != Address::ZERO {
+            self.update_rewards(&current_recipient)?;
+            let delegated = self.get_delegated_balance(&current_recipient);
+            let amount_u128 = holder_balance.to::<u128>();
+            let new_delegated = delegated.saturating_sub(U256::from(amount_u128));
+            self.set_delegated_balance(&current_recipient, new_delegated);
+
+            let opted_in = self.get_opted_in_supply();
+            let new_opted_in = opted_in.saturating_sub(U256::from(amount_u128));
+            self.set_opted_in_supply(new_opted_in);
+        }
+
+        self.set_reward_recipient_of(msg_sender, call.recipient);
+
+        if call.recipient == Address::ZERO {
+        } else {
+            let delegated = self.get_delegated_balance(&call.recipient);
+            if delegated > U256::ZERO {
+                self.update_rewards(&call.recipient)?;
+            }
+
+            let amount_u128 = holder_balance.to::<u128>();
+            let new_delegated = delegated.saturating_add(U256::from(amount_u128));
+            self.set_delegated_balance(&call.recipient, new_delegated);
+
+            let opted_in = self.get_opted_in_supply();
+            let new_opted_in = opted_in.saturating_add(U256::from(amount_u128));
+            self.set_opted_in_supply(new_opted_in);
+
+            let rpt = self.get_reward_per_token_stored();
+            self.set_user_reward_per_token_paid(&call.recipient, rpt);
+        }
+
+        Ok(())
+    }
+
+    fn get_user_reward_per_token_paid(&mut self, account: &Address) -> U256 {
+        let slot = mapping_slot(account, slots::USER_REWARD_PER_TOKEN_PAID);
+        self.storage
+            .sload(self.token_address, slot)
+            .expect("TODO: handle error")
+    }
+
+    fn set_user_reward_per_token_paid(&mut self, account: &Address, value: U256) {
+        let slot = mapping_slot(account, slots::USER_REWARD_PER_TOKEN_PAID);
+        self.storage
+            .sstore(self.token_address, slot, value)
+            .expect("TODO: handle error");
+    }
+
+    fn get_next_stream_id(&mut self) -> u64 {
+        self.storage
+            .sload(self.token_address, slots::NEXT_STREAM_ID)
+            .expect("TODO: handle error")
+            .to::<u64>()
+    }
+
+    fn set_next_stream_id(&mut self, value: u64) {
+        self.storage
+            .sstore(self.token_address, slots::NEXT_STREAM_ID, U256::from(value))
+            .expect("TODO: handle error");
+    }
+
+    fn set_stream(&mut self, stream_id: u64, stream: RewardStream) {
+        let slot = mapping_slot(stream_id.to_be_bytes(), slots::STREAMS);
+        // Store stream data as packed values (funder, start_time, end_time, rate)
+        // For simplicity, we'll store key fields - this would need proper encoding in production
+        let funder_val = stream.funder.into_u256();
+        self.storage
+            .sstore(self.token_address, slot, funder_val)
+            .expect("TODO: handle error");
+    }
+
+    fn get_scheduled_rate_decrease_at(&mut self, end_time: u128) -> U256 {
+        let slot = mapping_slot(end_time.to_be_bytes(), slots::SCHEDULED_RATE_DECREASE);
+        self.storage
+            .sload(self.token_address, slot)
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn set_scheduled_rate_decrease_at(&mut self, end_time: u128, value: U256) {
+        let slot = mapping_slot(end_time.to_be_bytes(), slots::SCHEDULED_RATE_DECREASE);
+        self.storage
+            .sstore(self.token_address, slot, value)
+            .expect("TODO: handle error");
+    }
+
+    fn get_total_reward_per_second(&mut self) -> U256 {
+        self.storage
+            .sload(self.token_address, slots::TOTAL_REWARD_PER_SECOND)
+            .expect("TODO: handle error")
+    }
+
+    fn set_total_reward_per_second(&mut self, value: U256) {
+        self.storage
+            .sstore(self.token_address, slots::TOTAL_REWARD_PER_SECOND, value)
+            .expect("TODO: handle error");
     }
 }
 

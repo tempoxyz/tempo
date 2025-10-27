@@ -84,6 +84,12 @@ sol! {
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
         function DOMAIN_SEPARATOR() external view returns (bytes32);
 
+        // Reward Functions
+        function startReward(uint256 amount, uint128 seconds) external returns (uint64);
+        function setRewardRecipient(address recipient) external;
+        function cancelStream(uint256 id) external returns (uint256);
+        function finalizeStreams(uint64 timestamp) external;
+
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
         event Approval(address indexed owner, address indexed spender, uint256 amount);
@@ -196,6 +202,11 @@ impl TIP20Error {
     /// Creates an error for transfers being disabled.
     pub const fn transfers_disabled() -> Self {
         Self::TransfersDisabled(ITIP20::TransfersDisabled {})
+    }
+
+    /// Creates an error for invalid amount.
+    pub const fn invalid_amount() -> Self {
+        Self::InvalidAmount(ITIP20::InvalidAmount {})
     }
 }
 
