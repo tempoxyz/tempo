@@ -443,7 +443,9 @@ where
                         },
                     ),
 
-                    _ => EVMError::Custom(format!("{e:?}")),
+                    _ => EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTxError(
+                        e.to_string(),
+                    )),
                 }
             })?;
         Ok(())
