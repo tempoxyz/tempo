@@ -3,6 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 pub mod error;
+pub use error::Result;
 pub mod linking_usd;
 pub mod nonce;
 pub mod provider;
@@ -16,7 +17,7 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use crate::{
-    error::{IntoPrecompileResult, TempoPrecompileError},
+    error::IntoPrecompileResult,
     linking_usd::LinkingUSD,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
@@ -194,17 +195,12 @@ impl LinkingUSDPrecompile {
 }
 
 #[inline]
-fn metadata<T: SolCall>(
-    f: impl FnOnce() -> Result<T::Return, TempoPrecompileError>,
-) -> PrecompileResult {
+fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
     f().into_precompile_result(METADATA_GAS, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
-fn view<T: SolCall>(
-    calldata: &[u8],
-    f: impl FnOnce(T) -> Result<T::Return, TempoPrecompileError>,
-) -> PrecompileResult {
+fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
     };
@@ -215,7 +211,7 @@ fn view<T: SolCall>(
 pub fn mutate<T: SolCall>(
     calldata: &[u8],
     sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<T::Return, TempoPrecompileError>,
+    f: impl FnOnce(&Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(
@@ -231,7 +227,7 @@ pub fn mutate<T: SolCall>(
 fn mutate_void<T: SolCall>(
     calldata: &[u8],
     sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<(), TempoPrecompileError>,
+    f: impl FnOnce(&Address, T) -> Result<()>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(

@@ -45,6 +45,9 @@ pub enum TempoPrecompileError {
     Fatal(String),
 }
 
+/// Result type alias for Tempo precompile operations
+pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
+
 impl From<StablecoinExchangeError> for TempoPrecompileError {
     fn from(err: StablecoinExchangeError) -> Self {
         Self::StablecoinExchange(err)
@@ -96,7 +99,7 @@ pub trait IntoPrecompileResult<T> {
     ) -> PrecompileResult;
 }
 
-impl<T> IntoPrecompileResult<T> for Result<T, TempoPrecompileError> {
+impl<T> IntoPrecompileResult<T> for Result<T> {
     fn into_precompile_result(
         self,
         gas: u64,
