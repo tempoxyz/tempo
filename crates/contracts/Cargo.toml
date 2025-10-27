@@ -13,3 +13,4 @@ workspace = true
 
 [dependencies]
 alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
+revm.workspace = true

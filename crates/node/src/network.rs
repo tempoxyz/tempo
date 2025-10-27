@@ -297,7 +297,7 @@ mod tests {
                 gas: Some(123456),
                 ..Default::default()
             },
-            fee_token: None,
+            ..Default::default()
         },
         TempoTypedTransaction::Legacy(TxLegacy {
             to: TxKind::Call(Address::repeat_byte(0xDE)),
@@ -318,7 +318,7 @@ mod tests {
                 gas: Some(123456),
                 ..Default::default()
             },
-            fee_token: None,
+            ..Default::default()
         },
         TempoTypedTransaction::Eip1559(TxEip1559 {
             to: TxKind::Call(Address::repeat_byte(0xDE)),
@@ -344,7 +344,7 @@ mod tests {
                 }])),
                 ..Default::default()
             },
-            fee_token: None,
+            ..Default::default()
         },
         TempoTypedTransaction::Eip2930(TxEip2930 {
             to: TxKind::Call(Address::repeat_byte(0xDE)),
@@ -380,7 +380,7 @@ mod tests {
                 )]),
                 ..Default::default()
             },
-            fee_token: None,
+            ..Default::default()
         },
         TempoTypedTransaction::Eip7702(TxEip7702 {
             to: Address::repeat_byte(0xDE),
@@ -414,6 +414,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(Address::repeat_byte(0xFA)),
+            ..Default::default()
         },
         TempoTypedTransaction::FeeToken(TxFeeToken {
             to: TxKind::Call(Address::repeat_byte(0xDE)),
@@ -438,6 +439,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(Address::repeat_byte(0xFA)),
+            ..Default::default()
         },
         TempoTypedTransaction::FeeToken(TxFeeToken {
             to: TxKind::Create,
@@ -472,6 +474,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(Address::repeat_byte(0xFA)),
+            ..Default::default()
         },
         TempoTypedTransaction::FeeToken(TxFeeToken {
             to: TxKind::Call(Address::repeat_byte(0xDE)),
@@ -515,7 +518,7 @@ mod tests {
                 gas: Some(123456),
                 ..Default::default()
             },
-            fee_token: None,
+            ..Default::default()
         },
         "Failed to build transaction: EIP-1559 transaction can't be built due to missing keys: [\"max_fee_per_gas\"]";
         "EIP-1559 missing max fee"
@@ -530,6 +533,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(Address::repeat_byte(0xFA)),
+            ..Default::default()
         },
         "Failed to build transaction: FeeToken transaction can't be built due to missing keys: [\"max_fee_per_gas\"]";
         "Fee token missing max fee"
@@ -555,6 +559,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(Address::repeat_byte(0xFA)),
+            ..Default::default()
         },
         "Failed to build transaction: FeeToken transaction can't be built due to missing keys: [\"to\"]";
         "Fee token of create kind with authorization list"

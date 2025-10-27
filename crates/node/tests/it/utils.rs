@@ -24,14 +24,16 @@ use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
+use tempo_contracts::precompiles::{
+    IRolesAuth,
+    ITIP20::{self, ITIP20Instance},
+    ITIP20Factory,
+};
 use tempo_node::node::TempoNode;
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    contracts::{
-        ITIP20::ITIP20Instance, ITIP20Factory, tip20::ISSUER_ROLE, token_id_to_address,
-        types::IRolesAuth,
-    },
+    tip20::{ISSUER_ROLE, token_id_to_address},
 };
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -58,7 +60,7 @@ where
     let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
 
     let token_addr = token_id_to_address(event.tokenId.to());
-    let token = ITIP20Instance::new(token_addr, provider.clone());
+    let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
 
     roles
