@@ -267,9 +267,14 @@ where
         })
     }
 
-    /// Requests players to sign acks.
+    /// Sends shares to all players for acknowledgements.
+    ///
+    /// Does not send shares if we are not a dealer in this ceremony.
+    ///
+    /// If we are both a dealer and a player, then we acknowledge our shares
+    /// immediately without going over the p2p network.
     #[instrument(skip_all, fields(epoch = self.config.epoch), err)]
-    pub(super) async fn request_acks(&mut self) -> eyre::Result<()> {
+    pub(super) async fn distribute_shares(&mut self) -> eyre::Result<()> {
         let Some(dealer_me) = &mut self.dealer_me else {
             debug!("not a dealer, not requesting acks");
             return Ok(());
@@ -372,9 +377,12 @@ where
         Ok(())
     }
 
-    /// Processes all available messages from the [Receiver], handling both incoming shares and
-    /// acknowledgements. Once the [Receiver] needs to wait for more messages, this function
-    /// yields back to the caller.
+    /// Processes all received shares and acks on the ceremony's p2p subchannel.
+    ///
+    /// If we receive a share and are a player: construct an ack and return it
+    /// to the sender.
+    ///
+    /// If we receive an ack and are a dealer: track the ack.
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
     pub(super) async fn process_messages(&mut self) -> eyre::Result<()> {
         while let Some(msg) = self.receiver.recv().now_or_never() {

@@ -388,7 +388,7 @@ where
 
         match epoch::relative_position(block.height(), self.config.heights_per_epoch) {
             epoch::RelativePosition::FirstHalf => {
-                let _ = this_ceremony.request_acks().await;
+                let _ = this_ceremony.distribute_shares().await;
                 let _ = this_ceremony.process_messages().await;
             }
             epoch::RelativePosition::Middle => {
