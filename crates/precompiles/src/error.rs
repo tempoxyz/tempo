@@ -87,26 +87,6 @@ impl From<NonceError> for TempoPrecompileError {
     }
 }
 
-impl TempoPrecompileError {
-    pub fn into_precompile_err(self, gas: u64) -> PrecompileResult {
-        let bytes = match self {
-            Self::StablecoinExchange(err) => err.abi_encode().into(),
-            Self::TIP20(err) => err.abi_encode().into(),
-            Self::RolesAuthError(err) => err.abi_encode().into(),
-            Self::TIP403RegistryError(err) => err.abi_encode().into(),
-            Self::TIPAccountRegistrarError(err) => err.abi_encode().into(),
-            Self::FeeManagerError(err) => err.abi_encode().into(),
-            Self::TIPFeeAMMError(err) => err.abi_encode().into(),
-            Self::NonceError(err) => err.abi_encode().into(),
-            Self::Fatal(msg) => {
-                return Err(PrecompileError::Fatal(msg));
-            }
-        };
-
-        Ok(PrecompileOutput::new_reverted(gas, bytes))
-    }
-}
-
 /// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
 pub trait IntoPrecompileResult<T> {
     fn into_precompile_result(
