@@ -17,9 +17,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY bin/ ./bin/
 COPY crates/ ./crates/
 
-# NOTE: Remove xtask from workspace to avoid missing dependency error for now
-RUN sed -i '/xtask/d' Cargo.toml
-
 ARG RUST_BINARY
 ARG RUST_PROFILE
 ARG RUST_FEATURES
