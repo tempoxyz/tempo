@@ -11456,6 +11456,7 @@ dependencies = [
  "reth-cli",
  "reth-ethereum",
  "reth-network-peers",
+ "serde",
  "serde_json",
  "tempo-contracts",
  "tempo-primitives",

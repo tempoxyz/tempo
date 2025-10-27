@@ -20,6 +20,7 @@ use reth_chainspec::ForkCondition;
 
 hardfork!(
     /// Tempo-specific hardforks for network upgrades.
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     TempoHardfork {
         /// Placeholder representing the baseline (pre-hardfork) state.
         Adagio,
@@ -114,5 +115,19 @@ mod tests {
         // Adagio is active at any timestamp >= 0
         assert!(hardforks.is_adagio_active_at_timestamp(1000));
         assert!(hardforks.is_adagio_active_at_timestamp(u64::MAX));
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_tempo_hardfork_serde() {
+        let fork = TempoHardfork::Adagio;
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&fork).unwrap();
+        assert_eq!(json, "\"Adagio\"");
+
+        // Deserialize from JSON
+        let deserialized: TempoHardfork = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, fork);
     }
 }
