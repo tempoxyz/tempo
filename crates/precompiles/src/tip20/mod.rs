@@ -974,27 +974,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::insufficient_balance());
         }
 
-        // TODO: accrue
-        // _accrue()
-        //
-        // Handle reward accounting for opted-in sender
-        // address fromRecipient = rewardRecipientOf[from];
-        // if (fromRecipient != address(0)) {
-        //     _updateRewards(fromRecipient);
-        //     delegatedBalance[fromRecipient] -= uint128(amount);
-        //     optedInSupply -= uint128(amount);
-        // }
-        //
-        // // Handle reward accounting for opted-in receiver (but not when burning)
-        // if (to != address(0)) {
-        //     address toRecipient = rewardRecipientOf[to];
-        //     if (toRecipient != address(0)) {
-        //         _updateRewards(toRecipient);
-        //         delegatedBalance[toRecipient] += uint128(amount);
-        //         optedInSupply += uint128(amount);
-        //     }
-        // }
-        //
+        // Accrue rewards before modifying balances
+        self.accrue()?;
+
+        // Handle reward accounting for sender and receiver
+        self.handle_sender_rewards(from, amount)?;
+        self.handle_receiver_rewards(to, amount)?;
 
         let new_from_balance = from_balance
             .checked_sub(amount)
@@ -1025,6 +1010,38 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    fn handle_sender_rewards(&mut self, from: &Address, amount: U256) -> Result<(), TIP20Error> {
+        let from_recipient = self.get_reward_recipient_of(from);
+        if from_recipient != Address::ZERO {
+            self.update_rewards(&from_recipient)?;
+            let delegated = self.get_delegated_balance(&from_recipient);
+            let amount_u128 = amount.to::<u128>();
+            let new_delegated = delegated.saturating_sub(U256::from(amount_u128));
+            self.set_delegated_balance(&from_recipient, new_delegated);
+
+            let opted_in = self.get_opted_in_supply();
+            let new_opted_in = opted_in.saturating_sub(U256::from(amount_u128));
+            self.set_opted_in_supply(new_opted_in);
+        }
+        Ok(())
+    }
+
+    fn handle_receiver_rewards(&mut self, to: &Address, amount: U256) -> Result<(), TIP20Error> {
+        let to_recipient = self.get_reward_recipient_of(to);
+        if to_recipient != Address::ZERO {
+            self.update_rewards(&to_recipient)?;
+            let delegated = self.get_delegated_balance(&to_recipient);
+            let amount_u128 = amount.to::<u128>();
+            let new_delegated = delegated.saturating_add(U256::from(amount_u128));
+            self.set_delegated_balance(&to_recipient, new_delegated);
+
+            let opted_in = self.get_opted_in_supply();
+            let new_opted_in = opted_in.saturating_add(U256::from(amount_u128));
+            self.set_opted_in_supply(new_opted_in);
+        }
+        Ok(())
+    }
+
     fn accrue(&mut self) -> Result<(), TIP20Error> {
         let current_time = self.storage.timestamp();
         let last_update_time = U256::from(self.get_last_update_time());
@@ -1035,7 +1052,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Ok(());
         };
 
-        self.set_last_update_time(current_time.to::<u64>());
+        self.set_last_update_time(current_time);
 
         let opted_in_supply = self.get_opted_in_supply();
         if opted_in_supply == U256::ZERO {
@@ -1071,13 +1088,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .to::<u64>()
     }
 
-    fn set_last_update_time(&mut self, value: u64) {
+    fn set_last_update_time(&mut self, value: U256) {
         self.storage
-            .sstore(
-                self.token_address,
-                slots::LAST_UPDATE_TIME,
-                U256::from(value),
-            )
+            .sstore(self.token_address, slots::LAST_UPDATE_TIME, value)
             .expect("TODO: handle error");
     }
 
@@ -1085,6 +1098,46 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage
             .sload(self.token_address, slots::OPTED_IN_SUPPLY)
             .expect("TODO: handle error")
+    }
+
+    fn set_opted_in_supply(&mut self, value: U256) {
+        self.storage
+            .sstore(self.token_address, slots::OPTED_IN_SUPPLY, value)
+            .expect("TODO: handle error");
+    }
+
+    fn get_reward_recipient_of(&mut self, account: &Address) -> Address {
+        let slot = mapping_slot(account, slots::REWARD_RECIPIENT_OF);
+        self.storage
+            .sload(self.token_address, slot)
+            .unwrap_or(U256::ZERO)
+            .into_address()
+    }
+
+    fn set_reward_recipient_of(&mut self, account: &Address, recipient: Address) {
+        let slot = mapping_slot(account, slots::REWARD_RECIPIENT_OF);
+        self.storage
+            .sstore(self.token_address, slot, recipient.into_u256())
+            .expect("TODO: handle error");
+    }
+
+    fn get_delegated_balance(&mut self, account: &Address) -> U256 {
+        let slot = mapping_slot(account, slots::DELEGATED_BALANCE);
+        self.storage
+            .sload(self.token_address, slot)
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn set_delegated_balance(&mut self, account: &Address, amount: U256) {
+        let slot = mapping_slot(account, slots::DELEGATED_BALANCE);
+        self.storage
+            .sstore(self.token_address, slot, amount)
+            .expect("TODO: handle error");
+    }
+
+    fn update_rewards(&mut self, _recipient: &Address) -> Result<(), TIP20Error> {
+        // TODO: Implement reward update logic
+        Ok(())
     }
 
     fn get_total_reward_per_second(&mut self) -> U256 {
