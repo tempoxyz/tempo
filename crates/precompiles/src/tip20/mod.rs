@@ -1149,15 +1149,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .sload(self.token_address, slot)
             .expect("TODO: handle error");
         let bytes = value.to_be_bytes::<32>();
-        let len = bytes[31] as usize / 2; // Last byte stores length * 2 for short strings
+        let len = bytes[31] as usize / 2;
         if len > 31 {
-            panic!("String too long, we shouldn't have stored this in the first place.");
+            todo!("handle error")
         } else {
             String::from_utf8_lossy(&bytes[..len]).to_string()
         }
     }
 
-    /// Write string to storage (simplified - assumes string fits in one slot)
     fn write_string(&mut self, slot: U256, value: String) -> Result<(), TIP20Error> {
         let bytes = value.as_bytes();
         if bytes.len() > 31 {
@@ -1165,7 +1164,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         }
         let mut storage_bytes = [0u8; 32];
         storage_bytes[..bytes.len()].copy_from_slice(bytes);
-        storage_bytes[31] = (bytes.len() * 2) as u8; // Store length * 2 in last byte
+        storage_bytes[31] = (bytes.len() * 2) as u8;
 
         self.storage
             .sstore(self.token_address, slot, U256::from_be_bytes(storage_bytes))
@@ -1412,6 +1411,108 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    pub fn cancel_stream(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::cancelStreamCall,
+    ) -> Result<U256, TIP20Error> {
+        let stream_id = call.id.to::<u64>();
+        let stream = self.get_stream(stream_id)?;
+
+        if stream.funder != *msg_sender {
+            return Err(TIP20Error::policy_forbids());
+        }
+
+        self.accrue()?;
+
+        let current_time = self.storage.timestamp();
+
+        let elapsed = if current_time > U256::from(stream.start_time) {
+            current_time - U256::from(stream.start_time)
+        } else {
+            U256::ZERO
+        };
+
+        let acc_precision = U256::from(1_000_000_000_000_000_000u128);
+        let distributed = (stream.rate_per_second_scaled * elapsed) / acc_precision;
+
+        let total_amount = stream.rate_per_second_scaled
+            * U256::from(stream.end_time - stream.start_time)
+            / acc_precision;
+        let remaining = if distributed < total_amount {
+            total_amount - distributed
+        } else {
+            U256::ZERO
+        };
+
+        let current_total = self.get_total_reward_per_second();
+        let new_total = current_total.saturating_sub(stream.rate_per_second_scaled);
+        self.set_total_reward_per_second(new_total);
+
+        let end_time = stream.end_time as u128;
+        let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
+        let new_decrease = current_decrease.saturating_sub(stream.rate_per_second_scaled);
+        self.set_scheduled_rate_decrease_at(end_time, new_decrease);
+
+        self.delete_stream(stream_id);
+
+        // Attempt to transfer remaining funds to funder
+        let mut refund = U256::ZERO;
+        if remaining > U256::ZERO {
+            // Check if transfer is authorized
+            let funder_authorized = self.is_transfer_authorized(&stream.funder, &stream.funder);
+            if funder_authorized {
+                let funder_balance = self.get_balance(&stream.funder);
+                let new_balance = funder_balance + remaining;
+                self.set_balance(&stream.funder, new_balance);
+
+                // Emit transfer event
+                self.storage
+                    .emit_event(
+                        self.token_address,
+                        TIP20Event::Transfer(ITIP20::Transfer {
+                            from: self.token_address,
+                            to: stream.funder,
+                            amount: remaining,
+                        })
+                        .into_log_data(),
+                    )
+                    .expect("TODO: handle error");
+
+                refund = remaining;
+            }
+        }
+
+        Ok(refund)
+    }
+
+    pub fn finalize_streams(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::finalizeStreamsCall,
+    ) -> Result<(), TIP20Error> {
+        if *msg_sender != Address::ZERO {
+            todo!("system tx error")
+        }
+
+        let end_time = call.timestamp as u128;
+        let rate_decrease = self.get_scheduled_rate_decrease_at(end_time);
+
+        if rate_decrease == U256::ZERO {
+            return Err(TIP20Error::invalid_amount());
+        }
+
+        self.accrue()?;
+
+        let current_total = self.get_total_reward_per_second();
+        let new_total = current_total.saturating_sub(rate_decrease);
+        self.set_total_reward_per_second(new_total);
+
+        self.set_scheduled_rate_decrease_at(end_time, U256::ZERO);
+
+        Ok(())
+    }
+
     fn get_user_reward_per_token_paid(&mut self, account: &Address) -> U256 {
         let slot = mapping_slot(account, slots::USER_REWARD_PER_TOKEN_PAID);
         self.storage
@@ -1440,12 +1541,100 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     fn set_stream(&mut self, stream_id: u64, stream: RewardStream) {
-        let slot = mapping_slot(stream_id.to_be_bytes(), slots::STREAMS);
-        // Store stream data as packed values (funder, start_time, end_time, rate)
-        // For simplicity, we'll store key fields - this would need proper encoding in production
-        let funder_val = stream.funder.into_u256();
+        let key = stream_id.to_be_bytes();
+
+        // Store funder
+        let funder_slot = mapping_slot(key, slots::STREAMS);
         self.storage
-            .sstore(self.token_address, slot, funder_val)
+            .sstore(self.token_address, funder_slot, stream.funder.into_u256())
+            .expect("TODO: handle error");
+
+        // Store start_time
+        let start_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 1));
+        self.storage
+            .sstore(
+                self.token_address,
+                start_slot,
+                U256::from(stream.start_time),
+            )
+            .expect("TODO: handle error");
+
+        // Store end_time
+        let end_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 2));
+        self.storage
+            .sstore(self.token_address, end_slot, U256::from(stream.end_time))
+            .expect("TODO: handle error");
+
+        // Store rate_per_second_scaled
+        let rate_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 3));
+        self.storage
+            .sstore(self.token_address, rate_slot, stream.rate_per_second_scaled)
+            .expect("TODO: handle error");
+    }
+
+    fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TIP20Error> {
+        let key = stream_id.to_be_bytes();
+
+        let funder_slot = mapping_slot(key, slots::STREAMS);
+        let funder_val = self
+            .storage
+            .sload(self.token_address, funder_slot)
+            .unwrap_or(U256::ZERO);
+
+        if funder_val == U256::ZERO {
+            return Err(TIP20Error::policy_forbids());
+        }
+
+        let start_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 1));
+        let start_time = self
+            .storage
+            .sload(self.token_address, start_slot)
+            .unwrap_or(U256::ZERO)
+            .to::<u64>();
+
+        let end_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 2));
+        let end_time = self
+            .storage
+            .sload(self.token_address, end_slot)
+            .unwrap_or(U256::ZERO)
+            .to::<u64>();
+
+        let rate_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 3));
+        let rate_per_second_scaled = self
+            .storage
+            .sload(self.token_address, rate_slot)
+            .unwrap_or(U256::ZERO);
+
+        // TODO: add from storage for Reward stream
+        Ok(RewardStream {
+            funder: funder_val.into_address(),
+            start_time,
+            end_time,
+            rate_per_second_scaled,
+        })
+    }
+
+    fn delete_stream(&mut self, stream_id: u64) {
+        let key = stream_id.to_be_bytes();
+
+        let funder_slot = mapping_slot(key, slots::STREAMS);
+        self.storage
+            .sstore(self.token_address, funder_slot, U256::ZERO)
+            .expect("TODO: handle error");
+
+        let start_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 1));
+        self.storage
+            .sstore(self.token_address, start_slot, U256::ZERO)
+            .expect("TODO: handle error");
+
+        let end_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 2));
+        self.storage
+            .sstore(self.token_address, end_slot, U256::ZERO)
+            .expect("TODO: handle error");
+
+        let rate_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 3));
+        self.storage
+            .sstore(self.token_address, rate_slot, U256::ZERO)
             .expect("TODO: handle error");
     }
 
