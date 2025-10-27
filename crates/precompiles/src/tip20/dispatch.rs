@@ -146,6 +146,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     |s, call| self.transfer_with_memo(s, call),
                 )
             }
+            ITIP20::startRewardCall::SELECTOR => {
+                mutate::<ITIP20::startRewardCall, TIP20Error>(calldata, msg_sender, |s, call| {
+                    self.start_reward(s, call)
+                })
+            }
 
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {

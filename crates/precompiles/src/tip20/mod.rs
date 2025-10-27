@@ -741,6 +741,76 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     // TIP20 extension functions
+    pub fn start_reward(
+        &mut self,
+        msg_sender: &Address,
+        call: ITIP20::startRewardCall,
+    ) -> Result<U256, TIP20Error> {
+        // Check if paused
+        self.check_not_paused()?;
+
+        // Check if transfer is authorized
+        self.ensure_transfer_authorized(msg_sender, &self.token_address)?;
+
+        // Validate amount
+        if call.amount == U256::ZERO {
+            return Err(TIP20Error::invalid_amount());
+        }
+
+        // Transfer tokens from sender to contract
+        self._transfer(msg_sender, &self.token_address, call.amount)?;
+
+        if call.seconds_ == 0 {
+            // Immediate payout - distribute to all opted-in users
+            self.accrue()?;
+
+            let opted_in_supply = self.get_opted_in_supply();
+            if opted_in_supply == U256::ZERO {
+                // No one opted in, just store the balance
+                return Ok(U256::ZERO);
+            }
+
+            // Calculate immediate distribution: amount / opted_in_supply
+            let rate = call.amount / opted_in_supply;
+
+            // Update reward per token stored
+            let current_rpt = self.get_reward_per_token_stored();
+            self.set_reward_per_token_stored(current_rpt + rate);
+
+            Ok(U256::ZERO)
+        } else {
+            // Streaming payout - create reward stream
+            let current_time = self.storage.timestamp();
+            let end_time = current_time + U256::from(call.seconds_);
+            let rate = call.amount / U256::from(call.seconds_);
+
+            // Get next stream ID
+            let stream_id = self.get_next_stream_id();
+            self.set_next_stream_id(stream_id + U256::ONE);
+
+            // Update total reward per second
+            let current_total = self.get_total_reward_per_second();
+            self.set_total_reward_per_second(current_total + rate);
+
+            // Store stream data
+            self.set_stream(
+                stream_id,
+                RewardStream {
+                    funder: *msg_sender,
+                    start_time: current_time.to::<u64>(),
+                    end_time: end_time.to::<u64>(),
+                    rate_per_second_scaled: rate,
+                },
+            );
+
+            // Update scheduled rate decrease
+            let current_decrease = self.get_scheduled_rate_decrease_at(&end_time);
+            self.set_scheduled_rate_decrease_at(&end_time, current_decrease + rate);
+
+            Ok(stream_id)
+        }
+    }
+
     pub fn transfer_with_memo(
         &mut self,
         msg_sender: &Address,
@@ -1149,14 +1219,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let accrued = delegated * (reward_per_token_stored - user_reward_per_token_paid);
 
         if accrued > U256::ZERO {
-            let contract_balance = self.get_balance(&self.token_address);
+            let token_address = self.token_address;
+            let contract_balance = self.get_balance(&token_address);
 
             if accrued > contract_balance {
                 return Err(TIP20Error::insufficient_balance());
             }
 
             let new_contract_balance = contract_balance - accrued;
-            self.set_balance(&self.token_address, new_contract_balance);
+            self.set_balance(&token_address, new_contract_balance);
 
             let recipient_balance = self.get_balance(recipient);
             let new_recipient_balance = recipient_balance + accrued;
@@ -1177,6 +1248,43 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
     fn set_user_reward_per_token_paid(&mut self, account: &Address, value: U256) {
         let slot = mapping_slot(account, slots::USER_REWARD_PER_TOKEN_PAID);
+        self.storage
+            .sstore(self.token_address, slot, value)
+            .expect("TODO: handle error");
+    }
+
+    fn get_next_stream_id(&mut self) -> U256 {
+        self.storage
+            .sload(self.token_address, slots::NEXT_STREAM_ID)
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn set_next_stream_id(&mut self, value: U256) {
+        self.storage
+            .sstore(self.token_address, slots::NEXT_STREAM_ID, value)
+            .expect("TODO: handle error");
+    }
+
+    fn set_stream(&mut self, stream_id: U256, stream: RewardStream) {
+        let slot = mapping_slot(stream_id, slots::STREAMS);
+        // Store stream data as packed values (funder, start_time, end_time, rate)
+        // For simplicity, we'll store key fields - this would need proper encoding in production
+        let funder_val = stream.funder.into_u256();
+        self.storage
+            .sstore(self.token_address, slot, funder_val)
+            .expect("TODO: handle error");
+        // TODO: Store start_time, end_time, rate_per_second_scaled properly
+    }
+
+    fn get_scheduled_rate_decrease_at(&mut self, end_time: &U256) -> U256 {
+        let slot = mapping_slot(end_time, slots::SCHEDULED_RATE_DECREASE);
+        self.storage
+            .sload(self.token_address, slot)
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn set_scheduled_rate_decrease_at(&mut self, end_time: &U256, value: U256) {
+        let slot = mapping_slot(end_time, slots::SCHEDULED_RATE_DECREASE);
         self.storage
             .sstore(self.token_address, slot, value)
             .expect("TODO: handle error");
