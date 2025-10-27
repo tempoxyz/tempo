@@ -30,4 +30,9 @@ serde = { workspace = true, optional = true }
 serde_json.workspace = true
 
 [features]
-serde = ["dep:serde", "alloy-hardforks/serde"]
+serde = [
+    "dep:serde",
+    "alloy-eips/serde",
+    "alloy-hardforks/serde",
+    "alloy-primitives/serde",
+]
