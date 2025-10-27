@@ -1,9 +1,11 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
     primitives::{Address, Bytes, U256, address},
-    signers::{local::MnemonicBuilder, utils::secret_key_to_address},
+    signers::{
+        local::{MnemonicBuilder, coins_bip39::English},
+        utils::secret_key_to_address,
+    },
 };
-use alloy_signer_local::coins_bip39::English;
 use clap::Parser;
 use rayon::prelude::*;
 use reth::revm::{
@@ -34,7 +36,7 @@ use tempo_precompiles::{
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
-pub struct GenesisArgs {
+pub(crate) struct GenesisArgs {
     /// Number of accounts to generate
     #[arg(short, long, default_value = "50000")]
     pub accounts: u32,
@@ -73,7 +75,7 @@ impl GenesisArgs {
     ///
     /// It creates a new genesis allocation for the configured accounts.
     /// And creates accounts for system contracts.
-    pub async fn run(self) -> eyre::Result<()> {
+    pub(crate) async fn run(self) -> eyre::Result<()> {
         println!("Generating {:?} accounts", self.accounts);
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()

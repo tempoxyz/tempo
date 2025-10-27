@@ -11,7 +11,11 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-chainspec.workspace = true
 tempo-commonware-node-config.workspace = true
+tempo-contracts.workspace = true
+tempo-evm.workspace = true
+tempo-precompiles.workspace = true
 
 alloy-primitives.workspace = true
 camino = "1.1.11"
@@ -21,4 +25,19 @@ commonware-utils.workspace = true
 eyre.workspace = true
 indexmap.workspace = true
 rand.workspace = true
+reth.workspace = true
+reth-evm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 toml.workspace = true
+
+alloy = { workspace = true, features = [
+  "genesis",
+  "signers",
+  "signer-local",
+  "signer-mnemonic",
+  "sol-types",
+] }
+rayon = "1.10"
+simple-tqdm = { version = "0.2.0", features = ["rayon"] }
