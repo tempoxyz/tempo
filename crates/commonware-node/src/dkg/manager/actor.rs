@@ -310,7 +310,7 @@ where
         parent = cause,
         skip_all,
         fields(
-            block.derived_epoch = epoch::of_height(block.height(), self.config.heights_per_epoch),
+            block.derived_epoch = epoch::of_height(block.height(), self.config.epoch_length),
             block.height = block.height(),
             ceremony.epoch = ceremony.epoch(),
         ),
@@ -327,7 +327,7 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         // Special case height == 0
-        let Some(block_epoch) = epoch::of_height(block.height(), self.config.heights_per_epoch)
+        let Some(block_epoch) = epoch::of_height(block.height(), self.config.epoch_length)
         else {
             return ceremony;
         };
@@ -336,7 +336,7 @@ where
         // can only enter the a new epoch once the last height of outgoing was
         // reached, because that's what provides the genesis.
         if ceremony.epoch().saturating_sub(1) == block_epoch
-            && epoch::is_last_height(block.height(), self.config.heights_per_epoch)
+            && epoch::is_last_height(block.height(), self.config.epoch_length)
         {
             debug!(
                 "reached last height of outgoing epoch; reporting that a \
@@ -366,7 +366,7 @@ where
 
         // Notify the epoch manager that the first height of the new epoch
         // was entered and the previous epoch can be exited.
-        if epoch::is_first_height(block.height(), self.config.heights_per_epoch) {
+        if epoch::is_first_height(block.height(), self.config.epoch_length) {
             // Special case epoch == 0
             if let Some(previous_epoch) = ceremony.epoch().checked_sub(1) {
                 self.config
@@ -381,7 +381,7 @@ where
             }
         }
 
-        match epoch::relative_position(block.height(), self.config.heights_per_epoch) {
+        match epoch::relative_position(block.height(), self.config.epoch_length) {
             epoch::RelativePosition::FirstHalf => {
                 let _ = ceremony.distribute_shares().await;
                 let _ = ceremony.process_messages().await;
@@ -402,7 +402,7 @@ where
         // This starts a new ceremony.
         if epoch::is_last_height(
             block.height().saturating_add(1),
-            self.config.heights_per_epoch,
+            self.config.epoch_length,
         ) {
             info!("on pre-to-last height of epoch; finalizing ceremony");
 

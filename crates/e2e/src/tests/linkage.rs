@@ -30,7 +30,7 @@ fn only_good_links() {
             how_many: 5,
             seed,
             linkage: link.clone(),
-            heights_per_epoch: 100,
+            epoch_length: 100,
         };
         let _first = run(setup.clone(), |metric, value| {
             // // TODO(janis): commonware calls this marshal, we call this sync.
@@ -98,7 +98,7 @@ fn many_bad_links() {
             how_many: 5,
             seed,
             linkage: link.clone(),
-            heights_per_epoch: 100,
+            epoch_length: 100,
         };
         let _first = run(setup.clone(), |metric, value| {
             // // TODO(janis): commonware calls this marshal, we call this sync.
@@ -139,7 +139,7 @@ fn reach_height_20_with_a_few_bad_links() {
         how_many: 10,
         seed: 0,
         linkage: link,
-        heights_per_epoch: 100,
+        epoch_length: 100,
     };
     let _first = run(setup, |metric, value| {
         // // TODO(janis): commonware calls this marshal, we call this sync.

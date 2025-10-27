@@ -39,7 +39,7 @@ pub struct Setup {
     /// The linkage between individual validators.
     pub linkage: Link,
     /// The number of heights in an epoch.
-    pub heights_per_epoch: u64,
+    pub epoch_length: u64,
 }
 
 /// Runs a test configured by [`Setup`].
@@ -48,7 +48,7 @@ pub fn run(
         how_many,
         seed,
         linkage,
-        heights_per_epoch,
+        epoch_length,
     }: Setup,
     mut stop_condition: impl FnMut(&str, &str) -> bool,
 ) -> String {
@@ -115,7 +115,7 @@ pub fn run(
                 views_to_track: 10,
                 views_until_leader_skip: 5,
                 new_payload_wait_time: Duration::from_millis(750),
-                heights_per_epoch,
+                epoch_length,
             }
             .try_init()
             .await

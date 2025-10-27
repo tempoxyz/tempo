@@ -80,7 +80,7 @@ pub struct Builder<
     pub mailbox_size: usize,
     pub deque_size: usize,
 
-    pub heights_per_epoch: u64,
+    pub epoch_length: u64,
 
     pub time_to_propose: Duration,
     pub time_to_collect_notarizations: Duration,
@@ -146,7 +146,7 @@ where
             self.context.with_label("marshal"),
             marshal::Config {
                 scheme_provider: scheme_provider.clone(),
-                epoch_length: self.heights_per_epoch,
+                epoch_length: self.epoch_length,
                 // identity: *self.polynomial.constant(),
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
@@ -181,7 +181,7 @@ where
             marshal: marshal_mailbox.clone(),
             execution_node: self.execution_node,
             new_payload_wait_time: self.new_payload_wait_time,
-            heights_per_epoch: self.heights_per_epoch,
+            epoch_length: self.epoch_length,
         }
         .build()
         .wrap_err("failed initializing execution driver")?;
@@ -193,7 +193,7 @@ where
                 application: execution_driver_mailbox.clone(),
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
-                epoch_length: self.heights_per_epoch,
+                epoch_length: self.epoch_length,
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
@@ -213,7 +213,7 @@ where
             self.context.with_label("dkg_manager"),
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox,
-                heights_per_epoch: self.heights_per_epoch,
+                epoch_length: self.epoch_length,
                 initial_participants: self.participants.clone(),
                 initial_public: self.polynomial.clone(),
                 initial_share: Some(self.share.clone()),

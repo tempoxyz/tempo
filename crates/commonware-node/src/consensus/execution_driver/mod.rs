@@ -78,7 +78,7 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
     /// The number of heights H in an epoch. For a given epoch E, all heights
     /// `E*H+1` to and including `(E+1)*H` make up the epoch. The block at
     /// `E*H` is said to be the genesis (or parent) of the epoch.
-    pub(super) heights_per_epoch: u64,
+    pub(super) epoch_length: u64,
 }
 
 impl<TContext> ExecutionDriverBuilder<TContext>
@@ -104,7 +104,7 @@ where
 
             inner: Inner {
                 fee_recipient: self.fee_recipient,
-                heights_per_epoch: self.heights_per_epoch,
+                epoch_length: self.epoch_length,
                 new_payload_wait_time: self.new_payload_wait_time,
 
                 my_mailbox,
@@ -225,7 +225,7 @@ where
 #[derive(Clone)]
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
-    heights_per_epoch: u64,
+    epoch_length: u64,
     new_payload_wait_time: Duration,
 
     my_mailbox: ExecutionDriverMailbox,
@@ -264,7 +264,7 @@ impl Inner<Init> {
         fields(
             block.digest = %finalized.block.digest(),
             block.height = %finalized.block.height(),
-            derived_epoch = epoch::of_height(finalized.block.height(), self.heights_per_epoch),
+            derived_epoch = epoch::of_height(finalized.block.height(), self.epoch_length),
         ),
     )]
     /// Pushes a `finalized` request to the back of the finalization queue.
@@ -284,7 +284,7 @@ impl Inner<Init> {
         let source = if genesis.epoch == 0 {
             self.genesis_block.digest()
         } else {
-            let height = epoch::parent_height(genesis.epoch, self.heights_per_epoch);
+            let height = epoch::parent_height(genesis.epoch, self.epoch_length);
             let Some((_, digest)) = self.marshal.get_info(height).await else {
                 // XXX: the None case here should not be hit:
                 // 1. an epoch transition is triggered by the application
@@ -347,7 +347,7 @@ impl Inner<Init> {
             if epoch::is_last_height_of_epoch(
                 proposal.height(),
                 round.epoch(),
-                self.heights_per_epoch,
+                self.epoch_length,
             ) {
                 let outcome = self
                     .state
@@ -507,7 +507,7 @@ impl Inner<Init> {
         // XXX: Re-propose the parent if the parent is the last height of the
         // epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
-        if epoch::is_last_height_of_epoch(parent.height(), round.epoch(), self.heights_per_epoch) {
+        if epoch::is_last_height_of_epoch(parent.height(), round.epoch(), self.epoch_length) {
             info!("last height of epoch reached; re-proposing parent");
             return Ok(parent);
         }
@@ -607,7 +607,7 @@ impl Inner<Init> {
         // immediately, and happen very rarely. It's better to optimize for the
         // general case.
         if payload == parent_digest {
-            if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.heights_per_epoch)
+            if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length)
             {
                 return Ok((block, true));
             } else {
@@ -615,7 +615,7 @@ impl Inner<Init> {
             }
         }
 
-        if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.heights_per_epoch) {
+        if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length) {
             let our_outcome = self
                 .state
                 .dkg_manager
@@ -664,7 +664,7 @@ impl Inner<Init> {
         let is_good = verify_block(
             context,
             round.epoch(),
-            self.heights_per_epoch,
+            self.epoch_length,
             self.execution_node
                 .add_ons_handle
                 .beacon_engine_handle
@@ -733,7 +733,7 @@ impl Inner<Uninit> {
 
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
-            heights_per_epoch: self.heights_per_epoch,
+            epoch_length: self.epoch_length,
             new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
@@ -776,7 +776,7 @@ struct Init {
     skip_all,
     fields(
         epoch,
-        heights_per_epoch,
+        epoch_length,
         block.parent_digest = %block.parent_digest(),
         block.digest = %block.digest(),
         block.height = block.height(),
@@ -789,13 +789,13 @@ struct Init {
 async fn verify_block<TContext: Pacer>(
     context: TContext,
     epoch: Epoch,
-    heights_per_epoch: u64,
+    epoch_length: u64,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
     parent: &Block,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
-    if !epoch::contains_height(block.height(), epoch, heights_per_epoch) {
+    if !epoch::contains_height(block.height(), epoch, epoch_length) {
         info!("block does not belong to this epoch");
         return Ok(false);
     }

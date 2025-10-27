@@ -14,19 +14,19 @@ mod scheme_provider;
 pub(crate) use manager::ingress::{Enter, Exit};
 pub(crate) use scheme_provider::{Coordinator, SchemeProvider};
 
-/// Returns the first height of `epoch` given `heights_per_epoch`.
-pub(crate) fn first_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {
-    epoch.saturating_mul(heights_per_epoch).saturating_add(1)
+/// Returns the first height of `epoch` given `epoch_length`.
+pub(crate) fn first_height(epoch: Epoch, epoch_length: u64) -> u64 {
+    epoch.saturating_mul(epoch_length).saturating_add(1)
 }
 
-/// Returns the last height of `epoch` given `heights_per_epoch`.
-pub(crate) fn last_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {
-    epoch.saturating_add(1).saturating_mul(heights_per_epoch)
+/// Returns the last height of `epoch` given `epoch_length`.
+pub(crate) fn last_height(epoch: Epoch, epoch_length: u64) -> u64 {
+    epoch.saturating_add(1).saturating_mul(epoch_length)
 }
 
-/// Returns the parent height of `epoch` given `heights_per_epoch`.
-pub(crate) fn parent_height(epoch: Epoch, heights_per_epoch: u64) -> u64 {
-    let first_height_of_epoch = first_height(epoch, heights_per_epoch);
+/// Returns the parent height of `epoch` given `epoch_length`.
+pub(crate) fn parent_height(epoch: Epoch, epoch_length: u64) -> u64 {
+    let first_height_of_epoch = first_height(epoch, epoch_length);
     first_height_of_epoch.saturating_sub(1)
 }
 
@@ -84,11 +84,11 @@ pub(crate) fn relative_position(height: u64, epoch_length: u64) -> RelativePosit
     }
 }
 
-/// Returns the epoch of `height` given `heights_per_epoch`.
+/// Returns the epoch of `height` given `epoch_length`.
 ///
 /// Returns `None` if `height == 0` because it does not fall into any epoch.
-pub(crate) fn of_height(height: u64, heights_per_epoch: u64) -> Option<Epoch> {
-    (height != 0).then(|| height.saturating_sub(1).saturating_div(heights_per_epoch))
+pub(crate) fn of_height(height: u64, epoch_length: u64) -> Option<Epoch> {
+    (height != 0).then(|| height.saturating_sub(1).saturating_div(epoch_length))
 }
 
 /// Returns if `height % epoch_length == 1`.
@@ -96,17 +96,17 @@ pub(crate) fn is_first_height(height: u64, epoch_length: u64) -> bool {
     (height % epoch_length) == 1
 }
 
-/// Returns if the `height` falls inside `epoch`, given `heights_per_epoch`.
-pub(crate) fn contains_height(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
-    of_height(height, heights_per_epoch).is_some_and(|calc_epoch| calc_epoch == epoch)
+/// Returns if the `height` falls inside `epoch`, given `epoch_length`.
+pub(crate) fn contains_height(height: u64, epoch: Epoch, epoch_length: u64) -> bool {
+    of_height(height, epoch_length).is_some_and(|calc_epoch| calc_epoch == epoch)
 }
 
-pub(crate) fn is_last_height(height: u64, heights_per_epoch: u64) -> bool {
-    height.is_multiple_of(heights_per_epoch)
+pub(crate) fn is_last_height(height: u64, epoch_length: u64) -> bool {
+    height.is_multiple_of(epoch_length)
 }
 
-pub(crate) fn is_last_height_of_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) -> bool {
-    height == last_height(epoch, heights_per_epoch)
+pub(crate) fn is_last_height_of_epoch(height: u64, epoch: Epoch, epoch_length: u64) -> bool {
+    height == last_height(epoch, epoch_length)
 }
 
 #[cfg(test)]
@@ -136,8 +136,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_first_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
-        assert_eq!(expected, first_height(epoch, heights_per_epoch));
+    fn assert_first_height(expected: u64, epoch: Epoch, epoch_length: u64) {
+        assert_eq!(expected, first_height(epoch, epoch_length));
     }
 
     #[test]
@@ -160,8 +160,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_last_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
-        assert_eq!(expected, last_height(epoch, heights_per_epoch));
+    fn assert_last_height(expected: u64, epoch: Epoch, epoch_length: u64) {
+        assert_eq!(expected, last_height(epoch, epoch_length));
     }
 
     #[test]
@@ -184,8 +184,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_source_height(expected: u64, epoch: Epoch, heights_per_epoch: u64) {
-        assert_eq!(expected, parent_height(epoch, heights_per_epoch));
+    fn assert_source_height(expected: u64, epoch: Epoch, epoch_length: u64) {
+        assert_eq!(expected, parent_height(epoch, epoch_length));
     }
 
     #[test]
@@ -208,10 +208,10 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_source_of_epoch_is_last_of_previous(epoch: Epoch, heights_per_epoch: u64) {
+    fn assert_source_of_epoch_is_last_of_previous(epoch: Epoch, epoch_length: u64) {
         assert_eq!(
-            last_height(epoch, heights_per_epoch),
-            parent_height(epoch + 1, heights_per_epoch),
+            last_height(epoch, epoch_length),
+            parent_height(epoch + 1, epoch_length),
         );
     }
 
@@ -231,8 +231,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_height_of_epoch(expected: Epoch, height: u64, heights_per_epoch: u64) {
-        assert_eq!(Some(expected), of_height(height, heights_per_epoch),)
+    fn assert_height_of_epoch(expected: Epoch, height: u64, epoch_length: u64) {
+        assert_eq!(Some(expected), of_height(height, epoch_length),)
     }
 
     #[test]
@@ -258,8 +258,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_height_in_epoch(height: u64, epoch: Epoch, heights_per_epoch: u64) {
-        assert!(contains_height(height, epoch, heights_per_epoch));
+    fn assert_height_in_epoch(height: u64, epoch: Epoch, epoch_length: u64) {
+        assert!(contains_height(height, epoch, epoch_length));
     }
 
     #[test]
@@ -285,8 +285,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_relative_position(expected: RelativePosition, height: u64, heights_per_epoch: u64) {
-        assert_eq!(expected, relative_position(height, heights_per_epoch),);
+    fn assert_relative_position(expected: RelativePosition, height: u64, epoch_length: u64) {
+        assert_eq!(expected, relative_position(height, epoch_length),);
     }
 
     #[test]

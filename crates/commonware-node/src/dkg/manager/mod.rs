@@ -37,7 +37,7 @@ pub(crate) struct Config {
     pub(crate) me: PrivateKey,
 
     /// The number of heights per epoch.
-    pub(crate) heights_per_epoch: u64,
+    pub(crate) epoch_length: u64,
 
     pub(crate) mailbox_size: usize,
 

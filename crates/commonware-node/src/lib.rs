@@ -74,7 +74,7 @@ pub async fn run_consensus_stack(
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
 
-        heights_per_epoch: config.heights_per_epoch,
+        epoch_length: config.epoch_length,
 
         time_to_propose: config.timeouts.time_to_propose,
         time_to_collect_notarizations: config.timeouts.time_to_collect_notarizations,

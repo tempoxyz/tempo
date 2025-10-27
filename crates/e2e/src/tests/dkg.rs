@@ -21,7 +21,7 @@ fn transitions_with_perfect_links() {
         how_many: 3,
         seed: 0,
         linkage,
-        heights_per_epoch: epoch_length,
+        epoch_length: epoch_length,
     };
 
     let mut epoch_reached = false;
@@ -62,7 +62,7 @@ fn transitions_with_perfect_links() {
 //         how_many: 5,
 //         seed: 0,
 //         linkage,
-//         heights_per_epoch: 2,
+//         epoch_length: 2,
 //     };
 
 //     let mut epoch_reached = false;

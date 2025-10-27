@@ -168,7 +168,7 @@ fn generate_config(
             deque_size,
             fee_recipient,
             timeouts: Default::default(),
-            heights_per_epoch: 100,
+            epoch_length: 100,
         };
         configurations.push((name, dst, peer_config));
         port += 2;
