@@ -191,8 +191,11 @@ where
             }
 
             if let Some(dealing) = recovered.dealing.clone() {
-                let (mut dkg_dealer, _, _) =
-                    dkg::Dealer::new(context, config.share.clone(), config.players.clone());
+                let (mut dkg_dealer, _, _) = dkg::Dealer::<PublicKey, MinSig>::new(
+                    context,
+                    config.share.clone(),
+                    config.players.clone(),
+                );
                 for ack in dealing.acks.values() {
                     dkg_dealer.ack(ack.player.clone()).wrap_err_with(|| {
                         format!(
@@ -203,7 +206,6 @@ where
                     })?;
                 }
                 dealer_me = Some(Dealer {
-                    inner: dkg_dealer,
                     commitment: dealing.commitment,
                     shares: dealing.shares,
                     acks: dealing.acks,
@@ -228,8 +230,8 @@ where
                 .await
                 .expect("must always be able to initialize the ceremony state to disk");
 
-            let (dkg_dealer, commitment, shares) =
-                dkg::Dealer::new(context, Some(share), config.players.clone());
+            let (_, commitment, shares) =
+                dkg::Dealer::<PublicKey, MinSig>::new(context, Some(share), config.players.clone());
             let shares = config
                 .players
                 .iter()
@@ -237,7 +239,6 @@ where
                 .map(|(player, share)| (player.clone(), share.clone()))
                 .collect();
             dealer_me = Some(Dealer {
-                inner: dkg_dealer,
                 commitment,
                 shares,
                 acks: BTreeMap::new(),
@@ -304,11 +305,6 @@ where
                         commitment",
                     );
 
-                dealer_me
-                    .inner
-                    .ack(self.config.me.public_key())
-                    .expect("must work: updating dealer with own player ack");
-
                 // TODO(janis): easy to mess up the fields because some of them
                 // are of the same type. Better pass in a struct or create a
                 // builder.
@@ -320,9 +316,13 @@ where
                     &self.config.me.public_key(),
                     &dealer_me.commitment,
                 );
-                dealer_me
-                    .acks
-                    .insert(self.config.me.public_key(), ack.clone());
+                assert_eq!(
+                    None,
+                    dealer_me
+                        .acks
+                        .insert(self.config.me.public_key(), ack.clone()),
+                    "must only insert our own ack once",
+                );
 
                 self.ceremony_metadata
                     .lock()
@@ -423,6 +423,8 @@ where
         ret,
     )]
     async fn process_ack(&mut self, peer: PublicKey, ack: Ack) -> eyre::Result<&'static str> {
+        use std::collections::btree_map::Entry;
+
         let Some(dealer_me) = &mut self.dealer_me else {
             return Ok("not a dealer, dropping ack");
         };
@@ -448,11 +450,11 @@ where
             "failed verifying ack signature against peer",
         );
 
-        dealer_me
-            .inner
-            .ack(peer.clone())
-            .wrap_err("failed to track and record ack")?;
-        dealer_me.acks.insert(peer.clone(), ack.clone());
+        if let Entry::Vacant(vacant) = dealer_me.acks.entry(peer.clone()) {
+            vacant.insert(ack.clone());
+        } else {
+            bail!("duplicate ack");
+        }
 
         self.ceremony_metadata
             .lock()
@@ -794,12 +796,9 @@ where
 
 /// Metadata associated with a [Dealer].
 struct Dealer {
-    /// The [Dealer] object.
-    inner: dkg::Dealer<PublicKey, MinSig>,
     /// The [Dealer]'s commitment.
     commitment: Public<MinSig>,
-    /// The [Dealer]'s shares for all players.
-    // shares: IndexMap<PublicKey, group::Share>,
+    /// The dealer's shares for all players.
     shares: BTreeMap<PublicKey, group::Share>,
     /// Signed acknowledgements from contributors.
     acks: BTreeMap<PublicKey, Ack>,
