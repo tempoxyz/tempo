@@ -293,9 +293,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::insufficient_output().into());
         }
 
-        // Transfer only the final output token to sender (only once, at the end)
-        self.transfer(token_out, *sender, amount)
-            .expect("Failed to transfer tokens to sender");
+        self.transfer(token_out, *sender, amount)?;
 
         Ok(amount)
     }
@@ -323,12 +321,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Deduct input tokens ONCE at end
-        self.decrement_balance_or_transfer_from(*sender, token_in, amount)
-            .expect("Failed to decrement balance or transfer from sender");
+        self.decrement_balance_or_transfer_from(*sender, token_in, amount)?;
 
         // Transfer only final output ONCE at end
-        self.transfer(token_out, *sender, amount_out)
-            .expect("Failed to transfer tokens to sender");
+        self.transfer(token_out, *sender, amount_out)?;
 
         Ok(amount)
     }
