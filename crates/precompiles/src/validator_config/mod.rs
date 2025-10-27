@@ -680,27 +680,27 @@ mod tests {
         assert_eq!(validators[0].validatorAddress, validator1);
         assert_eq!(validators[0].key, key1);
         assert_eq!(validators[0].ipAddressOrDns, "192.168.1.1");
-        assert_eq!(validators[0].active, true);
+        assert!(validators[0].active);
 
         assert_eq!(validators[1].validatorAddress, validator2);
         assert_eq!(validators[1].key, key2);
         assert_eq!(validators[1].ipAddressOrDns, "192.168.1.2");
-        assert_eq!(validators[1].active, true);
+        assert!(validators[1].active);
 
         assert_eq!(validators[2].validatorAddress, validator3);
         assert_eq!(validators[2].key, key3);
         assert_eq!(validators[2].ipAddressOrDns, "192.168.1.3");
-        assert_eq!(validators[2].active, false);
+        assert!(!validators[2].active);
 
         assert_eq!(validators[3].validatorAddress, validator4);
         assert_eq!(validators[3].key, key4);
         assert_eq!(validators[3].ipAddressOrDns, "192.168.1.4");
-        assert_eq!(validators[3].active, true);
+        assert!(validators[3].active);
 
         assert_eq!(validators[4].validatorAddress, validator5);
         assert_eq!(validators[4].key, key5);
         assert_eq!(validators[4].ipAddressOrDns, "192.168.1.5");
-        assert_eq!(validators[4].active, true);
+        assert!(validators[4].active);
 
         // Validator1 updates IP and key (keeps same address)
         let key1_new = FixedBytes::<32>::from([0x31; 32]);
@@ -759,19 +759,19 @@ mod tests {
             validators[0].ipAddressOrDns, "10.0.0.1",
             "IP should be updated"
         );
-        assert_eq!(validators[0].active, true);
+        assert!(validators[0].active);
 
         // Verify validator4 - unchanged
         assert_eq!(validators[1].validatorAddress, validator4);
         assert_eq!(validators[1].key, key4);
         assert_eq!(validators[1].ipAddressOrDns, "192.168.1.4");
-        assert_eq!(validators[1].active, true);
+        assert!(validators[1].active);
 
         // Verify validator5 - unchanged
         assert_eq!(validators[2].validatorAddress, validator5);
         assert_eq!(validators[2].key, key5);
         assert_eq!(validators[2].ipAddressOrDns, "192.168.1.5");
-        assert_eq!(validators[2].active, true);
+        assert!(validators[2].active);
 
         // Verify validator2_new - rotated address, kept IP and key
         assert_eq!(validators[3].validatorAddress, validator2_new);
@@ -780,7 +780,7 @@ mod tests {
             validators[3].ipAddressOrDns, "192.168.1.2",
             "IP should be same"
         );
-        assert_eq!(validators[3].active, true);
+        assert!(validators[3].active);
 
         // Verify validator3_new - rotated address and updated IP, kept key
         assert_eq!(validators[4].validatorAddress, validator3_new);
@@ -789,7 +789,7 @@ mod tests {
             validators[4].ipAddressOrDns, "10.0.0.3",
             "IP should be updated"
         );
-        assert_eq!(validators[4].active, false);
+        assert!(!validators[4].active);
     }
 
     #[test]
