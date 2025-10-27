@@ -43,6 +43,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::noncesCall::SELECTOR => {
                 view::<ITIP20::noncesCall>(calldata, |call| self.nonces(call))
             }
+            ITIP20::saltsCall::SELECTOR => {
+                view::<ITIP20::saltsCall>(calldata, |call| self.salts(call))
+            }
             ITIP20::quoteTokenCall::SELECTOR => {
                 view::<ITIP20::quoteTokenCall>(calldata, |_| self.quote_token())
             }

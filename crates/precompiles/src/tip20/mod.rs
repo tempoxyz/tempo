@@ -88,6 +88,9 @@ pub mod slots {
     pub const USER_REWARD_PER_TOKEN_PAID: U256 = uint!(21_U256);
     pub const DELEGATED_BALANCE: U256 = uint!(22_U256);
     pub const REWARD_PER_TOKEN_STORED: U256 = uint!(23_U256);
+
+    // Salts
+    pub const SALTS: U256 = uint!(24_U256);
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +197,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage
             .sload(self.token_address, slot)
             .expect("TODO: handle error")
+    }
+
+    pub fn salts(&mut self, call: ITIP20::saltsCall) -> bool {
+        let slot = double_mapping_slot(call.owner, call.salt, slots::SALTS);
+        self.storage
+            .sload(self.token_address, slot)
+            .expect("TODO: handle error")
+            != U256::ZERO
     }
 
     // Admin functions
