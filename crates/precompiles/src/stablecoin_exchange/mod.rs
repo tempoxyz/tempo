@@ -278,8 +278,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let route = self.find_trade_path(token_in, token_out)?;
 
         // Deduct input tokens from sender (only once, at the start)
-        self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)
-            .expect("Failed to decrement balance or transfer from sender");
+        self.decrement_balance_or_transfer_from(*sender, token_in, amount_in)?;
 
         // Execute swaps for each hop - intermediate balances are transitory
         let mut amount = amount_in;

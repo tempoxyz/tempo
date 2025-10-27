@@ -265,8 +265,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             if mean <= MIN_LIQUIDITY {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
-            self.set_total_supply(&pool_id, MIN_LIQUIDITY)
-                .expect("TODO: handle error");
+            self.set_total_supply(&pool_id, MIN_LIQUIDITY)?;
             mean - MIN_LIQUIDITY
         } else {
             let liquidity_user = if pool.reserve_user_token > 0 {
@@ -321,14 +320,10 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         self.set_pool(&pool_id, &pool)?;
 
         // Mint LP tokens
-        let current_total_supply = self.get_total_supply(&pool_id).expect("TODO: handle error");
-        self.set_total_supply(&pool_id, current_total_supply + liquidity)
-            .expect("TODO: handle error");
-        let balance = self
-            .get_balance_of(&pool_id, &to)
-            .expect("TODO: handle error");
-        self.set_balance_of(&pool_id, &to, balance + liquidity)
-            .expect("TODO: handle error");
+        let current_total_supply = self.get_total_supply(&pool_id)?;
+        self.set_total_supply(&pool_id, current_total_supply + liquidity)?;
+        let balance = self.get_balance_of(&pool_id, &to)?;
+        self.set_balance_of(&pool_id, &to, balance + liquidity)?;
 
         // Emit Mint event
         self.storage.emit_event(
