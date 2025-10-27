@@ -443,6 +443,8 @@ where
                         },
                     ),
 
+                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+
                     _ => EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTxError(
                         e.to_string(),
                     )),
