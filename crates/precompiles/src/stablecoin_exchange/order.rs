@@ -5,6 +5,7 @@
 //! automatically place opposite-side orders when filled.
 
 use crate::{
+    error::TempoPrecompileError,
     stablecoin_exchange::{IStablecoinExchange, error::OrderError},
     storage::{PrecompileStorageProvider, slots::mapping_slot},
 };
@@ -172,61 +173,49 @@ impl Order {
         order_id: u128,
         storage: &mut S,
         stablecoin_exchange: Address,
-    ) -> Self {
+    ) -> Result<Self, TempoPrecompileError> {
         let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
 
         let maker = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_MAKER_OFFSET)
-            .expect("TODO: handle error")
+            .sload(stablecoin_exchange, order_slot + ORDER_MAKER_OFFSET)?
             .into_address();
 
-        let book_key = B256::from(
-            storage
-                .sload(stablecoin_exchange, order_slot + ORDER_BOOK_KEY_OFFSET)
-                .expect("TODO: handle error"),
-        );
+        let book_key =
+            B256::from(storage.sload(stablecoin_exchange, order_slot + ORDER_BOOK_KEY_OFFSET)?);
 
         let is_bid = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_IS_BID_OFFSET)
-            .expect("TODO: handle error")
+            .sload(stablecoin_exchange, order_slot + ORDER_IS_BID_OFFSET)?
             .to::<bool>();
 
         let tick = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_TICK_OFFSET)
-            .expect("TODO: handle error")
+            .sload(stablecoin_exchange, order_slot + ORDER_TICK_OFFSET)?
             .to::<u16>() as i16;
 
         let amount = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_AMOUNT_OFFSET)
-            .expect("TODO: handle error")
+            .sload(stablecoin_exchange, order_slot + ORDER_AMOUNT_OFFSET)?
             .to::<u128>();
 
         let remaining = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_REMAINING_OFFSET)
-            .expect("TODO: handle error")
+            .sload(stablecoin_exchange, order_slot + ORDER_REMAINING_OFFSET)?
             .to::<u128>();
 
         let prev = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_PREV_OFFSET)
-            .expect("TODO: handle error")
+            .sload(stablecoin_exchange, order_slot + ORDER_PREV_OFFSET)?
             .to::<u128>();
 
         let next = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_NEXT_OFFSET)
-            .expect("TODO: handle error")
+            .sload(stablecoin_exchange, order_slot + ORDER_NEXT_OFFSET)?
             .to::<u128>();
 
         let is_flip = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_IS_FLIP_OFFSET)
-            .expect("TODO: handle error")
+            .sload(stablecoin_exchange, order_slot + ORDER_IS_FLIP_OFFSET)?
             .to::<bool>();
 
         let flip_tick = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_FLIP_TICK_OFFSET)
-            .expect("TODO: handle error")
+            .sload(stablecoin_exchange, order_slot + ORDER_FLIP_TICK_OFFSET)?
             .to::<u16>() as i16;
 
-        Self {
+        Ok(Self {
             order_id,
             maker,
             book_key,
@@ -238,173 +227,141 @@ impl Order {
             next,
             is_flip,
             flip_tick,
-        }
+        })
     }
 
     pub fn store<S: PrecompileStorageProvider>(
         &self,
         storage: &mut S,
         stablecoin_exchange: Address,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_MAKER_OFFSET,
-                self.maker().into_u256(),
-            )
-            .expect("Storage write failed");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_MAKER_OFFSET,
+            self.maker().into_u256(),
+        )?;
 
         // Store book_key
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_BOOK_KEY_OFFSET,
-                U256::from_be_bytes(self.book_key().0),
-            )
-            .expect("Storage write failed");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_BOOK_KEY_OFFSET,
+            U256::from_be_bytes(self.book_key().0),
+        )?;
 
         // Store is_bid boolean
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_BID_OFFSET,
-                U256::from(self.is_bid() as u8),
-            )
-            .expect("Storage write failed");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_IS_BID_OFFSET,
+            U256::from(self.is_bid() as u8),
+        )?;
 
         // Store tick
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_TICK_OFFSET,
-                U256::from(self.tick() as u16),
-            )
-            .expect("Storage write failed");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_TICK_OFFSET,
+            U256::from(self.tick() as u16),
+        )?;
 
         // Store original amount
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_AMOUNT_OFFSET,
-                U256::from(self.amount()),
-            )
-            .expect("Storage write failed");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_AMOUNT_OFFSET,
+            U256::from(self.amount()),
+        )?;
 
         // Store remaining amount
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_REMAINING_OFFSET,
-                U256::from(self.remaining()),
-            )
-            .expect("Storage write failed");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_REMAINING_OFFSET,
+            U256::from(self.remaining()),
+        )?;
 
         // Store is_flip boolean
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_FLIP_OFFSET,
-                U256::from(self.is_flip() as u8),
-            )
-            .expect("Storage write failed");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_IS_FLIP_OFFSET,
+            U256::from(self.is_flip() as u8),
+        )?;
 
         // Store flip_tick
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_FLIP_TICK_OFFSET,
-                U256::from(self.flip_tick() as u16),
-            )
-            .expect("Storage write failed");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_FLIP_TICK_OFFSET,
+            U256::from(self.flip_tick() as u16),
+        )?;
+
+        Ok(())
     }
 
     pub fn delete<S: PrecompileStorageProvider>(
         &self,
         storage: &mut S,
         stablecoin_exchange: Address,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_MAKER_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_MAKER_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_BOOK_KEY_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_BOOK_KEY_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_BID_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_IS_BID_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_TICK_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_TICK_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_AMOUNT_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_AMOUNT_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_REMAINING_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_REMAINING_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_PREV_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_PREV_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_NEXT_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_NEXT_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_IS_FLIP_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_IS_FLIP_OFFSET,
+            U256::ZERO,
+        )?;
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_FLIP_TICK_OFFSET,
-                U256::ZERO,
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_FLIP_TICK_OFFSET,
+            U256::ZERO,
+        )?;
+
+        Ok(())
     }
 
     /// Update the order's remaining value in memory and storage
@@ -413,17 +370,15 @@ impl Order {
         new_remaining: u128,
         storage: &mut S,
         stablecoin_exchange: Address,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         self.remaining = new_remaining;
 
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_REMAINING_OFFSET,
-                U256::from(new_remaining),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_REMAINING_OFFSET,
+            U256::from(new_remaining),
+        )
     }
 
     pub fn update_next_order<S: PrecompileStorageProvider>(
@@ -431,16 +386,14 @@ impl Order {
         new_next: u128,
         storage: &mut S,
         stablecoin_exchange: Address,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_NEXT_OFFSET,
-                U256::from(new_next),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_NEXT_OFFSET,
+            U256::from(new_next),
+        )
     }
 
     pub fn update_prev_order<S: PrecompileStorageProvider>(
@@ -448,16 +401,14 @@ impl Order {
         new_prev: u128,
         storage: &mut S,
         stablecoin_exchange: Address,
-    ) {
+    ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
 
-        storage
-            .sstore(
-                stablecoin_exchange,
-                order_slot + ORDER_PREV_OFFSET,
-                U256::from(new_prev),
-            )
-            .expect("TODO: handle error");
+        storage.sstore(
+            stablecoin_exchange,
+            order_slot + ORDER_PREV_OFFSET,
+            U256::from(new_prev),
+        )
     }
 
     /// Returns the order ID.
@@ -876,14 +827,14 @@ mod tests {
     }
 
     #[test]
-    fn test_store_order() {
+    fn test_store_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let exchange_address = Address::random();
 
         let order = Order::new_flip(42, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
-        order.store(&mut storage, exchange_address);
+        order.store(&mut storage, exchange_address)?;
 
-        let loaded_order = Order::from_storage(42, &mut storage, exchange_address);
+        let loaded_order = Order::from_storage(42, &mut storage, exchange_address)?;
         assert_eq!(loaded_order.order_id(), 42);
         assert_eq!(loaded_order.maker(), TEST_MAKER);
         assert_eq!(loaded_order.book_key(), TEST_BOOK_KEY);
@@ -895,18 +846,20 @@ mod tests {
         assert_eq!(loaded_order.flip_tick(), 10);
         assert_eq!(loaded_order.prev(), 0);
         assert_eq!(loaded_order.next(), 0);
+
+        Ok(())
     }
 
     #[test]
-    fn test_delete_order() {
+    fn test_delete_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let exchange_address = Address::random();
 
         let order = Order::new_flip(42, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
-        order.store(&mut storage, exchange_address);
-        order.delete(&mut storage, exchange_address);
+        order.store(&mut storage, exchange_address)?;
+        order.delete(&mut storage, exchange_address)?;
 
-        let deleted_order = Order::from_storage(42, &mut storage, exchange_address);
+        let deleted_order = Order::from_storage(42, &mut storage, exchange_address)?;
         assert_eq!(deleted_order.order_id(), 42);
         assert_eq!(deleted_order.maker(), Address::ZERO);
         assert_eq!(deleted_order.book_key(), B256::ZERO);
@@ -918,5 +871,7 @@ mod tests {
         assert_eq!(deleted_order.flip_tick(), 0);
         assert_eq!(deleted_order.prev(), 0);
         assert_eq!(deleted_order.next(), 0);
+
+        Ok(())
     }
 }

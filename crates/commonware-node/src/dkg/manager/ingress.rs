@@ -1,0 +1,120 @@
+use commonware_consensus::{Reporter, types::Epoch};
+use eyre::WrapErr as _;
+use futures::channel::{mpsc, oneshot};
+use tracing::{Span, warn};
+
+use crate::{
+    consensus::block::Block,
+    dkg::ceremony::{IntermediateOutcome, PublicOutcome},
+};
+
+#[derive(Clone, Debug)]
+pub(crate) struct Mailbox {
+    pub(super) inner: mpsc::UnboundedSender<Message>,
+}
+
+impl Mailbox {
+    /// Returns the intermediate dealing of this node's ceremony.
+    ///
+    /// Returns `None` if this node was not a dealer, or if the request is
+    /// for a different epoch than the ceremony that's currently running.
+    pub(crate) async fn get_intermediate_dealing(
+        &self,
+        epoch: Epoch,
+    ) -> eyre::Result<Option<IntermediateOutcome>> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(GetIntermediateDealing {
+                epoch,
+                response,
+            }))
+            .wrap_err("failed sending message to actor")?;
+        rx.await
+            .wrap_err("actor dropped channel before responding with ceremony deal outcome")
+    }
+
+    pub(crate) async fn get_public_ceremony_outcome(
+        &self,
+        epoch: Epoch,
+    ) -> eyre::Result<Option<PublicOutcome>> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(GetOutcome { epoch, response }))
+            .wrap_err("failed sending message to actor")?;
+        rx.await
+            .wrap_err("actor dropped channel before responding with ceremony deal outcome")
+    }
+}
+
+pub(super) struct Message {
+    pub(super) cause: Span,
+    pub(super) command: Command,
+}
+
+impl Message {
+    fn in_current_span(cmd: impl Into<Command>) -> Self {
+        Self {
+            cause: Span::current(),
+            command: cmd.into(),
+        }
+    }
+}
+
+pub(super) enum Command {
+    Finalize(Finalize),
+    GetIntermediateDealing(GetIntermediateDealing),
+    GetOutcome(GetOutcome),
+}
+
+impl From<Finalize> for Command {
+    fn from(value: Finalize) -> Self {
+        Self::Finalize(value)
+    }
+}
+
+impl From<GetIntermediateDealing> for Command {
+    fn from(value: GetIntermediateDealing) -> Self {
+        Self::GetIntermediateDealing(value)
+    }
+}
+
+impl From<GetOutcome> for Command {
+    fn from(value: GetOutcome) -> Self {
+        Self::GetOutcome(value)
+    }
+}
+
+pub(super) struct Finalize {
+    pub(super) block: Box<Block>,
+    pub(super) response: oneshot::Sender<()>,
+}
+
+pub(super) struct GetIntermediateDealing {
+    pub(super) epoch: Epoch,
+    pub(super) response: oneshot::Sender<Option<IntermediateOutcome>>,
+}
+
+pub(super) struct GetOutcome {
+    pub(super) epoch: Epoch,
+    pub(super) response: oneshot::Sender<Option<PublicOutcome>>,
+}
+
+impl Reporter for Mailbox {
+    type Activity = Block;
+
+    async fn report(&mut self, block: Self::Activity) {
+        let (response, rx) = oneshot::channel();
+        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
+        if let Err(error) = self
+            .inner
+            .unbounded_send(Message::in_current_span(Finalize {
+                block: block.into(),
+                response,
+            }))
+            .wrap_err("dkg manager no longer running")
+        {
+            warn!(%error, "failed to report finalized block to dkg manager")
+        }
+        let _ = rx.await;
+    }
+}

@@ -1,14 +1,14 @@
 pub mod dispatch;
 
-pub use tempo_contracts::precompiles::{ITipAccountRegistrar, TipAccountRegistrarError};
+pub use tempo_contracts::precompiles::ITipAccountRegistrar;
 
-use crate::storage::PrecompileStorageProvider;
+use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 use alloy::{
     eips::eip7702::constants::SECP256K1N_HALF,
     primitives::{Address, B512, U256},
 };
 use revm::{precompile::secp256k1::ecrecover, state::Bytecode};
-use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::TIPAccountRegistrarError};
 
 pub struct TipAccountRegistrar<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
@@ -24,7 +24,7 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
     pub fn delegate_to_default(
         &mut self,
         call: ITipAccountRegistrar::delegateToDefaultCall,
-    ) -> Result<Address, TipAccountRegistrarError> {
+    ) -> Result<Address, TempoPrecompileError> {
         let ITipAccountRegistrar::delegateToDefaultCall { hash, signature } = call;
 
         let (sig, v) = validate_signature(&signature)?;
@@ -32,33 +32,23 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
         let signer = match ecrecover(&sig, v, &hash) {
             Ok(recovered_addr) => Address::from_word(recovered_addr),
             Err(_) => {
-                return Err(TipAccountRegistrarError::InvalidSignature(
-                    ITipAccountRegistrar::InvalidSignature {},
-                ));
+                return Err(TIPAccountRegistrarError::invalid_signature().into());
             }
         };
 
-        let account_info = self
-            .storage
-            .get_account_info(signer)
-            .expect("TODO: handle error");
+        let account_info = self.storage.get_account_info(signer)?;
 
         if account_info.nonce != 0 {
-            return Err(TipAccountRegistrarError::NonceNotZero(
-                ITipAccountRegistrar::NonceNotZero {},
-            ));
+            return Err(TIPAccountRegistrarError::nonce_not_zero().into());
         }
 
         if !account_info.is_empty_code_hash() {
-            return Err(TipAccountRegistrarError::CodeNotEmpty(
-                ITipAccountRegistrar::CodeNotEmpty {},
-            ));
+            return Err(TIPAccountRegistrarError::code_not_empty().into());
         }
 
         // Delegate the account to the default 7702 implementation
         self.storage
-            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))
-            .expect("TODO: handle error");
+            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))?;
 
         Ok(signer)
     }
@@ -66,11 +56,9 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
 
 /// Validates an ECDSA signature according to Ethereum standards.
 /// Accepts recovery values `v ∈ {0, 1, 27, 28}` and enforces EIP-2 low-s requirement.
-fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TipAccountRegistrarError> {
+fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TIPAccountRegistrarError> {
     if signature.len() != 65 {
-        return Err(TipAccountRegistrarError::InvalidSignature(
-            ITipAccountRegistrar::InvalidSignature {},
-        ));
+        return Err(TIPAccountRegistrarError::invalid_signature());
     }
 
     // Extract signature components
@@ -84,18 +72,14 @@ fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TipAccountRegistra
         27 | 28 => v - 27,
         0 | 1 => v,
         _ => {
-            return Err(TipAccountRegistrarError::InvalidSignature(
-                ITipAccountRegistrar::InvalidSignature {},
-            ));
+            return Err(TIPAccountRegistrarError::invalid_signature());
         }
     };
 
     // Enforce EIP-2 low-s
     let s = U256::from_be_slice(&sig[32..64]);
     if s > SECP256K1N_HALF {
-        return Err(TipAccountRegistrarError::InvalidSignature(
-            ITipAccountRegistrar::InvalidSignature {},
-        ));
+        return Err(TIPAccountRegistrarError::invalid_signature());
     }
 
     Ok((sig.into(), v))
@@ -108,6 +92,7 @@ mod tests {
     use alloy::primitives::keccak256;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use tempo_contracts::precompiles::TIPAccountRegistrarError;
 
     #[test]
     fn test_delegate_to_default() {
@@ -155,7 +140,9 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            TipAccountRegistrarError::InvalidSignature(_)
+            TempoPrecompileError::TIPAccountRegistrarError(
+                TIPAccountRegistrarError::InvalidSignature(_)
+            )
         ));
 
         // Signature too long
@@ -168,7 +155,9 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            TipAccountRegistrarError::InvalidSignature(_)
+            TempoPrecompileError::TIPAccountRegistrarError(
+                TIPAccountRegistrarError::InvalidSignature(_)
+            )
         ));
     }
 
@@ -192,7 +181,9 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            TipAccountRegistrarError::InvalidSignature(_)
+            TempoPrecompileError::TIPAccountRegistrarError(
+                TIPAccountRegistrarError::InvalidSignature(_)
+            )
         ));
     }
 
@@ -215,7 +206,9 @@ mod tests {
         let result = registrar.delegate_to_default(call);
         assert!(matches!(
             result.unwrap_err(),
-            TipAccountRegistrarError::NonceNotZero(_)
+            TempoPrecompileError::TIPAccountRegistrarError(TIPAccountRegistrarError::NonceNotZero(
+                _
+            ))
         ));
 
         let account_info_after = storage

@@ -2,6 +2,8 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+pub mod error;
+pub use error::Result;
 pub mod linking_usd;
 pub mod nonce;
 pub mod provider;
@@ -15,6 +17,7 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 
 use crate::{
+    error::IntoPrecompileResult,
     linking_usd::LinkingUSD,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
@@ -27,10 +30,12 @@ use crate::{
     tip4217_registry::TIP4217Registry,
 };
 
+#[cfg(test)]
+use alloy::sol_types::SolInterface;
 use alloy::{
     primitives::{Address, Bytes, address},
     sol,
-    sol_types::{SolCall, SolError, SolInterface},
+    sol_types::{SolCall, SolError},
 };
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
@@ -190,51 +195,23 @@ impl LinkingUSDPrecompile {
 }
 
 #[inline]
-fn metadata<T: SolCall>(result: T::Return) -> PrecompileResult {
-    Ok(PrecompileOutput::new(
-        METADATA_GAS,
-        T::abi_encode_returns(&result).into(),
-    ))
+fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
+    f().into_precompile_result(METADATA_GAS, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
-fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> T::Return) -> PrecompileResult {
+fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
     };
-    Ok(PrecompileOutput::new(
-        VIEW_FUNC_GAS,
-        T::abi_encode_returns(&f(call)).into(),
-    ))
-}
-
-// NOTE: Temporary fix to dispatch view functions that return results. This should be unified with
-// `view` when precompiles are refactored
-#[inline]
-fn view_result<T: SolCall, E: SolInterface>(
-    calldata: &[u8],
-    f: impl FnOnce(T) -> Result<T::Return, E>,
-) -> PrecompileResult {
-    let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
-    };
-    match f(call) {
-        Ok(result) => Ok(PrecompileOutput::new(
-            VIEW_FUNC_GAS,
-            T::abi_encode_returns(&result).into(),
-        )),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            VIEW_FUNC_GAS,
-            E::abi_encode(&e).into(),
-        )),
-    }
+    f(call).into_precompile_result(VIEW_FUNC_GAS, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
-pub fn mutate<T: SolCall, E: SolInterface>(
+pub fn mutate<T: SolCall>(
     calldata: &[u8],
     sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<T::Return, E>,
+    f: impl FnOnce(&Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(
@@ -242,23 +219,15 @@ pub fn mutate<T: SolCall, E: SolInterface>(
             Bytes::new(),
         ));
     };
-    match f(sender, call) {
-        Ok(result) => Ok(PrecompileOutput::new(
-            MUTATE_FUNC_GAS,
-            T::abi_encode_returns(&result).into(),
-        )),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            E::abi_encode(&e).into(),
-        )),
-    }
+    f(sender, call)
+        .into_precompile_result(MUTATE_FUNC_GAS, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
-fn mutate_void<T: SolCall, E: SolInterface>(
+fn mutate_void<T: SolCall>(
     calldata: &[u8],
     sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<(), E>,
+    f: impl FnOnce(&Address, T) -> Result<()>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(
@@ -266,13 +235,7 @@ fn mutate_void<T: SolCall, E: SolInterface>(
             Bytes::new(),
         ));
     };
-    match f(sender, call) {
-        Ok(()) => Ok(PrecompileOutput::new(MUTATE_FUNC_GAS, Bytes::new())),
-        Err(e) => Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            E::abi_encode(&e).into(),
-        )),
-    }
+    f(sender, call).into_precompile_result(MUTATE_FUNC_GAS, |()| Bytes::new())
 }
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+pub use INonce::INonceErrors as NonceError;
+
 use alloy::sol;
 
 sol! {
@@ -27,5 +29,23 @@ sol! {
         // Errors
         error ProtocolNonceNotSupported();
         error InvalidNonceKey();
+        error NonceOverflow();
+    }
+}
+
+impl NonceError {
+    /// Creates an error for protocol nonce not supported
+    pub const fn protocol_nonce_not_supported() -> Self {
+        Self::ProtocolNonceNotSupported(INonce::ProtocolNonceNotSupported)
+    }
+
+    /// Creates an error for invalid nonce key
+    pub const fn invalid_nonce_key() -> Self {
+        Self::InvalidNonceKey(INonce::InvalidNonceKey)
+    }
+
+    /// Creates an error for when nonce overflows
+    pub const fn nonce_overflow() -> Self {
+        Self::NonceOverflow(INonce::NonceOverflow)
     }
 }

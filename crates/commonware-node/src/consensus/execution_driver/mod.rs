@@ -12,12 +12,14 @@
 
 use std::{sync::Arc, time::Duration};
 
+use alloy_consensus::BlockHeader;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadId;
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Automaton, Block as _, Epochable, Relay, Reporter,
-    marshal::{self, ingress::mailbox::Identifier},
-    threshold_simplex::types::Context,
+    marshal::ingress::mailbox::Identifier,
+    simplex::types::Context,
     types::{Epoch, Round, View},
 };
 use commonware_macros::select;
@@ -33,22 +35,23 @@ use futures::{
     future::{Either, always_ready, try_join},
 };
 use rand::{CryptoRng, Rng};
-use reth::payload::EthBuiltPayload;
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::{BlockNumReader as _, BlockReader as _};
-use tempo_primitives::TempoPrimitives;
 use tokio::sync::RwLock;
-use tracing::{Level, info, instrument};
+use tracing::{Level, debug, error, error_span, info, instrument, warn};
 
-use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 mod executor;
 
-use crate::consensus::execution_driver::executor::ExecutorMailbox;
+use crate::{
+    consensus::{Digest, execution_driver::executor::ExecutorMailbox},
+    dkg::PublicOutcome,
+    epoch,
+};
 
 use super::block::Block;
 
@@ -63,15 +66,19 @@ pub(super) struct ExecutionDriverBuilder<TContext> {
     /// before blocking.
     pub(super) mailbox_size: usize,
 
-    /// The syncer for subscribing to blocks distributed via the consensus
-    /// p2p network.
-    pub(super) syncer: marshal::Mailbox<BlsScheme, Block>,
+    /// For subscribing to blocks distributed via the consensus p2p network.
+    pub(super) marshal: crate::alias::marshal::Mailbox,
 
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: TempoFullNode,
 
     /// The minimum amount of time to wait before resolving a new payload from the builder
     pub(super) new_payload_wait_time: Duration,
+
+    /// The number of heights H in an epoch. For a given epoch E, all heights
+    /// `E*H+1` to and including `(E+1)*H` make up the epoch. The block at
+    /// `E*H` is said to be the genesis (or parent) of the epoch.
+    pub(super) epoch_length: u64,
 }
 
 impl<TContext> ExecutionDriverBuilder<TContext>
@@ -97,10 +104,11 @@ where
 
             inner: Inner {
                 fee_recipient: self.fee_recipient,
+                epoch_length: self.epoch_length,
                 new_payload_wait_time: self.new_payload_wait_time,
 
                 my_mailbox,
-                syncer: self.syncer,
+                marshal: self.marshal,
 
                 genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
 
@@ -130,7 +138,7 @@ where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
     /// Runs the execution driver until it is externally stopped.
-    async fn run_until_stopped(self) {
+    async fn run_until_stopped(self, dkg_manager: crate::dkg::manager::Mailbox) {
         let Self {
             context,
             mailbox,
@@ -138,7 +146,7 @@ where
         } = self;
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
-        let Ok(initialized) = inner.into_initialized(context.clone()).await else {
+        let Ok(initialized) = inner.into_initialized(context.clone(), dkg_manager).await else {
             // XXX: relies on into_initialized generating an error event before exit.
             return;
         };
@@ -152,8 +160,8 @@ where
         .await
     }
 
-    pub(super) fn start(mut self) -> Handle<()> {
-        spawn_cell!(self.context, self.run_until_stopped().await)
+    pub(super) fn start(mut self, dkg_manager: crate::dkg::manager::Mailbox) -> Handle<()> {
+        spawn_cell!(self.context, self.run_until_stopped(dkg_manager).await)
     }
 }
 
@@ -165,8 +173,8 @@ where
     async fn run_until_stopped(mut self) {
         while let Some(msg) = self.mailbox.next().await {
             if let Err(error) = self.handle_message(msg) {
-                tracing::error_span!("handle message").in_scope(|| {
-                    tracing::error!(
+                error_span!("handle message").in_scope(|| {
+                    error!(
                         %error,
                         "critical error occurred while handling message; exiting"
                     )
@@ -191,7 +199,12 @@ where
                     .handle_finalized(*finalized)
                     .wrap_err("failed finalizing block")?;
             }
-            Message::Genesis(genesis) => _ = self.inner.handle_genesis(genesis),
+            Message::Genesis(genesis) => {
+                self.context.with_label("genesis").spawn({
+                    let inner = self.inner.clone();
+                    move |_| inner.handle_genesis(genesis)
+                });
+            }
             Message::Propose(propose) => {
                 self.context.with_label("propose").spawn({
                     let inner = self.inner.clone();
@@ -212,11 +225,12 @@ where
 #[derive(Clone)]
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
+    epoch_length: u64,
     new_payload_wait_time: Duration,
 
     my_mailbox: ExecutionDriverMailbox,
 
-    syncer: marshal::Mailbox<BlsScheme, Block>,
+    marshal: crate::alias::marshal::Mailbox,
 
     genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
@@ -241,10 +255,18 @@ impl Inner<Init> {
             latest_proposed.digest(),
         );
 
-        self.syncer.broadcast(latest_proposed).await;
+        self.marshal.broadcast(latest_proposed).await;
         Ok(())
     }
 
+    #[instrument(
+        skip_all,
+        fields(
+            block.digest = %finalized.block.digest(),
+            block.height = %finalized.block.height(),
+            derived_epoch = epoch::of_height(finalized.block.height(), self.epoch_length),
+        ),
+    )]
     /// Pushes a `finalized` request to the back of the finalization queue.
     fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
         self.state.executor_mailbox.forward_finalized(finalized)
@@ -256,14 +278,34 @@ impl Inner<Init> {
             epoch = genesis.epoch,
         ),
         ret(Display),
-        err(level = Level::WARN)
+        err(level = Level::ERROR)
     )]
-    fn handle_genesis(&mut self, genesis: Genesis) -> eyre::Result<Digest> {
-        let genesis_digest = self.genesis_block.digest();
-        genesis.response.send(genesis_digest).map_err(|_| {
-            eyre!("failed returning genesis block digest: return channel was already closed")
+    async fn handle_genesis(mut self, genesis: Genesis) -> eyre::Result<Digest> {
+        let source = if genesis.epoch == 0 {
+            self.genesis_block.digest()
+        } else {
+            let height = epoch::parent_height(genesis.epoch, self.epoch_length);
+            let Some((_, digest)) = self.marshal.get_info(height).await else {
+                // XXX: the None case here should not be hit:
+                // 1. an epoch transition is triggered by the application
+                // finalizing the last block of the outgoing epoch.
+                // 2. the finalized block is received from the marshaller (here
+                // called syncer), so we know it must be available and indexed
+                // by the marshaller.
+                // 3. this means this call should always succeed.
+                //
+                // TODO(janis): should we panic instead?
+                bail!(
+                    "no information on the source block at height `{height}` \
+                    exists yet; this is a problem and will likely cause the consensus engine to not start"
+                );
+            };
+            digest
+        };
+        genesis.response.send(source).map_err(|_| {
+            eyre!("failed returning parent digest for epoch: return channel was already closed")
         })?;
-        Ok(genesis_digest)
+        Ok(source)
     }
 
     /// Handles a [`Propose`] request.
@@ -283,11 +325,12 @@ impl Inner<Init> {
         context: TContext,
     ) -> eyre::Result<()> {
         let Propose {
-            parent,
+            parent: (parent_view, parent_digest),
             mut response,
             round,
         } = request;
-        let proposal = select!(
+
+        let mut proposal = select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
@@ -295,32 +338,78 @@ impl Inner<Init> {
                 ))
            },
 
-            res = self.clone().propose(context, parent, round) => {
+            res = self.clone().propose(context, parent_view, parent_digest, round) => {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
 
-        let consensus_block = Block::from_execution_block(proposal.block().clone());
-        let proposed_block_digest = consensus_block.digest();
-        response.send(proposed_block_digest).map_err(|_| {
+        if proposal.digest() != parent_digest {
+            if epoch::is_last_height_of_epoch(proposal.height(), round.epoch(), self.epoch_length) {
+                let outcome = self
+                    .state
+                    .dkg_manager
+                    .get_public_ceremony_outcome(request.round.epoch())
+                    .await
+                    .transpose()
+                    .ok_or_eyre("public dkg ceremony outcome does not exist")
+                    // TODO(janis): Result::flatten once msrv is 1.89
+                    .and_then(|this| this)
+                    .wrap_err(
+                        "failed getting public dkg ceremony outcome; refusing to generate proposal",
+                    )?;
+                proposal = proposal.insert_public_ceremony_outcome(outcome);
+            } else {
+                match self
+                    .state
+                    .dkg_manager
+                    .get_intermediate_dealing(request.round.epoch())
+                    .await
+                {
+                    Err(error) => warn!(
+                        %error,
+                        "failed getting ceremony deal for current epoch because DKG manager went away",
+                    ),
+                    Ok(None) => {}
+                    Ok(Some(deal_outcome)) => {
+                        info!("found ceremony deal outcome; inserting it into the proposal header");
+                        proposal = proposal.insert_intermediate_ceremony_dealing(deal_outcome);
+                    }
+                }
+            }
+        }
+
+        let proposal_digest = proposal.digest();
+
+        info!(
+            proposal.digest = %proposal_digest,
+            proposal.height = %proposal.height(),
+            "constructed proposal",
+        );
+        response.send(proposal_digest).map_err(|_| {
             eyre!(
                 "failed returning proposal to consensus engine: response channel was already closed"
             )
         })?;
 
+        // If re-proposing, then don't store the parent for broadcasting and
+        // don't touch the execution layer.
+        if proposal_digest == parent_digest {
+            return Ok(());
+        }
+
         {
             let mut lock = self.state.latest_proposed_block.write().await;
-            *lock = Some(consensus_block);
+            *lock = Some(proposal);
         }
 
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize(None, proposed_block_digest)
+            .canonicalize(None, proposal_digest)
         {
-            tracing::warn!(
+            warn!(
                 %error,
-                %proposed_block_digest,
+                %proposal_digest,
                 "failed making the proposal the head of the canonical chain",
             );
         }
@@ -367,54 +456,68 @@ impl Inner<Init> {
             }
         );
 
-        // 1. respond with the verification result ASAP. Also generates
+        // Respond with the verification result ASAP. Also generates
         // the event reporting the result of the verification.
         let _ = report_verification_result(response, &result);
 
-        // 2. make the forkchoice state available && cache the block
         if let Ok((block, true)) = result {
-            if let Err(error) = self.state.executor_mailbox.canonicalize(None, payload) {
-                tracing::warn!(
+            // Only make the verified block canonical when not doing a
+            // re-propose at the end of an epoch.
+            if parent.1 != payload
+                && let Err(error) = self.state.executor_mailbox.canonicalize(None, payload)
+            {
+                warn!(
                     %error,
                     "failed making the verified proposal the head of the canonical chain",
                 );
             }
-            self.syncer.verified(round, block).await;
+            self.marshal.verified(round, block).await;
         }
     }
 
     async fn propose<TContext: Pacer>(
         mut self,
         context: TContext,
-        parent: (View, Digest),
+        parent_view: View,
+        parent_digest: Digest,
         round: Round,
-    ) -> eyre::Result<EthBuiltPayload<TempoPrimitives>> {
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize(Some(Round::new(round.epoch(), parent.0)), parent.1)
-        {
-            tracing::warn!(
-                %error,
-                "failed making the proposal's parent the head of the canonical chain",
-            );
-        }
+    ) -> eyre::Result<Block> {
         let genesis_block = self.genesis_block.clone();
-        let parent_request = if parent.1 == genesis_block.digest() {
+        let parent_request = if parent_digest == genesis_block.digest() {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
-                self.syncer
-                    .subscribe(Some(Round::new(round.epoch(), parent.0)), parent.1)
+                self.marshal
+                    .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
                     .await,
             )
         };
         let parent = parent_request
-                .await
-                .map_err(|_| eyre!(
-                    "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
-                ))?;
+            .await
+            .map_err(|_| eyre!(
+                "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
+            ))?;
 
+        debug!(height = parent.height(), "retrieved parent block",);
+
+        // XXX: Re-propose the parent if the parent is the last height of the
+        // epoch. parent.height+1 should be proposed as the first block of the
+        // next epoch.
+        if epoch::is_last_height_of_epoch(parent.height(), round.epoch(), self.epoch_length) {
+            info!("last height of epoch reached; re-proposing parent");
+            return Ok(parent);
+        }
+
+        if let Err(error) = self
+            .state
+            .executor_mailbox
+            .canonicalize(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+        {
+            warn!(
+                %error,
+                "failed making the proposal's parent the head of the canonical chain",
+            );
+        }
         let attrs = TempoPayloadBuilderAttributes::new(
             // XXX: derives the payload ID from the parent so that
             // overlong payload builds will eventually succeed on the
@@ -441,7 +544,7 @@ impl Inner<Init> {
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
             .wrap_err("failed requesting new payload from the execution layer")?;
 
-        tracing::debug!(
+        debug!(
             timeout_ms = self.new_payload_wait_time.as_millis(),
             "sleeping for payload builder timeout"
         );
@@ -449,17 +552,6 @@ impl Inner<Init> {
 
         interrupt_handle.interrupt();
 
-        // XXX: resolves to a payload with at least one transactions included.
-        //
-        // FIXME: Figure out if WaitForPending really is ok. Using
-        // WaitForPending instead of Earliest could mean that this future hangs
-        // for too long and consensus just moves past this node.
-        //
-        // Summit does not suffer from this difficulty because they don't have that
-        // granular control over the node. Instead, they hardcoded a sleep of 50ms
-        // before fetching the payload. Hard sleep is always iffy, but maybe that
-        // is a viable alternative to force normal processing to stay within
-        // proposal timings?
         let payload = self
             .execution_node
             .payload_builder_handle
@@ -473,40 +565,29 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
-        Ok(payload)
+        Ok(Block::from_execution_block(payload.block().clone()))
     }
 
     async fn verify<TContext: Pacer>(
         mut self,
         context: TContext,
-        parent: (View, Digest),
+        (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         round: Round,
     ) -> eyre::Result<(Block, bool)> {
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize(Some(Round::new(round.epoch(), parent.0)), parent.1)
-        {
-            tracing::warn!(
-                %error,
-                "failed setting the proposal's parent as the head of the canonical chain",
-            );
-        }
-
         let genesis_block = self.genesis_block.clone();
-        let parent_request = if parent.1 == genesis_block.digest() {
+        let parent_request = if parent_digest == genesis_block.digest() {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
         } else {
             Either::Right(
-                self.syncer
-                    .subscribe(Some(Round::new(round.epoch(), parent.0)), parent.1)
+                self.marshal
+                    .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
                     .await
                     .map_err(|_| eyre!("syncer dropped channel before the parent block was sent")),
             )
         };
         let block_request = self
-            .syncer
+            .marshal
             .subscribe(None, payload)
             .await
             .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
@@ -515,8 +596,70 @@ impl Inner<Init> {
             .await
             .wrap_err("failed getting required blocks from syncer")?;
 
+        // Can only repropose at the end of an epoch.
+        //
+        // NOTE: fetching block and parent twice (in the case block == parent)
+        // seems wasteful, but both run concurrently, should finish almost
+        // immediately, and happen very rarely. It's better to optimize for the
+        // general case.
+        if payload == parent_digest {
+            if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length) {
+                return Ok((block, true));
+            } else {
+                return Ok((block, false));
+            }
+        }
+
+        if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length) {
+            let our_outcome = self
+                .state
+                .dkg_manager
+                .get_public_ceremony_outcome(round.epoch())
+                .await
+                .transpose()
+                .ok_or_eyre("public dkg ceremony outcome does not exist")
+                // TODO(janis): Result::flatten once msrv 1.89
+                .and_then(|this| this)
+                .wrap_err(
+                    "failed getting public dkg ceremony outcome; cannot verify end of epoch block",
+                )?;
+            let block_outcome = match PublicOutcome::decode(block.header().extra_data().as_ref()) {
+                Err(error) => {
+                    warn!(
+                        error = %eyre::Report::new(error),
+                        "cannot decode extra data header field of boundary block as public ceremony outcome; failing block",
+                    );
+                    return Ok((block, false));
+                }
+                Ok(block_outcome) => block_outcome,
+            };
+            if our_outcome != block_outcome {
+                warn!(
+                    our.participants = ?our_outcome.participants,
+                    our.public = ?our_outcome.public,
+                    block.participants = ?block_outcome.participants,
+                    block.public = ?block_outcome.public,
+                    "our public dkg ceremont outcome does not match what's stored in the block; failing block",
+                );
+                return Ok((block, false));
+            }
+        };
+
+        if let Err(error) = self
+            .state
+            .executor_mailbox
+            .canonicalize(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+        {
+            warn!(
+                %error,
+                "failed setting the proposal's parent as the head of the canonical chain",
+            );
+        }
+
         let is_good = verify_block(
             context,
+            round.epoch(),
+            self.epoch_length,
             self.execution_node
                 .add_ons_handle
                 .beacon_engine_handle
@@ -542,11 +685,12 @@ impl Inner<Uninit> {
     async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
         mut self,
         context: TContext,
+        dkg_manager: crate::dkg::manager::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
         // TODO(janis): does this have the potential to stall indefinitely?
         // If so, we should have some kind of heartbeat to inform telemetry.
         let (finalized_consensus_height, finalized_consensus_digest) = self
-            .syncer
+            .marshal
             .get_info(Identifier::Latest)
             .await
             .unwrap_or_else(|| {
@@ -578,19 +722,21 @@ impl Inner<Uninit> {
             execution_node: self.execution_node.clone(),
             genesis_block: self.genesis_block.clone(),
             latest_finalized_digest: finalized_consensus_digest,
-            marshal: self.syncer.clone(),
+            marshal: self.marshal.clone(),
         }
         .build(context.with_label("executor"));
 
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
+            epoch_length: self.epoch_length,
             new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
-            syncer: self.syncer,
+            marshal: self.marshal,
             genesis_block: self.genesis_block,
             execution_node: self.execution_node,
             state: Init {
                 latest_proposed_block: Arc::new(RwLock::new(None)),
+                dkg_manager,
                 executor_mailbox: executor.mailbox().clone(),
             },
         };
@@ -609,6 +755,7 @@ pub(super) struct Uninit(());
 #[derive(Clone, Debug)]
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<Block>>>,
+    dkg_manager: crate::dkg::manager::Mailbox,
     executor_mailbox: ExecutorMailbox,
 }
 
@@ -623,6 +770,8 @@ struct Init {
 #[instrument(
     skip_all,
     fields(
+        epoch,
+        epoch_length,
         block.parent_digest = %block.parent_digest(),
         block.digest = %block.digest(),
         block.height = block.height(),
@@ -634,11 +783,17 @@ struct Init {
 )]
 async fn verify_block<TContext: Pacer>(
     context: TContext,
+    epoch: Epoch,
+    epoch_length: u64,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
     parent: &Block,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
+    if !epoch::contains_height(block.height(), epoch, epoch_length) {
+        info!("block does not belong to this epoch");
+        return Ok(false);
+    }
     if block.parent_digest() != parent.digest() {
         info!(
             "parent digest stored in block must match the digest of the parent \
@@ -782,7 +937,7 @@ impl Reporter for ExecutionDriverMailbox {
 }
 
 #[derive(Clone)]
-pub(super) struct ExecutionDriverMailbox {
+pub(crate) struct ExecutionDriverMailbox {
     to_execution_driver: mpsc::Sender<Message>,
 }
 

@@ -2,9 +2,8 @@ pub use IStablecoinExchange::{
     IStablecoinExchangeErrors as StablecoinExchangeError,
     IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
-use revm::precompile::PrecompileError;
 
-use alloy::{sol, sol_types::SolInterface};
+use alloy::sol;
 
 sol! {
     /// StablecoinExchange interface for managing order book based trading of stablecoins.
@@ -87,12 +86,12 @@ sol! {
         error OrderDoesNotExist();
         error IdenticalTokens();
         error TickOutOfBounds(int16 tick);
+        error InvalidTick();
         error InvalidFlipTick();
         error InsufficientBalance();
         error InsufficientLiquidity();
         error InsufficientOutput();
         error MaxInputExceeded();
-        error Fatal(string message);
     }
 }
 
@@ -132,6 +131,11 @@ impl StablecoinExchangeError {
         Self::InvalidFlipTick(IStablecoinExchange::InvalidFlipTick {})
     }
 
+    /// Creates an error for invalid tick.
+    pub const fn invalid_tick() -> Self {
+        Self::InvalidTick(IStablecoinExchange::InvalidTick {})
+    }
+
     /// Creates an error for insufficient balance.
     pub const fn insufficient_balance() -> Self {
         Self::InsufficientBalance(IStablecoinExchange::InsufficientBalance {})
@@ -150,16 +154,5 @@ impl StablecoinExchangeError {
     /// Creates an error for max input exceeded.
     pub const fn max_input_exceeded() -> Self {
         Self::MaxInputExceeded(IStablecoinExchange::MaxInputExceeded {})
-    }
-
-    /// Creates a fatal error with message.
-    pub fn fatal(message: String) -> Self {
-        Self::Fatal(IStablecoinExchange::Fatal { message })
-    }
-}
-
-impl From<StablecoinExchangeError> for PrecompileError {
-    fn from(err: StablecoinExchangeError) -> Self {
-        Self::Other(format!("{:?}", err.selector()))
     }
 }

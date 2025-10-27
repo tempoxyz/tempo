@@ -19,42 +19,11 @@ Usage: tempo-bench <COMMAND>
 
 Commands:
   run-max-tps       Run maximum TPS throughput benchmarking
-  generate-genesis  Generate genesis allocation file for testing
   help              Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
   -V, --version  Print version
-```
-
-## Commands
-
-### `generate-genesis`
-
-Generate pre-funded test accounts for benchmarking:
-
-```
-Usage: tempo-bench generate-genesis [OPTIONS]
-
-Options:
-  -a, --accounts <ACCOUNTS>  Number of accounts to generate [default: 50000]
-  -o, --output <OUTPUT>      Output file path [default: genesis.json]
-  -m, --mnemonic <MNEMONIC>  Mnemonic to use for account generation [default: "test test test test test test test test test test test junk"]
-  -b, --balance <BALANCE>    Balance for each account (in hex) [default: 0xD3C21BCECCEDA1000000]
-  -h, --help                 Print help
-```
-
-**Examples:**
-
-```bash
-# Generate 50,000 accounts with default settings
-tempo-bench generate-genesis
-
-# Generate 25,000 accounts with custom output file
-tempo-bench generate-genesis --accounts 25000 --output test-genesis.json
-
-# Generate accounts with custom balance (1M ETH in hex)
-tempo-bench generate-genesis --balance 0xD3C21BCECCEDA1000000
 ```
 
 ### `run-max-tps`
@@ -130,7 +99,7 @@ The benchmark will continuously output performance metrics including transaction
 ### 1. Generate genesis.json
 
 ```bash
-tempo-bench generate-genesis --accounts 50000 --output genesis.json
+cargo x generate-genesis --accounts 50000 --output genesis.json
 ```
 
 ### 2. Start the Node

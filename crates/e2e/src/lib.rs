@@ -38,8 +38,8 @@ pub struct Setup {
     pub seed: u64,
     /// The linkage between individual validators.
     pub linkage: Link,
-    /// The height that a test has to reach to be considered a success.
-    pub height_to_reach: u64,
+    /// The number of heights in an epoch.
+    pub epoch_length: u64,
 }
 
 /// Runs a test configured by [`Setup`].
@@ -48,8 +48,9 @@ pub fn run(
         how_many,
         seed,
         linkage,
-        height_to_reach,
+        epoch_length,
     }: Setup,
+    mut stop_condition: impl FnMut(&str, &str) -> bool,
 ) -> String {
     let threshold = quorum(how_many);
     let cfg = deterministic::Config::default().with_seed(seed);
@@ -104,32 +105,35 @@ pub fn run(
                 signer,
                 polynomial: polynomial.clone(),
                 share,
-                participants: validators.clone(),
+                participants: validators.clone().into(),
                 mailbox_size: 1024,
                 deque_size: 10,
-                leader_timeout: Duration::from_secs(2),
-                notarization_timeout: Duration::from_secs(3),
-                nullify_retry: Duration::from_secs(10),
-                fetch_timeout: Duration::from_secs(2),
-                activity_timeout: 10,
-                skip_timeout: 5,
+                time_to_propose: Duration::from_secs(2),
+                time_to_collect_notarizations: Duration::from_secs(3),
+                time_to_retry_nullify_broadcast: Duration::from_secs(10),
+                time_for_peer_response: Duration::from_secs(2),
+                views_to_track: 10,
+                views_until_leader_skip: 5,
                 new_payload_wait_time: Duration::from_millis(750),
+                epoch_length,
             }
             .try_init()
             .await
             .expect("must be able to initialize consensus engines to run tests");
 
-            let (pending, recovered, resolver, broadcast, backfill) = registrations
+            let (pending, recovered, resolver, broadcast, backfill, dkg) = registrations
                 .remove(&public_key)
                 .expect("public key must have an entry in registrations map");
 
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, recovered, resolver, broadcast, backfill, dkg);
 
             debug!(%uid, "started validator");
         }
 
         loop {
             let metrics = context.encode();
+
+            std::fs::write("metrics_dump", &metrics).unwrap();
 
             let mut success = false;
             for line in metrics.lines() {
@@ -146,14 +150,9 @@ pub fn run(
                     assert_eq!(value, 0);
                 }
 
-                // TODO(janis): commonware calls this marshal, we call this sync.
-                // We should rename this to marshal (the actor, that is).
-                if metric.ends_with("_sync_processed_height") {
-                    let value = value.parse::<u64>().unwrap();
-                    if value >= height_to_reach {
-                        success = true;
-                        break;
-                    }
+                if stop_condition(metric, value) {
+                    success = true;
+                    break;
                 }
             }
 
@@ -180,6 +179,7 @@ async fn register_validators(
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
+        (Sender<PublicKey>, Receiver<PublicKey>),
     ),
 > {
     let mut registrations = HashMap::new();
@@ -194,6 +194,7 @@ async fn register_validators(
             oracle.register(validator.clone(), 3).await.unwrap();
         let (backfill_sender, backfill_receiver) =
             oracle.register(validator.clone(), 4).await.unwrap();
+        let (dkg_sender, dkg_receiver) = oracle.register(validator.clone(), 5).await.unwrap();
         registrations.insert(
             validator.clone(),
             (
@@ -202,6 +203,7 @@ async fn register_validators(
                 (resolver_sender, resolver_receiver),
                 (broadcast_sender, broadcast_receiver),
                 (backfill_sender, backfill_receiver),
+                (dkg_sender, dkg_receiver),
             ),
         );
     }

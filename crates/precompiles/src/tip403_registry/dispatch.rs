@@ -4,7 +4,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
     storage::PrecompileStorageProvider,
-    tip403_registry::{ITIP403Registry, TIP403Registry, TIP403RegistryError},
+    tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {
@@ -30,35 +30,33 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {
                 view::<ITIP403Registry::isAuthorizedCall>(calldata, |call| self.is_authorized(call))
             }
             ITIP403Registry::createPolicyCall::SELECTOR => {
-                mutate::<ITIP403Registry::createPolicyCall, TIP403RegistryError>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.create_policy(s, call),
-                )
+                mutate::<ITIP403Registry::createPolicyCall>(calldata, msg_sender, |s, call| {
+                    self.create_policy(s, call)
+                })
             }
             ITIP403Registry::createPolicyWithAccountsCall::SELECTOR => {
-                mutate::<ITIP403Registry::createPolicyWithAccountsCall, TIP403RegistryError>(
+                mutate::<ITIP403Registry::createPolicyWithAccountsCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.create_policy_with_accounts(s, call),
                 )
             }
             ITIP403Registry::setPolicyAdminCall::SELECTOR => {
-                mutate_void::<ITIP403Registry::setPolicyAdminCall, TIP403RegistryError>(
+                mutate_void::<ITIP403Registry::setPolicyAdminCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.set_policy_admin(s, call),
                 )
             }
             ITIP403Registry::modifyPolicyWhitelistCall::SELECTOR => {
-                mutate_void::<ITIP403Registry::modifyPolicyWhitelistCall, TIP403RegistryError>(
+                mutate_void::<ITIP403Registry::modifyPolicyWhitelistCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.modify_policy_whitelist(s, call),
                 )
             }
             ITIP403Registry::modifyPolicyBlacklistCall::SELECTOR => {
-                mutate_void::<ITIP403Registry::modifyPolicyBlacklistCall, TIP403RegistryError>(
+                mutate_void::<ITIP403Registry::modifyPolicyBlacklistCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.modify_policy_blacklist(s, call),

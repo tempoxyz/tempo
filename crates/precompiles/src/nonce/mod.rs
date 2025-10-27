@@ -1,8 +1,9 @@
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::INonce;
+use tempo_contracts::precompiles::NonceError;
 
-use crate::storage::PrecompileStorageProvider;
+use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 use alloy::primitives::{Address, U256};
 
 /// Storage slots for Nonce precompile data
@@ -53,98 +54,100 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     }
 
     /// Get the nonce for a specific account and nonce key
-    pub fn get_nonce(&mut self, call: INonce::getNonceCall) -> Result<u64, String> {
+    pub fn get_nonce(&mut self, call: INonce::getNonceCall) -> Result<u64, TempoPrecompileError> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
         if call.nonceKey == 0 {
-            return Err("Protocol nonce not supported".to_string());
+            return Err(NonceError::protocol_nonce_not_supported().into());
         }
 
         // For user nonce keys, read from precompile storage
         let slot = slots::nonce_slot(&call.account, call.nonceKey);
-        let nonce = self
-            .storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .map_err(|e| format!("Failed to read nonce from storage: {e:?}"))?;
+        let nonce = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         Ok(nonce.to::<u64>())
     }
 
     /// Get the number of active user nonce keys for an account
-    pub fn get_active_nonce_key_count(&mut self, call: INonce::getActiveNonceKeyCountCall) -> U256 {
+    pub fn get_active_nonce_key_count(
+        &mut self,
+        call: INonce::getActiveNonceKeyCountCall,
+    ) -> Result<U256, TempoPrecompileError> {
         let slot = slots::active_key_count_slot(&call.account);
-        self.storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .expect("TODO: handle error")
+        let count = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
+
+        Ok(count)
     }
 
     /// Internal: Set nonce for a specific account and nonce key
     /// This is called by the transaction validation logic
-    pub fn set_nonce(&mut self, account: &Address, nonce_key: u64, nonce: u64) {
+    pub fn set_nonce(
+        &mut self,
+        account: &Address,
+        nonce_key: u64,
+        nonce: u64,
+    ) -> Result<(), TempoPrecompileError> {
         if nonce_key == 0 {
             // Protocol nonce is managed by account state, not this precompile
-            return;
+            return Ok(());
         }
 
         let slot = slots::nonce_slot(account, nonce_key);
 
         // If this is a new nonce key (sequence was 0), increment active key count
-        let current = self
-            .storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .expect("TODO: handle error");
+        let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         if current == U256::ZERO && nonce > 0 {
-            self.increment_active_key_count(account);
+            self.increment_active_key_count(account)?;
         }
 
         self.storage
             .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, U256::from(nonce))
-            .expect("TODO: handle error");
     }
 
     /// Internal: Increment nonce for a specific account and nonce key
-    pub fn increment_nonce(&mut self, account: &Address, nonce_key: u64) -> u64 {
+    pub fn increment_nonce(
+        &mut self,
+        account: &Address,
+        nonce_key: u64,
+    ) -> Result<u64, TempoPrecompileError> {
         if nonce_key == 0 {
-            // Protocol nonce is managed by account state, not this precompile
-            panic!("Protocol nonce should not be managed by nonce precompile");
+            // TODO: Should this be a different error?
+            return Err(NonceError::invalid_nonce_key().into());
         }
 
         let slot = slots::nonce_slot(account, nonce_key);
-        let current = self
-            .storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .expect("TODO: handle error");
+        let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         // If transitioning from 0 to 1, increment active key count
         if current == U256::ZERO {
-            self.increment_active_key_count(account);
+            self.increment_active_key_count(account)?;
         }
 
-        let new_nonce = current.checked_add(U256::from(1)).expect("Nonce overflow");
+        let new_nonce = current
+            .checked_add(U256::ONE)
+            .ok_or_else(NonceError::nonce_overflow)?;
 
         self.storage
-            .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_nonce)
-            .expect("TODO: handle error");
+            .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_nonce)?;
 
-        new_nonce.to::<u64>()
+        Ok(new_nonce.to::<u64>())
     }
 
     /// Increment the active key count for an account
-    fn increment_active_key_count(&mut self, account: &Address) {
+    fn increment_active_key_count(
+        &mut self,
+        account: &Address,
+    ) -> Result<(), TempoPrecompileError> {
         let slot = slots::active_key_count_slot(account);
-        let current = self
-            .storage
-            .sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)
-            .expect("TODO: handle error");
+        let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
         let new_count = current
-            .checked_add(U256::from(1))
-            .expect("Active key count overflow");
+            .checked_add(U256::ONE)
+            .ok_or_else(NonceError::nonce_overflow)?;
 
         self.storage
             .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_count)
-            .expect("TODO: handle error");
     }
 }
 
@@ -182,8 +185,10 @@ mod tests {
             nonceKey: 0,
         });
 
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Protocol nonce not supported");
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::NonceError(NonceError::protocol_nonce_not_supported())
+        );
     }
 
     #[test]
@@ -194,7 +199,7 @@ mod tests {
         let account = address!("0x1111111111111111111111111111111111111111");
         let nonce_key = 5;
 
-        nonce_mgr.set_nonce(&account, nonce_key, 42);
+        nonce_mgr.set_nonce(&account, nonce_key, 42).unwrap();
 
         let nonce = nonce_mgr
             .get_nonce(INonce::getNonceCall {
@@ -214,10 +219,10 @@ mod tests {
         let account = address!("0x1111111111111111111111111111111111111111");
         let nonce_key = 5;
 
-        let new_nonce = nonce_mgr.increment_nonce(&account, nonce_key);
+        let new_nonce = nonce_mgr.increment_nonce(&account, nonce_key).unwrap();
         assert_eq!(new_nonce, 1);
 
-        let new_nonce = nonce_mgr.increment_nonce(&account, nonce_key);
+        let new_nonce = nonce_mgr.increment_nonce(&account, nonce_key).unwrap();
         assert_eq!(new_nonce, 2);
     }
 
@@ -229,26 +234,30 @@ mod tests {
         let account = address!("0x1111111111111111111111111111111111111111");
 
         // Initially, no active keys
-        let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account });
+        let count = nonce_mgr
+            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
+            .unwrap();
         assert_eq!(count, U256::ZERO);
 
         // Increment a nonce key - should increase active count
-        nonce_mgr.increment_nonce(&account, 1);
-        let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account });
+        nonce_mgr.increment_nonce(&account, 1).unwrap();
+        let count = nonce_mgr
+            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
+            .unwrap();
         assert_eq!(count, U256::from(1));
 
         // Increment same key again - count should stay the same
-        nonce_mgr.increment_nonce(&account, 1);
-        let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account });
+        nonce_mgr.increment_nonce(&account, 1).unwrap();
+        let count = nonce_mgr
+            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
+            .unwrap();
         assert_eq!(count, U256::from(1));
 
         // Increment a different key - count should increase
-        nonce_mgr.increment_nonce(&account, 2);
-        let count =
-            nonce_mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account });
+        nonce_mgr.increment_nonce(&account, 2).unwrap();
+        let count = nonce_mgr
+            .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
+            .unwrap();
         assert_eq!(count, U256::from(2));
     }
 
@@ -261,8 +270,8 @@ mod tests {
         let account2 = address!("0x2222222222222222222222222222222222222222");
         let nonce_key = 5;
 
-        nonce_mgr.set_nonce(&account1, nonce_key, 10);
-        nonce_mgr.set_nonce(&account2, nonce_key, 20);
+        nonce_mgr.set_nonce(&account1, nonce_key, 10).unwrap();
+        nonce_mgr.set_nonce(&account2, nonce_key, 20).unwrap();
 
         let nonce1 = nonce_mgr
             .get_nonce(INonce::getNonceCall {

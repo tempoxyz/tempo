@@ -1,8 +1,8 @@
-use super::{ITIP20, TIP20Error};
+use super::ITIP20;
 use crate::{
     Precompile, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip20::{IRolesAuth, RolesAuthError, TIP20Token},
+    tip20::{IRolesAuth, TIP20Token},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -20,18 +20,20 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
         match selector {
             // Metadata
-            ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(self.name()),
-            ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(self.symbol()),
-            ITIP20::decimalsCall::SELECTOR => metadata::<ITIP20::decimalsCall>(self.decimals()),
-            ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(self.currency()),
+            ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(|| self.name()),
+            ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(|| self.symbol()),
+            ITIP20::decimalsCall::SELECTOR => metadata::<ITIP20::decimalsCall>(|| self.decimals()),
+            ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(|| self.currency()),
             ITIP20::totalSupplyCall::SELECTOR => {
-                metadata::<ITIP20::totalSupplyCall>(self.total_supply())
+                metadata::<ITIP20::totalSupplyCall>(|| self.total_supply())
             }
-            ITIP20::supplyCapCall::SELECTOR => metadata::<ITIP20::supplyCapCall>(self.supply_cap()),
+            ITIP20::supplyCapCall::SELECTOR => {
+                metadata::<ITIP20::supplyCapCall>(|| self.supply_cap())
+            }
             ITIP20::transferPolicyIdCall::SELECTOR => {
-                metadata::<ITIP20::transferPolicyIdCall>(self.transfer_policy_id())
+                metadata::<ITIP20::transferPolicyIdCall>(|| self.transfer_policy_id())
             }
-            ITIP20::pausedCall::SELECTOR => metadata::<ITIP20::pausedCall>(self.paused()),
+            ITIP20::pausedCall::SELECTOR => metadata::<ITIP20::pausedCall>(|| self.paused()),
 
             // View functions
             ITIP20::balanceOfCall::SELECTOR => {
@@ -55,111 +57,95 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
             // State changing functions
             ITIP20::transferFromCall::SELECTOR => {
-                mutate::<ITIP20::transferFromCall, TIP20Error>(calldata, msg_sender, |s, call| {
+                mutate::<ITIP20::transferFromCall>(calldata, msg_sender, |s, call| {
                     self.transfer_from(s, call)
                 })
             }
             ITIP20::transferCall::SELECTOR => {
-                mutate::<ITIP20::transferCall, TIP20Error>(calldata, msg_sender, |s, call| {
+                mutate::<ITIP20::transferCall>(calldata, msg_sender, |s, call| {
                     self.transfer(s, call)
                 })
             }
             ITIP20::approveCall::SELECTOR => {
-                mutate::<ITIP20::approveCall, TIP20Error>(calldata, msg_sender, |s, call| {
-                    self.approve(s, call)
-                })
+                mutate::<ITIP20::approveCall>(calldata, msg_sender, |s, call| self.approve(s, call))
             }
             ITIP20::permitCall::SELECTOR => {
-                mutate_void::<ITIP20::permitCall, TIP20Error>(calldata, msg_sender, |s, call| {
+                mutate_void::<ITIP20::permitCall>(calldata, msg_sender, |s, call| {
                     self.permit(s, call)
                 })
             }
             ITIP20::changeTransferPolicyIdCall::SELECTOR => {
-                mutate_void::<ITIP20::changeTransferPolicyIdCall, TIP20Error>(
+                mutate_void::<ITIP20::changeTransferPolicyIdCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.change_transfer_policy_id(s, call),
                 )
             }
             ITIP20::setSupplyCapCall::SELECTOR => {
-                mutate_void::<ITIP20::setSupplyCapCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.set_supply_cap(s, call),
-                )
+                mutate_void::<ITIP20::setSupplyCapCall>(calldata, msg_sender, |s, call| {
+                    self.set_supply_cap(s, call)
+                })
             }
             ITIP20::pauseCall::SELECTOR => {
-                mutate_void::<ITIP20::pauseCall, TIP20Error>(calldata, msg_sender, |s, call| {
+                mutate_void::<ITIP20::pauseCall>(calldata, msg_sender, |s, call| {
                     self.pause(s, call)
                 })
             }
             ITIP20::unpauseCall::SELECTOR => {
-                mutate_void::<ITIP20::unpauseCall, TIP20Error>(calldata, msg_sender, |s, call| {
+                mutate_void::<ITIP20::unpauseCall>(calldata, msg_sender, |s, call| {
                     self.unpause(s, call)
                 })
             }
             ITIP20::updateQuoteTokenCall::SELECTOR => {
-                mutate_void::<ITIP20::updateQuoteTokenCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.update_quote_token(s, call),
-                )
+                mutate_void::<ITIP20::updateQuoteTokenCall>(calldata, msg_sender, |s, call| {
+                    self.update_quote_token(s, call)
+                })
             }
             ITIP20::finalizeQuoteTokenUpdateCall::SELECTOR => {
-                mutate_void::<ITIP20::finalizeQuoteTokenUpdateCall, TIP20Error>(
+                mutate_void::<ITIP20::finalizeQuoteTokenUpdateCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.finalize_quote_token_update(s, call),
                 )
             }
             ITIP20::mintCall::SELECTOR => {
-                mutate_void::<ITIP20::mintCall, _>(calldata, msg_sender, |s, call| {
-                    self.mint(s, call)
-                })
+                mutate_void::<ITIP20::mintCall>(calldata, msg_sender, |s, call| self.mint(s, call))
             }
             ITIP20::mintWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::mintWithMemoCall, _>(calldata, msg_sender, |s, call| {
+                mutate_void::<ITIP20::mintWithMemoCall>(calldata, msg_sender, |s, call| {
                     self.mint_with_memo(s, call)
                 })
             }
             ITIP20::burnCall::SELECTOR => {
-                mutate_void::<ITIP20::burnCall, TIP20Error>(calldata, msg_sender, |s, call| {
-                    self.burn(s, call)
-                })
+                mutate_void::<ITIP20::burnCall>(calldata, msg_sender, |s, call| self.burn(s, call))
             }
             ITIP20::burnWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::burnWithMemoCall, _>(calldata, msg_sender, |s, call| {
+                mutate_void::<ITIP20::burnWithMemoCall>(calldata, msg_sender, |s, call| {
                     self.burn_with_memo(s, call)
                 })
             }
             ITIP20::burnBlockedCall::SELECTOR => {
-                mutate_void::<ITIP20::burnBlockedCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.burn_blocked(s, call),
-                )
+                mutate_void::<ITIP20::burnBlockedCall>(calldata, msg_sender, |s, call| {
+                    self.burn_blocked(s, call)
+                })
             }
             ITIP20::transferWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::transferWithMemoCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.transfer_with_memo(s, call),
-                )
+                mutate_void::<ITIP20::transferWithMemoCall>(calldata, msg_sender, |s, call| {
+                    self.transfer_with_memo(s, call)
+                })
             }
             ITIP20::startRewardCall::SELECTOR => {
-                mutate::<ITIP20::startRewardCall, TIP20Error>(calldata, msg_sender, |s, call| {
+                mutate::<ITIP20::startRewardCall>(calldata, msg_sender, |s, call| {
                     self.start_reward(s, call)
                 })
             }
             ITIP20::setRewardRecipientCall::SELECTOR => {
-                mutate_void::<ITIP20::setRewardRecipientCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.set_reward_recipient(s, call),
-                )
+                mutate_void::<ITIP20::setRewardRecipientCall>(calldata, msg_sender, |s, call| {
+                    self.set_reward_recipient(s, call)
+                })
             }
             ITIP20::cancelStreamCall::SELECTOR => {
-                mutate::<ITIP20::cancelStreamCall, TIP20Error>(calldata, msg_sender, |s, call| {
+                mutate::<ITIP20::cancelStreamCall>(calldata, msg_sender, |s, call| {
                     self.cancel_stream(s, call)
                 })
             }
@@ -175,32 +161,24 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                 })
             }
             IRolesAuth::grantRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::grantRoleCall, RolesAuthError>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.get_roles_contract().grant_role(s, call),
-                )
+                mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, |s, call| {
+                    self.get_roles_contract().grant_role(s, call)
+                })
             }
             IRolesAuth::revokeRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::revokeRoleCall, RolesAuthError>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.get_roles_contract().revoke_role(s, call),
-                )
+                mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, |s, call| {
+                    self.get_roles_contract().revoke_role(s, call)
+                })
             }
             IRolesAuth::renounceRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::renounceRoleCall, RolesAuthError>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.get_roles_contract().renounce_role(s, call),
-                )
+                mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, |s, call| {
+                    self.get_roles_contract().renounce_role(s, call)
+                })
             }
             IRolesAuth::setRoleAdminCall::SELECTOR => {
-                mutate_void::<IRolesAuth::setRoleAdminCall, RolesAuthError>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.get_roles_contract().set_role_admin(s, call),
-                )
+                mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, |s, call| {
+                    self.get_roles_contract().set_role_admin(s, call)
+                })
             }
 
             _ => Err(PrecompileError::Other(
@@ -214,12 +192,14 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 mod tests {
     use crate::{
         LINKING_USD_ADDRESS, METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS,
-        expect_precompile_revert, storage::hashmap::HashMapStorageProvider, tip20::TIP20Token,
+        storage::hashmap::HashMapStorageProvider, tip20::TIP20Token,
     };
+
     use alloy::{
         primitives::{Bytes, U256, keccak256},
-        sol_types::SolValue,
+        sol_types::{SolInterface, SolValue},
     };
+    use tempo_contracts::precompiles::{RolesAuthError, TIP20Error};
 
     use super::*;
 
@@ -289,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mint_updates_storage() {
+    fn test_mint_updates_storage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
@@ -317,7 +297,7 @@ mod tests {
             .unwrap();
 
         // Check initial balance is zero
-        let initial_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let initial_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
         assert_eq!(initial_balance, U256::ZERO);
 
         // Create mint call
@@ -332,12 +312,14 @@ mod tests {
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify balance was updated in storage
-        let final_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient });
+        let final_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
         assert_eq!(final_balance, mint_amount);
+
+        Ok(())
     }
 
     #[test]
-    fn test_transfer_updates_balances() {
+    fn test_transfer_updates_balances() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
@@ -378,11 +360,11 @@ mod tests {
 
         // Check initial balances
         assert_eq!(
-            token.balance_of(ITIP20::balanceOfCall { account: sender }),
+            token.balance_of(ITIP20::balanceOfCall { account: sender })?,
             initial_sender_balance
         );
         assert_eq!(
-            token.balance_of(ITIP20::balanceOfCall { account: recipient }),
+            token.balance_of(ITIP20::balanceOfCall { account: recipient })?,
             U256::ZERO
         );
 
@@ -402,19 +384,21 @@ mod tests {
         assert!(success);
 
         // Verify balances were updated correctly
-        let final_sender_balance = token.balance_of(ITIP20::balanceOfCall { account: sender });
+        let final_sender_balance = token.balance_of(ITIP20::balanceOfCall { account: sender })?;
         let final_recipient_balance =
-            token.balance_of(ITIP20::balanceOfCall { account: recipient });
+            token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         assert_eq!(
             final_sender_balance,
             initial_sender_balance - transfer_amount
         );
         assert_eq!(final_recipient_balance, transfer_amount);
+
+        Ok(())
     }
 
     #[test]
-    fn test_approve_and_transfer_from() {
+    fn test_approve_and_transfer_from() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::random();
@@ -466,7 +450,7 @@ mod tests {
         assert!(success);
 
         // Check allowance
-        let allowance = token.allowance(ITIP20::allowanceCall { owner, spender });
+        let allowance = token.allowance(ITIP20::allowanceCall { owner, spender })?;
         assert_eq!(allowance, approve_amount);
 
         // Spender transfers from owner to recipient
@@ -483,21 +467,23 @@ mod tests {
 
         // Verify balances
         assert_eq!(
-            token.balance_of(ITIP20::balanceOfCall { account: owner }),
+            token.balance_of(ITIP20::balanceOfCall { account: owner })?,
             initial_owner_balance - transfer_amount
         );
         assert_eq!(
-            token.balance_of(ITIP20::balanceOfCall { account: recipient }),
+            token.balance_of(ITIP20::balanceOfCall { account: recipient })?,
             transfer_amount
         );
 
         // Verify allowance was reduced
-        let remaining_allowance = token.allowance(ITIP20::allowanceCall { owner, spender });
+        let remaining_allowance = token.allowance(ITIP20::allowanceCall { owner, spender })?;
         assert_eq!(remaining_allowance, approve_amount - transfer_amount);
+
+        Ok(())
     }
 
     #[test]
-    fn test_pause_and_unpause() {
+    fn test_pause_and_unpause() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
@@ -537,7 +523,7 @@ mod tests {
             .unwrap();
 
         // Verify initial state (not paused)
-        assert!(!token.paused());
+        assert!(!token.paused()?);
 
         // Pause the token
         let pause_call = ITIP20::pauseCall {};
@@ -546,7 +532,7 @@ mod tests {
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify token is paused
-        assert!(token.paused());
+        assert!(token.paused()?);
 
         // Unpause the token
         let unpause_call = ITIP20::unpauseCall {};
@@ -555,11 +541,13 @@ mod tests {
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify token is unpaused
-        assert!(!token.paused());
+        assert!(!token.paused()?);
+
+        Ok(())
     }
 
     #[test]
-    fn test_burn_functionality() {
+    fn test_burn_functionality() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
@@ -611,10 +599,10 @@ mod tests {
 
         // Check initial state
         assert_eq!(
-            token.balance_of(ITIP20::balanceOfCall { account: burner }),
+            token.balance_of(ITIP20::balanceOfCall { account: burner })?,
             initial_balance
         );
-        assert_eq!(token.total_supply(), initial_balance);
+        assert_eq!(token.total_supply()?, initial_balance);
 
         // Burn tokens
         let burn_call = ITIP20::burnCall {
@@ -626,10 +614,12 @@ mod tests {
 
         // Verify balances and total supply after burn
         assert_eq!(
-            token.balance_of(ITIP20::balanceOfCall { account: burner }),
+            token.balance_of(ITIP20::balanceOfCall { account: burner })?,
             initial_balance - burn_amount
         );
-        assert_eq!(token.total_supply(), initial_balance - burn_amount);
+        assert_eq!(token.total_supply()?, initial_balance - burn_amount);
+
+        Ok(())
     }
 
     #[test]
@@ -686,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn test_supply_cap_enforcement() {
+    fn test_supply_cap_enforcement() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
@@ -727,14 +717,17 @@ mod tests {
             amount: mint_amount,
         };
         let calldata = mint_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin);
+        let output = token.call(&Bytes::from(calldata), &admin)?;
+        assert!(output.reverted);
 
-        // Should fail due to supply cap
-        expect_precompile_revert(&result, TIP20Error::supply_cap_exceeded());
+        let expected: Bytes = TIP20Error::supply_cap_exceeded().selector().into();
+        assert_eq!(output.bytes, expected);
+
+        Ok(())
     }
 
     #[test]
-    fn test_role_based_access_control() {
+    fn test_role_based_access_control() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
@@ -786,16 +779,20 @@ mod tests {
             amount: U256::from(100),
         };
         let calldata = mint_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata.clone()), &unauthorized);
-        expect_precompile_revert(&result, TIP20Error::policy_forbids());
+        let output = token.call(&Bytes::from(calldata.clone()), &unauthorized)?;
+        assert!(output.reverted);
+        let expected: Bytes = RolesAuthError::unauthorized().selector().into();
+        assert_eq!(output.bytes, expected);
 
         // Test authorized mint (should succeed)
         let result = token.call(&Bytes::from(calldata), &user1).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        Ok(())
     }
 
     #[test]
-    fn test_transfer_with_memo() {
+    fn test_transfer_with_memo() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
@@ -846,13 +843,15 @@ mod tests {
 
         // Verify balances
         assert_eq!(
-            token.balance_of(ITIP20::balanceOfCall { account: sender }),
+            token.balance_of(ITIP20::balanceOfCall { account: sender })?,
             initial_balance - transfer_amount
         );
         assert_eq!(
-            token.balance_of(ITIP20::balanceOfCall { account: recipient }),
+            token.balance_of(ITIP20::balanceOfCall { account: recipient })?,
             transfer_amount
         );
+
+        Ok(())
     }
 
     #[test]
@@ -877,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn test_change_transfer_policy_id() {
+    fn test_change_transfer_policy_id() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
@@ -898,12 +897,16 @@ mod tests {
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify policy ID was changed
-        assert_eq!(token.transfer_policy_id(), new_policy_id);
+        assert_eq!(token.transfer_policy_id()?, new_policy_id);
 
         // Non-admin cannot change transfer policy ID
         let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &non_admin);
-        expect_precompile_revert(&result, TIP20Error::policy_forbids());
+        let output = token.call(&Bytes::from(calldata), &non_admin)?;
+        assert!(output.reverted);
+        let expected: Bytes = RolesAuthError::unauthorized().selector().into();
+        assert_eq!(output.bytes, expected);
+
+        Ok(())
     }
 }

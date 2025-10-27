@@ -3,7 +3,7 @@ use crate::{
     linking_usd::LinkingUSD,
     metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip20::{IRolesAuth, ITIP20, RolesAuthError, TIP20Error},
+    tip20::{IRolesAuth, ITIP20},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -21,20 +21,22 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
 
         match selector {
             // Metadata
-            ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(self.name()),
-            ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(self.symbol()),
-            ITIP20::decimalsCall::SELECTOR => metadata::<ITIP20::decimalsCall>(self.decimals()),
+            ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(|| self.name()),
+            ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(|| self.symbol()),
+            ITIP20::decimalsCall::SELECTOR => metadata::<ITIP20::decimalsCall>(|| self.decimals()),
             ITIP20::totalSupplyCall::SELECTOR => {
-                metadata::<ITIP20::totalSupplyCall>(self.total_supply())
+                metadata::<ITIP20::totalSupplyCall>(|| self.total_supply())
             }
-            ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(self.currency()),
-            ITIP20::quoteTokenCall::SELECTOR => metadata::<ITIP20::quoteTokenCall>(Address::ZERO),
-            ITIP20::pausedCall::SELECTOR => metadata::<ITIP20::pausedCall>(self.paused()),
+            ITIP20::currencyCall::SELECTOR => metadata::<ITIP20::currencyCall>(|| self.currency()),
+            ITIP20::quoteTokenCall::SELECTOR => {
+                view::<ITIP20::quoteTokenCall>(calldata, |_| self.token.quote_token())
+            }
+            ITIP20::pausedCall::SELECTOR => metadata::<ITIP20::pausedCall>(|| self.paused()),
             ITIP20::supplyCapCall::SELECTOR => {
-                metadata::<ITIP20::supplyCapCall>(self.token.supply_cap())
+                metadata::<ITIP20::supplyCapCall>(|| self.token.supply_cap())
             }
             ITIP20::transferPolicyIdCall::SELECTOR => {
-                metadata::<ITIP20::transferPolicyIdCall>(self.token.transfer_policy_id())
+                metadata::<ITIP20::transferPolicyIdCall>(|| self.token.transfer_policy_id())
             }
 
             // View functions
@@ -50,95 +52,83 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
 
             // Mutating functions that work normally
             ITIP20::approveCall::SELECTOR => {
-                mutate::<ITIP20::approveCall, TIP20Error>(calldata, msg_sender, |sender, call| {
+                mutate::<ITIP20::approveCall>(calldata, msg_sender, |sender, call| {
                     self.approve(sender, call)
                 })
             }
             ITIP20::mintCall::SELECTOR => {
-                mutate_void::<ITIP20::mintCall, TIP20Error>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::mintCall>(calldata, msg_sender, |sender, call| {
                     self.mint(sender, call)
                 })
             }
             ITIP20::mintWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::mintWithMemoCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.token.mint_with_memo(sender, call),
-                )
+                mutate_void::<ITIP20::mintWithMemoCall>(calldata, msg_sender, |sender, call| {
+                    self.token.mint_with_memo(sender, call)
+                })
             }
             ITIP20::burnCall::SELECTOR => {
-                mutate_void::<ITIP20::burnCall, TIP20Error>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::burnCall>(calldata, msg_sender, |sender, call| {
                     self.burn(sender, call)
                 })
             }
             ITIP20::burnWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::burnWithMemoCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.token.burn_with_memo(sender, call),
-                )
+                mutate_void::<ITIP20::burnWithMemoCall>(calldata, msg_sender, |sender, call| {
+                    self.token.burn_with_memo(sender, call)
+                })
             }
             ITIP20::burnBlockedCall::SELECTOR => {
-                mutate_void::<ITIP20::burnBlockedCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.token.burn_blocked(sender, call),
-                )
+                mutate_void::<ITIP20::burnBlockedCall>(calldata, msg_sender, |sender, call| {
+                    self.token.burn_blocked(sender, call)
+                })
             }
-            ITIP20::pauseCall::SELECTOR => mutate_void::<ITIP20::pauseCall, TIP20Error>(
-                calldata,
-                msg_sender,
-                |sender, call| self.pause(sender, call),
-            ),
-            ITIP20::unpauseCall::SELECTOR => mutate_void::<ITIP20::unpauseCall, TIP20Error>(
-                calldata,
-                msg_sender,
-                |sender, call| self.unpause(sender, call),
-            ),
-            ITIP20::permitCall::SELECTOR => mutate_void::<ITIP20::permitCall, TIP20Error>(
-                calldata,
-                msg_sender,
-                |sender, call| self.token.permit(sender, call),
-            ),
+            ITIP20::pauseCall::SELECTOR => {
+                mutate_void::<ITIP20::pauseCall>(calldata, msg_sender, |sender, call| {
+                    self.pause(sender, call)
+                })
+            }
+            ITIP20::unpauseCall::SELECTOR => {
+                mutate_void::<ITIP20::unpauseCall>(calldata, msg_sender, |sender, call| {
+                    self.unpause(sender, call)
+                })
+            }
+            ITIP20::permitCall::SELECTOR => {
+                mutate_void::<ITIP20::permitCall>(calldata, msg_sender, |sender, call| {
+                    self.token.permit(sender, call)
+                })
+            }
             ITIP20::changeTransferPolicyIdCall::SELECTOR => {
-                mutate_void::<ITIP20::changeTransferPolicyIdCall, TIP20Error>(
+                mutate_void::<ITIP20::changeTransferPolicyIdCall>(
                     calldata,
                     msg_sender,
                     |sender, call| self.token.change_transfer_policy_id(sender, call),
                 )
             }
             ITIP20::setSupplyCapCall::SELECTOR => {
-                mutate_void::<ITIP20::setSupplyCapCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.token.set_supply_cap(sender, call),
-                )
+                mutate_void::<ITIP20::setSupplyCapCall>(calldata, msg_sender, |sender, call| {
+                    self.token.set_supply_cap(sender, call)
+                })
             }
 
             // Transfer functions that are disabled for LinkingUSD
             ITIP20::transferCall::SELECTOR => {
-                mutate::<ITIP20::transferCall, TIP20Error>(calldata, msg_sender, |sender, call| {
+                mutate::<ITIP20::transferCall>(calldata, msg_sender, |sender, call| {
                     self.transfer(sender, call)
                 })
             }
-            ITIP20::transferFromCall::SELECTOR => mutate::<ITIP20::transferFromCall, TIP20Error>(
-                calldata,
-                msg_sender,
-                |sender, call| self.transfer_from(sender, call),
-            ),
+            ITIP20::transferFromCall::SELECTOR => {
+                mutate::<ITIP20::transferFromCall>(calldata, msg_sender, |sender, call| {
+                    self.transfer_from(sender, call)
+                })
+            }
             ITIP20::transferWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::transferWithMemoCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.transfer_with_memo(sender, call),
-                )
+                mutate_void::<ITIP20::transferWithMemoCall>(calldata, msg_sender, |sender, call| {
+                    self.transfer_with_memo(sender, call)
+                })
             }
             ITIP20::transferFromWithMemoCall::SELECTOR => {
-                mutate::<ITIP20::transferFromWithMemoCall, TIP20Error>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.transfer_from_with_memo(sender, call),
-                )
+                mutate::<ITIP20::transferFromWithMemoCall>(calldata, msg_sender, |sender, call| {
+                    self.transfer_from_with_memo(sender, call)
+                })
             }
 
             // RolesAuth functions
@@ -153,32 +143,24 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
                 })
             }
             IRolesAuth::grantRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::grantRoleCall, RolesAuthError>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.get_roles_contract().grant_role(sender, call),
-                )
+                mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, |sender, call| {
+                    self.get_roles_contract().grant_role(sender, call)
+                })
             }
             IRolesAuth::revokeRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::revokeRoleCall, RolesAuthError>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.get_roles_contract().revoke_role(sender, call),
-                )
+                mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, |sender, call| {
+                    self.get_roles_contract().revoke_role(sender, call)
+                })
             }
             IRolesAuth::renounceRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::renounceRoleCall, RolesAuthError>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.get_roles_contract().renounce_role(sender, call),
-                )
+                mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, |sender, call| {
+                    self.get_roles_contract().renounce_role(sender, call)
+                })
             }
             IRolesAuth::setRoleAdminCall::SELECTOR => {
-                mutate_void::<IRolesAuth::setRoleAdminCall, RolesAuthError>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.get_roles_contract().set_role_admin(sender, call),
-                )
+                mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, |sender, call| {
+                    self.get_roles_contract().set_role_admin(sender, call)
+                })
             }
 
             _ => Err(PrecompileError::Other("Unknown selector".to_string())),
