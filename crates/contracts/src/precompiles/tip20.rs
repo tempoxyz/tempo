@@ -96,6 +96,9 @@ sol! {
         event PauseStateUpdate(address indexed updater, bool isPaused);
         event UpdateQuoteToken(address indexed updater, address indexed newQuoteToken);
         event QuoteTokenUpdateFinalized(address indexed updater, address indexed newQuoteToken);
+        event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
+        event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
+        event RewardRecipientSet(address indexed holder, address indexed recipient);
 
         // Errors
         error InsufficientBalance();
@@ -113,6 +116,9 @@ sol! {
         error InvalidCurrency();
         error InvalidQuoteToken();
         error TransfersDisabled();
+        error InvalidAmount();
+        error NotStreamFunder();
+        error StreamInactive();
     }
 }
 

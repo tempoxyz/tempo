@@ -2,24 +2,24 @@ pub mod dispatch;
 pub mod roles;
 
 pub use tempo_contracts::precompiles::{
-    IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
+    IRolesAuth, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, ITIP20,
 };
 
 use crate::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     storage::{
-        PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
+        PrecompileStorageProvider,
     },
-    tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
+    tip20::roles::{RolesAuthContract, DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
     tip4217_registry::{ITIP4217Registry, TIP4217Registry},
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use alloy::{
     consensus::crypto::secp256k1 as eth_secp256k1,
     hex,
-    primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
+    primitives::{keccak256, Address, Bytes, IntoLogData, Signature as EthSignature, B256, U256},
     sol_types::SolStruct,
 };
 use revm::{
@@ -54,7 +54,7 @@ pub fn address_to_token_id_unchecked(address: &Address) -> u64 {
 }
 
 pub mod slots {
-    use alloy::primitives::{U256, uint};
+    use alloy::primitives::{uint, U256};
 
     // Variables
     pub const NAME: U256 = uint!(0_U256);
@@ -1099,14 +1099,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, FixedBytes, U256, keccak256};
+    use alloy::primitives::{keccak256, Address, FixedBytes, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
     use crate::{
-        DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider,
-        tip20_factory::ITIP20Factory,
+        storage::hashmap::HashMapStorageProvider, tip20_factory::ITIP20Factory, DEFAULT_FEE_TOKEN,
+        LINKING_USD_ADDRESS,
     };
 
     /// Initialize a factory and create a single token
@@ -1959,9 +1959,7 @@ mod tests {
     fn test_tip20_token_prefix() {
         assert_eq!(
             TIP20_TOKEN_PREFIX,
-            [
-                0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-            ]
+            [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         );
         assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..12], &TIP20_TOKEN_PREFIX);
     }
@@ -1970,9 +1968,7 @@ mod tests {
     fn test_tip20_payment_prefix() {
         assert_eq!(
             TIP20_PAYMENT_PREFIX,
-            [
-                0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-            ]
+            [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         );
         // Payment prefix should start with token prefix
         assert_eq!(&TIP20_PAYMENT_PREFIX[..12], &TIP20_TOKEN_PREFIX);
