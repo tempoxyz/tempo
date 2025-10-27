@@ -170,16 +170,14 @@ where
             self.metrics
                 .ceremony_players
                 .set(epoch_state.participants.len() as i64);
-            Some(
-                ceremony::Ceremony::init(
-                    &mut self.context,
-                    &mut ceremony_mux,
-                    self.ceremony_metadata.clone(),
-                    config,
-                )
-                .await
-                .expect("must be able to initialize the first dkg ceremony; can't recover if not"),
+            ceremony::Ceremony::init(
+                &mut self.context,
+                &mut ceremony_mux,
+                self.ceremony_metadata.clone(),
+                config,
             )
+            .await
+            .expect("must be able to initialize the first dkg ceremony; can't recover if not")
         };
 
         while let Some(message) = self.mailbox.next().await {
@@ -187,28 +185,17 @@ where
             match message.command {
                 super::Command::GetIntermediateDealing(get_ceremony_deal) => {
                     let _: Result<_, _> = self
-                        .handle_get_intermediate_dealing(
-                            cause,
-                            get_ceremony_deal,
-                            ceremony
-                                .as_mut()
-                                .expect("there must be a ceremony active at all times"),
-                        )
+                        .handle_get_intermediate_dealing(cause, get_ceremony_deal, &mut ceremony)
                         .await;
                 }
                 super::Command::GetOutcome(get_ceremony_outcome) => {
                     let _: Result<_, _> = self
-                        .handle_get_outcome(
-                            cause,
-                            get_ceremony_outcome,
-                            ceremony
-                                .as_mut()
-                                .expect("there must be a ceremony active at all times"),
-                        )
+                        .handle_get_outcome(cause, get_ceremony_outcome, &mut ceremony)
                         .await;
                 }
                 super::Command::Finalize(finalize) => {
-                    self.handle_finalize(cause, finalize, &mut ceremony, &mut ceremony_mux)
+                    ceremony = self
+                        .handle_finalize(cause, finalize, ceremony, &mut ceremony_mux)
                         .await;
                 }
             }
@@ -311,35 +298,30 @@ where
         fields(
             block.derived_epoch = epoch::of_height(block.height(), self.config.heights_per_epoch),
             block.height = block.height(),
-            ceremony.epoch = ceremony.as_ref().map(Ceremony::epoch),
+            ceremony.epoch = ceremony.epoch(),
         ),
     )]
     async fn handle_finalize<TReceiver, TSender>(
         &mut self,
         cause: Span,
         Finalize { block, response }: Finalize,
-        ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
+        mut ceremony: Ceremony<ContextCell<TContext>, TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
-    ) where
+    ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
+    where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        assert!(
-            ceremony.is_some(),
-            "there must be a ceremony active at all times"
-        );
-
         // Special case height == 0
         let Some(block_epoch) = epoch::of_height(block.height(), self.config.heights_per_epoch)
         else {
-            return;
+            return ceremony;
         };
 
         // Special case the last height of the previous epoch: remember that we
         // can only enter the a new epoch once the last height of outgoing was
         // reached, because that's what provides the genesis.
-        if let Some(this_ceremony) = ceremony
-            && this_ceremony.epoch().saturating_sub(1) == block_epoch
+        if ceremony.epoch().saturating_sub(1) == block_epoch
             && epoch::is_last_height(block.height(), self.config.heights_per_epoch)
         {
             debug!(
@@ -350,30 +332,29 @@ where
                 .epoch_manager
                 .report(
                     epoch::Enter {
-                        epoch: this_ceremony.config().epoch,
-                        public: this_ceremony.config().public.clone(),
-                        share: this_ceremony.config().share.clone(),
-                        participants: this_ceremony.config().dealers.clone(),
+                        epoch: ceremony.config().epoch,
+                        public: ceremony.config().public.clone(),
+                        share: ceremony.config().share.clone(),
+                        participants: ceremony.config().dealers.clone(),
                     }
                     .into(),
                 )
                 .await;
         }
 
-        let Some(mut this_ceremony) = ceremony.take_if(|ceremony| ceremony.epoch() == block_epoch)
-        else {
+        if ceremony.epoch() != block_epoch {
             debug!(
                 "block was for a different epoch; not including it in the \
                 ceremony"
             );
-            return;
+            return ceremony;
         };
 
         // Notify the epoch manager that the first height of the new epoch
         // was entered and the previous epoch can be exited.
         if epoch::is_first_height(block.height(), self.config.heights_per_epoch) {
             // Special case epoch == 0
-            if let Some(previous_epoch) = this_ceremony.epoch().checked_sub(1) {
+            if let Some(previous_epoch) = ceremony.epoch().checked_sub(1) {
                 self.config
                     .epoch_manager
                     .report(
@@ -388,30 +369,32 @@ where
 
         match epoch::relative_position(block.height(), self.config.heights_per_epoch) {
             epoch::RelativePosition::FirstHalf => {
-                let _ = this_ceremony.distribute_shares().await;
-                let _ = this_ceremony.process_messages().await;
+                let _ = ceremony.distribute_shares().await;
+                let _ = ceremony.process_messages().await;
             }
             epoch::RelativePosition::Middle => {
-                let _ = this_ceremony.process_messages().await;
-                let _ = this_ceremony.construct_intermediate_outcome().await;
+                let _ = ceremony.process_messages().await;
+                let _ = ceremony.construct_intermediate_outcome().await;
             }
             epoch::RelativePosition::SecondHalf => {
-                let _ = this_ceremony.process_dealings_in_block(&block).await;
+                let _ = ceremony.process_dealings_in_block(&block).await;
             }
         }
 
         // XXX: Need to finalize on the pre-to-last height of the epoch so that
         // the information becomes available on the last height and can be
         // stored on chain.
-        let new_ceremony = if epoch::is_last_height(
+        //
+        // This starts a new ceremony.
+        if epoch::is_last_height(
             block.height().saturating_add(1),
             self.config.heights_per_epoch,
         ) {
             info!("on pre-to-last height of epoch; finalizing ceremony");
 
-            let next_epoch = this_ceremony.epoch().saturating_add(1);
+            let next_epoch = ceremony.epoch().saturating_add(1);
 
-            let ceremony_outcome = match this_ceremony.finalize() {
+            let ceremony_outcome = match ceremony.finalize() {
                 Ok(outcome) => {
                     self.metrics.ceremony_successes.inc();
                     info!(
@@ -463,7 +446,7 @@ where
                 .ceremony_players
                 .set(epoch_state.participants.len() as i64);
 
-            ceremony::Ceremony::init(
+            ceremony = ceremony::Ceremony::init(
                 &mut self.context,
                 ceremony_mux,
                 self.ceremony_metadata.clone(),
@@ -471,18 +454,13 @@ where
             )
             .await
             .expect("must always be able to initialize ceremony")
-        } else {
-            this_ceremony
-        };
-
-        assert!(
-            ceremony.replace(new_ceremony).is_none(),
-            "ceremony was moved out of option at the start of this method"
-        );
+        }
 
         if let Err(()) = response.send(()) {
             warn!("could not confirm finalization because recipient already went away");
         }
+
+        ceremony
     }
 }
 
