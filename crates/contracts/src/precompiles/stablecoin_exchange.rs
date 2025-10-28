@@ -71,7 +71,6 @@ sol! {
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
-        function getBookKeys() external view returns (bytes32[] memory);
 
         // Events
         event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);

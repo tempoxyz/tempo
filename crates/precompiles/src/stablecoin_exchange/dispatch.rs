@@ -71,12 +71,6 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
 
-            IStablecoinExchange::getBookKeysCall::SELECTOR => {
-                view::<IStablecoinExchange::getBookKeysCall>(calldata, |_call| {
-                    self.get_book_keys()
-                })
-            }
-
             IStablecoinExchange::createPairCall::SELECTOR => {
                 mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, |_s, call| {
                     self.create_pair(&call.base)
