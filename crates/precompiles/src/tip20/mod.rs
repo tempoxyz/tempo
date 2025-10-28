@@ -1470,10 +1470,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     fn get_next_stream_id(&mut self) -> Result<u64, TempoPrecompileError> {
-        Ok(self
+        let id = self
             .storage
             .sload(self.token_address, slots::NEXT_STREAM_ID)?
-            .to::<u64>())
+            .to::<u64>();
+
+        Ok(id.max(1))
     }
 
     fn set_next_stream_id(&mut self, value: u64) -> Result<(), TempoPrecompileError> {
@@ -2655,7 +2657,7 @@ mod tests {
             },
         )?;
 
-        assert_eq!(stream_id, 0);
+        assert_eq!(stream_id, 1);
         let token_address = token.token_address;
         let balance = token.get_balance(&token_address)?;
         assert_eq!(balance, reward_amount);
@@ -2669,7 +2671,6 @@ mod tests {
         let expected_rate = reward_amount / U256::from(10);
         assert_eq!(total_reward_per_second, expected_rate);
 
-        // Check reward per token stored (should still be 0 as no time has passed)
         let reward_per_token_stored = token.get_reward_per_token_stored()?;
         assert_eq!(reward_per_token_stored, U256::ZERO);
 
@@ -2730,7 +2731,7 @@ mod tests {
         assert_eq!(reward_per_token_stored, U256::ZERO);
 
         let opted_in_supply = token.get_opted_in_supply()?;
-        assert_eq!(opted_in_supply, U256::ZERO); // No users opted in
+        assert_eq!(opted_in_supply, U256::ZERO);
 
         Ok(())
     }
