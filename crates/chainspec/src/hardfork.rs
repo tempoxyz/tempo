@@ -6,10 +6,11 @@
 //!
 //! When a new hardfork is needed:
 //! 1. Add a new variant to `TempoHardfork` (e.g., `Allegro`, `Vivace`)
-//! 2. Add the activation condition to `TempoChainHardforks`
-//! 3. Add a convenience method to `TempoHardforks` trait (optional, for ergonomics)
-//! 4. Update genesis files with the activation timestamp/block
-//! 5. Use hardfork checks in the EVM handler and precompiles to gate new features
+//! 2. Add a field to `TempoGenesisInfo` in `spec.rs` (e.g., `allegro_time: Option<u64>`)
+//! 3. Add the hardfork to the `tempo_hardfork_opts` array in `TempoChainSpec::from_genesis`
+//! 4. Add a convenience method to `TempoHardforks` trait (optional, for ergonomics)
+//! 5. Update genesis files with the activation timestamp (e.g., `"allegroTime": 1234567890`)
+//! 6. Use hardfork checks in the EVM handler and precompiles to gate new features
 //!
 //! ## Current State
 //!
