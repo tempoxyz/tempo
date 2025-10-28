@@ -5,6 +5,7 @@
 pub mod error;
 pub use error::Result;
 use tempo_chainspec::hardfork::TempoHardfork;
+pub mod account_keychain;
 pub mod linking_usd;
 pub mod nonce;
 pub mod stablecoin_exchange;
@@ -21,6 +22,7 @@ pub mod validator_config;
 pub mod test_util;
 
 use crate::{
+    account_keychain::AccountKeychain,
     linking_usd::LinkingUSD,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
@@ -49,9 +51,10 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
-    TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS,
 };
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
@@ -95,6 +98,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(NoncePrecompile::create(chain_id, spec))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
             Some(ValidatorConfigPrecompile::create(chain_id, spec))
+        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
+            Some(AccountKeychainPrecompile::create(chain_id, spec))
         } else {
             None
         }
@@ -199,6 +204,16 @@ impl NoncePrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("NonceManager", |input| NonceManager::new(
             &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
+        ))
+    }
+}
+
+pub struct AccountKeychainPrecompile;
+impl AccountKeychainPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("AccountKeychain", |input| AccountKeychain::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+            ACCOUNT_KEYCHAIN_ADDRESS
         ))
     }
 }

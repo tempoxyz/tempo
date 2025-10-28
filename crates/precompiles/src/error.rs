@@ -57,6 +57,10 @@ pub enum TempoPrecompileError {
     #[error("Validator config error: {0:?}")]
     ValidatorConfigError(ValidatorConfigError),
 
+    /// Error from account keychain precompile
+    #[error("Account keychain error: {0:?}")]
+    AccountKeychainError(crate::account_keychain::AccountKeychainError),
+
     #[error("Gas limit exceeded")]
     OutOfGas,
 
@@ -74,6 +78,12 @@ pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
 impl TempoPrecompileError {
     pub fn under_overflow() -> Self {
         Self::Panic(PanicKind::UnderOverflow)
+    }
+}
+
+impl From<crate::account_keychain::AccountKeychainError> for TempoPrecompileError {
+    fn from(err: crate::account_keychain::AccountKeychainError) -> Self {
+        Self::AccountKeychainError(err)
     }
 }
 
@@ -115,6 +125,7 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                         panic.abi_encode().into()
                     }
                     TPErr::ValidatorConfigError(e) => e.abi_encode().into(),
+                    TPErr::AccountKeychainError(e) => e.abi_encode().into(),
                     TPErr::OutOfGas => {
                         return Err(PrecompileError::OutOfGas);
                     }
