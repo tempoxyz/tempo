@@ -1,14 +1,14 @@
 use alloy::{primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder};
 use rand::Rng;
 use std::env;
-use tempo_contracts::precompiles::ITIP20::ITIP20Instance;
+use tempo_contracts::precompiles::{
+    IStablecoinExchange,
+    ITIP20::{self, ITIP20Instance},
+};
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS,
-    contracts::{
-        stablecoin_exchange::{MAX_TICK, MIN_TICK},
-        token_id_to_address,
-        types::{IStablecoinExchange, ITIP20},
-    },
+    stablecoin_exchange::{MAX_TICK, MIN_TICK},
+    tip20::token_id_to_address,
 };
 
 use crate::utils::{await_receipts, setup_test_token};
@@ -442,6 +442,191 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         // Assert order does not exist
         assert!(err.to_string().contains("0x5dcaf2d7"));
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_multi_hop_swap() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Setup node
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    // Setup tokens: LinkingUSD (token_id=0) <- USDC (token_id=2) and LinkingUSD <- EURC (token_id=3)
+    let linking_usd = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+    let usdc = setup_test_token(provider.clone(), caller).await?; // This will be token_id=2
+    let eurc = setup_test_token(provider.clone(), caller).await?; // This will be token_id=3
+
+    // Setup liquidity provider (Alice) and trader (Bob)
+    let alice_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)
+        .unwrap()
+        .build()
+        .unwrap();
+    let alice = alice_signer.address();
+
+    let bob_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(2)
+        .unwrap()
+        .build()
+        .unwrap();
+    let bob = bob_signer.address();
+
+    let mint_amount = U256::from(10_000_000u128);
+    let mut pending = vec![];
+
+    // Mint tokens to Alice (liquidity provider)
+    pending.push(usdc.mint(alice, mint_amount).send().await?);
+    pending.push(eurc.mint(alice, mint_amount).send().await?);
+    pending.push(linking_usd.mint(alice, mint_amount).send().await?);
+
+    // Mint USDC to Bob (trader)
+    pending.push(usdc.mint(bob, mint_amount).send().await?);
+
+    await_receipts(&mut pending).await?;
+
+    // Create pairs on the exchange
+    let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
+    let tx = exchange.createPair(*usdc.address()).send().await?;
+    tx.get_receipt().await?;
+    let tx = exchange.createPair(*eurc.address()).send().await?;
+    tx.get_receipt().await?;
+
+    // Alice approves exchange to spend her tokens
+    let alice_provider = ProviderBuilder::new()
+        .wallet(alice_signer.clone())
+        .connect_http(http_url.clone());
+    let alice_usdc = ITIP20::new(*usdc.address(), alice_provider.clone());
+    let alice_eurc = ITIP20::new(*eurc.address(), alice_provider.clone());
+    let alice_linking_usd = ITIP20::new(*linking_usd.address(), alice_provider.clone());
+
+    let mut pending = vec![];
+    pending.push(
+        alice_usdc
+            .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    pending.push(
+        alice_eurc
+            .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    pending.push(
+        alice_linking_usd
+            .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    // Alice places liquidity orders at tick 0 (1:1 price)
+    let alice_exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, alice_provider);
+    let liquidity_amount = 5_000_000u128;
+
+    // For USDC -> LinkingUSD: need bid on USDC (buying USDC with LinkingUSD)
+    let tx = alice_exchange
+        .place(*usdc.address(), liquidity_amount, true, 0)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
+
+    // For LinkingUSD -> EURC: need ask on EURC (selling EURC for LinkingUSD)
+    let tx = alice_exchange
+        .place(*eurc.address(), liquidity_amount, false, 0)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
+
+    // Bob approves exchange to spend his USDC
+    let bob_provider = ProviderBuilder::new()
+        .wallet(bob_signer)
+        .connect_http(http_url.clone());
+    let bob_usdc = ITIP20::new(*usdc.address(), bob_provider.clone());
+    let tx = bob_usdc
+        .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
+
+    // Check Bob's balances before swap
+    let bob_exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, bob_provider.clone());
+    let bob_usdc_before = bob_usdc.balanceOf(bob).call().await?;
+    let bob_eurc = ITIP20::new(*eurc.address(), bob_provider.clone());
+    let bob_eurc_before = bob_eurc.balanceOf(bob).call().await?;
+    let bob_linking_usd = ITIP20::new(*linking_usd.address(), bob_provider);
+    let bob_linking_usd_wallet_before = bob_linking_usd.balanceOf(bob).call().await?;
+    let bob_linking_usd_exchange_before = bob_exchange
+        .balanceOf(bob, *linking_usd.address())
+        .call()
+        .await?;
+
+    // Execute multi-hop swap: USDC -> LinkingUSD -> EURC
+    let amount_in = 1_000_000u128;
+    let amount_out = bob_exchange
+        .quoteSwapExactAmountIn(*usdc.address(), *eurc.address(), amount_in)
+        .call()
+        .await?;
+
+    let tx = bob_exchange
+        .swapExactAmountIn(*usdc.address(), *eurc.address(), amount_in, 0)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
+
+    // Check Bob's balances after swap
+    let bob_usdc_after = bob_usdc.balanceOf(bob).call().await?;
+    let bob_eurc_after = bob_eurc.balanceOf(bob).call().await?;
+    let bob_linking_usd_wallet_after = bob_linking_usd.balanceOf(bob).call().await?;
+    let bob_linking_usd_exchange_after = bob_exchange
+        .balanceOf(bob, *linking_usd.address())
+        .call()
+        .await?;
+
+    // Verify Bob spent USDC
+    assert_eq!(
+        bob_usdc_before - bob_usdc_after,
+        U256::from(amount_in),
+        "Bob should have spent exact amount_in USDC"
+    );
+
+    // Verify Bob received EURC
+    assert_eq!(
+        bob_eurc_after - bob_eurc_before,
+        U256::from(amount_out),
+        "Bob should have received amount_out EURC"
+    );
+
+    // Verify Bob has ZERO LinkingUSD (proving intermediate balances are transitory)
+    assert_eq!(
+        bob_linking_usd_wallet_before, bob_linking_usd_wallet_after,
+        "Bob's LinkingUSD wallet balance should not change (transitory)"
+    );
+    assert!(
+        bob_linking_usd_wallet_after.is_zero(),
+        "Bob should have ZERO LinkingUSD in wallet (transitory)"
+    );
+    assert_eq!(
+        bob_linking_usd_exchange_before, bob_linking_usd_exchange_after,
+        "Bob's LinkingUSD exchange balance should not change (transitory)"
+    );
+    assert_eq!(
+        bob_linking_usd_exchange_after, 0,
+        "Bob should have ZERO LinkingUSD on exchange (transitory)"
+    );
 
     Ok(())
 }

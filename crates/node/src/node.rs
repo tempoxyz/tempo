@@ -1,5 +1,8 @@
 use crate::{
-    TempoPayloadTypes, args::TempoArgs, engine::TempoEngineValidator, rpc::TempoEthApiBuilder,
+    TempoPayloadTypes,
+    args::TempoArgs,
+    engine::TempoEngineValidator,
+    rpc::{TempoDexApiServer, TempoEthApiBuilder, dex::TempoDex},
 };
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
@@ -128,11 +131,21 @@ where
 {
     type Handle = <RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB> as NodeAddOns<N>>::Handle;
 
-    async fn launch_add_ons(
-        self,
-        ctx: reth_node_api::AddOnsContext<'_, N>,
-    ) -> eyre::Result<Self::Handle> {
-        self.inner.launch_add_ons(ctx).await
+    async fn launch_add_ons(self, ctx: AddOnsContext<'_, N>) -> eyre::Result<Self::Handle> {
+        self.inner
+            .launch_add_ons_with(ctx, move |container| {
+                let reth_node_builder::rpc::RpcModuleContainer {
+                    modules, registry, ..
+                } = container;
+
+                let eth_api = registry.eth_api().clone();
+                let dex = TempoDex::new(eth_api);
+
+                modules.merge_configured(dex.into_rpc())?;
+
+                Ok(())
+            })
+            .await
     }
 }
 
@@ -283,7 +296,7 @@ where
     }
 }
 
-/// A basic optimism transaction pool.
+/// A basic Tempo transaction pool.
 ///
 /// This contains various settings that can be configured and take precedence over the node's
 /// config.

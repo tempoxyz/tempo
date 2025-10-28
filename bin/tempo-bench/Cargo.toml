@@ -9,7 +9,6 @@ publish.workspace = true
 
 [dependencies]
 tempo-chainspec.workspace = true
-tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-contracts.workspace = true
 # Workspace dependencies
@@ -30,15 +29,12 @@ serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
-reth.workspace = true
-reth-evm.workspace = true
 thiserror.workspace = true
 
 # Bespoke dependencies
 alloy-signer-local = { version = "1", features = ["mnemonic"] }
 core_affinity = "0.8.3"
 crossbeam-utils = "0.8.21"
-csv = "1.3.1"
 dashmap = "6.1"
 fastrand = "2.1"
 http = "1"
@@ -47,9 +43,7 @@ hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 mimalloc = "0.1.47"
 parking_lot = "0.12.4"
-ratelimit = "0.10"
 rayon = "1.10"
 rlimit = "0.10.2"
 simple-tqdm = { version = "0.2.0", features = ["rayon"] }
 governor = "0.10.1"
-thousands = "0.2.0"

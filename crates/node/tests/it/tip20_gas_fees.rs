@@ -7,10 +7,8 @@ use alloy::{
 use alloy_rpc_types_eth::TransactionRequest;
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager, ITIP20},
-};
+use tempo_contracts::precompiles::{IFeeManager, ITIP20};
+use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_fee_in_stable() -> eyre::Result<()> {

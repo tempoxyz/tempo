@@ -6,9 +6,16 @@
 use std::path::Path;
 
 use commonware_codec::Decode;
+use commonware_cryptography::{
+    bls12381::primitives::{
+        group::Share,
+        poly::Poly,
+        variant::{MinSig, Variant},
+    },
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_utils::quorum;
 use indexmap::IndexMap;
-use tempo_commonware_node_cryptography::{GroupShare, PrivateKey, PublicKey, PublicPolynomial};
 
 pub mod p2p;
 pub mod timeouts;
@@ -45,10 +52,10 @@ mod tests;
 pub struct Config {
     #[serde(serialize_with = "crate::_serde::private_key::serialize")]
     pub signer: PrivateKey,
-    #[serde(serialize_with = "crate::_serde::group_share::serialize")]
-    pub share: GroupShare,
+    #[serde(serialize_with = "crate::_serde::share::serialize")]
+    pub share: Share,
     #[serde(serialize_with = "crate::_serde::polynomial::serialize")]
-    pub polynomial: PublicPolynomial,
+    pub polynomial: Poly<<MinSig as Variant>::Public>,
 
     pub listen_port: u16,
     pub metrics_port: Option<u16>,
@@ -57,6 +64,11 @@ pub struct Config {
 
     pub storage_directory: camino::Utf8PathBuf,
     pub worker_threads: usize,
+
+    /// The number of heights H that make up an epoch E.
+    /// The heights starting from (E-1) * H + 1 up to and including E * H make
+    /// up the epoch E.
+    pub epoch_length: u64,
 
     // XXX: alto has a config `allowed_peers`, which it does not make any use of, instead relying
     // on a "peers" file.
@@ -154,8 +166,8 @@ impl From<Vec<PublicKey>> for Bootstrappers {
 struct DeserConfig {
     #[serde(deserialize_with = "crate::_serde::private_key::deserialize")]
     signer: PrivateKey,
-    #[serde(deserialize_with = "crate::_serde::group_share::deserialize")]
-    share: GroupShare,
+    #[serde(deserialize_with = "crate::_serde::share::deserialize")]
+    share: Share,
     #[serde(deserialize_with = "const_hex::serde::deserialize")]
     polynomial: Vec<u8>,
 
@@ -166,6 +178,8 @@ struct DeserConfig {
 
     storage_directory: camino::Utf8PathBuf,
     worker_threads: usize,
+
+    epoch_length: u64,
 
     // XXX: alto has a config `allowed_peers`, which it does not make any use of, instead relying
     // on a "peers" file.
@@ -210,6 +224,7 @@ impl TryFrom<DeserConfig> for Config {
             deque_size,
             fee_recipient,
             timeouts,
+            epoch_length,
         } = value;
 
         let threshold = quorum(peers.len() as u32);
@@ -223,7 +238,7 @@ impl TryFrom<DeserConfig> for Config {
         Ok(Self {
             signer,
             share,
-            polynomial: PublicPolynomial::decode_cfg(&polynomial[..], &(threshold as usize))
+            polynomial: Poly::decode_cfg(&polynomial[..], &(threshold as usize))
                 .map_err(Error::Polynomial)?,
             listen_port,
             metrics_port,
@@ -237,6 +252,7 @@ impl TryFrom<DeserConfig> for Config {
             deque_size,
             fee_recipient,
             timeouts,
+            epoch_length,
         })
     }
 }
@@ -246,7 +262,7 @@ mod _serde {
     use serde::{Deserialize, Serialize};
 
     /// Serialization target for public keys.
-    struct PublicKeySer<'a>(&'a tempo_commonware_node_cryptography::PublicKey);
+    struct PublicKeySer<'a>(&'a super::PublicKey);
     impl<'a> Serialize for PublicKeySer<'a> {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where
@@ -259,20 +275,18 @@ mod _serde {
         }
     }
     // Deserialization target for public keys.
-    struct PublicKeyDe(tempo_commonware_node_cryptography::PublicKey);
+    struct PublicKeyDe(super::PublicKey);
     impl<'de> Deserialize<'de> for PublicKeyDe {
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
         where
             D: serde::Deserializer<'de>,
         {
             let bytes: Vec<u8> = const_hex::serde::deserialize(deserializer)?;
-            let key = tempo_commonware_node_cryptography::PublicKey::decode(&bytes[..]).map_err(
-                |err| {
-                    serde::de::Error::custom(format!(
-                        "failed decoding hex-formatted bytes as public key: {err:?}"
-                    ))
-                },
-            )?;
+            let key = super::PublicKey::decode(&bytes[..]).map_err(|err| {
+                serde::de::Error::custom(format!(
+                    "failed decoding hex-formatted bytes as public key: {err:?}"
+                ))
+            })?;
             Ok(Self(key))
         }
     }
@@ -281,7 +295,7 @@ mod _serde {
 
         use serde::{Deserializer, Serializer, de::Visitor, ser::SerializeSeq}; // # codespell:ignore ser
 
-        use tempo_commonware_node_cryptography::PublicKey;
+        use crate::PublicKey;
 
         use super::PublicKeyDe;
 
@@ -328,31 +342,26 @@ mod _serde {
         }
     }
 
-    pub(crate) mod group_share {
+    pub(crate) mod share {
         use commonware_codec::{DecodeExt as _, Encode as _};
         use serde::{Deserializer, Serializer};
 
-        use tempo_commonware_node_cryptography::GroupShare;
-
-        pub(crate) fn serialize<S>(
-            group_share: &GroupShare,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error>
+        pub(crate) fn serialize<S>(share: &crate::Share, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
         {
-            let bytes = group_share.encode();
+            let bytes = share.encode();
             const_hex::serde::serialize(&bytes, serializer)
         }
 
-        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<GroupShare, D::Error>
+        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<crate::Share, D::Error>
         where
             D: Deserializer<'de>,
         {
             // XXX: we don't use commonware's built-in hex tooling because it doesn't provide good
             // errors. If it fails, `None` is all you get.
             let bytes: Vec<u8> = const_hex::serde::deserialize(deserializer)?;
-            let share = GroupShare::decode(&bytes[..]).map_err(|err| {
+            let share = crate::Share::decode(&bytes[..]).map_err(|err| {
                 serde::de::Error::custom(format!(
                     "failed decoding hex-formatted bytes as group share: {err:?}"
                 ))
@@ -365,10 +374,8 @@ mod _serde {
         use commonware_codec::Encode as _;
         use serde::Serializer;
 
-        use tempo_commonware_node_cryptography::PublicPolynomial;
-
         pub(crate) fn serialize<S>(
-            polynomial: &PublicPolynomial,
+            polynomial: &crate::Poly<<crate::MinSig as crate::Variant>::Public>,
             serializer: S,
         ) -> Result<S::Ok, S::Error>
         where
@@ -383,14 +390,12 @@ mod _serde {
         use indexmap::IndexMap;
         use serde::{Deserializer, Serializer, de::Visitor, ser::SerializeMap}; // # codespell:ignore ser
 
-        use tempo_commonware_node_cryptography::PublicKey;
-
         use super::PublicKeyDe;
 
         struct PeersVisitor;
 
         impl<'de> Visitor<'de> for PeersVisitor {
-            type Value = IndexMap<PublicKey, String>;
+            type Value = IndexMap<crate::PublicKey, String>;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("a map of hex-formatted ed25519 public keys to DNS name")
@@ -410,7 +415,7 @@ mod _serde {
         }
 
         pub(crate) fn serialize<S>(
-            peers: &IndexMap<PublicKey, String>,
+            peers: &IndexMap<crate::PublicKey, String>,
             serializer: S,
         ) -> Result<S::Ok, S::Error>
         where
@@ -425,7 +430,7 @@ mod _serde {
 
         pub(crate) fn deserialize<'de, D>(
             deserializer: D,
-        ) -> Result<IndexMap<PublicKey, String>, D::Error>
+        ) -> Result<IndexMap<crate::PublicKey, String>, D::Error>
         where
             D: Deserializer<'de>,
         {
@@ -437,10 +442,8 @@ mod _serde {
         use commonware_codec::{DecodeExt as _, Encode as _};
         use serde::{Deserializer, Serializer};
 
-        use tempo_commonware_node_cryptography::PrivateKey;
-
         pub(crate) fn serialize<S>(
-            private_key: &PrivateKey,
+            private_key: &crate::PrivateKey,
             serializer: S,
         ) -> Result<S::Ok, S::Error>
         where
@@ -450,14 +453,14 @@ mod _serde {
             const_hex::serde::serialize(&bytes, serializer)
         }
 
-        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<PrivateKey, D::Error>
+        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<crate::PrivateKey, D::Error>
         where
             D: Deserializer<'de>,
         {
             // XXX: we don't use commonware's built-in hex tooling because it doesn't provide good
             // errors. If it fails, `None` is all you get.
             let bytes: Vec<u8> = const_hex::serde::deserialize(deserializer)?;
-            let signer = PrivateKey::decode(&bytes[..]).map_err(|err| {
+            let signer = crate::PrivateKey::decode(&bytes[..]).map_err(|err| {
                 serde::de::Error::custom(format!(
                     "failed decoding hex-formatted bytes as private key: {err:?}"
                 ))

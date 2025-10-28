@@ -7,7 +7,7 @@ use alloy_consensus::{
 use alloy_primitives::{Address, B256, Signature, SignatureError, U256};
 use core::fmt;
 use reth_primitives_traits::InMemorySize;
-use tempo_precompiles::TIP20_PAYMENT_PREFIX;
+use tempo_precompiles::tip20::TIP20_PAYMENT_PREFIX;
 
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);

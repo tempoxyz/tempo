@@ -7,16 +7,14 @@ use alloy::{
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
 use std::env;
+use tempo_contracts::precompiles::{
+    IFeeManager,
+    ITIP20::{self, ITIP20Instance},
+    ITIPFeeAMM,
+};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{
-        ITIP20::ITIP20Instance,
-        tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
-        types::{
-            IFeeManager, ITIP20,
-            ITIPFeeAMM::{self},
-        },
-    },
+    tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
 };
 
 #[tokio::test(flavor = "multi_thread")]
