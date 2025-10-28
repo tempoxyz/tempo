@@ -664,3 +664,129 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_rewards() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+
+    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin = admin_wallet.address();
+    let admin_provider = ProviderBuilder::new()
+        .wallet(admin_wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(admin_provider.clone(), admin).await?;
+
+    let alice_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)
+        .unwrap()
+        .build()
+        .unwrap();
+    let alice = alice_wallet.address();
+    let alice_provider = ProviderBuilder::new()
+        .wallet(alice_wallet)
+        .connect_http(http_url.clone());
+    let alice_token = ITIP20::new(*token.address(), alice_provider);
+
+    let bob_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(2)
+        .unwrap()
+        .build()
+        .unwrap();
+    let bob = bob_wallet.address();
+    let bob_provider = ProviderBuilder::new()
+        .wallet(bob_wallet)
+        .connect_http(http_url.clone());
+    let bob_token = ITIP20::new(*token.address(), bob_provider);
+
+    // Mint tokens to participants
+    let alice_amount = U256::from(1000e18);
+    let bob_amount = U256::from(500e18);
+    let reward_amount = U256::from(300e18);
+
+    token
+        .mint(alice, alice_amount)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas(30000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    token
+        .mint(bob, bob_amount)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas(30000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Mint reward tokens to admin
+    token
+        .mint(admin, reward_amount)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas(30000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Set reward recipients
+    alice_token
+        .setRewardRecipient(alice)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas(30000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    bob_token
+        .setRewardRecipient(bob)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas(30000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // let opted_in_supply = token.getOptedInSupply().call().await?;
+    // assert_eq!(opted_in_supply, alice_amount + bob_amount);
+    //
+    // Start reward stream (10 second duration)
+    let start_receipt = token
+        .startReward(reward_amount, 10)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Verify RewardStarted event
+    let reward_started_event = start_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::RewardScheduled::decode_log(&log.inner).ok())
+        .next()
+        .expect("RewardStarted event should be emitted");
+
+    let stream_id = reward_started_event;
+    // TODO: assert fields
+
+    // Record initial balances
+    let alice_balance_initial = token.balanceOf(alice).call().await?;
+    let bob_balance_initial = token.balanceOf(bob).call().await?;
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    // TODO:
+
+    Ok(())
+}
