@@ -25,7 +25,7 @@ use tempo_contracts::{
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    linking_usd::LinkingUSD,
+    linking_usd::{LinkingUSD, TRANSFER_ROLE},
     stablecoin_exchange::StablecoinExchange,
     storage::evm::EvmPrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
@@ -364,6 +364,7 @@ fn initialize_linking_usd(
         .expect("LinkingUSD initialization should succeed");
     let mut roles = linking_usd.get_roles_contract();
     roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
+    roles.grant_role_internal(&admin, *TRANSFER_ROLE)?;
 
     Ok(())
 }
