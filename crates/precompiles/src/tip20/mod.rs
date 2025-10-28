@@ -1256,7 +1256,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let reward_per_token_stored = self.get_reward_per_token_stored()?;
         let user_reward_per_token_paid = self.get_user_reward_per_token_paid(recipient)?;
 
-        let accrued = (delegated * (reward_per_token_stored - user_reward_per_token_paid)) / ACC_PRECISION;
+        let accrued =
+            (delegated * (reward_per_token_stored - user_reward_per_token_paid)) / ACC_PRECISION;
 
         if accrued > U256::ZERO {
             let token_address = self.token_address;
@@ -2638,7 +2639,7 @@ mod tests {
         assert_eq!(stream.end_time, current_time + 10);
 
         let total_reward_per_second = token.get_total_reward_per_second()?;
-        let expected_rate = reward_amount / U256::from(10);
+        let expected_rate = (reward_amount * ACC_PRECISION) / U256::from(10);
         assert_eq!(total_reward_per_second, expected_rate);
 
         let reward_per_token_stored = token.get_reward_per_token_stored()?;
@@ -2817,7 +2818,7 @@ mod tests {
 
         // Check total reward per second remains consistent
         let total_reward_per_second = token.get_total_reward_per_second()?;
-        let expected_rate = reward_amount / U256::from(100);
+        let expected_rate = (reward_amount * ACC_PRECISION) / U256::from(100);
         assert_eq!(total_reward_per_second, expected_rate);
 
         assert_eq!(token.get_opted_in_supply()?, mint_amount);
@@ -2871,6 +2872,9 @@ mod tests {
 
         let end_time = current_time + stream_duration;
 
+        // Advance the timestamp to simulate time passing
+        token.storage.set_timestamp(U256::from(end_time));
+
         let total_before = token.get_total_reward_per_second()?;
         token.finalize_streams(
             &Address::ZERO,
@@ -2886,6 +2890,7 @@ mod tests {
         let reward_per_token_stored = token.get_reward_per_token_stored()?;
         assert!(reward_per_token_stored > U256::ZERO);
 
+        token.update_rewards(&alice)?;
         assert_eq!(token.get_opted_in_supply()?, mint_amount);
         assert_eq!(token.get_delegated_balance(&alice)?, mint_amount);
         assert_eq!(
