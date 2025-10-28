@@ -91,6 +91,13 @@ pub mod slots {
     pub const REWARD_PER_TOKEN_STORED: U256 = uint!(23_U256);
     pub const TOTAL_REWARD_PER_SECOND: U256 = uint!(24_U256);
 
+    // Stream field offsets
+    pub const STREAM_FUNDER_OFFSET: U256 = uint!(0_U256);
+    pub const STREAM_START_TIME_OFFSET: U256 = uint!(1_U256);
+    pub const STREAM_END_TIME_OFFSET: U256 = uint!(2_U256);
+    pub const STREAM_RATE_OFFSET: U256 = uint!(3_U256);
+    pub const STREAM_AMOUNT_TOTAL_OFFSET: U256 = uint!(4_U256);
+
     // Salts
     pub const SALTS: U256 = uint!(25_U256);
 }
@@ -1376,7 +1383,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn cancel_reward(
         &mut self,
         msg_sender: &Address,
-        call: ITIP20::cancelStreamCall,
+        call: ITIP20::cancelRewardCall,
     ) -> Result<U256, TempoPrecompileError> {
         let stream_id = call.id.to::<u64>();
         let stream = self.get_stream(stream_id)?;
@@ -1458,6 +1465,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(refund)
     }
 
+    // NOTE: bookmark
     pub fn finalize_streams(
         &mut self,
         msg_sender: &Address,
@@ -1523,52 +1531,77 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TempoPrecompileError> {
         let key = stream_id.to_be_bytes();
 
-        let funder_slot = mapping_slot(key, slots::STREAMS);
-        self.storage
-            .sstore(self.token_address, funder_slot, stream.funder.into_u256())?;
-
-        let start_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 1));
         self.storage.sstore(
             self.token_address,
-            start_slot,
+            mapping_slot(key, slots::STREAMS + slots::STREAM_FUNDER_OFFSET),
+            stream.funder.into_u256(),
+        )?;
+
+        self.storage.sstore(
+            self.token_address,
+            mapping_slot(key, slots::STREAMS + slots::STREAM_START_TIME_OFFSET),
             U256::from(stream.start_time),
         )?;
 
-        let end_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 2));
-        self.storage
-            .sstore(self.token_address, end_slot, U256::from(stream.end_time))?;
+        self.storage.sstore(
+            self.token_address,
+            mapping_slot(key, slots::STREAMS + slots::STREAM_END_TIME_OFFSET),
+            U256::from(stream.end_time),
+        )?;
 
-        let rate_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 3));
-        self.storage
-            .sstore(self.token_address, rate_slot, stream.rate_per_second_scaled)
+        self.storage.sstore(
+            self.token_address,
+            mapping_slot(key, slots::STREAMS + slots::STREAM_RATE_OFFSET),
+            stream.rate_per_second_scaled,
+        )?;
+
+        self.storage.sstore(
+            self.token_address,
+            mapping_slot(key, slots::STREAMS + slots::STREAM_AMOUNT_TOTAL_OFFSET),
+            stream.amount_total,
+        )?;
+
+        Ok(())
     }
 
     fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TempoPrecompileError> {
         let key = stream_id.to_be_bytes();
-        let funder_slot = mapping_slot(key, slots::STREAMS);
-        let funder = self.storage.sload(self.token_address, funder_slot)?;
+        let funder = self.storage.sload(
+            self.token_address,
+            mapping_slot(key, slots::STREAMS + slots::STREAM_FUNDER_OFFSET),
+        )?;
 
-        let start_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 1));
         let start_time = self
             .storage
-            .sload(self.token_address, start_slot)?
+            .sload(
+                self.token_address,
+                mapping_slot(key, slots::STREAMS + slots::STREAM_START_TIME_OFFSET),
+            )?
             .to::<u64>();
 
-        let end_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 2));
         let end_time = self
             .storage
-            .sload(self.token_address, end_slot)?
+            .sload(
+                self.token_address,
+                mapping_slot(key, slots::STREAMS + slots::STREAM_END_TIME_OFFSET),
+            )?
             .to::<u64>();
 
-        let rate_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 3));
-        let rate_per_second_scaled = self.storage.sload(self.token_address, rate_slot)?;
+        let rate_per_second_scaled = self.storage.sload(
+            self.token_address,
+            mapping_slot(key, slots::STREAMS + slots::STREAM_RATE_OFFSET),
+        )?;
 
-        // TODO: add from storage for Reward stream
+        let amount_total = self.storage.sload(
+            self.token_address,
+            mapping_slot(key, slots::STREAMS + slots::STREAM_AMOUNT_TOTAL_OFFSET),
+        )?;
         Ok(RewardStream {
             funder: funder.into_address(),
             start_time,
             end_time,
             rate_per_second_scaled,
+            amount_total,
         })
     }
 
@@ -2731,9 +2764,9 @@ mod tests {
             },
         )?;
 
-        let remaining = token.cancel_stream(
+        let remaining = token.cancel_reward(
             &admin,
-            ITIP20::cancelStreamCall {
+            ITIP20::cancelRewardCall {
                 id: U256::from(stream_id),
             },
         )?;

@@ -144,9 +144,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.set_reward_recipient(s, call)
                 })
             }
-            ITIP20::cancelStreamCall::SELECTOR => {
-                mutate::<ITIP20::cancelStreamCall>(calldata, msg_sender, |s, call| {
-                    self.cancel_stream(s, call)
+            ITIP20::cancelRewardCall::SELECTOR => {
+                mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, |s, call| {
+                    self.cancel_reward(s, call)
                 })
             }
 

@@ -85,7 +85,7 @@ sol! {
         // Reward Functions
         function startReward(uint256 amount, uint128 seconds) external returns (uint64);
         function setRewardRecipient(address recipient) external;
-        function cancelStream(uint256 id) external returns (uint256);
+        function cancelReward(uint256 id) external returns (uint256);
         function finalizeStreams(uint64 timestamp) external;
 
         // Events
