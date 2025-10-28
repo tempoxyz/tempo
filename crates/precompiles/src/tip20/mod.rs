@@ -1380,6 +1380,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<U256, TempoPrecompileError> {
         let stream_id = call.id.to::<u64>();
         let stream = self.get_stream(stream_id)?;
+        let current_time = self.storage.timestamp();
 
         if stream.funder.is_zero() {
             return Err(TIP20Error::stream_inactive().into());
@@ -1388,39 +1389,35 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::not_stream_funder().into());
         }
 
-        if self.storage.timestamp() >= stream.end_time {
+        if current_time >= stream.end_time {
             return Err(TIP20Error::stream_inactive().into());
         }
 
-        // NOTE: bookmark
         self.accrue()?;
 
-        let current_time = self.storage.timestamp();
         let elapsed = if current_time > U256::from(stream.start_time) {
             current_time - U256::from(stream.start_time)
         } else {
             U256::ZERO
         };
 
-        let distributed = (stream.rate_per_second_scaled * elapsed) / ACC_PRECISION;
+        let mut distributed = (stream.rate_per_second_scaled * elapsed) / ACC_PRECISION;
+        distributed = distributed.min(stream.amount_total);
+        let remaining = stream.amount_total - distributed;
 
-        let total_amount = stream.rate_per_second_scaled
-            * U256::from(stream.end_time - stream.start_time)
-            / ACC_PRECISION;
-        let remaining = if distributed < total_amount {
-            total_amount - distributed
-        } else {
-            U256::ZERO
-        };
+        let total_rps = self
+            .get_total_reward_per_second()?
+            .checked_sub(stream.rate_per_second_scaled)
+            .expect("TODO: handle error");
+        self.set_total_reward_per_second(total_rps)?;
 
-        let current_total = self.get_total_reward_per_second()?;
-        let new_total = current_total.saturating_sub(stream.rate_per_second_scaled);
-        self.set_total_reward_per_second(new_total)?;
-
+        // Update the rate decrease and remove the stream
         let end_time = stream.end_time as u128;
-        let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
-        let new_decrease = current_decrease.saturating_sub(stream.rate_per_second_scaled);
-        self.set_scheduled_rate_decrease_at(end_time, new_decrease)?;
+        let rate_decrease = self
+            .get_scheduled_rate_decrease_at(end_time)
+            .checked_sub(stream.rate_per_second_scaled)
+            .expect("TODO: handle error");
+        self.set_scheduled_rate_decrease_at(end_time, rate_decrease)?;
 
         self.delete_stream(stream_id)?;
 
@@ -1428,11 +1425,19 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let mut refund = U256::ZERO;
         if remaining > U256::ZERO {
             // Check if transfer is authorized
-            let funder_authorized = self.is_transfer_authorized(&stream.funder, &stream.funder)?;
-            if funder_authorized {
-                let funder_balance = self.get_balance(&stream.funder)?;
-                let new_balance = funder_balance + remaining;
-                self.set_balance(&stream.funder, new_balance)?;
+            if self.is_transfer_authorized(&stream.funder, &stream.funder)? {
+                let contract_address = self.token_address;
+                let contract_balance = self
+                    .get_balance(&contract_address)?
+                    .checked_sub(remaining)
+                    .expect("TODO: handle error");
+                self.set_balance(&contract_address, contract_balance)?;
+
+                let funder_balance = self
+                    .get_balance(&stream.funder)?
+                    .checked_add(remaining)
+                    .expect("TODO: handle error");
+                self.set_balance(&stream.funder, funder_balance)?;
 
                 self.storage.emit_event(
                     self.token_address,
@@ -1447,6 +1452,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 refund = remaining;
             }
         }
+
+        // TODO: emit reward canceled
 
         Ok(refund)
     }
