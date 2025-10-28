@@ -1,3 +1,15 @@
+//! The actor running the application event loop.
+//!
+//! # On the usage of the commonware-pacer
+//!
+//! The actor will contain `Pacer::pace` calls for all interactions
+//! with the execution layer. This is a no-op in production because the
+//! commonware tokio runtime ignores these. However, these are critical in
+//! e2e tests using the commonware deterministic runtime: since the execution
+//! layer is still running on the tokio runtime, these calls signal the
+//! deterministic runtime to spend real life time to wait for the execution
+//! layer calls to complete.
+
 use std::{sync::Arc, time::Duration};
 
 use alloy_consensus::BlockHeader;
@@ -93,7 +105,7 @@ where
         })
     }
 
-    /// Runs the execution driver until it is externally stopped.
+    /// Runs the actor until it is externally stopped.
     async fn run_until_stopped(self, dkg_manager: crate::dkg::manager::Mailbox) {
         let Self {
             context,
@@ -128,7 +140,6 @@ impl<TContext> Actor<TContext, Init>
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    /// Runs the initialized execution driver.
     async fn run_until_stopped(mut self) {
         while let Some(msg) = self.mailbox.next().await {
             if let Err(error) = self.handle_message(msg) {
@@ -634,7 +645,7 @@ impl Inner<Init> {
 }
 
 impl Inner<Uninit> {
-    /// Returns a fully initialized execution driver using runtime information.
+    /// Returns a fully initialized actor using runtime information.
     ///
     /// This includes:
     ///
@@ -706,11 +717,11 @@ impl Inner<Uninit> {
     }
 }
 
-/// Marker type to signal that the execution driver is not fully initialized.
+/// Marker type to signal that the actor is not fully initialized.
 #[derive(Clone, Debug)]
 pub(in crate::consensus) struct Uninit(());
 
-/// Carries the runtime initialized state of the execution driver.
+/// Carries the runtime initialized state of the application.
 #[derive(Clone, Debug)]
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<Block>>>,

@@ -185,7 +185,7 @@ where
             epoch_length: self.epoch_length,
         })
         .await
-        .wrap_err("failed initializing execution driver")?;
+        .wrap_err("failed initializing application actor")?;
 
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             epoch::manager::Config {

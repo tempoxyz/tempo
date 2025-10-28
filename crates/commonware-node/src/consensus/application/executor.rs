@@ -55,7 +55,7 @@ impl Builder {
             marshal,
         } = self;
 
-        let (to_me, from_execution_driver) = mpsc::unbounded();
+        let (to_me, from_app) = mpsc::unbounded();
 
         let my_mailbox = ExecutorMailbox { inner: to_me };
 
@@ -75,7 +75,7 @@ impl Builder {
             context: ContextCell::new(context),
             execution_node,
             genesis_block,
-            mailbox: from_execution_driver,
+            mailbox: from_app,
             latest_finalized_digest,
             marshal,
             my_mailbox,
@@ -96,7 +96,7 @@ pub(super) struct Executor<TContext> {
     genesis_block: Arc<Block>,
 
     /// The channel over which the agent will receive new commands from the
-    /// execution driver.
+    /// application actor.
     mailbox: mpsc::UnboundedReceiver<Message>,
 
     /// The mailbox of the marshal actor. Used to backfill blocks.

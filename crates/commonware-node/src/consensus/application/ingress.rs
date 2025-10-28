@@ -22,7 +22,7 @@ impl Mailbox {
     }
 }
 
-/// Messages forwarded from consensus to execution driver.
+/// Messages forwarded from consensus to application.
 // TODO: add trace spans into all of these messages.
 pub(super) enum Message {
     Broadcast(Broadcast),
