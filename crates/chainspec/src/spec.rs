@@ -108,42 +108,64 @@ impl TempoChainSpec {
         // Extract Tempo genesis info from extra_fields
         let tempo_genesis_info = TempoGenesisInfo::extract_from(&genesis);
 
-        // Create base chainspec from genesis
+        // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
-        // Collect all hardforks (Ethereum + Tempo) by reconstructing the list
-        let mut all_hardforks = Vec::new();
+        // Collect Tempo hardforks to insert with their activation times
+        let mut tempo_forks_to_insert: Vec<_> = [tempo_genesis_info.adagio_time.map(|time| {
+            (
+                TempoHardfork::Adagio.boxed(),
+                ForkCondition::Timestamp(time),
+                time,
+            )
+        })]
+        .into_iter()
+        .flatten()
+        .collect();
 
-        // Add all Ethereum hardforks from base spec
+        // Sort Tempo hardforks by activation time (required for correct merge)
+        tempo_forks_to_insert.sort_by_key(|(_, _, time)| *time);
+
+        // Merge Ethereum and Tempo hardforks in sorted order (single pass)
+        let mut all_forks = Vec::new();
+        let mut tempo_idx = 0;
+
         for (fork, condition) in base_spec.hardforks.forks_iter() {
-            // Reconstruct the fork based on its name
+            // Get activation time for this Ethereum fork
+            let eth_activation = match condition {
+                ForkCondition::Timestamp(ts) => ts,
+                ForkCondition::Block(block) => block,
+                ForkCondition::TTD { fork_block, .. } => fork_block.unwrap_or(0),
+                ForkCondition::Never => u64::MAX,
+            };
+
+            // Insert any Tempo forks that activate before this Ethereum fork
+            while tempo_idx < tempo_forks_to_insert.len() {
+                let (_, _, tempo_time) = &tempo_forks_to_insert[tempo_idx];
+                if *tempo_time < eth_activation {
+                    let (boxed_fork, condition, _) = tempo_forks_to_insert[tempo_idx].clone();
+                    all_forks.push((boxed_fork, condition));
+                    tempo_idx += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Add the Ethereum fork
             if let Some(eth_fork) = EthereumHardfork::VARIANTS
                 .iter()
                 .find(|f| f.name() == fork.name())
             {
-                all_hardforks.push((eth_fork.boxed(), condition));
+                all_forks.push((eth_fork.boxed(), condition));
             }
         }
 
-        // Add Tempo hardforks parsed from genesis extra_fields
-        let tempo_hardfork_opts = [(
-            TempoHardfork::Adagio.boxed(),
-            tempo_genesis_info.adagio_time,
-        )];
+        // Add any remaining Tempo forks (that activate after all Ethereum forks)
+        for (boxed_fork, condition, _) in tempo_forks_to_insert.iter().skip(tempo_idx).cloned() {
+            all_forks.push((boxed_fork, condition));
+        }
 
-        let mut tempo_hardforks = tempo_hardfork_opts
-            .into_iter()
-            .filter_map(|(hardfork, opt)| {
-                opt.map(|time| (hardfork, ForkCondition::Timestamp(time)))
-            })
-            .collect::<Vec<_>>();
-
-        all_hardforks.append(&mut tempo_hardforks);
-
-        // Create new ChainHardforks with merged forks
-        let hardforks = ChainHardforks::new(all_hardforks);
-
-        base_spec.hardforks = hardforks;
+        base_spec.hardforks = ChainHardforks::new(all_forks);
 
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
@@ -265,7 +287,7 @@ impl TempoHardforks for TempoChainSpec {
 #[cfg(test)]
 mod tests {
     use crate::hardfork::{TempoHardfork, TempoHardforks};
-    use reth_chainspec::{ForkCondition, Hardforks};
+    use reth_chainspec::{EthereumHardfork, ForkCondition, Hardforks};
     use reth_cli::chainspec::ChainSpecParser as _;
     use serde_json::json;
 
@@ -376,6 +398,70 @@ mod tests {
         assert!(
             chainspec.is_adagio_active_at_timestamp(2000),
             "Adagio should be active after its activation timestamp"
+        );
+    }
+
+    #[test]
+    fn test_tempo_hardforks_are_ordered_correctly() {
+        // Create a genesis where Adagio should appear between Shanghai (time 0) and Cancun (time 2000)
+        let genesis_json = json!({
+            "config": {
+                "chainId": 1337,
+                "homesteadBlock": 0,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "shanghaiTime": 0,
+                "cancunTime": 2000,
+                "adagioTime": 1000
+            },
+            "alloc": {}
+        });
+
+        let genesis: alloy_genesis::Genesis =
+            serde_json::from_value(genesis_json).expect("genesis should be valid");
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+
+        // Collect forks in order
+        let forks: Vec<_> = chainspec.inner.hardforks.forks_iter().collect();
+
+        // Find positions of Shanghai, Adagio, and Cancun
+        let shanghai_pos = forks
+            .iter()
+            .position(|(f, _)| f.name() == EthereumHardfork::Shanghai.name());
+        let adagio_pos = forks
+            .iter()
+            .position(|(f, _)| f.name() == TempoHardfork::Adagio.name());
+        let cancun_pos = forks
+            .iter()
+            .position(|(f, _)| f.name() == EthereumHardfork::Cancun.name());
+
+        assert!(shanghai_pos.is_some(), "Shanghai should be present");
+        assert!(adagio_pos.is_some(), "Adagio should be present");
+        assert!(cancun_pos.is_some(), "Cancun should be present");
+
+        // Verify ordering: Shanghai (0) < Adagio (1000) < Cancun (2000)
+        assert!(
+            shanghai_pos.unwrap() < adagio_pos.unwrap(),
+            "Shanghai (time 0) should come before Adagio (time 1000), but got positions {} and {}",
+            shanghai_pos.unwrap(),
+            adagio_pos.unwrap()
+        );
+        assert!(
+            adagio_pos.unwrap() < cancun_pos.unwrap(),
+            "Adagio (time 1000) should come before Cancun (time 2000), but got positions {} and {}",
+            adagio_pos.unwrap(),
+            cancun_pos.unwrap()
         );
     }
 }
