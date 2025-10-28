@@ -313,7 +313,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
                 U256::ZERO,
             )?;
 
-            // Clear old validator's ipAddressOrDns
+            // Clear old validator's inboundAddress
             self.storage.sstore(
                 self.precompile_address,
                 old_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET,
@@ -496,7 +496,7 @@ mod tests {
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator1,
                 key,
-                ipAddressOrDns: "192.168.1.1".to_string(),
+                inboundAddress: "192.168.1.1".to_string(),
                 active: true,
                 outboundAddress: "192.168.1.1".to_string(),
             },
@@ -538,7 +538,7 @@ mod tests {
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator2,
                 key: FixedBytes::<32>::from([0x66; 32]),
-                ipAddressOrDns: "192.168.1.2".to_string(),
+                inboundAddress: "192.168.1.2".to_string(),
                 active: true,
                 outboundAddress: "192.168.1.2".to_string(),
             },
@@ -589,7 +589,7 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
                     key: key1,
-                    ipAddressOrDns: "192.168.1.1".to_string(),
+                    inboundAddress: "192.168.1.1".to_string(),
                     active: true,
                     outboundAddress: "192.168.1.1".to_string(),
                 },
@@ -602,7 +602,7 @@ mod tests {
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator1,
                 key: FixedBytes::<32>::from([0x22; 32]),
-                ipAddressOrDns: "192.168.1.2".to_string(),
+                inboundAddress: "192.168.1.2".to_string(),
                 active: true,
                 outboundAddress: "192.168.1.2".to_string(),
             },
@@ -623,7 +623,7 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator2,
                     key: key2,
-                    ipAddressOrDns: "192.168.1.2".to_string(),
+                    inboundAddress: "192.168.1.2".to_string(),
                     active: true,
                     outboundAddress: "192.168.1.2".to_string(),
                 },
@@ -638,7 +638,7 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator3,
                     key: key3,
-                    ipAddressOrDns: "192.168.1.3".to_string(),
+                    inboundAddress: "192.168.1.3".to_string(),
                     active: false,
                     outboundAddress: "192.168.1.3".to_string(),
                 },
@@ -653,7 +653,7 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator4,
                     key: key4,
-                    ipAddressOrDns: "192.168.1.4".to_string(),
+                    inboundAddress: "192.168.1.4".to_string(),
                     active: true,
                     outboundAddress: "192.168.1.4".to_string(),
                 },
@@ -668,7 +668,7 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator5,
                     key: key5,
-                    ipAddressOrDns: "192.168.1.5".to_string(),
+                    inboundAddress: "192.168.1.5".to_string(),
                     active: true,
                     outboundAddress: "192.168.1.5".to_string(),
                 },
@@ -689,27 +689,27 @@ mod tests {
         // Verify each validator
         assert_eq!(validators[0].validatorAddress, validator1);
         assert_eq!(validators[0].key, key1);
-        assert_eq!(validators[0].ipAddressOrDns, "192.168.1.1");
+        assert_eq!(validators[0].inboundAddress, "192.168.1.1");
         assert!(validators[0].active);
 
         assert_eq!(validators[1].validatorAddress, validator2);
         assert_eq!(validators[1].key, key2);
-        assert_eq!(validators[1].ipAddressOrDns, "192.168.1.2");
+        assert_eq!(validators[1].inboundAddress, "192.168.1.2");
         assert!(validators[1].active);
 
         assert_eq!(validators[2].validatorAddress, validator3);
         assert_eq!(validators[2].key, key3);
-        assert_eq!(validators[2].ipAddressOrDns, "192.168.1.3");
+        assert_eq!(validators[2].inboundAddress, "192.168.1.3");
         assert!(!validators[2].active);
 
         assert_eq!(validators[3].validatorAddress, validator4);
         assert_eq!(validators[3].key, key4);
-        assert_eq!(validators[3].ipAddressOrDns, "192.168.1.4");
+        assert_eq!(validators[3].inboundAddress, "192.168.1.4");
         assert!(validators[3].active);
 
         assert_eq!(validators[4].validatorAddress, validator5);
         assert_eq!(validators[4].key, key5);
-        assert_eq!(validators[4].ipAddressOrDns, "192.168.1.5");
+        assert_eq!(validators[4].inboundAddress, "192.168.1.5");
         assert!(validators[4].active);
 
         // Validator1 updates IP and key (keeps same address)
@@ -720,7 +720,7 @@ mod tests {
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator1,
                     key: key1_new,
-                    ipAddressOrDns: "10.0.0.1".to_string(),
+                    inboundAddress: "10.0.0.1".to_string(),
                     outboundAddress: "10.0.0.1".to_string(),
                 },
             )
@@ -734,7 +734,7 @@ mod tests {
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator2_new,
                     key: key2,
-                    ipAddressOrDns: "192.168.1.2".to_string(),
+                    inboundAddress: "192.168.1.2".to_string(),
                     outboundAddress: "192.168.1.2".to_string(),
                 },
             )
@@ -748,7 +748,7 @@ mod tests {
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator3_new,
                     key: key3,
-                    ipAddressOrDns: "10.0.0.3".to_string(),
+                    inboundAddress: "10.0.0.3".to_string(),
                     outboundAddress: "10.0.0.3".to_string(),
                 },
             )
@@ -769,7 +769,7 @@ mod tests {
         assert_eq!(validators[0].validatorAddress, validator1);
         assert_eq!(validators[0].key, key1_new, "Key should be updated");
         assert_eq!(
-            validators[0].ipAddressOrDns, "10.0.0.1",
+            validators[0].inboundAddress, "10.0.0.1",
             "IP should be updated"
         );
         assert!(validators[0].active);
@@ -777,20 +777,20 @@ mod tests {
         // Verify validator4 - unchanged
         assert_eq!(validators[1].validatorAddress, validator4);
         assert_eq!(validators[1].key, key4);
-        assert_eq!(validators[1].ipAddressOrDns, "192.168.1.4");
+        assert_eq!(validators[1].inboundAddress, "192.168.1.4");
         assert!(validators[1].active);
 
         // Verify validator5 - unchanged
         assert_eq!(validators[2].validatorAddress, validator5);
         assert_eq!(validators[2].key, key5);
-        assert_eq!(validators[2].ipAddressOrDns, "192.168.1.5");
+        assert_eq!(validators[2].inboundAddress, "192.168.1.5");
         assert!(validators[2].active);
 
         // Verify validator2_new - rotated address, kept IP and key
         assert_eq!(validators[3].validatorAddress, validator2_new);
         assert_eq!(validators[3].key, key2, "Key should be same");
         assert_eq!(
-            validators[3].ipAddressOrDns, "192.168.1.2",
+            validators[3].inboundAddress, "192.168.1.2",
             "IP should be same"
         );
         assert!(validators[3].active);
@@ -799,7 +799,7 @@ mod tests {
         assert_eq!(validators[4].validatorAddress, validator3_new);
         assert_eq!(validators[4].key, key3, "Key should be same");
         assert_eq!(
-            validators[4].ipAddressOrDns, "10.0.0.3",
+            validators[4].inboundAddress, "10.0.0.3",
             "IP should be updated"
         );
         assert!(!validators[4].active);
@@ -822,7 +822,7 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
                     key,
-                    ipAddressOrDns: "192.168.1.1".to_string(),
+                    inboundAddress: "192.168.1.1".to_string(),
                     active: true,
                     outboundAddress: "192.168.1.1".to_string(),
                 },
@@ -835,7 +835,7 @@ mod tests {
             IValidatorConfig::updateValidatorCall {
                 newValidatorAddress: validator,
                 key: FixedBytes::<32>::from([0x22; 32]),
-                ipAddressOrDns: "10.0.0.1".to_string(),
+                inboundAddress: "10.0.0.1".to_string(),
                 outboundAddress: "10.0.0.1".to_string(),
             },
         );

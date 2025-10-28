@@ -134,9 +134,8 @@ mod tests {
             newValidatorAddress: validator_addr,
             key,
             active: true,
-            ipAddressOrDns: "192.168.1.1".to_string(),
+            inboundAddress: "192.168.1.1".to_string(),
             outboundAddress: "192.168.1.1".to_string(),
-            outboundPort: 8545,
         };
         let calldata = add_call.abi_encode();
 
@@ -151,7 +150,7 @@ mod tests {
         assert_eq!(validators.len(), 1);
         assert_eq!(validators[0].validatorAddress, validator_addr);
         assert_eq!(validators[0].key, key);
-        assert_eq!(validators[0].ipAddressOrDns, "192.168.1.1");
+        assert_eq!(validators[0].inboundAddress, "192.168.1.1");
         assert!(validators[0].active);
     }
 
@@ -173,9 +172,8 @@ mod tests {
             newValidatorAddress: validator_addr,
             key,
             active: true,
-            ipAddressOrDns: "192.168.1.1".to_string(),
+            inboundAddress: "192.168.1.1".to_string(),
             outboundAddress: "192.168.1.1".to_string(),
-            outboundPort: 8545,
         };
         let calldata = add_call.abi_encode();
 
