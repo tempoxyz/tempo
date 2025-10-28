@@ -37,6 +37,7 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
+use eyre::WrapErr;
 
 /// Initial validator configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -497,7 +498,7 @@ fn initialize_validator_config(
     let mut validator_config = ValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, &mut provider);
     validator_config
         .initialize(owner)
-        .expect("Failed to initialize validator config");
+        .wrap_err("Failed to initialize validator config")?;
 
     // Load initial validators if config file provided
     let initial_validators = if let Some(config_path) = validators_config {
@@ -522,7 +523,7 @@ fn initialize_validator_config(
                     ipAddressOrDns: validator.ip_address_or_dns.clone(),
                 },
             )
-            .expect("Failed to add validator");
+            .wrap_err("Failed to add validator")?;
     }
 
     Ok(())
