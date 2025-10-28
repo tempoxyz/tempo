@@ -1310,7 +1310,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.accrue()?;
 
         let current_recipient = self.get_reward_recipient_of(msg_sender)?;
-        let holder_balance = self.get_balance(msg_sender)?;
+        let balance = self.get_balance(msg_sender)?;
 
         if call.recipient == current_recipient {
             return Ok(());
@@ -1319,12 +1319,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         if current_recipient != Address::ZERO {
             self.update_rewards(&current_recipient)?;
             let delegated = self.get_delegated_balance(&current_recipient)?;
-            let amount_u128 = holder_balance.to::<u128>();
-            let new_delegated = delegated.saturating_sub(U256::from(amount_u128));
+            let new_delegated = delegated.saturating_sub(balance);
             self.set_delegated_balance(&current_recipient, new_delegated)?;
 
             let opted_in = self.get_opted_in_supply()?;
-            let new_opted_in = opted_in.saturating_sub(U256::from(amount_u128));
+            let new_opted_in = opted_in.saturating_sub(balance);
             self.set_opted_in_supply(new_opted_in)?;
         }
 
@@ -1337,12 +1336,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 self.update_rewards(&call.recipient)?;
             }
 
-            let amount_u128 = holder_balance.to::<u128>();
-            let new_delegated = delegated.saturating_add(U256::from(amount_u128));
+            // TODO: update to checked math not saturating
+            let new_delegated = delegated.saturating_add(balance);
             self.set_delegated_balance(&call.recipient, new_delegated)?;
 
             let opted_in = self.get_opted_in_supply()?;
-            let new_opted_in = opted_in.saturating_add(U256::from(amount_u128));
+
+            let new_opted_in = opted_in.saturating_add(balance);
             self.set_opted_in_supply(new_opted_in)?;
 
             let rpt = self.get_reward_per_token_stored()?;
@@ -2914,10 +2914,16 @@ mod tests {
 
         assert!(total_after < total_before);
 
-        // TODO: check changes in totalReward Per sEcond, opted in supply, reward per token stored.
-        // Also check userRewardPerTokenPaid, delegatedBalance,
-        // TODO: also check streams and check that its inactive and check scheduled rate decreate
-        // too
+        // Check reward per token stored has been updated
+        let reward_per_token_stored = token.get_reward_per_token_stored()?;
+        assert!(reward_per_token_stored > U256::ZERO);
+
+        assert_eq!(token.get_opted_in_supply()?, mint_amount);
+        assert_eq!(token.get_delegated_balance(&alice)?, mint_amount);
+        assert_eq!(
+            token.get_user_reward_per_token_paid(&alice)?,
+            reward_per_token_stored
+        );
 
         Ok(())
     }
@@ -2959,11 +2965,12 @@ mod tests {
         assert_eq!(balance, reward_amount);
         assert_eq!(id, 0);
 
-        // TODO: assert reward balance for holders
-        // TODO: check changes in totalReward Per second, opted in supply, reward per token stored.
-        // Also check userRewardPerTokenPaid, delegatedBalance,
-        // TODO: also check streams and check that its inactive and check scheduled rate decreate
-        // too
+        let total_reward_per_second = token.get_total_reward_per_second()?;
+        assert_eq!(total_reward_per_second, U256::ZERO);
+
+        let reward_per_token_stored = token.get_reward_per_token_stored()?;
+        let opted_in_supply = token.get_opted_in_supply()?;
+        assert_eq!(opted_in_supply, U256::ZERO);
 
         Ok(())
     }
@@ -3015,6 +3022,9 @@ mod tests {
             )
             .unwrap();
 
+        let alice_balance_before = token.get_balance(&alice)?;
+        let bob_balance_before = token.get_balance(&bob)?;
+
         token.start_reward(
             &admin,
             ITIP20::startRewardCall {
@@ -3023,12 +3033,40 @@ mod tests {
             },
         )?;
 
-        // TODO: simulate by checking rewards/balances for everything and looping and calling
-        // finalize streams
-        // TODO: check changes in totalReward Per second, opted in supply, reward per token stored.
-        // Also check userRewardPerTokenPaid, delegatedBalance,
-        // TODO: also check streams and check that its inactive and check scheduled rate decreate
-        // too
+        // Update rewards for both users
+        token.update_rewards(&alice)?;
+        token.update_rewards(&bob)?;
+
+        let alice_balance_after = token.get_balance(&alice)?;
+        let bob_balance_after = token.get_balance(&bob)?;
+
+        let alice_reward = alice_balance_after - alice_balance_before;
+        let bob_reward = bob_balance_after - bob_balance_before;
+
+        let expected_alice_reward = U256::from(200e18);
+        let expected_bob_reward = U256::from(100e18);
+        assert_eq!(alice_reward, expected_alice_reward);
+        assert_eq!(bob_reward, expected_bob_reward);
+
+        // Check total reward per second is 0 after instant distribution
+        let total_reward_per_second = token.get_total_reward_per_second()?;
+        assert_eq!(total_reward_per_second, U256::ZERO);
+
+        assert_eq!(token.get_opted_in_supply()?, U256::from(1500e18));
+
+        assert_eq!(token.get_delegated_balance(&alice)?, alice_amount);
+        assert_eq!(token.get_delegated_balance(&bob)?, bob_amount);
+
+        // Check user reward per token paid is updated for both users
+        let reward_per_token_stored = token.get_reward_per_token_stored()?;
+        assert_eq!(
+            token.get_user_reward_per_token_paid(&alice)?,
+            reward_per_token_stored
+        );
+        assert_eq!(
+            token.get_user_reward_per_token_paid(&bob)?,
+            reward_per_token_stored
+        );
 
         Ok(())
     }
