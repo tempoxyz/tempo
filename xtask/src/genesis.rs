@@ -48,6 +48,10 @@ pub(crate) struct InitialValidator {
     pub key: B256,
     /// IP address or DNS name
     pub ip_address_or_dns: String,
+    /// Outbound address
+    pub outbound_address: String,
+    /// Outbound port
+    pub outbound_port: u16,
     /// Whether validator starts active
     pub active: bool,
 }
@@ -521,6 +525,8 @@ fn initialize_validator_config(
                     key: FixedBytes::from(validator.key.0),
                     active: validator.active,
                     ipAddressOrDns: validator.ip_address_or_dns.clone(),
+                    outboundAddress: validator.outbound_address.clone(),
+                    outboundPort: validator.outbound_port,
                 },
             )
             .wrap_err("Failed to add validator")?;

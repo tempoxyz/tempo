@@ -135,6 +135,8 @@ mod tests {
             key,
             active: true,
             ipAddressOrDns: "192.168.1.1".to_string(),
+            outboundAddress: "192.168.1.1".to_string(),
+            outboundPort: 8545,
         };
         let calldata = add_call.abi_encode();
 
@@ -172,6 +174,8 @@ mod tests {
             key,
             active: true,
             ipAddressOrDns: "192.168.1.1".to_string(),
+            outboundAddress: "192.168.1.1".to_string(),
+            outboundPort: 8545,
         };
         let calldata = add_call.abi_encode();
 

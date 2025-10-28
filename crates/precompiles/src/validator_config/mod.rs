@@ -30,6 +30,10 @@ pub mod slots {
     pub const VALIDATOR_ACTIVE_INDEX_OFFSET: U256 = uint!(1_U256);
     /// IP address/DNS field offset (string)
     pub const VALIDATOR_IP_OFFSET: U256 = uint!(2_U256);
+    /// Outbound address field offset (string)
+    pub const VALIDATOR_OUTBOUND_ADDRESS_OFFSET: U256 = uint!(3_U256);
+    /// Outbound port field offset (u16)
+    pub const VALIDATOR_OUTBOUND_PORT_OFFSET: U256 = uint!(4_U256);
 
     pub fn validator_at_index_slot(index: u64) -> U256 {
         mapping_slot(index.to_be_bytes(), VALIDATORS_ARRAY)
@@ -172,12 +176,25 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
 
             let ip_address_or_dns = self.read_string(slot + slots::VALIDATOR_IP_OFFSET)?;
 
+            let outbound_address =
+                self.read_string(slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET)?;
+
+            let outbound_port = self
+                .storage
+                .sload(
+                    self.precompile_address,
+                    slot + slots::VALIDATOR_OUTBOUND_PORT_OFFSET,
+                )?
+                .to::<u16>();
+
             validators.push(IValidatorConfig::Validator {
                 key,
                 active,
                 index,
                 validatorAddress: validator_address,
                 ipAddressOrDns: ip_address_or_dns,
+                outboundAddress: outbound_address,
+                outboundPort: outbound_port,
             });
         }
 
@@ -219,6 +236,19 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
 
         // Store ipAddressOrDns
         self.write_string(slot + slots::VALIDATOR_IP_OFFSET, call.ipAddressOrDns)?;
+
+        // Store outboundAddress
+        self.write_string(
+            slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
+            call.outboundAddress,
+        )?;
+
+        // Store outboundPort
+        self.storage.sstore(
+            self.precompile_address,
+            slot + slots::VALIDATOR_OUTBOUND_PORT_OFFSET,
+            U256::from(call.outboundPort),
+        )?;
 
         // Set validator in validators array
         let validator_array_slot = slots::validator_at_index_slot(count);
@@ -290,6 +320,20 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
                 U256::ZERO,
             )?;
 
+            // Clear old validator's outboundAddress
+            self.storage.sstore(
+                self.precompile_address,
+                old_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
+                U256::ZERO,
+            )?;
+
+            // Clear old validator's outboundPort
+            self.storage.sstore(
+                self.precompile_address,
+                old_slot + slots::VALIDATOR_OUTBOUND_PORT_OFFSET,
+                U256::ZERO,
+            )?;
+
             // Update the validators array to point to new address
             let array_slot = slots::validator_at_index_slot(index);
             self.storage.sstore(
@@ -322,6 +366,31 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
 
         if self.read_string(new_slot + slots::VALIDATOR_IP_OFFSET)? != call.ipAddressOrDns {
             self.write_string(new_slot + slots::VALIDATOR_IP_OFFSET, call.ipAddressOrDns)?;
+        }
+
+        if self.read_string(new_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET)?
+            != call.outboundAddress
+        {
+            self.write_string(
+                new_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
+                call.outboundAddress,
+            )?;
+        }
+
+        let current_port = self
+            .storage
+            .sload(
+                self.precompile_address,
+                new_slot + slots::VALIDATOR_OUTBOUND_PORT_OFFSET,
+            )?
+            .to::<u16>();
+
+        if current_port != call.outboundPort {
+            self.storage.sstore(
+                self.precompile_address,
+                new_slot + slots::VALIDATOR_OUTBOUND_PORT_OFFSET,
+                U256::from(call.outboundPort),
+            )?;
         }
 
         Ok(())
@@ -448,6 +517,8 @@ mod tests {
                 key,
                 ipAddressOrDns: "192.168.1.1".to_string(),
                 active: true,
+                outboundAddress: "192.168.1.1".to_string(),
+                outboundPort: 8545,
             },
         );
         assert!(result.is_ok(), "Owner should be able to add validator");
@@ -489,6 +560,8 @@ mod tests {
                 key: FixedBytes::<32>::from([0x66; 32]),
                 ipAddressOrDns: "192.168.1.2".to_string(),
                 active: true,
+                outboundAddress: "192.168.1.2".to_string(),
+                outboundPort: 8545,
             },
         );
         assert!(
@@ -539,6 +612,8 @@ mod tests {
                     key: key1,
                     ipAddressOrDns: "192.168.1.1".to_string(),
                     active: true,
+                    outboundAddress: "192.168.1.1".to_string(),
+                    outboundPort: 8545,
                 },
             )
             .expect("Should add validator1");
@@ -551,6 +626,8 @@ mod tests {
                 key: FixedBytes::<32>::from([0x22; 32]),
                 ipAddressOrDns: "192.168.1.2".to_string(),
                 active: true,
+                outboundAddress: "192.168.1.2".to_string(),
+                outboundPort: 8545,
             },
         );
         assert!(result.is_err(), "Should not allow duplicate validator");
@@ -571,6 +648,8 @@ mod tests {
                     key: key2,
                     ipAddressOrDns: "192.168.1.2".to_string(),
                     active: true,
+                    outboundAddress: "192.168.1.2".to_string(),
+                    outboundPort: 8545,
                 },
             )
             .expect("Should add validator2");
@@ -585,6 +664,8 @@ mod tests {
                     key: key3,
                     ipAddressOrDns: "192.168.1.3".to_string(),
                     active: false,
+                    outboundAddress: "192.168.1.3".to_string(),
+                    outboundPort: 8545,
                 },
             )
             .expect("Should add validator3");
@@ -599,6 +680,8 @@ mod tests {
                     key: key4,
                     ipAddressOrDns: "192.168.1.4".to_string(),
                     active: true,
+                    outboundAddress: "192.168.1.4".to_string(),
+                    outboundPort: 8545,
                 },
             )
             .expect("Should add validator4");
@@ -613,6 +696,8 @@ mod tests {
                     key: key5,
                     ipAddressOrDns: "192.168.1.5".to_string(),
                     active: true,
+                    outboundAddress: "192.168.1.5".to_string(),
+                    outboundPort: 8545,
                 },
             )
             .expect("Should add validator5");
@@ -663,6 +748,8 @@ mod tests {
                     newValidatorAddress: validator1,
                     key: key1_new,
                     ipAddressOrDns: "10.0.0.1".to_string(),
+                    outboundAddress: "10.0.0.1".to_string(),
+                    outboundPort: 8545,
                 },
             )
             .expect("Should update validator1");
@@ -676,6 +763,8 @@ mod tests {
                     newValidatorAddress: validator2_new,
                     key: key2,
                     ipAddressOrDns: "192.168.1.2".to_string(),
+                    outboundAddress: "192.168.1.2".to_string(),
+                    outboundPort: 8545,
                 },
             )
             .expect("Should rotate validator2 address");
@@ -689,6 +778,8 @@ mod tests {
                     newValidatorAddress: validator3_new,
                     key: key3,
                     ipAddressOrDns: "10.0.0.3".to_string(),
+                    outboundAddress: "10.0.0.3".to_string(),
+                    outboundPort: 8545,
                 },
             )
             .expect("Should rotate validator3 address and update IP");
@@ -763,6 +854,8 @@ mod tests {
                     key,
                     ipAddressOrDns: "192.168.1.1".to_string(),
                     active: true,
+                    outboundAddress: "192.168.1.1".to_string(),
+                    outboundPort: 8545,
                 },
             )
             .expect("Should add validator");
@@ -774,6 +867,8 @@ mod tests {
                 newValidatorAddress: validator,
                 key: FixedBytes::<32>::from([0x22; 32]),
                 ipAddressOrDns: "10.0.0.1".to_string(),
+                outboundAddress: "10.0.0.1".to_string(),
+                outboundPort: 8545,
             },
         );
 
