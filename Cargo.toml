@@ -111,67 +111,67 @@ tempo-contracts = { path = "crates/contracts" }
 tempo-telemetry-util = { path = "crates/telemetry-util" }
 tempo-transaction-pool = { path = "crates/transaction-pool" }
 
-reth = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-codecs = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds", default-features = false }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds", default-features = false }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-network = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds" }
+reth = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-codecs = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a", default-features = false }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a", default-features = false }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-network = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a" }
 
 alloy-network = { version = "1.0.41" }
 alloy-rpc-types-eth = { version = "1.0.41" }
-reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "fgimenez/relax-e2e-bounds", features = [
+reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "020eb6a", features = [
   "std",
   "optional-checks",
 ] }
 revm = "30.2.0"
 
 alloy = { version = "1.0.41", default-features = false }
-alloy-evm = "0.22.3"
+alloy-evm = "0.22.5"
 alloy-consensus = "1.0.41"
 alloy-eips = "1.0.41"
 alloy-genesis = "1.0.41"
