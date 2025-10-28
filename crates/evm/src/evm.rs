@@ -4,7 +4,6 @@ use alloy_evm::{
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::result::{EVMError, HaltReason, ResultAndState},
-        handler::EthPrecompiles,
         inspector::NoOpInspector,
         primitives::hardfork::SpecId,
     },
@@ -12,7 +11,6 @@ use alloy_evm::{
 use alloy_primitives::{Address, Bytes, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
-use tempo_precompiles::extend_tempo_precompiles;
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
 
 use crate::TempoBlockEnv;
@@ -70,11 +68,8 @@ impl<DB: Database> TempoEvm<DB> {
             .with_cfg(input.cfg_env)
             .with_tx(Default::default());
 
-        let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
-        extend_tempo_precompiles(&mut precompiles, ctx.cfg.chain_id);
-
         Self {
-            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}).with_precompiles(precompiles),
+            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
             inspect: false,
         }
     }

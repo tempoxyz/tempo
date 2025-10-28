@@ -1,18 +1,19 @@
-use crate::{instructions, TempoBlockEnv, TempoTxEnv};
+use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use reth_evm::{
+    Database,
     precompiles::PrecompilesMap,
     revm::{
+        Context, Inspector,
         context::{CfgEnv, ContextError, Evm, FrameStack},
         handler::{
-            instructions::EthInstructions, EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult,
-            FrameTr, ItemOrResult,
+            EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
+            instructions::EthInstructions,
         },
         inspector::InspectorEvmTr,
         interpreter::interpreter::EthInterpreter,
-        Context, Inspector,
     },
-    Database,
 };
+use tempo_precompiles::extend_tempo_precompiles;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv, DB>;
@@ -34,11 +35,14 @@ pub struct TempoEvm<DB: Database, I>(
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
+        let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
+        extend_tempo_precompiles(&mut precompiles, ctx.cfg.chain_id);
+
         Self(Evm {
             ctx,
             inspector,
             instruction: instructions::tempo_instructions(),
-            precompiles: PrecompilesMap::from_static(EthPrecompiles::default().precompiles),
+            precompiles,
             frame_stack: FrameStack::new(),
         })
     }
@@ -155,13 +159,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{bytes, Address, U256};
+    use alloy_primitives::{Address, U256, bytes};
     use reth_evm::revm::{
+        ExecuteEvm,
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
         primitives::hardfork::SpecId,
         state::{AccountInfo, Bytecode},
-        ExecuteEvm,
     };
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
