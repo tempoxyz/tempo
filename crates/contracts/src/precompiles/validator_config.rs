@@ -17,9 +17,8 @@ sol! {
             bool active;
             uint64 index;
             address validatorAddress;
-            string ipAddressOrDns;
+            string inboundAddress;
             string outboundAddress;
-            uint16 outboundPort;
         }
 
         /// Get the complete set of validators
@@ -32,7 +31,7 @@ sol! {
         /// @param ipAddressOrDns The validator's IP address
         /// @param outboundAddress The validator's outbound address
         /// @param outboundPort The validator's outbound port
-        function addValidator(address newValidatorAddress, bytes32 key, bool active, string calldata ipAddressOrDns, string calldata outboundAddress, uint16 outboundPort) external;
+        function addValidator(address newValidatorAddress, bytes32 key, bool active, string calldata inboundAddress, string calldata outboundAddress) external;
 
         /// Update validator information (only validator)
         /// @param newValidatorAddress The new address for this validator

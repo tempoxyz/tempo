@@ -7,7 +7,8 @@ use alloy::{
     },
 };
 use clap::Parser;
-use eyre::WrapErr;
+use eyre::OptionExt as _;
+use eyre::WrapErr as _;
 use rayon::prelude::*;
 use reth::revm::{
     context::ContextTr,
@@ -17,7 +18,7 @@ use reth::revm::{
 use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals};
 use serde::{Deserialize, Serialize};
 use simple_tqdm::{ParTqdm, Tqdm};
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fmt::Display, fs, path::PathBuf, str::FromStr};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
@@ -41,19 +42,17 @@ use tempo_precompiles::{
 
 /// Initial validator configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct InitialValidator {
+struct InitialValidator {
     /// Validator address
-    pub address: Address,
+    address: Address,
     /// Communication key (32 bytes)
     pub key: B256,
     /// IP address or DNS name
-    pub ip_address_or_dns: String,
+    inbound_address: HostWithPort,
     /// Outbound address
-    pub outbound_address: String,
-    /// Outbound port
-    pub outbound_port: u16,
+    outbound_address: HostWithPort,
     /// Whether validator starts active
-    pub active: bool,
+    active: bool,
 }
 
 /// Generate genesis allocation file for testing
@@ -524,9 +523,8 @@ fn initialize_validator_config(
                     newValidatorAddress: validator.address,
                     key: FixedBytes::from(validator.key.0),
                     active: validator.active,
-                    ipAddressOrDns: validator.ip_address_or_dns.clone(),
-                    outboundAddress: validator.outbound_address.clone(),
-                    outboundPort: validator.outbound_port,
+                    inboundAddress: validator.inbound_address.to_string(),
+                    outboundAddress: validator.outbound_address.to_string(),
                 },
             )
             .wrap_err("Failed to add validator")?;
@@ -561,5 +559,85 @@ fn mint_pairwise_liquidity(
                 },
             )
             .expect("Could not mint A -> B Liquidity pool");
+    }
+}
+
+/// A string guaranteed to be `<host>:<port>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostWithPort {
+    host: String,
+    port: u16,
+}
+
+impl Display for HostWithPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.host)?;
+        f.write_str(":")?;
+        self.port.fmt(f)
+    }
+}
+
+impl FromStr for HostWithPort {
+    type Err = eyre::Report;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let url = s
+            .trim()
+            .parse::<url::Url>()
+            .wrap_err("failed to parse input as URL")?;
+
+        let host = url.host_str().ok_or_eyre("input contains no host")?;
+        let port = url.port().ok_or_eyre("input contains no port")?;
+
+        let inner = format!("{host}:{port}");
+
+        eyre::ensure!(
+            url.to_string() == inner,
+            "only strings of the form <host>:<port> are accepted"
+        );
+
+        Ok(Self {
+            host: host.to_string(),
+            port,
+        })
+    }
+}
+
+impl Serialize for HostWithPort {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for HostWithPort {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let this = s.parse::<Self>().map_err(serde::de::Error::custom)?;
+        Ok(this)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::genesis::HostWithPort;
+
+    #[test]
+    fn hostname_with_port() {
+        let input = "container-1:1234";
+        let parsed = input.parse::<HostWithPort>().unwrap();
+        assert_eq!(input, &parsed.to_string());
+    }
+
+    #[test]
+    fn ip_with_port() {
+        let input = "127.0.0.1:1234";
+        let parsed = input.parse::<HostWithPort>().unwrap();
+        assert_eq!(input, &parsed.to_string());
     }
 }

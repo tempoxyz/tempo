@@ -174,27 +174,18 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
 
             let (active, index) = slots::unpack_active_index(active_and_idx);
 
-            let ip_address_or_dns = self.read_string(slot + slots::VALIDATOR_IP_OFFSET)?;
+            let inbound_address = self.read_string(slot + slots::VALIDATOR_IP_OFFSET)?;
 
             let outbound_address =
                 self.read_string(slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET)?;
-
-            let outbound_port = self
-                .storage
-                .sload(
-                    self.precompile_address,
-                    slot + slots::VALIDATOR_OUTBOUND_PORT_OFFSET,
-                )?
-                .to::<u16>();
 
             validators.push(IValidatorConfig::Validator {
                 key,
                 active,
                 index,
                 validatorAddress: validator_address,
-                ipAddressOrDns: ip_address_or_dns,
+                inboundAddress: inbound_address,
                 outboundAddress: outbound_address,
-                outboundPort: outbound_port,
             });
         }
 
@@ -234,20 +225,13 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             slots::pack_active_index(call.active, count),
         )?;
 
-        // Store ipAddressOrDns
-        self.write_string(slot + slots::VALIDATOR_IP_OFFSET, call.ipAddressOrDns)?;
+        // Store inboundAddress
+        self.write_string(slot + slots::VALIDATOR_IP_OFFSET, call.inboundAddress)?;
 
         // Store outboundAddress
         self.write_string(
             slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
             call.outboundAddress,
-        )?;
-
-        // Store outboundPort
-        self.storage.sstore(
-            self.precompile_address,
-            slot + slots::VALIDATOR_OUTBOUND_PORT_OFFSET,
-            U256::from(call.outboundPort),
         )?;
 
         // Set validator in validators array
