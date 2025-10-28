@@ -1,17 +1,17 @@
-use crate::{TempoBlockEnv, TempoTxEnv, instructions};
+use crate::{instructions, TempoBlockEnv, TempoTxEnv};
 use reth_evm::{
-    Database,
     precompiles::PrecompilesMap,
     revm::{
-        Context, Inspector,
         context::{CfgEnv, ContextError, Evm, FrameStack},
         handler::{
-            EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
-            instructions::EthInstructions,
+            instructions::EthInstructions, EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult,
+            FrameTr, ItemOrResult,
         },
         inspector::InspectorEvmTr,
         interpreter::interpreter::EthInterpreter,
+        Context, Inspector,
     },
+    Database,
 };
 
 /// The Tempo EVM context type.
@@ -32,7 +32,7 @@ pub struct TempoEvm<DB: Database, I>(
 );
 
 impl<DB: Database, I> TempoEvm<DB, I> {
-    /// Create a new Optimism EVM.
+    /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
         Self(Evm {
             ctx,
@@ -155,13 +155,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, U256, bytes};
+    use alloy_primitives::{bytes, Address, U256};
     use reth_evm::revm::{
-        ExecuteEvm,
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
         primitives::hardfork::SpecId,
         state::{AccountInfo, Bytecode},
+        ExecuteEvm,
     };
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 
