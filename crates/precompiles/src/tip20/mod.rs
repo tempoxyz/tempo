@@ -2766,7 +2766,57 @@ mod tests {
 
     #[test]
     fn test_accrue() -> eyre::Result<()> {
-        todo!()
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+        let token_id = 1;
+
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            &admin,
+            ITIP20::mintCall {
+                to: alice,
+                amount: mint_amount,
+            },
+        )?;
+
+        token.set_reward_recipient(&alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+        let reward_amount = U256::from(100e18);
+        token.mint(
+            &admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: reward_amount,
+            },
+        )?;
+
+        token.start_reward(
+            &admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 100,
+            },
+        )?;
+
+        let rpt_before = token.get_reward_per_token_stored()?;
+        let last_update_before = token.get_last_update_time()?;
+
+        token.accrue()?;
+
+        let rpt_after = token.get_reward_per_token_stored()?;
+        let last_update_after = token.get_last_update_time()?;
+
+        assert!(rpt_after >= rpt_before);
+        assert!(last_update_after >= last_update_before);
+
+        Ok(())
     }
 
     #[test]
