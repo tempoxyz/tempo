@@ -11600,6 +11600,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-revm",
  "reth-rpc-eth-api",
+ "revm",
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-payload-types",
@@ -11792,12 +11793,14 @@ name = "tempo-revm"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-evm",
  "alloy-primitives",
  "alloy-rpc-types-eth",
  "derive_more",
  "eyre",
  "reth-evm",
  "reth-rpc-convert",
+ "revm",
  "tempo-contracts",
  "tempo-precompiles",
  "tempo-primitives",

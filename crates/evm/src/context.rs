@@ -1,4 +1,5 @@
-use reth_evm::{NextBlockEnvAttributes, eth::EthBlockExecutionCtx};
+use alloy_evm::eth::EthBlockExecutionCtx;
+use reth_evm::NextBlockEnvAttributes;
 #[cfg(feature = "rpc")]
 use tempo_primitives::TempoHeader;
 

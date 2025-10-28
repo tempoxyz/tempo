@@ -1,17 +1,14 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
-use reth_evm::{
-    Database,
-    precompiles::PrecompilesMap,
-    revm::{
-        Context, Inspector,
-        context::{CfgEnv, ContextError, Evm, FrameStack},
-        handler::{
-            EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
-            instructions::EthInstructions,
-        },
-        inspector::InspectorEvmTr,
-        interpreter::interpreter::EthInterpreter,
+use alloy_evm::{Database, precompiles::PrecompilesMap};
+use revm::{
+    Context, Inspector,
+    context::{CfgEnv, ContextError, Evm, FrameStack},
+    handler::{
+        EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
+        instructions::EthInstructions,
     },
+    inspector::InspectorEvmTr,
+    interpreter::interpreter::EthInterpreter,
 };
 
 /// The Tempo EVM context type.
@@ -156,7 +153,7 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::{Address, U256, bytes};
-    use reth_evm::revm::{
+    use revm::{
         ExecuteEvm,
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},

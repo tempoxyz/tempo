@@ -1,15 +1,13 @@
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
+use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use reth_evm::{
-    FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnv,
-    revm::context::{
-        Transaction, TxEnv,
-        either::Either,
-        result::InvalidTransaction,
-        transaction::{
-            AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization,
-            SignedAuthorization,
-        },
+use reth_evm::TransactionEnv;
+use revm::context::{
+    Transaction, TxEnv,
+    either::Either,
+    result::InvalidTransaction,
+    transaction::{
+        AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
 use tempo_primitives::{
@@ -357,8 +355,8 @@ impl reth_rpc_convert::transaction::TryIntoTxEnv<TempoTxEnv>
 
     fn try_into_tx_env<Spec>(
         self,
-        cfg_env: &reth_evm::revm::context::CfgEnv<Spec>,
-        block_env: &reth_evm::revm::context::BlockEnv,
+        cfg_env: &revm::context::CfgEnv<Spec>,
+        block_env: &revm::context::BlockEnv,
     ) -> Result<TempoTxEnv, Self::Err> {
         Ok(TempoTxEnv {
             inner: self.try_into_tx_env(cfg_env, block_env)?,

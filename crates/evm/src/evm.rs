@@ -227,8 +227,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use reth_evm::revm::{context::TxEnv, database::EmptyDB};
     use reth_revm::context::BlockEnv;
+    use revm::{context::TxEnv, database::EmptyDB};
 
     use super::*;
 

@@ -1,18 +1,18 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
-use alloy_primitives::Bytes;
-use alloy_sol_types::SolCall;
-use reth_evm::{
-    Database, Evm, OnStateHook,
+use alloy_evm::{
+    Database, Evm,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx,
+        ExecutableTx, OnStateHook,
     },
     eth::{
         EthBlockExecutor,
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
+use alloy_primitives::Bytes;
+use alloy_sol_types::SolCall;
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
@@ -136,7 +136,7 @@ where
     type Receipt = TempoReceipt;
     type Evm = TempoEvm<&'a mut State<DB>, I>;
 
-    fn apply_pre_execution_changes(&mut self) -> Result<(), reth_evm::block::BlockExecutionError> {
+    fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         self.inner.apply_pre_execution_changes()
     }
 

@@ -2,35 +2,32 @@
 
 use std::fmt::Debug;
 
+use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
-use reth_evm::{
-    EvmInternals,
-    revm::{
-        Database,
-        context::{
-            Block, Cfg, ContextTr, Host, JournalTr, Transaction,
-            result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
-            transaction::{AccessListItem, AccessListItemTr},
-        },
-        handler::{
-            EvmTr, FrameResult, FrameTr, Handler,
-            pre_execution::{self, calculate_caller_fee},
-            validation,
-        },
-        inspector::{Inspector, InspectorHandler},
-        interpreter::{
-            Gas, InitialAndFloorGas,
-            gas::{
-                ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
-                CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost, get_tokens_in_calldata,
-                initcode_cost,
-            },
-            instructions::utility::IntoAddress,
-            interpreter::EthInterpreter,
-        },
-        primitives::hardfork::SpecId as RevmSpecId,
-        state::Bytecode,
+use revm::{
+    Database,
+    context::{
+        Block, Cfg, ContextTr, Host, JournalTr, Transaction,
+        result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
+        transaction::{AccessListItem, AccessListItemTr},
     },
+    handler::{
+        EvmTr, FrameResult, FrameTr, Handler,
+        pre_execution::{self, calculate_caller_fee},
+        validation,
+    },
+    inspector::{Inspector, InspectorHandler},
+    interpreter::{
+        Gas, InitialAndFloorGas,
+        gas::{
+            ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
+            CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost, get_tokens_in_calldata, initcode_cost,
+        },
+        instructions::utility::IntoAddress,
+        interpreter::EthInterpreter,
+    },
+    primitives::hardfork::SpecId as RevmSpecId,
+    state::Bytecode,
 };
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::FeeManagerError};
 use tempo_precompiles::{
@@ -76,7 +73,7 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     }
 }
 
-impl<DB: reth_evm::Database, I> TempoEvmHandler<DB, I> {
+impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     fn load_fee_fields(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -90,7 +87,7 @@ impl<DB: reth_evm::Database, I> TempoEvmHandler<DB, I> {
 
 impl<DB, I> TempoEvmHandler<DB, I>
 where
-    DB: reth_evm::Database,
+    DB: alloy_evm::Database,
 {
     /// Generic single-call execution that works with both standard and inspector exec loops.
     ///
@@ -311,7 +308,7 @@ impl<DB, I> Default for TempoEvmHandler<DB, I> {
 
 impl<DB, I> Handler for TempoEvmHandler<DB, I>
 where
-    DB: reth_evm::Database,
+    DB: alloy_evm::Database,
 {
     type Evm = TempoEvm<DB, I>;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
@@ -666,7 +663,7 @@ fn validate_aa_initial_tx_gas<DB, I>(
     evm: &TempoEvm<DB, I>,
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
 where
-    DB: reth_evm::Database,
+    DB: alloy_evm::Database,
 {
     let spec = evm.ctx_ref().cfg().spec();
     let tx = evm.ctx_ref().tx();
@@ -822,7 +819,7 @@ where
 
 impl<DB, I> InspectorHandler for TempoEvmHandler<DB, I>
 where
-    DB: reth_evm::Database,
+    DB: alloy_evm::Database,
     I: Inspector<TempoContext<DB>>,
 {
     type IT = EthInterpreter;
@@ -903,7 +900,7 @@ pub fn validate_time_window(
 mod tests {
     use super::*;
     use alloy_primitives::{Address, U256};
-    use reth_evm::revm::{
+    use revm::{
         Journal,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
@@ -1023,7 +1020,7 @@ mod tests {
     fn test_aa_gas_single_call_vs_normal_tx() {
         use crate::AATxEnv;
         use alloy_primitives::{Bytes, TxKind};
-        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
         // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
@@ -1073,7 +1070,7 @@ mod tests {
     fn test_aa_gas_multiple_calls_overhead() {
         use crate::AATxEnv;
         use alloy_primitives::{Bytes, TxKind};
-        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
         let spec = RevmSpecId::CANCUN;
@@ -1129,7 +1126,7 @@ mod tests {
     fn test_aa_gas_p256_signature() {
         use crate::AATxEnv;
         use alloy_primitives::{B256, Bytes, TxKind};
-        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{
             AASignature, Call, aa_signature::P256SignatureWithPreHash,
         };
@@ -1178,7 +1175,7 @@ mod tests {
     fn test_aa_gas_create_call() {
         use crate::AATxEnv;
         use alloy_primitives::{Bytes, TxKind};
-        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
         let spec = RevmSpecId::CANCUN; // Post-Shanghai
@@ -1219,7 +1216,7 @@ mod tests {
     fn test_aa_gas_value_transfer() {
         use crate::AATxEnv;
         use alloy_primitives::{Bytes, TxKind};
-        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
         let spec = RevmSpecId::CANCUN;
@@ -1261,7 +1258,7 @@ mod tests {
     fn test_aa_gas_access_list() {
         use crate::AATxEnv;
         use alloy_primitives::{Bytes, TxKind};
-        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
         let spec = RevmSpecId::CANCUN;
@@ -1303,7 +1300,7 @@ mod tests {
     fn test_aa_gas_floor_gas_prague() {
         use crate::AATxEnv;
         use alloy_primitives::{Bytes, TxKind};
-        use reth_evm::revm::interpreter::gas::calculate_initial_tx_gas;
+        use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
         let spec = RevmSpecId::PRAGUE;
