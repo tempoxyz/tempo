@@ -2596,36 +2596,6 @@ mod tests {
 
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {
-        todo!()
-    }
-
-    #[test]
-    fn test_start_reward() -> eyre::Result<()> {
-        todo!()
-    }
-
-    #[test]
-    fn test_cancel_reward() -> eyre::Result<()> {
-        todo!()
-    }
-
-    #[test]
-    fn test_update_rewards() -> eyre::Result<()> {
-        todo!()
-    }
-
-    #[test]
-    fn test_accrue() -> eyre::Result<()> {
-        todo!()
-    }
-
-    #[test]
-    fn test_finalize_streams() -> eyre::Result<()> {
-        todo!()
-    }
-
-    #[test]
-    fn test_set_reward_recipient_opt_in_out() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
@@ -2658,6 +2628,65 @@ mod tests {
         assert_eq!(token.get_opted_in_supply()?, U256::ZERO);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_start_reward() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let token_id = 1;
+
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            &admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let reward_amount = U256::from(100e18);
+        let stream_id = token.start_reward(
+            &admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 10,
+            },
+        )?;
+
+        assert!(stream_id >= 0);
+        let token_address = token.token_address;
+        let balance = token.get_balance(&token_address)?;
+        assert_eq!(balance, reward_amount);
+        assert!(storage.events[&token_address].len() > 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_reward() -> eyre::Result<()> {
+        todo!()
+    }
+
+    #[test]
+    fn test_update_rewards() -> eyre::Result<()> {
+        todo!()
+    }
+
+    #[test]
+    fn test_accrue() -> eyre::Result<()> {
+        todo!()
+    }
+
+    #[test]
+    fn test_finalize_streams() -> eyre::Result<()> {
+        todo!()
     }
 
     #[test]
