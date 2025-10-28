@@ -84,7 +84,7 @@ where
             .and_then(|maybe| maybe.ok_or_eyre("block reader returned empty genesis block"))
             .wrap_err("failed reading genesis block from execution node")?;
 
-        Ok(Actor {
+        Ok(Self {
             context: ContextCell::new(config.context),
             mailbox: rx,
 
