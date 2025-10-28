@@ -16,7 +16,7 @@
 //! The `Adagio` variant is a placeholder representing the pre-hardfork baseline.
 
 use alloy_hardforks::hardfork;
-use reth_chainspec::ForkCondition;
+use reth_chainspec::{EthereumHardforks, ForkCondition};
 
 hardfork!(
     /// Tempo-specific hardforks for network upgrades.
@@ -28,7 +28,7 @@ hardfork!(
 );
 
 /// Trait for querying Tempo-specific hardfork activations.
-pub trait TempoHardforks {
+pub trait TempoHardforks: EthereumHardforks {
     /// Retrieves activation condition for a Tempo-specific hardfork
     fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition;
 
