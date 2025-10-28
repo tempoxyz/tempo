@@ -93,6 +93,20 @@ impl TempoChainSpec {
     }
 }
 
+// Required by reth's e2e-test-utils for integration tests.
+// The test utilities need to convert from standard ChainSpec to custom chain specs.
+impl From<ChainSpec> for TempoChainSpec {
+    fn from(spec: ChainSpec) -> Self {
+        Self {
+            inner: spec.map_header(|inner| TempoHeader {
+                general_gas_limit: inner.gas_limit,
+                timestamp_millis_part: inner.timestamp * 1000,
+                inner,
+            }),
+        }
+    }
+}
+
 impl Hardforks for TempoChainSpec {
     fn fork<H: Hardfork>(&self, fork: H) -> ForkCondition {
         self.inner.fork(fork)

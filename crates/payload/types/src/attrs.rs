@@ -81,6 +81,20 @@ impl TempoPayloadBuilderAttributes {
     }
 }
 
+// Required by reth's e2e-test-utils for integration tests.
+// The test utilities need to convert from standard Ethereum payload attributes
+// to custom chain-specific attributes.
+impl From<EthPayloadBuilderAttributes> for TempoPayloadBuilderAttributes {
+    fn from(inner: EthPayloadBuilderAttributes) -> Self {
+        Self {
+            inner,
+            interrupt: InterruptHandle::default(),
+            timestamp_millis_part: 0,
+            subblocks: Default::default(),
+        }
+    }
+}
+
 impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
     type RpcPayloadAttributes = PayloadAttributes;
     type Error = Infallible;

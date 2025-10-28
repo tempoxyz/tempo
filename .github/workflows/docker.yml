@@ -1,0 +1,60 @@
+name: Docker Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  REGISTRY: ghcr.io/tempoxyz
+  IMAGE_NAME: tempo
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: depot-ubuntu-latest
+    strategy:
+      matrix:
+        binary: [tempo, tempo-xtask, tempo-bench, tempo-sidecar]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - uses: depot/setup-action@v1
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.binary }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=edge,branch=main
+            type=sha,prefix=sha-
+            type=ref,event=pr
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push Docker image
+        uses: depot/build-push-action@v1
+        with:
+          build-args: |
+            RUST_BINARY=${{ matrix.binary }}
+            RUST_PROFILE=release
+          project: 0c6tg19qsp
+          context: .
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          push: true

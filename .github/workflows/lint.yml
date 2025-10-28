@@ -43,6 +43,18 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
+  
+  crate-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: taiki-e/install-action@cargo-hack
+      - run: cargo hack check --feature-powerset --depth 1
 
   docs:
     name: docs
