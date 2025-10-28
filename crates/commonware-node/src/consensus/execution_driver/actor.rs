@@ -63,9 +63,7 @@ impl<TContext> ExecutionDriver<TContext, Uninit>
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    pub(super) async fn init(
-        config: super::ExecutionDriverBuilder<TContext>,
-    ) -> eyre::Result<Self> {
+    pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
         let (tx, rx) = mpsc::channel(config.mailbox_size);
         let my_mailbox = ExecutionDriverMailbox::from_sender(tx);
 

@@ -175,7 +175,7 @@ where
         .await;
 
         let (execution_driver, execution_driver_mailbox) =
-            execution_driver::init(super::execution_driver::ExecutionDriverBuilder {
+            execution_driver::init(super::execution_driver::Config {
                 context: self.context.with_label("execution_driver"),
                 // TODO: pass in from the outside,
                 fee_recipient: self.fee_recipient,

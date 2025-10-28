@@ -27,7 +27,7 @@ pub(super) use actor::ExecutionDriver;
 pub(crate) use ingress::ExecutionDriverMailbox;
 
 pub(super) async fn init<TContext>(
-    config: ExecutionDriverBuilder<TContext>,
+    config: Config<TContext>,
 ) -> eyre::Result<(ExecutionDriver<TContext>, ExecutionDriverMailbox)>
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
@@ -39,7 +39,7 @@ where
     Ok((execution_driver, mailbox))
 }
 
-pub(super) struct ExecutionDriverBuilder<TContext> {
+pub(super) struct Config<TContext> {
     /// The execution context of the commonwarexyz application (tokio runtime, etc).
     pub(super) context: TContext,
 
