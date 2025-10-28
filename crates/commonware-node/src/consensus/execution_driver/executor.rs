@@ -414,7 +414,10 @@ impl ExecutorMailbox {
     }
 
     /// Requests the agent to forward a `finalized` block to the execution layer.
-    pub(super) fn forward_finalized(&self, finalized: super::Finalized) -> eyre::Result<()> {
+    pub(super) fn forward_finalized(
+        &self,
+        finalized: super::ingress::Finalized,
+    ) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),

@@ -30,6 +30,7 @@ use tempo_node::TempoFullNode;
 
 use crate::{
     config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
+    consensus::execution_driver,
     dkg,
     epoch::{self, Coordinator, SchemeProvider},
 };
@@ -173,20 +174,19 @@ where
         )
         .await;
 
-        let execution_driver = super::execution_driver::ExecutionDriverBuilder {
-            context: self.context.with_label("execution_driver"),
-            // TODO: pass in from the outside,
-            fee_recipient: self.fee_recipient,
-            mailbox_size: self.mailbox_size,
-            marshal: marshal_mailbox.clone(),
-            execution_node: self.execution_node,
-            new_payload_wait_time: self.new_payload_wait_time,
-            epoch_length: self.epoch_length,
-        }
-        .build()
-        .wrap_err("failed initializing execution driver")?;
-
-        let execution_driver_mailbox = execution_driver.mailbox().clone();
+        let (execution_driver, execution_driver_mailbox) =
+            execution_driver::init(super::execution_driver::ExecutionDriverBuilder {
+                context: self.context.with_label("execution_driver"),
+                // TODO: pass in from the outside,
+                fee_recipient: self.fee_recipient,
+                mailbox_size: self.mailbox_size,
+                marshal: marshal_mailbox.clone(),
+                execution_node: self.execution_node,
+                new_payload_wait_time: self.new_payload_wait_time,
+                epoch_length: self.epoch_length,
+            })
+            .await
+            .wrap_err("failed initializing execution driver")?;
 
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             epoch::manager::Config {
