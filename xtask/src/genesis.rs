@@ -1,6 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, Bytes, FixedBytes, U256, address},
+    primitives::{Address, Bytes, FixedBytes, U256, B256, address},
     signers::{
         local::{MnemonicBuilder, coins_bip39::English},
         utils::secret_key_to_address,
@@ -44,37 +44,11 @@ pub struct InitialValidator {
     /// Validator address
     pub address: Address,
     /// Communication key (32 bytes)
-    #[serde(with = "serde_bytes_32")]
-    pub key: [u8; 32],
+    pub key: B256,
     /// IP address or DNS name
     pub ip_address_or_dns: String,
     /// Whether validator starts active
     pub active: bool,
-}
-
-mod serde_bytes_32 {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&hex::encode(bytes))
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let bytes = hex::decode(s.trim_start_matches("0x")).map_err(serde::de::Error::custom)?;
-        if bytes.len() != 32 {
-            return Err(serde::de::Error::custom("key must be 32 bytes"));
-        }
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        Ok(arr)
-    }
 }
 
 /// Generate genesis allocation file for testing
@@ -128,17 +102,6 @@ impl GenesisArgs {
     /// And creates accounts for system contracts.
     pub(crate) async fn run(self) -> eyre::Result<()> {
         println!("Generating {:?} accounts", self.accounts);
-
-        // Load initial validators if config file provided
-        let initial_validators = if let Some(config_path) = &self.validators_config {
-            println!("Loading validators from {:?}", config_path);
-            let config_content = fs::read_to_string(config_path)?;
-            let validators: Vec<InitialValidator> = serde_json::from_str(&config_content)?;
-            println!("Loaded {} initial validators", validators.len());
-            validators
-        } else {
-            Vec::new()
-        };
 
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
@@ -210,7 +173,7 @@ impl GenesisArgs {
         initialize_nonce_manager(&mut evm)?;
         
         println!("Initializing validator config");
-        initialize_validator_config(admin, initial_validators, &mut evm)?;
+        initialize_validator_config(admin, self.validators_config, &mut evm)?;
 
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
@@ -524,7 +487,7 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 
 fn initialize_validator_config(
     owner: Address,
-    initial_validators: Vec<InitialValidator>,
+    validators_config: Option<PathBuf>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<()> {
     let block = evm.block.clone();
@@ -534,6 +497,17 @@ fn initialize_validator_config(
     let mut validator_config = ValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, &mut provider);
     validator_config.initialize(owner);
 
+    // Load initial validators if config file provided
+    let initial_validators = if let Some(config_path) = validators_config {
+        println!("Loading validators from {:?}", config_path);
+        let config_content = fs::read_to_string(config_path)?;
+        let validators: Vec<InitialValidator> = serde_json::from_str(&config_content)?;
+        println!("Loaded {} initial validators", validators.len());
+        validators
+    } else {
+        Vec::new()
+    };
+
     // Add initial validators
     for validator in initial_validators.iter().tqdm() {
         validator_config
@@ -541,7 +515,7 @@ fn initialize_validator_config(
                 &owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator.address,
-                    key: FixedBytes::from(validator.key),
+                    key: FixedBytes::from(validator.key.0),
                     active: validator.active,
                     ipAddressOrDns: validator.ip_address_or_dns.clone(),
                 },

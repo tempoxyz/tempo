@@ -123,7 +123,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
                 slots::OWNER,
                 call.newOwner.into_word().into(),
             )
-            .map_err(|_| ValidatorConfigError::unauthorized())?;
+            .expect("TODO: handle error");
         Ok(())
     }
 
@@ -406,7 +406,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         let value = self
             .storage
             .sload(self.precompile_address, slot)
-            .map_err(|_| ValidatorConfigError::unauthorized())?;
+            .expect("TODO: handle error");
         let bytes = value.to_be_bytes::<32>();
         let len = bytes[31] as usize / 2;
         if len > 31 {
