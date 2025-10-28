@@ -756,6 +756,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
             self.set_scheduled_rate_decrease_at(end_time, current_decrease + rate)?;
 
+            // TODO: emit reward sceheduled event
+
+            // NOTE: there is a diff with the reference contract where this returns the next id ++
+            // rather than the current next id
             Ok(stream_id)
         }
     }
@@ -1146,14 +1150,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         if from_recipient != Address::ZERO {
             self.update_rewards(&from_recipient)?;
 
-            // TODO: update to checked operations
             let delegated = self
                 .get_delegated_balance(&from_recipient)?
-                .saturating_sub(amount);
+                .checked_sub(amount)
+                .expect("TODO: handle error");
             self.set_delegated_balance(&from_recipient, delegated)?;
 
-            // TODO: update to checked operations
-            let opted_in = self.get_opted_in_supply()?.saturating_sub(amount);
+            let opted_in = self
+                .get_opted_in_supply()?
+                .checked_sub(amount)
+                .expect("TODO: handle error");
             self.set_opted_in_supply(opted_in)?;
         }
         Ok(())
@@ -1168,14 +1174,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         if to_recipient != Address::ZERO {
             self.update_rewards(&to_recipient)?;
 
-            // TODO: update to checked operations
             let delegated = self
                 .get_delegated_balance(&to_recipient)?
-                .saturating_add(amount);
+                .checked_add(amount)
+                .expect("TODO: handle error");
             self.set_delegated_balance(&to_recipient, delegated)?;
 
-            // TODO: update to checked operations
-            let opted_in = self.get_opted_in_supply()?.saturating_add(amount);
+            let opted_in = self
+                .get_opted_in_supply()?
+                .checked_add(amount)
+                .expect("TODO: handle error");
             self.set_opted_in_supply(opted_in)?;
         }
         Ok(())
@@ -1317,44 +1325,50 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.accrue()?;
 
         let current_recipient = self.get_reward_recipient_of(msg_sender)?;
-        let balance = self.get_balance(msg_sender)?;
-
         if call.recipient == current_recipient {
             return Ok(());
         }
 
+        let balance = self.get_balance(msg_sender)?;
         if current_recipient != Address::ZERO {
             self.update_rewards(&current_recipient)?;
-            let delegated = self.get_delegated_balance(&current_recipient)?;
-            let new_delegated = delegated.saturating_sub(balance);
-            self.set_delegated_balance(&current_recipient, new_delegated)?;
-
-            let opted_in = self.get_opted_in_supply()?;
-            let new_opted_in = opted_in.saturating_sub(balance);
-            self.set_opted_in_supply(new_opted_in)?;
+            let delegated = self
+                .get_delegated_balance(&current_recipient)?
+                .checked_sub(balance)
+                .expect("TODO: handle error");
+            self.set_delegated_balance(&current_recipient, delegated)?;
         }
 
         self.set_reward_recipient_of(msg_sender, call.recipient)?;
-
         if call.recipient == Address::ZERO {
+            // TODO: opt out
+            let opted_in_supply = self
+                .get_opted_in_supply()?
+                .checked_sub(balance)
+                .expect("TODO: handle error");
+            self.set_opted_in_supply(opted_in_supply);
         } else {
             let delegated = self.get_delegated_balance(&call.recipient)?;
             if delegated > U256::ZERO {
                 self.update_rewards(&call.recipient)?;
             }
 
-            // TODO: update to checked math not saturating
-            let new_delegated = delegated.saturating_add(balance);
+            let new_delegated = delegated.checked_add(balance).expect("TODO: handle error");
             self.set_delegated_balance(&call.recipient, new_delegated)?;
 
-            let opted_in = self.get_opted_in_supply()?;
-
-            let new_opted_in = opted_in.saturating_add(balance);
-            self.set_opted_in_supply(new_opted_in)?;
+            if current_recipient.is_zero() {
+                let opted_in = self
+                    .get_opted_in_supply()?
+                    .checked_add(balance)
+                    .expect("TODO: handle error");
+                self.set_opted_in_supply(opted_in)?;
+            }
 
             let rpt = self.get_reward_per_token_stored()?;
             self.set_user_reward_per_token_paid(&call.recipient, rpt)?;
         }
+
+        // TODO: emit reward recipient set
 
         Ok(())
     }
@@ -1364,6 +1378,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         msg_sender: &Address,
         call: ITIP20::cancelStreamCall,
     ) -> Result<U256, TempoPrecompileError> {
+        // NOTE: bookmark
         let stream_id = call.id.to::<u64>();
         let stream = self.get_stream(stream_id)?;
 
