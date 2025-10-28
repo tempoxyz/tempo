@@ -58,9 +58,8 @@ pub async fn run_consensus_stack(
         BACKFILL_QUOTA,
         message_backlog,
     );
-    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
-
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
+    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
     let consensus_engine = crate::consensus::engine::Builder {
         context: context.with_label("engine"),
@@ -100,8 +99,8 @@ pub async fn run_consensus_stack(
             resolver,
             broadcaster,
             backfill,
-            subblocks,
             dkg,
+            subblocks,
         ),
     );
 

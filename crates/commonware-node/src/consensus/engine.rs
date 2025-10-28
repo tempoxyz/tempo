@@ -339,11 +339,11 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        subblocks_network: (
+        dkg_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        dkg_channel: (
+        subblocks_network: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -355,8 +355,8 @@ where
                 resolver_network,
                 broadcast_network,
                 backfill_network,
-                subblocks_network,
                 dkg_channel,
+                subblocks_network,
             )
         })
     }
@@ -387,11 +387,11 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        subblocks_network: (
+        dkg_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        dkg_channel: (
+        subblocks_network: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -425,8 +425,8 @@ where
             epoch_manager,
             execution_driver,
             syncer,
-            subblocks,
             dkg_manager,
+            subblocks,
         ])
         .await
         .map(|_| ())

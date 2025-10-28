@@ -20,8 +20,8 @@ pub(crate) const RECOVERED_CHANNEL_IDENT: commonware_p2p::Channel = 1;
 pub(crate) const RESOLVER_CHANNEL_IDENT: commonware_p2p::Channel = 2;
 pub(crate) const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
 pub(crate) const BACKFILL_BY_DIGEST_CHANNEL_IDENT: commonware_p2p::Channel = 4;
-pub(crate) const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 5;
-pub(crate) const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 6;
+pub(crate) const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 5;
+pub(crate) const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 6;
 
 pub(crate) const NUMBER_CONCURRENT_FETCHES: usize = 4;
 pub(crate) const NUMBER_MAX_FETCHES: usize = 16;
