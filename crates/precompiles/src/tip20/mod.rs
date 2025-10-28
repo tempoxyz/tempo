@@ -1139,10 +1139,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         from: &Address,
         amount: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let from_recipient = self.get_reward_recipient_of(from);
+        let from_recipient = self.get_reward_recipient_of(from)?;
         if from_recipient != Address::ZERO {
             self.update_rewards(&from_recipient)?;
-            let delegated = self.get_delegated_balance(&from_recipient);
+            let delegated = self.get_delegated_balance(&from_recipient)?;
             let amount_u128 = amount.to::<u128>();
             let new_delegated = delegated.saturating_sub(U256::from(amount_u128));
             self.set_delegated_balance(&from_recipient, new_delegated)?;
@@ -1159,10 +1159,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         to: &Address,
         amount: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let to_recipient = self.get_reward_recipient_of(to);
+        let to_recipient = self.get_reward_recipient_of(to)?;
         if to_recipient != Address::ZERO {
             self.update_rewards(&to_recipient)?;
-            let delegated = self.get_delegated_balance(&to_recipient);
+            let delegated = self.get_delegated_balance(&to_recipient)?;
             let amount_u128 = amount.to::<u128>();
             let new_delegated = delegated.saturating_add(U256::from(amount_u128));
             self.set_delegated_balance(&to_recipient, new_delegated)?;
@@ -1176,7 +1176,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
     fn accrue(&mut self) -> Result<(), TempoPrecompileError> {
         let current_time = self.storage.timestamp();
-        let last_update_time = U256::from(self.get_last_update_time());
+        let last_update_time = U256::from(self.get_last_update_time()?);
 
         let elapsed = if current_time > last_update_time {
             current_time - last_update_time
@@ -1270,7 +1270,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Ok(());
         }
 
-        let delegated = self.get_delegated_balance(recipient);
+        let delegated = self.get_delegated_balance(recipient)?;
         let reward_per_token_stored = self.get_reward_per_token_stored()?;
         let user_reward_per_token_paid = self.get_user_reward_per_token_paid(recipient)?;
 
@@ -2653,8 +2653,8 @@ mod tests {
             },
         )?;
 
-        assert_eq!(token.get_reward_recipient_of(&alice), Address::ZERO);
-        assert_eq!(token.get_delegated_balance(&alice), U256::ZERO);
+        assert_eq!(token.get_reward_recipient_of(&alice)?, Address::ZERO);
+        assert_eq!(token.get_delegated_balance(&alice)?, U256::ZERO);
         assert_eq!(token.get_opted_in_supply()?, U256::ZERO);
 
         Ok(())
