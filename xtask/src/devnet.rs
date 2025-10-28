@@ -1,14 +1,12 @@
 use alloy_primitives::address;
-use commonware_cryptography::{PrivateKeyExt as _, Signer as _};
+use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
 use eyre::{Context, ensure};
 use indexmap::IndexMap;
 use itertools::multizip;
-use rand::SeedableRng;
 use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
 use tempo_commonware_node_config::Config;
-use tempo_commonware_node_cryptography::PrivateKey;
 
 /// Generates a config file to run a bunch of validators locally.
 #[derive(Debug, clap::Parser)]
@@ -73,9 +71,8 @@ pub(crate) fn generate_devnet_configs(
         );
     }
 
-    let mut rng = rand::rngs::StdRng::seed_from_u64(rand::random::<u64>());
     let mut signers = (0..nodes.len())
-        .map(|_| PrivateKey::from_rng(&mut rng))
+        .map(|_| PrivateKey::from_rng(&mut rand::thread_rng()))
         .collect::<Vec<_>>();
     signers.sort_by_key(|signer| signer.public_key());
 
@@ -85,8 +82,8 @@ pub(crate) fn generate_devnet_configs(
     let threshold = commonware_utils::quorum(nodes.len() as u32);
     let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
         _,
-        tempo_commonware_node_cryptography::BlsScheme,
-    >(&mut rng, None, nodes.len() as u32, threshold);
+        commonware_cryptography::bls12381::primitives::variant::MinSig,
+    >(&mut rand::thread_rng(), None, nodes.len() as u32, threshold);
 
     // Generate instance configurations
     let mut these_will_be_peers = IndexMap::new();
@@ -99,6 +96,7 @@ pub(crate) fn generate_devnet_configs(
             signer,
             share,
             polynomial: polynomial.clone(),
+            epoch_length: 302_400,
             listen_port: 8000,
             metrics_port: Some(8002),
             p2p: Default::default(),
@@ -107,9 +105,9 @@ pub(crate) fn generate_devnet_configs(
             // this will be updated after we have collected all peers
             peers: IndexMap::new(),
             bootstrappers: all_peers.clone().into(),
-            message_backlog: 0,
-            mailbox_size: 0,
-            deque_size: 0,
+            message_backlog: 16384,
+            mailbox_size: 16384,
+            deque_size: 10,
             fee_recipient: address!("0x0000000000000000000000000000000000000000"),
             timeouts: Default::default(),
         };
@@ -129,17 +127,16 @@ pub(crate) fn generate_devnet_configs(
         .collect::<Vec<_>>();
 
     let enodes = reth_identities
-        .clone()
         .iter()
         .zip(nodes.clone())
         .map(|((_, id), node)| {
-            let enode = format!("enode://{:x}@{}", id, node);
+            let enode = format!("enode://{id:x}@{node}");
             enode
         })
         .collect::<Vec<_>>();
 
     for (commonware_config, reth_identity, node) in
-        multizip((commonware_configs, reth_identities, nodes.clone()))
+        multizip((commonware_configs, reth_identities, nodes))
     {
         let serialized_commonware_config = toml::to_string_pretty(&commonware_config)
             .wrap_err("failed to convert commonware config to toml")?;
