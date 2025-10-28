@@ -7,8 +7,7 @@ use alloy::{
     },
 };
 use clap::Parser;
-use eyre::OptionExt as _;
-use eyre::WrapErr as _;
+use eyre::{OptionExt as _, WrapErr as _};
 use rayon::prelude::*;
 use reth::revm::{
     context::ContextTr,
