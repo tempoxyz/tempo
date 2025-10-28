@@ -32,16 +32,13 @@ use tracing::{Level, debug, error, error_span, info, instrument, warn};
 
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
+use super::{
+    Mailbox, executor,
+    executor::ExecutorMailbox,
+    ingress::{Broadcast, Finalized, Genesis, Message, Propose, Verify},
+};
 use crate::{
-    consensus::{
-        Digest,
-        block::Block,
-        execution_driver::{
-            Mailbox,
-            executor::{self, ExecutorMailbox},
-            ingress::{Broadcast, Finalized, Genesis, Message, Propose, Verify},
-        },
-    },
+    consensus::{Digest, block::Block},
     dkg::PublicOutcome,
     epoch,
 };
