@@ -22,6 +22,7 @@ use alloy::{
     hex,
     primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
     sol_types::SolStruct,
+    uint,
 };
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
@@ -112,8 +113,7 @@ pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"
 pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
-
-// pub static ACC_PRECISION: U256 = uint!(1000000000000000000_u128);
+pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
 impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn name(&mut self) -> Result<String, TempoPrecompileError> {
@@ -1349,19 +1349,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.accrue()?;
 
         let current_time = self.storage.timestamp();
-
         let elapsed = if current_time > U256::from(stream.start_time) {
             current_time - U256::from(stream.start_time)
         } else {
             U256::ZERO
         };
 
-        let acc_precision = U256::from(1_000_000_000_000_000_000u128);
-        let distributed = (stream.rate_per_second_scaled * elapsed) / acc_precision;
+        let distributed = (stream.rate_per_second_scaled * elapsed) / ACC_PRECISION;
 
         let total_amount = stream.rate_per_second_scaled
             * U256::from(stream.end_time - stream.start_time)
-            / acc_precision;
+            / ACC_PRECISION;
         let remaining = if distributed < total_amount {
             total_amount - distributed
         } else {
@@ -1389,7 +1387,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 let new_balance = funder_balance + remaining;
                 self.set_balance(&stream.funder, new_balance)?;
 
-                // Emit transfer event
                 self.storage.emit_event(
                     self.token_address,
                     TIP20Event::Transfer(ITIP20::Transfer {
@@ -1472,12 +1469,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TempoPrecompileError> {
         let key = stream_id.to_be_bytes();
 
-        // Store funder
         let funder_slot = mapping_slot(key, slots::STREAMS);
         self.storage
             .sstore(self.token_address, funder_slot, stream.funder.into_u256())?;
 
-        // Store start_time
         let start_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 1));
         self.storage.sstore(
             self.token_address,
@@ -1485,12 +1480,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             U256::from(stream.start_time),
         )?;
 
-        // Store end_time
         let end_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 2));
         self.storage
             .sstore(self.token_address, end_slot, U256::from(stream.end_time))?;
 
-        // Store rate_per_second_scaled
         let rate_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 3));
         self.storage
             .sstore(self.token_address, rate_slot, stream.rate_per_second_scaled)
