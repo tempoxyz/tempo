@@ -23,16 +23,16 @@ mod executor;
 mod actor;
 mod ingress;
 
-pub(super) use actor::ExecutionDriver;
+pub(super) use actor::Actor;
 pub(crate) use ingress::ExecutionDriverMailbox;
 
 pub(super) async fn init<TContext>(
     config: Config<TContext>,
-) -> eyre::Result<(ExecutionDriver<TContext>, ExecutionDriverMailbox)>
+) -> eyre::Result<(Actor<TContext>, ExecutionDriverMailbox)>
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    let execution_driver = ExecutionDriver::init(config)
+    let execution_driver = Actor::init(config)
         .await
         .wrap_err("failed initializing actor")?;
     let mailbox = execution_driver.mailbox().clone();

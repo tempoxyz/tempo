@@ -46,20 +46,20 @@ use crate::{
     epoch,
 };
 
-pub(in crate::consensus) struct ExecutionDriver<TContext, TState = Uninit> {
+pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
     context: ContextCell<TContext>,
     mailbox: mpsc::Receiver<Message>,
 
     inner: Inner<TState>,
 }
 
-impl<TContext, TState> ExecutionDriver<TContext, TState> {
+impl<TContext, TState> Actor<TContext, TState> {
     pub(super) fn mailbox(&self) -> &ExecutionDriverMailbox {
         &self.inner.my_mailbox
     }
 }
 
-impl<TContext> ExecutionDriver<TContext, Uninit>
+impl<TContext> Actor<TContext, Uninit>
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
@@ -75,7 +75,7 @@ where
             .and_then(|maybe| maybe.ok_or_eyre("block reader returned empty genesis block"))
             .wrap_err("failed reading genesis block from execution node")?;
 
-        Ok(ExecutionDriver {
+        Ok(Actor {
             context: ContextCell::new(config.context),
             mailbox: rx,
 
@@ -110,7 +110,7 @@ where
             return;
         };
 
-        ExecutionDriver {
+        Actor {
             context,
             mailbox,
             inner: initialized,
@@ -127,7 +127,7 @@ where
     }
 }
 
-impl<TContext> ExecutionDriver<TContext, Init>
+impl<TContext> Actor<TContext, Init>
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {

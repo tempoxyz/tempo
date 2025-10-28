@@ -272,7 +272,7 @@ where
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
-    execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
+    execution_driver: crate::consensus::execution_driver::Actor<TContext>,
     execution_driver_mailbox: crate::consensus::execution_driver::ExecutionDriverMailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
