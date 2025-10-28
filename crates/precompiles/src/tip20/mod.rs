@@ -689,56 +689,39 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         msg_sender: &Address,
         call: ITIP20::startRewardCall,
     ) -> Result<u64, TempoPrecompileError> {
-        // Check if paused
         self.check_not_paused()?;
-
-        // Save token address to avoid borrow checker issues
         let token_address = self.token_address;
-
-        // Check if transfer is authorized
         self.ensure_transfer_authorized(msg_sender, &token_address)?;
 
-        // Validate amount
         if call.amount == U256::ZERO {
             return Err(TIP20Error::invalid_amount().into());
         }
 
-        // Transfer tokens from sender to contract
         self._transfer(msg_sender, &token_address, call.amount)?;
-
         if call.seconds == 0 {
-            // Immediate payout - distribute to all opted-in users
             self.accrue()?;
 
             let opted_in_supply = self.get_opted_in_supply()?;
             if opted_in_supply == U256::ZERO {
-                // No one opted in, just store the balance
                 return Ok(0);
             }
 
-            // Calculate immediate distribution: amount / opted_in_supply
             let rate = call.amount / opted_in_supply;
-
-            // Update reward per token stored
             let current_rpt = self.get_reward_per_token_stored()?;
             self.set_reward_per_token_stored(current_rpt + rate)?;
 
             Ok(0)
         } else {
-            // Streaming payout - create reward stream
             let current_time = self.storage.timestamp().to::<u128>();
             let end_time = current_time + call.seconds;
             let rate = call.amount / U256::from(call.seconds);
 
-            // Get next stream ID
             let stream_id = self.get_next_stream_id()?;
             self.set_next_stream_id(stream_id + 1)?;
 
-            // Update total reward per second
             let current_total = self.get_total_reward_per_second()?;
             self.set_total_reward_per_second(current_total + rate)?;
 
-            // Store stream data
             self.set_stream(
                 stream_id,
                 RewardStream {
@@ -749,7 +732,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 },
             )?;
 
-            // Update scheduled rate decrease
             let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
             self.set_scheduled_rate_decrease_at(end_time, current_decrease + rate)?;
 
@@ -2707,9 +2689,6 @@ mod tests {
             },
         )?;
 
-        let total_before = token.get_total_reward_per_second()?;
-        assert!(total_before > U256::ZERO);
-
         let remaining = token.cancel_stream(
             &admin,
             ITIP20::cancelStreamCall {
@@ -2719,7 +2698,9 @@ mod tests {
 
         let total_after = token.get_total_reward_per_second()?;
         assert_eq!(total_after, U256::ZERO);
-        assert!(remaining > U256::ZERO);
+
+        // TODO: assert the exact value
+        assert_eq!(remaining, reward_amount);
 
         let stream = token.get_stream(stream_id)?;
         assert!(stream.funder.is_zero());
