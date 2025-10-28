@@ -366,6 +366,34 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         Orderbook::from_storage(pair_key, self.storage, self.address)
     }
 
+    /// Add book key to book keys array
+    fn push_to_book_keys(&mut self, book_key: B256) -> Result<(), TempoPrecompileError> {
+        let length = self.storage.sload(self.address, slots::BOOK_KEYS_LENGTH)?;
+        self.storage.sstore(
+            self.address,
+            slots::BOOK_KEYS_BASE + length,
+            book_key.into(),
+        )?;
+        self.storage
+            .sstore(self.address, slots::BOOK_KEYS_LENGTH, length + U256::ONE)?;
+        Ok(())
+    }
+
+    /// Get all book keys
+    pub fn get_book_keys(&mut self) -> Result<Vec<B256>, TempoPrecompileError> {
+        let length = self.storage.sload(self.address, slots::BOOK_KEYS_LENGTH)?;
+        let mut book_keys = Vec::new();
+        let mut i = U256::ZERO;
+        while i < length {
+            let book_key = self
+                .storage
+                .sload(self.address, slots::BOOK_KEYS_BASE + i)?;
+            book_keys.push(B256::from(book_key));
+            i += U256::ONE;
+        }
+        Ok(book_keys)
+    }
+
     pub fn create_pair(&mut self, base: &Address) -> Result<B256, TempoPrecompileError> {
         let quote = TIP20Token::from_address(*base, self.storage).quote_token()?;
 
@@ -377,6 +405,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let book = Orderbook::new(*base, quote);
         book.store(self.storage, self.address)?;
+        self.push_to_book_keys(book_key)?;
 
         // Emit PairCreated event
         self.storage.emit_event(
