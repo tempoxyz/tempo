@@ -2256,17 +2256,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
-name = "clocksource"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "129026dd5a8a9592d96916258f3a5379589e513ea5e86aeb0bd2530286e44e9e"
-dependencies = [
- "libc",
- "time",
- "winapi",
-]
-
-[[package]]
 name = "coins-bip32"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2347,7 +2336,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2365,7 +2354,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "bytes",
  "paste",
@@ -2375,7 +2364,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2400,7 +2389,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "blake3",
  "blst",
@@ -2425,7 +2414,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "futures",
  "proc-macro2",
@@ -2438,7 +2427,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2464,7 +2453,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "bimap",
  "bytes",
@@ -2486,7 +2475,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "async-lock",
  "axum",
@@ -2518,7 +2507,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2540,7 +2529,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -2560,7 +2549,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "0.0.62"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=0124b5fb2b3859a702f0ae6d9678ce37ac906db4#0124b5fb2b3859a702f0ae6d9678ce37ac906db4"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=8c07397a10630e0f6cda8aa8abd4047b6d682ffc#8c07397a10630e0f6cda8aa8abd4047b6d682ffc"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2954,27 +2943,6 @@ dependencies = [
  "generic-array",
  "rand_core 0.6.4",
  "typenum",
-]
-
-[[package]]
-name = "csv"
-version = "1.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acdc4883a9c96732e4733212c01447ebd805833b7275a73ca3ee080fd77afdaf"
-dependencies = [
- "csv-core",
- "itoa",
- "ryu",
- "serde",
-]
-
-[[package]]
-name = "csv-core"
-version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d02f3b0da4c6504f86e9cd789d8dbafab48c2321be74e9987593de5a894d93d"
-dependencies = [
- "memchr",
 ]
 
 [[package]]
@@ -7210,17 +7178,6 @@ dependencies = [
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width 0.2.0",
-]
-
-[[package]]
-name = "ratelimit"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36ea961700fd7260e7fa3701c8287d901b2172c51f9c1421fa0f21d7f7e184b7"
-dependencies = [
- "clocksource",
- "parking_lot",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -11478,7 +11435,6 @@ dependencies = [
  "clap",
  "core_affinity",
  "crossbeam-utils",
- "csv",
  "dashmap 6.1.0",
  "eyre",
  "fastrand",
@@ -11491,20 +11447,15 @@ dependencies = [
  "hyper-util",
  "mimalloc",
  "parking_lot",
- "ratelimit",
  "rayon",
- "reth",
- "reth-evm",
  "rlimit",
  "serde",
  "serde_json",
  "simple-tqdm",
  "tempo-chainspec",
  "tempo-contracts",
- "tempo-evm",
  "tempo-precompiles",
  "thiserror 2.0.17",
- "thousands",
  "tokio",
  "tokio-util",
  "toml",
@@ -11532,7 +11483,6 @@ name = "tempo-commonware-node"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
- "alloy-evm",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
@@ -11546,19 +11496,22 @@ dependencies = [
  "commonware-p2p",
  "commonware-resolver",
  "commonware-runtime",
+ "commonware-storage",
  "commonware-utils",
  "eyre",
  "futures",
  "governor 0.6.3",
  "indexmap 2.11.4",
+ "prometheus-client",
  "rand 0.8.5",
- "reth",
+ "rand_core 0.6.4",
+ "reth-evm",
  "reth-node-builder",
  "reth-node-core",
  "reth-primitives-traits",
  "reth-provider",
+ "reth-revm",
  "tempo-commonware-node-config",
- "tempo-commonware-node-cryptography",
  "tempo-node",
  "tempo-payload-types",
  "tempo-primitives",
@@ -11573,26 +11526,14 @@ dependencies = [
  "alloy-primitives",
  "camino",
  "commonware-codec",
+ "commonware-cryptography",
  "commonware-utils",
  "const-hex",
  "humantime-serde",
  "indexmap 2.11.4",
  "serde",
- "tempo-commonware-node-cryptography",
  "thiserror 2.0.17",
  "toml",
-]
-
-[[package]]
-name = "tempo-commonware-node-cryptography"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "bytes",
- "commonware-codec",
- "commonware-cryptography",
- "commonware-utils",
- "rand 0.8.5",
 ]
 
 [[package]]
@@ -11600,6 +11541,7 @@ name = "tempo-consensus"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-evm",
  "reth-chainspec",
  "reth-consensus",
@@ -11704,10 +11646,12 @@ dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
+ "async-trait",
  "base64 0.22.1",
  "clap",
  "eyre",
  "futures",
+ "jsonrpsee",
  "p256",
  "rand 0.9.2",
  "reth-chainspec",
@@ -11919,6 +11863,7 @@ dependencies = [
 name = "tempo-xtask"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "alloy-primitives",
  "camino",
  "clap",
@@ -11927,8 +11872,18 @@ dependencies = [
  "eyre",
  "indexmap 2.11.4",
  "rand 0.8.5",
+ "rayon",
+ "reth",
+ "reth-evm",
+ "serde",
+ "serde_json",
+ "simple-tqdm",
+ "tempo-chainspec",
  "tempo-commonware-node-config",
- "tempo-commonware-node-cryptography",
+ "tempo-contracts",
+ "tempo-evm",
+ "tempo-precompiles",
+ "tokio",
  "toml",
 ]
 
@@ -12062,12 +12017,6 @@ dependencies = [
  "quote",
  "syn 2.0.106",
 ]
-
-[[package]]
-name = "thousands"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bf63baf9f5039dadc247375c29eb13706706cfde997d0330d05aa63a77d8820"
 
 [[package]]
 name = "thread_local"

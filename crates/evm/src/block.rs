@@ -19,8 +19,8 @@ use reth_revm::{
 };
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    contracts::{IFeeManager::executeBlockCall, types::IStablecoinExchange},
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
+    tip_fee_manager::IFeeManager,
 };
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_revm::evm::TempoContext;
@@ -149,7 +149,7 @@ where
         let block = self.evm().block().number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
         if to == TIP_FEE_MANAGER_ADDRESS {
-            let fee_input = executeBlockCall
+            let fee_input = IFeeManager::executeBlockCall
                 .abi_encode()
                 .into_iter()
                 .chain(block)
@@ -275,37 +275,35 @@ where
         };
 
         // Allow subblock transactions to fail with nonce too low if their nonce was valid at the top of the block.
-        if tx.tx().subblock_proposer().is_some() {
-            if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+        if tx.tx().subblock_proposer().is_some()
+            && let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                 error, ..
             }) = &err
-            {
-                if error.is_nonce_too_low() {
-                    let nonce_before_block = self
-                        .evm_mut()
-                        .db_mut()
-                        .transition_state
-                        .as_ref()
-                        .ok_or(BlockExecutionError::msg("missing transition state"))?
-                        .transitions
-                        .get(tx.signer())
-                        .and_then(|acc| acc.previous_info.as_ref())
-                        .map(|info| info.nonce)
-                        .unwrap_or_default();
+            && error.is_nonce_too_low()
+        {
+            let nonce_before_block = self
+                .evm_mut()
+                .db_mut()
+                .transition_state
+                .as_ref()
+                .ok_or(BlockExecutionError::msg("missing transition state"))?
+                .transitions
+                .get(tx.signer())
+                .and_then(|acc| acc.previous_info.as_ref())
+                .map(|info| info.nonce)
+                .unwrap_or_default();
 
-                    if nonce_before_block < tx.tx().nonce() {
-                        return Ok(ResultAndState {
-                            result: ExecutionResult::Success {
-                                reason: SuccessReason::Stop,
-                                gas_used: Default::default(),
-                                gas_refunded: Default::default(),
-                                logs: Default::default(),
-                                output: Output::Call(Default::default()),
-                            },
-                            state: Default::default(),
-                        });
-                    }
-                }
+            if nonce_before_block < tx.tx().nonce() {
+                return Ok(ResultAndState {
+                    result: ExecutionResult::Success {
+                        reason: SuccessReason::Stop,
+                        gas_used: Default::default(),
+                        gas_refunded: Default::default(),
+                        logs: Default::default(),
+                        output: Output::Call(Default::default()),
+                    },
+                    state: Default::default(),
+                });
             }
         }
 

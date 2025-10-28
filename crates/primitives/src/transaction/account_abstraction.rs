@@ -18,7 +18,9 @@ pub const P256_SIGNATURE_LENGTH: usize = 129;
 pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
 
 /// Signature type enumeration
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum SignatureType {
     Secp256k1,
     P256,
@@ -47,7 +49,7 @@ pub struct Call {
     pub value: U256,
 
     /// Call input.
-    #[cfg_attr(feature = "serde", serde(with = "serde_input"))]
+    #[cfg_attr(feature = "serde", serde(flatten, with = "serde_input"))]
     pub input: Bytes,
 }
 
@@ -772,7 +774,7 @@ mod serde_input {
 mod tests {
     use super::*;
     use crate::transaction::aa_signature::{AASignature, derive_p256_address};
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, hex};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
     #[test]
@@ -1442,5 +1444,20 @@ mod tests {
             result.unwrap_err(),
             alloy_rlp::Error::InputTooShort | alloy_rlp::Error::UnexpectedLength
         ));
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn call_serde() {
+        let call: Call = serde_json::from_str(
+            r#"{"to":"0x0000000000000000000000000000000000000002","value":"0x1","input":"0x1234"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            call.to,
+            TxKind::Call(address!("0000000000000000000000000000000000000002"))
+        );
+        assert_eq!(call.value, U256::ONE);
+        assert_eq!(call.input, bytes!("0x1234"));
     }
 }

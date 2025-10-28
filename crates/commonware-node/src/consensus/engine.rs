@@ -8,28 +8,35 @@ use std::{
 };
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{Reporters, marshal, threshold_simplex};
-use commonware_cryptography::Signer as _;
+use commonware_consensus::{Reporters, marshal};
+use commonware_cryptography::{
+    Signer as _,
+    bls12381::primitives::{
+        group::Share,
+        poly::Poly,
+        variant::{MinSig, Variant},
+    },
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::{Blocker, Receiver, Sender};
-use commonware_runtime::{Handle, Metrics, Pacer, Spawner, Storage, buffer::PoolRef};
+use commonware_runtime::{
+    Clock, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
+};
+use commonware_utils::set::Ordered;
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_cryptography::{
-    BlsScheme, GroupShare, PrivateKey, PublicKey, PublicPolynomial,
-};
 use tempo_node::TempoFullNode;
+use tokio::sync::watch;
 
 use crate::{
-    config::{
-        BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, NUMBER_CONCURRENT_FETCHES,
-        NUMBER_MAX_FETCHES, RESOLVER_LIMIT,
-    },
+    config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
+    dkg,
+    epoch::{self, Coordinator, SchemeProvider},
     subblocks::SubBlocksService,
-    utils::ChannelReporter,
 };
 
-use super::{block::Block, supervisor::Supervisor};
+use super::block::Block;
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
@@ -69,34 +76,37 @@ pub struct Builder<
     pub blocker: TBlocker,
     pub partition_prefix: String,
     pub signer: PrivateKey,
-    pub polynomial: PublicPolynomial,
-    pub share: GroupShare,
-    pub participants: Vec<PublicKey>,
+    pub polynomial: Poly<<MinSig as Variant>::Public>,
+    pub share: Share,
+    pub participants: Ordered<PublicKey>,
     pub mailbox_size: usize,
     pub deque_size: usize,
 
-    pub leader_timeout: Duration,
-    pub notarization_timeout: Duration,
-    pub nullify_retry: Duration,
-    pub fetch_timeout: Duration,
-    pub activity_timeout: u64,
-    pub skip_timeout: u64,
+    pub epoch_length: u64,
+
+    pub time_to_propose: Duration,
+    pub time_to_collect_notarizations: Duration,
+    pub time_to_retry_nullify_broadcast: Duration,
+    pub time_for_peer_response: Duration,
+    pub views_to_track: u64,
+    pub views_until_leader_skip: u64,
     pub new_payload_wait_time: Duration,
-    // pub indexer: Option<TIndexer>,
 }
 
 impl<TBlocker, TContext> Builder<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Clock
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Pacer
+        + Spawner
+        + Storage
+        + Metrics
+        + Network,
 {
     pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
-        let supervisor = Supervisor::new(
-            self.polynomial.clone(),
-            self.participants.clone(),
-            self.share,
-        );
-
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             self.context.with_label("broadcast"),
             buffered::Config {
@@ -108,6 +118,8 @@ where
             },
         );
 
+        let coordinator = Coordinator::new(self.participants.clone());
+
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
@@ -116,7 +128,10 @@ where
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            coordinator: supervisor.clone(),
+            // FIXME(janis): this information should probably be flow from the DKG manager, since
+            // the players in epoch E are the peers in epoch E+1. But `Coordinator::peers -> &[PubKey]`,
+            // and so we can't pass it a mailbox.
+            coordinator,
             mailbox_size: self.mailbox_size,
             requester_config: commonware_p2p::utils::requester::Config {
                 public_key: self.signer.public_key(),
@@ -128,40 +143,44 @@ where
             priority_requests: false,
             priority_responses: false,
         };
-        let (syncer, syncer_mailbox): (_, marshal::Mailbox<BlsScheme, Block>) =
-            marshal::Actor::init(
-                self.context.with_label("sync"),
-                marshal::Config {
-                    identity: *self.polynomial.constant(),
-                    partition_prefix: self.partition_prefix.clone(),
-                    mailbox_size: self.mailbox_size,
-                    view_retention_timeout: self
-                        .activity_timeout
-                        .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
-                    namespace: crate::config::NAMESPACE.to_vec(),
-                    prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
-                    immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                    freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-                    freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
-                    freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-                    freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-                    freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
-                    freezer_journal_buffer_pool: buffer_pool.clone(),
-                    replay_buffer: REPLAY_BUFFER,
-                    write_buffer: WRITE_BUFFER,
-                    codec_config: (),
-                    max_repair: MAX_REPAIR,
-                },
-            )
-            .await;
+        let scheme_provider = SchemeProvider::new();
+        let (marshal, marshal_mailbox) = marshal::Actor::init(
+            self.context.with_label("marshal"),
+            marshal::Config {
+                scheme_provider: scheme_provider.clone(),
+                epoch_length: self.epoch_length,
+                // identity: *self.polynomial.constant(),
+                partition_prefix: self.partition_prefix.clone(),
+                mailbox_size: self.mailbox_size,
+                view_retention_timeout: self
+                    .views_to_track
+                    .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
+                namespace: crate::config::NAMESPACE.to_vec(),
+                prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
+                immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+                freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
+                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
 
-        let (consensus_reporter, consenus_events) = ChannelReporter::new();
+                freezer_journal_buffer_pool: buffer_pool.clone(),
+
+                replay_buffer: REPLAY_BUFFER,
+                write_buffer: WRITE_BUFFER,
+                block_codec_config: (),
+                max_repair: MAX_REPAIR,
+                _marker: std::marker::PhantomData,
+            },
+        )
+        .await;
+
+        let (epoch_context_tx, epoch_context_rx) = watch::channel(None);
 
         let (subblocks, subblocks_handle) = SubBlocksService::new(
             self.context.clone(),
             self.signer.clone(),
-            supervisor.clone(),
-            consenus_events,
+            epoch_context_rx,
             self.execution_node.clone(),
         );
 
@@ -170,49 +189,55 @@ where
             // TODO: pass in from the outside,
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
-            syncer: syncer_mailbox.clone(),
+            marshal: marshal_mailbox.clone(),
             execution_node: self.execution_node,
             new_payload_wait_time: self.new_payload_wait_time,
-            subblocks: subblocks_handle,
-            // chainspec: self.chainspec,
-            // engine_handle: self.execution_engine,
-            // payload_builder: self.execution_payload_builder,
+            subblocks: subblocks_handle.clone(),
+            epoch_length: self.epoch_length,
         }
         .build()
         .wrap_err("failed initializing execution driver")?;
 
         let execution_driver_mailbox = execution_driver.mailbox().clone();
 
-        // Create the consensus engine
-        let consensus = threshold_simplex::Engine::new(
-            self.context.with_label("consensus"),
-            threshold_simplex::Config {
-                // TODO(janis): make configuration epoch aware.
-                epoch: 0,
-                namespace: crate::config::NAMESPACE.to_vec(),
-                crypto: self.signer,
-                automaton: execution_driver.mailbox().clone(),
-                relay: execution_driver.mailbox().clone(),
-                // XXX: this is where the `indexer` would usually go (in alto)
-                reporter: Reporters::from((syncer_mailbox, consensus_reporter)),
-                supervisor,
-                partition: format!("{}-consensus", self.partition_prefix),
+        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
+            epoch::manager::Config {
+                application: execution_driver_mailbox.clone(),
+                blocker: self.blocker.clone(),
+                buffer_pool: buffer_pool.clone(),
+                epoch_length: self.epoch_length,
+                time_for_peer_response: self.time_for_peer_response,
+                time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
-                leader_timeout: self.leader_timeout,
-                notarization_timeout: self.notarization_timeout,
-                nullify_retry: self.nullify_retry,
-                fetch_timeout: self.fetch_timeout,
-                activity_timeout: self.activity_timeout,
-                skip_timeout: self.skip_timeout,
-                max_fetch_count: NUMBER_MAX_FETCHES,
-                fetch_concurrent: NUMBER_CONCURRENT_FETCHES,
-                fetch_rate_per_peer: RESOLVER_LIMIT,
-                replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
-                blocker: self.blocker,
-                buffer_pool,
+                subblocks: subblocks_handle.clone(),
+                marshal: marshal_mailbox,
+                me: self.signer.clone(),
+                scheme_provider,
+                time_to_collect_notarizations: self.time_to_collect_notarizations,
+                time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
+                partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
+                views_to_track: self.views_to_track,
+                views_until_leader_skip: self.views_until_leader_skip,
             },
+            self.context.with_label("epoch_manager"),
+            epoch_context_tx,
         );
+
+        let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
+            self.context.with_label("dkg_manager"),
+            dkg::manager::Config {
+                epoch_manager: epoch_manager_mailbox,
+                epoch_length: self.epoch_length,
+                initial_participants: self.participants.clone(),
+                initial_public: self.polynomial.clone(),
+                initial_share: Some(self.share.clone()),
+                mailbox_size: self.mailbox_size,
+                namespace: crate::config::NAMESPACE.to_vec(),
+                me: self.signer.clone(),
+                partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
+            },
+        )
+        .await;
 
         Ok(Engine {
             context: self.context,
@@ -220,13 +245,16 @@ where
             broadcast,
             broadcast_mailbox,
 
+            dkg_manager,
+            dkg_manager_mailbox,
+
             execution_driver,
             execution_driver_mailbox,
 
             resolver_config,
-            syncer,
+            marshal,
 
-            consensus,
+            epoch_manager,
 
             subblocks,
         })
@@ -236,7 +264,15 @@ where
 pub struct Engine<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Clock
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Metrics
+        + Network
+        + Pacer
+        + Spawner
+        + Storage,
     // XXX: alto also defines an Indexer trait (not part of commonwarexyz itself); we will
     // not define it for now.
     // TIndexer,
@@ -248,18 +284,21 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
+    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager_mailbox: dkg::manager::Mailbox,
+
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
     execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
     execution_driver_mailbox: crate::consensus::execution_driver::ExecutionDriverMailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
-    resolver_config: marshal::resolver::p2p::Config<PublicKey, Supervisor>,
+    resolver_config: marshal::resolver::p2p::Config<PublicKey, Coordinator>,
 
     /// Listens to consensus events and syncs blocks from the network to the
     /// local node.
-    syncer: marshal::Actor<Block, TContext, BlsScheme>,
+    marshal: crate::alias::marshal::Actor<TContext>,
 
-    consensus: crate::consensus::Consensus<TContext, TBlocker>,
+    epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
 
     subblocks: SubBlocksService<TContext>,
 }
@@ -267,8 +306,17 @@ where
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Clock
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Metrics
+        + Network
+        + Pacer
+        + Spawner
+        + Storage,
 {
+    #[expect(clippy::too_many_arguments)]
     pub fn start(
         self,
         pending_network: (
@@ -295,6 +343,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        dkg_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> Handle<eyre::Result<()>> {
         self.context.clone().spawn(|_| {
             self.run(
@@ -304,6 +356,7 @@ where
                 broadcast_network,
                 backfill_network,
                 subblocks_network,
+                dkg_channel,
             )
         })
     }
@@ -311,6 +364,7 @@ where
     /// Start the `simplex` consensus engine.
     ///
     /// This will also rebuild the state of the engine from provided `Journal`.
+    #[expect(clippy::too_many_arguments)]
     async fn run(
         self,
         pending_network: (
@@ -337,32 +391,42 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        dkg_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_network);
-        let execution_driver = self.execution_driver.start();
+        let execution_driver = self
+            .execution_driver
+            .start(self.dkg_manager_mailbox.clone());
 
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
-        let syncer = self.syncer.start(
-            self.execution_driver_mailbox,
+
+        let syncer = self.marshal.start(
+            Reporters::from((self.execution_driver_mailbox, self.dkg_manager_mailbox)),
             self.broadcast_mailbox,
             resolver,
         );
 
-        let simplex = self
-            .consensus
-            .start(pending_network, recovered_network, resolver_network);
+        let epoch_manager =
+            self.epoch_manager
+                .start(pending_network, recovered_network, resolver_network);
 
         let subblocks = self
             .context
             .spawn(|_| self.subblocks.run(subblocks_network));
 
+        let dkg_manager = self.dkg_manager.start(dkg_channel);
+
         try_join_all(vec![
             broadcast,
+            epoch_manager,
             execution_driver,
-            simplex,
             syncer,
             subblocks,
+            dkg_manager,
         ])
         .await
         .map(|_| ())

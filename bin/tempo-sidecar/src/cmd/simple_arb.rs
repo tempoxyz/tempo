@@ -9,12 +9,8 @@ use eyre::Context;
 use itertools::Itertools;
 use std::{collections::HashSet, time::Duration};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    contracts::{
-        ITIP20Factory,
-        ITIPFeeAMM::{self},
-        token_id_to_address,
-    },
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, tip_fee_manager::ITIPFeeAMM,
+    tip20::token_id_to_address, tip20_factory::ITIP20Factory,
 };
 use tempo_telemetry_util::error_field;
 use tracing::{debug, error, info, instrument};

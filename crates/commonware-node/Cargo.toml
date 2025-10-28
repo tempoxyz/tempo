@@ -12,12 +12,13 @@ workspace = true
 
 [dependencies]
 tempo-commonware-node-config.workspace = true
-tempo-commonware-node-cryptography.workspace = true
 tempo-node.workspace = true
 tempo-primitives.workspace = true
 tempo-payload-types.workspace = true
 
-alloy-evm.workspace = true
+reth-evm.workspace = true
+reth-revm.workspace = true
+
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
@@ -34,6 +35,7 @@ commonware-macros.workspace = true
 commonware-p2p.workspace = true
 commonware-resolver.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
+commonware-storage.workspace = true
 commonware-utils.workspace = true
 
 eyre.workspace = true
@@ -41,8 +43,9 @@ futures.workspace = true
 governor.workspace = true
 indexmap.workspace = true
 
+prometheus-client.workspace = true
 rand.workspace = true
-reth.workspace = true
+rand_core.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-primitives-traits.workspace = true

@@ -1,12 +1,16 @@
-use crate::consensus::Supervisor;
+use crate::{consensus::Digest, epoch::manager::EpochContext};
 use alloy_consensus::{BlockHeader, Transaction};
-use alloy_evm::Evm;
 use alloy_primitives::{BlockHash, Bytes, map::HashMap};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_consensus::{
-    ThresholdSupervisor, Viewable,
-    threshold_simplex::types::{Activity, Notarization},
+    Reporter,
+    simplex::{
+        select_leader,
+        signing_scheme::{Scheme as _, bls12381_threshold::Scheme},
+        types::{Activity, Notarization},
+    },
+    types::Round,
 };
 use commonware_cryptography::{
     Signer, Verifier,
@@ -16,19 +20,19 @@ use commonware_cryptography::{
 use commonware_p2p::{Receiver, Recipients, Sender};
 use commonware_runtime::{Handle, Spawner};
 use futures::future::OptionFuture;
-use reth::revm::{State, database::StateProviderDatabase};
+use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
 use reth_primitives_traits::SignedTransaction;
 use reth_provider::{BlockReader, ProviderError, StateProviderFactory};
-use tempo_commonware_node_cryptography::Digest;
+use reth_revm::database::StateProviderDatabase;
 use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR};
 use tempo_payload_types::{SignedSubBlock, SubBlock};
 use tempo_primitives::TempoTxEnvelope;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// Actions processed by the subblocks service.
 #[derive(Debug)]
-enum Action {
+enum Message {
     /// Returns all subblocks collected so far.
     ///
     /// This will return nothing if parent hash does not match the current chain view
@@ -39,18 +43,21 @@ enum Action {
         /// Response channel.
         response: oneshot::Sender<Vec<SignedSubBlock>>,
     },
+
     /// Sends a new transaction to the subblocks service.
     AddTransaction(Box<TempoTxEnvelope>),
+
+    /// Reports a new consensus event.
+    Consensus(Box<Activity<Scheme<MinSig>, Digest>>),
 }
 
 /// Task managing collected subblocks.
 pub struct SubBlocksService<Ctx> {
-    consensus_events: mpsc::UnboundedReceiver<Activity<MinSig, Digest>>,
-    actions_rx: mpsc::UnboundedReceiver<Action>,
+    actions_rx: mpsc::UnboundedReceiver<Message>,
+    epoch_context_rx: watch::Receiver<Option<EpochContext>>,
     subblock_builder_handle: Option<Handle<eyre::Result<SubBlock>>>,
 
     context: Ctx,
-    supervisor: Supervisor,
     signer: PrivateKey,
 
     next_proposer: Option<PublicKey>,
@@ -64,17 +71,15 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
     pub(crate) fn new(
         context: Ctx,
         signer: PrivateKey,
-        supervisor: Supervisor,
-        consensus_events: mpsc::UnboundedReceiver<Activity<MinSig, Digest>>,
+        epoch_context_rx: watch::Receiver<Option<EpochContext>>,
         node: TempoFullNode,
     ) -> (Self, SubBlocksHandle) {
         let (actions_tx, actions_rx) = mpsc::unbounded_channel();
         let this = Self {
             subblock_builder_handle: None,
-            consensus_events,
+            epoch_context_rx,
             actions_rx,
             context,
-            supervisor,
             signer,
             node,
             next_proposer: None,
@@ -83,15 +88,36 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             subblock_transactions: Default::default(),
         };
 
-        (this, SubBlocksHandle { actions_tx })
+        (this, SubBlocksHandle { tx: actions_tx })
     }
 
-    fn on_new_notarization(&mut self, event: Notarization<MinSig, Digest>) {
-        // On a notarization, we need to find who is the next proposer.
-        let Some(next_proposer) = self
-            .supervisor
-            .leader(event.view() + 1, event.seed_signature)
+    fn on_new_notarization(&mut self, event: Notarization<Scheme<MinSig>, Digest>) {
+        let epoch_context = self.epoch_context_rx.borrow();
+        let Some(EpochContext {
+            epoch,
+            participants,
+            scheme,
+        }) = epoch_context.as_ref()
         else {
+            return;
+        };
+
+        // Find out who is the next proposer
+        if epoch != &event.proposal.round.epoch() {
+            return;
+        }
+
+        let Some(seed) = scheme.seed(event.proposal.round, &event.certificate) else {
+            return;
+        };
+
+        let leader_idx = select_leader::<Scheme<MinSig>, _>(
+            participants.as_ref(),
+            Round::new(*epoch, event.proposal.round.view() + 1),
+            Some(seed),
+        );
+
+        let Some(next_proposer) = participants.get(leader_idx as usize).cloned() else {
             return;
         };
 
@@ -103,10 +129,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             self.subblocks.clear();
         }
 
-        let num_validators =
-            commonware_consensus::Supervisor::participants(&self.supervisor, event.view() + 1)
-                .map(|p| p.len())
-                .unwrap_or_default();
+        let num_validators = participants.len();
 
         // Record next proposer and parent hash.
         self.next_proposer = Some(next_proposer.clone());
@@ -130,9 +153,9 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         }
     }
 
-    fn on_new_action(&mut self, action: Action) {
+    fn on_new_action(&mut self, action: Message) {
         match action {
-            Action::GetSubBlocks { parent, response } => {
+            Message::GetSubBlocks { parent, response } => {
                 // This should never happen, but just in case.
                 if self.next_parent_hash != Some(parent) {
                     let _ = response.send(Vec::new());
@@ -142,13 +165,18 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                 let subblocks = self.subblocks.values().cloned().collect();
                 let _ = response.send(subblocks);
             }
-            Action::AddTransaction(transaction) => {
+            Message::AddTransaction(transaction) => {
                 if transaction.subblock_proposer().as_ref().map(|v| v.as_ref())
                     != Some(self.signer.public_key().as_ref())
                 {
                     return;
                 }
                 self.subblock_transactions.push(*transaction);
+            }
+            Message::Consensus(activity) => {
+                if let Activity::Notarization(event) = *activity {
+                    self.on_new_notarization(event);
+                }
             }
         }
     }
@@ -164,9 +192,6 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
     ) {
         loop {
             tokio::select! {
-                Some(Activity::Notarization(event)) = self.consensus_events.recv() => {
-                    self.on_new_notarization(event);
-                }
                 Ok((sender, message)) = network_rx.recv() => {
                     let Ok(subblock) = SignedSubBlock::decode(&mut &*message) else {
                         continue;
@@ -231,13 +256,13 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
 /// Handle to the spawned subblocks service.
 #[derive(Clone)]
 pub struct SubBlocksHandle {
-    actions_tx: mpsc::UnboundedSender<Action>,
+    tx: mpsc::UnboundedSender<Message>,
 }
 
 impl SubBlocksHandle {
     pub fn get_subblocks(&self, parent: BlockHash) -> oneshot::Receiver<Vec<SignedSubBlock>> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.actions_tx.send(Action::GetSubBlocks {
+        let _ = self.tx.send(Message::GetSubBlocks {
             parent,
             response: tx,
         });
@@ -245,7 +270,15 @@ impl SubBlocksHandle {
     }
 
     pub fn add_transaction(&self, tx: TempoTxEnvelope) {
-        let _ = self.actions_tx.send(Action::AddTransaction(tx.into()));
+        let _ = self.tx.send(Message::AddTransaction(tx.into()));
+    }
+}
+
+impl Reporter for SubBlocksHandle {
+    type Activity = Activity<Scheme<MinSig>, Digest>;
+
+    async fn report(&mut self, activity: Self::Activity) -> () {
+        let _ = self.tx.send(Message::Consensus(Box::new(activity)));
     }
 }
 

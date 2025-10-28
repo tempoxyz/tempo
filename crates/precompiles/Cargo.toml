@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 tempo-contracts.workspace = true
 reth-storage-api = { workspace = true, optional = true }
-alloy = { workspace = true, default-features = false }
+alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
 alloy-evm.workspace = true
 revm.workspace = true
 

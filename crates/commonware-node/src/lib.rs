@@ -3,16 +3,21 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+pub(crate) mod alias;
 pub(crate) mod config;
 pub mod consensus;
+pub(crate) mod dkg;
+pub(crate) mod epoch;
 pub mod metrics;
 
 pub mod subblocks;
-mod utils;
 
 use std::net::SocketAddr;
 
-use commonware_cryptography::Signer;
+use commonware_cryptography::{
+    Signer,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::authenticated::discovery;
 use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, bail, eyre};
@@ -22,10 +27,10 @@ use tracing::info;
 
 use crate::config::{
     BACKFILL_BY_DIGEST_CHANNEL_IDENT, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
-    PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT,
-    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
+    DKG_CHANNEL_IDENT, DKG_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT,
+    RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT,
+    SUBBLOCKS_LIMIT,
 };
-use tempo_commonware_node_cryptography::{PrivateKey, PublicKey};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
@@ -55,6 +60,8 @@ pub async fn run_consensus_stack(
     );
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
+    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
+
     let consensus_engine = crate::consensus::engine::Builder {
         context: context.with_label("engine"),
 
@@ -67,18 +74,19 @@ pub async fn run_consensus_stack(
         signer: config.signer.clone(),
         polynomial: config.polynomial.clone(),
         share: config.share.clone(),
-        participants: config.peers.keys().cloned().collect::<Vec<_>>(),
+        participants: config.peers.keys().cloned().collect::<Vec<_>>().into(),
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
 
-        leader_timeout: config.timeouts.time_to_propose,
-        notarization_timeout: config.timeouts.time_to_collect_notarizations,
-        nullify_retry: config.timeouts.time_to_retry_nullify_broadcast,
-        fetch_timeout: config.timeouts.time_for_peer_response,
-        activity_timeout: config.timeouts.views_to_track,
-        skip_timeout: config.timeouts.views_until_leader_skip,
+        epoch_length: config.epoch_length,
+
+        time_to_propose: config.timeouts.time_to_propose,
+        time_to_collect_notarizations: config.timeouts.time_to_collect_notarizations,
+        time_to_retry_nullify_broadcast: config.timeouts.time_to_retry_nullify_broadcast,
+        time_for_peer_response: config.timeouts.time_for_peer_response,
+        views_to_track: config.timeouts.views_to_track,
+        views_until_leader_skip: config.timeouts.views_until_leader_skip,
         new_payload_wait_time: config.timeouts.new_payload_wait_time,
-        // indexer: Option<TIndexer>,
     }
     .try_init()
     .await
@@ -93,6 +101,7 @@ pub async fn run_consensus_stack(
             broadcaster,
             backfill,
             subblocks,
+            dkg,
         ),
     );
 

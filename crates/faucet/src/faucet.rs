@@ -19,7 +19,7 @@ use jsonrpsee::{
 use reth_rpc_server_types::result::rpc_err;
 use reth_transaction_pool::{TransactionOrigin, TransactionPool, error::PoolError};
 use std::error::Error;
-use tempo_precompiles::contracts::ITIP20;
+use tempo_precompiles::tip20::ITIP20;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
 #[rpc(server, namespace = "tempo")]

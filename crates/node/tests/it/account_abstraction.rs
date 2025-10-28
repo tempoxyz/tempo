@@ -8,7 +8,10 @@ use alloy::{
 use alloy_eips::{Decodable2718, Encodable2718};
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, contracts::ITIP20::transferCall};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN,
+    tip20::{ITIP20, ITIP20::transferCall},
+};
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
@@ -1035,7 +1038,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     use sha2::{Digest, Sha256};
-    use tempo_precompiles::contracts::ITIP20;
+    use tempo_contracts::precompiles::ITIP20;
 
     reth_tracing::init_test_tracing();
 
@@ -1296,11 +1299,10 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     println!("User address: {user_addr} (unfunded)");
 
     // Verify user has ZERO balance in DEFAULT_FEE_TOKEN
-    let user_token_balance =
-        tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-            .balanceOf(user_addr)
-            .call()
-            .await?;
+    let user_token_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(user_addr)
+        .call()
+        .await?;
     assert_eq!(
         user_token_balance,
         U256::ZERO,
@@ -1309,11 +1311,10 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     println!("User token balance: {user_token_balance} (expected: 0)");
 
     // Get fee payer's balance before transaction
-    let fee_payer_balance_before =
-        tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-            .balanceOf(fee_payer_addr)
-            .call()
-            .await?;
+    let fee_payer_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(fee_payer_addr)
+        .call()
+        .await?;
     println!("Fee payer balance before: {fee_payer_balance_before} tokens");
 
     // Create AA transaction with fee payer signature placeholder
@@ -1403,11 +1404,10 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
 
     // Verify user still has ZERO balance (fee payer paid)
-    let user_token_balance_after =
-        tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-            .balanceOf(user_addr)
-            .call()
-            .await?;
+    let user_token_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(user_addr)
+        .call()
+        .await?;
     assert_eq!(
         user_token_balance_after,
         U256::ZERO,
@@ -1415,11 +1415,10 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
 
     // Verify fee payer's balance decreased
-    let fee_payer_balance_after =
-        tempo_precompiles::contracts::ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-            .balanceOf(fee_payer_addr)
-            .call()
-            .await?;
+    let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(fee_payer_addr)
+        .call()
+        .await?;
 
     println!("Fee payer balance after: {fee_payer_balance_after} tokens");
 
@@ -1512,5 +1511,92 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
 
     println!("✓ Test completed: Empty call batch correctly rejected");
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
+    // Keep setup alive for the duration of the test
+    let _ = &_setup;
+
+    println!("\n=== Testing eth_estimateGas with keyType and keyData ===\n");
+    println!("Test address: {signer_addr}");
+
+    let recipient = Address::random();
+
+    // Create a simple AA transaction request for gas estimation (based on issue #516 format)
+    // Note: We provide maxFeePerGas and maxPriorityFeePerGas but NOT gas - gas is what we're estimating!
+    let tx_request = serde_json::json!({
+        "from": signer_addr.to_string(),
+        "calls": [{
+            "to": recipient.to_string(),
+            "value": "0x0",
+            "input": "0x"
+        }],
+    });
+
+    // Test 1: Estimate gas WITHOUT keyType (baseline - uses secp256k1)
+    println!("Test 1: Estimating gas WITHOUT keyType (baseline)");
+    let baseline_gas: String = provider
+        .raw_request("eth_estimateGas".into(), [tx_request.clone()])
+        .await?;
+    let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
+    println!("  Baseline gas: {baseline_gas_u64}");
+
+    // Test 2: Estimate gas WITH keyType="p256"
+    println!("\nTest 2: Estimating gas WITH keyType='p256'");
+    let mut tx_request_p256 = tx_request.clone();
+    tx_request_p256
+        .as_object_mut()
+        .unwrap()
+        .insert("keyType".to_string(), serde_json::json!("p256"));
+
+    let p256_gas: String = provider
+        .raw_request("eth_estimateGas".into(), [tx_request_p256])
+        .await?;
+    let p256_gas_u64 = u64::from_str_radix(p256_gas.trim_start_matches("0x"), 16)?;
+    println!("  P256 gas: {p256_gas_u64}");
+    // P256 should add approximately 5,000 gas (allow small tolerance for gas estimation variance)
+    let p256_diff = (p256_gas_u64 as i64 - baseline_gas_u64 as i64).unsigned_abs();
+    assert!(
+        (4_985..=5_015).contains(&p256_diff),
+        "P256 should add ~5,000 gas: actual diff {p256_diff} (expected 5,000 ±15)",
+    );
+    println!("  ✓ P256 adds {p256_diff} gas (expected ~5,000)");
+
+    // Test 3: Estimate gas WITH keyType="webauthn" and keyData
+    println!("\nTest 3: Estimating gas WITH keyType='webauthn' and keyData");
+
+    // Specify WebAuthn data size (excluding 128 bytes for public keys)
+    // Encoded as hex: 116 = 0x74 (1 byte) or 0x0074 (2 bytes)
+    let webauthn_size = 116u16;
+    let key_data_hex = format!("0x{webauthn_size:04x}"); // 2-byte encoding: "0x0074"
+    println!("  Requesting WebAuthn data size: {webauthn_size} bytes (keyData: {key_data_hex})",);
+
+    let mut tx_request_webauthn = tx_request.clone();
+    tx_request_webauthn
+        .as_object_mut()
+        .unwrap()
+        .insert("keyType".to_string(), serde_json::json!("webAuthn"));
+    tx_request_webauthn
+        .as_object_mut()
+        .unwrap()
+        .insert("keyData".to_string(), serde_json::json!(key_data_hex));
+
+    let webauthn_gas: String = provider
+        .raw_request("eth_estimateGas".into(), [tx_request_webauthn])
+        .await?;
+    let webauthn_gas_u64 = u64::from_str_radix(webauthn_gas.trim_start_matches("0x"), 16)?;
+    println!("  WebAuthn gas: {webauthn_gas_u64}");
+
+    // WebAuthn should add 5,000 + calldata gas
+    assert!(
+        webauthn_gas_u64 > p256_gas_u64,
+        "WebAuthn should cost more than P256"
+    );
+    println!("  ✓ WebAuthn adds signature verification + calldata gas");
     Ok(())
 }

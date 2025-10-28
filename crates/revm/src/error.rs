@@ -57,6 +57,13 @@ pub enum TempoInvalidTransaction {
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
 
+    /// Fee collection pre tx execution error
+    ///
+    /// This error occurs if there is an issue while collecting fees
+    /// pre tx execution
+    #[error("fee collection error: {0:?}")]
+    CollectFeePreTxError(String),
+
     // Account Abstraction (AA) transaction errors
     /// Transaction cannot be included before validAfter timestamp.
     ///

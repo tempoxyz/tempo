@@ -1,4 +1,4 @@
-use crate::cmd::{genesis::GenesisArgs, max_tps::MaxTpsArgs};
+use crate::cmd::max_tps::MaxTpsArgs;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
@@ -11,5 +11,4 @@ pub struct TempoBench {
 #[derive(Subcommand, Debug)]
 pub enum TempoBenchSubcommand {
     RunMaxTps(MaxTpsArgs),
-    GenerateGenesis(GenesisArgs),
 }
