@@ -706,7 +706,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 return Ok(0);
             }
 
-            let rate = call.amount / opted_in_supply;
+            let rate = (call.amount * ACC_PRECISION) / opted_in_supply;
             let current_rpt = self.get_reward_per_token_stored()?;
             self.set_reward_per_token_stored(current_rpt + rate)?;
 
@@ -1256,7 +1256,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let reward_per_token_stored = self.get_reward_per_token_stored()?;
         let user_reward_per_token_paid = self.get_user_reward_per_token_paid(recipient)?;
 
-        let accrued = delegated * (reward_per_token_stored - user_reward_per_token_paid);
+        let accrued = (delegated * (reward_per_token_stored - user_reward_per_token_paid)) / ACC_PRECISION;
 
         if accrued > U256::ZERO {
             let token_address = self.token_address;
@@ -2736,6 +2736,7 @@ mod tests {
             },
         )?;
 
+        // Distribute the reward immediately
         token.start_reward(
             &admin,
             ITIP20::startRewardCall {
@@ -2747,7 +2748,6 @@ mod tests {
         let alice_balance_before = token.get_balance(&alice)?;
         let reward_per_token_before = token.get_reward_per_token_stored()?;
         let user_reward_per_token_paid_before = token.get_user_reward_per_token_paid(&alice)?;
-
         token.update_rewards(&alice)?;
 
         let alice_balance_after = token.get_balance(&alice)?;
