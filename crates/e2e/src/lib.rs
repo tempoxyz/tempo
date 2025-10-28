@@ -166,8 +166,7 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
         let execution_runtime = ExecutionRuntime::new();
 
         // Setup and run all validators.
-        let (nodes, _oracle) =
-            setup_validators(context.clone(), &execution_runtime, how_many, linkage).await;
+        let (nodes, _oracle) = setup_validators(context.clone(), &execution_runtime, setup).await;
         join_all(nodes.into_iter().map(|mut node| node.start())).await;
 
         loop {

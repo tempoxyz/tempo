@@ -166,15 +166,21 @@ fn validator_can_join_later() {
 
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
         let num_nodes = 5;
-        let link = Link {
-            latency: Duration::from_millis(10),
-            jitter: Duration::from_millis(1),
-            success_rate: 1.0,
+
+        let setup = Setup {
+            how_many: num_nodes,
+            seed: 0,
+            linkage: Link {
+                latency: Duration::from_millis(10),
+                jitter: Duration::from_millis(1),
+                success_rate: 1.0,
+            },
+            epoch_length: 100,
         };
 
         let execution_runtime = ExecutionRuntime::new();
         let (mut nodes, _network_handle) =
-            setup_validators(context.clone(), &execution_runtime, num_nodes, link).await;
+            setup_validators(context.clone(), &execution_runtime, setup).await;
 
         // Start all nodes except the last one
         let mut last = nodes.pop().unwrap();
