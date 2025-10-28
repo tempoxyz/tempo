@@ -1211,11 +1211,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .sstore(self.token_address, slots::REWARD_PER_TOKEN_STORED, value)
     }
 
-    fn get_last_update_time(&mut self) -> u64 {
-        self.storage
-            .sload(self.token_address, slots::LAST_UPDATE_TIME)
-            .unwrap_or(U256::ZERO)
-            .to::<u64>()
+    fn get_last_update_time(&mut self) -> Result<u64, TempoPrecompileError> {
+        Ok(self
+            .storage
+            .sload(self.token_address, slots::LAST_UPDATE_TIME)?
+            .to::<u64>())
     }
 
     fn set_last_update_time(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
@@ -1233,12 +1233,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .sstore(self.token_address, slots::OPTED_IN_SUPPLY, value)
     }
 
-    fn get_reward_recipient_of(&mut self, account: &Address) -> Address {
+    fn get_reward_recipient_of(
+        &mut self,
+        account: &Address,
+    ) -> Result<Address, TempoPrecompileError> {
         let slot = mapping_slot(account, slots::REWARD_RECIPIENT_OF);
-        self.storage
-            .sload(self.token_address, slot)
-            .unwrap_or(U256::ZERO)
-            .into_address()
+        Ok(self.storage.sload(self.token_address, slot)?.into_address())
     }
 
     fn set_reward_recipient_of(
@@ -1251,11 +1251,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .sstore(self.token_address, slot, recipient.into_u256())
     }
 
-    fn get_delegated_balance(&mut self, account: &Address) -> U256 {
+    fn get_delegated_balance(&mut self, account: &Address) -> Result<U256, TempoPrecompileError> {
         let slot = mapping_slot(account, slots::DELEGATED_BALANCE);
-        self.storage
-            .sload(self.token_address, slot)
-            .unwrap_or(U256::ZERO)
+        self.storage.sload(self.token_address, slot)
     }
 
     fn set_delegated_balance(
@@ -1311,7 +1309,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         self.accrue()?;
 
-        let current_recipient = self.get_reward_recipient_of(msg_sender);
+        let current_recipient = self.get_reward_recipient_of(msg_sender)?;
         let holder_balance = self.get_balance(msg_sender)?;
 
         if call.recipient == current_recipient {
@@ -1320,7 +1318,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         if current_recipient != Address::ZERO {
             self.update_rewards(&current_recipient)?;
-            let delegated = self.get_delegated_balance(&current_recipient);
+            let delegated = self.get_delegated_balance(&current_recipient)?;
             let amount_u128 = holder_balance.to::<u128>();
             let new_delegated = delegated.saturating_sub(U256::from(amount_u128));
             self.set_delegated_balance(&current_recipient, new_delegated)?;
@@ -1334,7 +1332,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         if call.recipient == Address::ZERO {
         } else {
-            let delegated = self.get_delegated_balance(&call.recipient);
+            let delegated = self.get_delegated_balance(&call.recipient)?;
             if delegated > U256::ZERO {
                 self.update_rewards(&call.recipient)?;
             }
@@ -2597,6 +2595,36 @@ mod tests {
     }
 
     #[test]
+    fn test_set_reward_recipient() -> eyre::Result<()> {
+        todo!()
+    }
+
+    #[test]
+    fn test_start_reward() -> eyre::Result<()> {
+        todo!()
+    }
+
+    #[test]
+    fn test_cancel_reward() -> eyre::Result<()> {
+        todo!()
+    }
+
+    #[test]
+    fn test_update_rewards() -> eyre::Result<()> {
+        todo!()
+    }
+
+    #[test]
+    fn test_accrue() -> eyre::Result<()> {
+        todo!()
+    }
+
+    #[test]
+    fn test_finalize_streams() -> eyre::Result<()> {
+        todo!()
+    }
+
+    #[test]
     fn test_set_reward_recipient_opt_in_out() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -2614,8 +2642,8 @@ mod tests {
 
         token.set_reward_recipient(&alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
-        assert_eq!(token.get_reward_recipient_of(&alice), alice);
-        assert_eq!(token.get_delegated_balance(&alice), amount);
+        assert_eq!(token.get_reward_recipient_of(&alice)?, alice);
+        assert_eq!(token.get_delegated_balance(&alice)?, amount);
         assert_eq!(token.get_opted_in_supply()?, amount);
 
         token.set_reward_recipient(
@@ -2668,6 +2696,69 @@ mod tests {
         let balance = token.get_balance(&token_address)?;
         assert_eq!(balance, reward_amount);
         assert_eq!(id, 0);
+
+        // TODO: assert reward balance for holders
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reward_distribution_pro_rata() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+        let bob = Address::random();
+        let token_id = 1;
+
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
+
+        let alice_amount = U256::from(1000e18);
+        let bob_amount = U256::from(500e18);
+        token.mint(
+            &admin,
+            ITIP20::mintCall {
+                to: alice,
+                amount: alice_amount,
+            },
+        )?;
+
+        token.mint(
+            &admin,
+            ITIP20::mintCall {
+                to: bob,
+                amount: bob_amount,
+            },
+        )?;
+
+        token.set_reward_recipient(&alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+        token.set_reward_recipient(&bob, ITIP20::setRewardRecipientCall { recipient: bob })?;
+        assert_eq!(token.get_opted_in_supply()?, U256::from(1500e18));
+
+        let reward_amount = U256::from(300e18);
+        token
+            .mint(
+                &admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: reward_amount,
+                },
+            )
+            .unwrap();
+
+        token.start_reward(
+            &admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 0,
+            },
+        )?;
+
+        // TODO: simulate by checking rewards/balances for everything and looping and calling
+        // finalize streams
 
         Ok(())
     }
