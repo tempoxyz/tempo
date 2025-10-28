@@ -1125,12 +1125,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         if from_recipient != Address::ZERO {
             self.update_rewards(&from_recipient)?;
             let delegated = self.get_delegated_balance(&from_recipient)?;
-            let amount_u128 = amount.to::<u128>();
-            let new_delegated = delegated.saturating_sub(U256::from(amount_u128));
+
+            // TODO: should this be saturating or checked
+            let new_delegated = delegated.saturating_sub(amount);
             self.set_delegated_balance(&from_recipient, new_delegated)?;
 
             let opted_in = self.get_opted_in_supply()?;
-            let new_opted_in = opted_in.saturating_sub(U256::from(amount_u128));
+            let new_opted_in = opted_in.saturating_sub(amount);
             self.set_opted_in_supply(new_opted_in)?;
         }
         Ok(())
@@ -2952,11 +2953,21 @@ mod tests {
 
         assert_eq!(id, 0);
 
-        token.update_rewards(&alice)?;
+        let bob = Address::random();
+        token.transfer(
+            &alice,
+            ITIP20::transferCall {
+                to: bob,
+                amount: U256::from(1),
+            },
+        )?;
 
         let alice_balance_after = token.get_balance(&alice)?;
 
-        assert_eq!(alice_balance_after, alice_balance_before + reward_amount);
+        assert_eq!(
+            alice_balance_after,
+            alice_balance_before + reward_amount - U256::from(1)
+        );
 
         // No ongoing reward streams
         let total_reward_per_second = token.get_total_reward_per_second()?;
@@ -3027,7 +3038,7 @@ mod tests {
             },
         )?;
 
-        // Update rewards for both users
+        // TODO: update to use transfer
         token.update_rewards(&alice)?;
         token.update_rewards(&bob)?;
 
