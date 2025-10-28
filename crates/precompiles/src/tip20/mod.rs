@@ -101,6 +101,7 @@ pub struct RewardStream {
     pub start_time: u64,
     pub end_time: u64,
     pub rate_per_second_scaled: U256,
+    pub amount_total: U256,
 }
 
 #[derive(Debug)]
@@ -397,6 +398,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         let new_supply = total_supply
             .checked_add(amount)
+            // TODO: update to return overflow error
             .ok_or(TIP20Error::supply_cap_exceeded())?;
 
         let supply_cap = self.supply_cap()?;
@@ -404,13 +406,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.set_total_supply(new_supply)?;
         self.accrue()?;
         self.handle_receiver_rewards(&to, amount)?;
 
+        self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(&to)?;
         let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
             .checked_add(amount)
+            // TODO: update this to overflow error
             .ok_or(TIP20Error::supply_cap_exceeded())?;
         self.set_balance(&to, new_to_balance)?;
 
@@ -697,31 +700,48 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::invalid_amount().into());
         }
 
-        self._transfer(msg_sender, &token_address, call.amount)?;
-        if call.seconds == 0 {
-            self.accrue()?;
+        // TODO: create helper function for this
+        let from_balance = self.get_balance(msg_sender)?;
+        let new_from_balance = from_balance
+            .checked_sub(call.amount)
+            // TODO: update this to overflow error
+            .ok_or(TIP20Error::insufficient_balance())?;
+        self.set_balance(msg_sender, new_from_balance)?;
 
+        // TODO: create helper function for this
+        let contract_address = self.token_address;
+        let to_balance = self.get_balance(&contract_address)?;
+        let new_to_balance = to_balance
+            .checked_add(call.amount)
+            // TODO: update this to overflow error
+            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        self.set_balance(&contract_address, new_to_balance)?;
+
+        self.accrue()?;
+
+        if call.seconds == 0 {
             let opted_in_supply = self.get_opted_in_supply()?;
-            if opted_in_supply == U256::ZERO {
+            if opted_in_supply.is_zero() {
                 return Ok(0);
             }
 
-            let rate = (call.amount * ACC_PRECISION) / opted_in_supply;
+            let delta_rpt = (call.amount * ACC_PRECISION) / opted_in_supply;
             let current_rpt = self.get_reward_per_token_stored()?;
-            self.set_reward_per_token_stored(current_rpt + rate)?;
+            self.set_reward_per_token_stored(current_rpt + delta_rpt)?;
+
+            // TODO: emit reward scheduled event
 
             Ok(0)
         } else {
-            let current_time = self.storage.timestamp().to::<u128>();
-            let end_time = current_time + call.seconds;
             let rate = (call.amount * ACC_PRECISION) / U256::from(call.seconds);
-
             let stream_id = self.get_next_stream_id()?;
             self.set_next_stream_id(stream_id + 1)?;
 
             let current_total = self.get_total_reward_per_second()?;
             self.set_total_reward_per_second(current_total + rate)?;
 
+            let current_time = self.storage.timestamp().to::<u128>();
+            let end_time = current_time + call.seconds;
             self.set_stream(
                 stream_id,
                 RewardStream {
@@ -729,6 +749,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                     start_time: current_time as u64,
                     end_time: end_time as u64,
                     rate_per_second_scaled: rate,
+                    amount_total: call.amount,
                 },
             )?;
 
@@ -980,13 +1001,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let new_from_balance = from_balance
             .checked_sub(amount)
             .ok_or(TIP20Error::insufficient_balance())?;
-
         self.set_balance(from, new_from_balance)?;
 
         if *to != Address::ZERO {
             let to_balance = self.get_balance(to)?;
             let new_to_balance = to_balance
                 .checked_add(amount)
+                // TODO: update this to overflow error
                 .ok_or(TIP20Error::supply_cap_exceeded())?;
 
             self.set_balance(to, new_to_balance)?;
@@ -1169,7 +1190,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         } else {
             return Ok(());
         };
-
         self.set_last_update_time(current_time)?;
 
         let opted_in_supply = self.get_opted_in_supply()?;
