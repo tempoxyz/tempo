@@ -6,6 +6,7 @@ use tempo_contracts::precompiles::{
     TIPAccountRegistrarError, TIPFeeAMMError,
 };
 
+// TODO: add error type for overflow/underflow
 /// Top-level error type for all Tempo precompile operations
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TempoPrecompileError {
