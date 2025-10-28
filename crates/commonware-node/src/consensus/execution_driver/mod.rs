@@ -24,11 +24,11 @@ mod actor;
 mod ingress;
 
 pub(super) use actor::Actor;
-pub(crate) use ingress::ExecutionDriverMailbox;
+pub(crate) use ingress::Mailbox;
 
 pub(super) async fn init<TContext>(
     config: Config<TContext>,
-) -> eyre::Result<(Actor<TContext>, ExecutionDriverMailbox)>
+) -> eyre::Result<(Actor<TContext>, Mailbox)>
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {

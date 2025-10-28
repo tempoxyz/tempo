@@ -273,7 +273,7 @@ where
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
     execution_driver: crate::consensus::execution_driver::Actor<TContext>,
-    execution_driver_mailbox: crate::consensus::execution_driver::ExecutionDriverMailbox,
+    execution_driver_mailbox: crate::consensus::execution_driver::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
     resolver_config: marshal::resolver::p2p::Config<PublicKey, Coordinator>,

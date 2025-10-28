@@ -37,7 +37,7 @@ use crate::{
         Digest,
         block::Block,
         execution_driver::{
-            ExecutionDriverMailbox,
+            Mailbox,
             executor::{self, ExecutorMailbox},
             ingress::{Broadcast, Finalized, Genesis, Message, Propose, Verify},
         },
@@ -54,7 +54,7 @@ pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
-    pub(super) fn mailbox(&self) -> &ExecutionDriverMailbox {
+    pub(super) fn mailbox(&self) -> &Mailbox {
         &self.inner.my_mailbox
     }
 }
@@ -65,7 +65,7 @@ where
 {
     pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
         let (tx, rx) = mpsc::channel(config.mailbox_size);
-        let my_mailbox = ExecutionDriverMailbox::from_sender(tx);
+        let my_mailbox = Mailbox::from_sender(tx);
 
         let block = config
             .execution_node
@@ -190,7 +190,7 @@ struct Inner<TState> {
     epoch_length: u64,
     new_payload_wait_time: Duration,
 
-    my_mailbox: ExecutionDriverMailbox,
+    my_mailbox: Mailbox,
 
     marshal: crate::alias::marshal::Mailbox,
 

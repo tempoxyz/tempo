@@ -12,15 +12,13 @@ use futures::{
 use crate::consensus::{Digest, block::Block};
 
 #[derive(Clone)]
-pub(crate) struct ExecutionDriverMailbox {
-    to_execution_driver: mpsc::Sender<Message>,
+pub(crate) struct Mailbox {
+    inner: mpsc::Sender<Message>,
 }
 
-impl ExecutionDriverMailbox {
-    pub(super) fn from_sender(to_execution_driver: mpsc::Sender<Message>) -> Self {
-        Self {
-            to_execution_driver,
-        }
+impl Mailbox {
+    pub(super) fn from_sender(inner: mpsc::Sender<Message>) -> Self {
+        Self { inner }
     }
 }
 
@@ -92,7 +90,7 @@ impl From<Finalized> for Message {
     }
 }
 
-impl Automaton for ExecutionDriverMailbox {
+impl Automaton for Mailbox {
     type Context = Context<Self::Digest>;
 
     type Digest = Digest;
@@ -101,7 +99,7 @@ impl Automaton for ExecutionDriverMailbox {
         let (tx, rx) = oneshot::channel();
         // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
         // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
-        self.to_execution_driver
+        self.inner
             .send(
                 Genesis {
                     epoch,
@@ -123,7 +121,7 @@ impl Automaton for ExecutionDriverMailbox {
         // > If we linked payloads to their parent, we would verify
         // > the parent included in the payload matches the provided `Context`.
         let (tx, rx) = oneshot::channel();
-        self.to_execution_driver
+        self.inner
             .send(
                 Propose {
                     parent: context.parent,
@@ -149,7 +147,7 @@ impl Automaton for ExecutionDriverMailbox {
         // > If we linked payloads to their parent, we would verify
         // > the parent included in the payload matches the provided `Context`.
         let (tx, rx) = oneshot::channel();
-        self.to_execution_driver
+        self.inner
             .send(
                 Verify {
                     parent: context.parent,
@@ -165,25 +163,25 @@ impl Automaton for ExecutionDriverMailbox {
     }
 }
 
-impl Relay for ExecutionDriverMailbox {
+impl Relay for Mailbox {
     type Digest = Digest;
 
     async fn broadcast(&mut self, digest: Self::Digest) {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
-        self.to_execution_driver
+        self.inner
             .send(Broadcast { payload: digest }.into())
             .await
             .expect("application is present and ready to receive broadcasts");
     }
 }
 
-impl Reporter for ExecutionDriverMailbox {
+impl Reporter for Mailbox {
     type Activity = Block;
 
     async fn report(&mut self, block: Self::Activity) {
         let (response, rx) = oneshot::channel();
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
-        self.to_execution_driver
+        self.inner
             .send(Finalized { block, response }.into())
             .await
             .expect("application is present and ready to receive broadcasts");
