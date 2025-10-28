@@ -1512,38 +1512,30 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .sstore(self.token_address, rate_slot, stream.rate_per_second_scaled)
     }
 
-    fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TIP20Error> {
+    fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TempoPrecompileError> {
         let key = stream_id.to_be_bytes();
 
         let funder_slot = mapping_slot(key, slots::STREAMS);
-        let funder_val = self
-            .storage
-            .sload(self.token_address, funder_slot)
-            .unwrap_or(U256::ZERO);
+        let funder_val = self.storage.sload(self.token_address, funder_slot)?;
 
         if funder_val == U256::ZERO {
-            return Err(TIP20Error::policy_forbids());
+            return Err(TIP20Error::policy_forbids().into());
         }
 
         let start_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 1));
         let start_time = self
             .storage
-            .sload(self.token_address, start_slot)
-            .unwrap_or(U256::ZERO)
+            .sload(self.token_address, start_slot)?
             .to::<u64>();
 
         let end_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 2));
         let end_time = self
             .storage
-            .sload(self.token_address, end_slot)
-            .unwrap_or(U256::ZERO)
+            .sload(self.token_address, end_slot)?
             .to::<u64>();
 
         let rate_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 3));
-        let rate_per_second_scaled = self
-            .storage
-            .sload(self.token_address, rate_slot)
-            .unwrap_or(U256::ZERO);
+        let rate_per_second_scaled = self.storage.sload(self.token_address, rate_slot)?;
 
         // TODO: add from storage for Reward stream
         Ok(RewardStream {
@@ -2615,6 +2607,7 @@ mod tests {
         assert_eq!(token.get_reward_recipient_of(&alice)?, alice);
         assert_eq!(token.get_delegated_balance(&alice)?, amount);
         assert_eq!(token.get_opted_in_supply()?, amount);
+        assert_eq!(token.get_user_reward_per_token_paid(&alice)?, U256::ZERO);
 
         token.set_reward_recipient(
             &alice,
@@ -2626,6 +2619,7 @@ mod tests {
         assert_eq!(token.get_reward_recipient_of(&alice)?, Address::ZERO);
         assert_eq!(token.get_delegated_balance(&alice)?, U256::ZERO);
         assert_eq!(token.get_opted_in_supply()?, U256::ZERO);
+        assert_eq!(token.get_user_reward_per_token_paid(&alice)?, U256::ZERO);
 
         Ok(())
     }
@@ -2633,6 +2627,7 @@ mod tests {
     #[test]
     fn test_start_reward() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
+        let current_time = storage.timestamp().to::<u64>();
         let admin = Address::random();
         let token_id = 1;
 
@@ -2665,7 +2660,18 @@ mod tests {
         let balance = token.get_balance(&token_address)?;
         assert_eq!(balance, reward_amount);
 
-        // TODO: assert event emission
+        let stream = token.get_stream(stream_id)?;
+        assert_eq!(stream.funder, admin);
+        assert_eq!(stream.start_time, current_time);
+        assert_eq!(stream.end_time, current_time + 10);
+
+        let total_reward_per_second = token.get_total_reward_per_second()?;
+        let expected_rate = reward_amount / U256::from(10);
+        assert_eq!(total_reward_per_second, expected_rate);
+
+        // Check reward per token stored (should still be 0 as no time has passed)
+        let reward_per_token_stored = token.get_reward_per_token_stored()?;
+        assert_eq!(reward_per_token_stored, U256::ZERO);
 
         Ok(())
     }
@@ -2714,6 +2720,18 @@ mod tests {
         assert_eq!(total_after, U256::ZERO);
         assert!(remaining > U256::ZERO);
 
+        let stream = token.get_stream(stream_id)?;
+        assert!(stream.funder.is_zero());
+        assert_eq!(stream.start_time, 0);
+        assert_eq!(stream.end_time, 0);
+        assert_eq!(stream.rate_per_second_scaled, U256::ZERO);
+
+        let reward_per_token_stored = token.get_reward_per_token_stored()?;
+        assert_eq!(reward_per_token_stored, U256::ZERO);
+
+        let opted_in_supply = token.get_opted_in_supply()?;
+        assert_eq!(opted_in_supply, U256::ZERO); // No users opted in
+
         Ok(())
     }
 
@@ -2759,10 +2777,20 @@ mod tests {
         )?;
 
         let alice_balance_before = token.get_balance(&alice)?;
+        let reward_per_token_before = token.get_reward_per_token_stored()?;
+        let user_reward_per_token_paid_before = token.get_user_reward_per_token_paid(&alice)?;
+
         token.update_rewards(&alice)?;
+
         let alice_balance_after = token.get_balance(&alice)?;
+        let reward_per_token_after = token.get_reward_per_token_stored()?;
+        let user_reward_per_token_paid_after = token.get_user_reward_per_token_paid(&alice)?;
 
         assert!(alice_balance_after > alice_balance_before);
+        assert!(reward_per_token_after >= reward_per_token_before);
+        assert_eq!(user_reward_per_token_paid_after, reward_per_token_after);
+        assert_eq!(token.get_opted_in_supply()?, mint_amount);
+        assert_eq!(token.get_delegated_balance(&alice)?, mint_amount);
 
         Ok(())
     }
@@ -2819,6 +2847,14 @@ mod tests {
         assert!(rpt_after >= rpt_before);
         assert!(last_update_after >= last_update_before);
 
+        // Check total reward per second remains consistent
+        let total_reward_per_second = token.get_total_reward_per_second()?;
+        let expected_rate = reward_amount / U256::from(100);
+        assert_eq!(total_reward_per_second, expected_rate);
+
+        assert_eq!(token.get_opted_in_supply()?, mint_amount);
+        assert_eq!(token.get_delegated_balance(&alice)?, mint_amount);
+        assert_eq!(token.get_user_reward_per_token_paid(&alice)?, U256::ZERO);
         Ok(())
     }
 
@@ -2878,6 +2914,11 @@ mod tests {
 
         assert!(total_after < total_before);
 
+        // TODO: check changes in totalReward Per sEcond, opted in supply, reward per token stored.
+        // Also check userRewardPerTokenPaid, delegatedBalance,
+        // TODO: also check streams and check that its inactive and check scheduled rate decreate
+        // too
+
         Ok(())
     }
 
@@ -2919,6 +2960,10 @@ mod tests {
         assert_eq!(id, 0);
 
         // TODO: assert reward balance for holders
+        // TODO: check changes in totalReward Per second, opted in supply, reward per token stored.
+        // Also check userRewardPerTokenPaid, delegatedBalance,
+        // TODO: also check streams and check that its inactive and check scheduled rate decreate
+        // too
 
         Ok(())
     }
@@ -2980,6 +3025,10 @@ mod tests {
 
         // TODO: simulate by checking rewards/balances for everything and looping and calling
         // finalize streams
+        // TODO: check changes in totalReward Per second, opted in supply, reward per token stored.
+        // Also check userRewardPerTokenPaid, delegatedBalance,
+        // TODO: also check streams and check that its inactive and check scheduled rate decreate
+        // too
 
         Ok(())
     }
