@@ -1,6 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, Bytes, FixedBytes, U256, B256, address},
+    primitives::{Address, B256, Bytes, FixedBytes, U256, address},
     signers::{
         local::{MnemonicBuilder, coins_bip39::English},
         utils::secret_key_to_address,
@@ -40,7 +40,7 @@ use tempo_precompiles::{
 
 /// Initial validator configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InitialValidator {
+pub(crate) struct InitialValidator {
     /// Validator address
     pub address: Address,
     /// Communication key (32 bytes)
@@ -171,7 +171,7 @@ impl GenesisArgs {
 
         println!("Initializing nonce manager");
         initialize_nonce_manager(&mut evm)?;
-        
+
         println!("Initializing validator config");
         initialize_validator_config(admin, self.validators_config, &mut evm)?;
 
@@ -495,11 +495,13 @@ fn initialize_validator_config(
     let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
 
     let mut validator_config = ValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, &mut provider);
-    validator_config.initialize(owner);
+    validator_config
+        .initialize(owner)
+        .expect("Failed to initialize validator config");
 
     // Load initial validators if config file provided
     let initial_validators = if let Some(config_path) = validators_config {
-        println!("Loading validators from {:?}", config_path);
+        println!("Loading validators from {config_path:?}");
         let config_content = fs::read_to_string(config_path)?;
         let validators: Vec<InitialValidator> = serde_json::from_str(&config_content)?;
         println!("Loaded {} initial validators", validators.len());

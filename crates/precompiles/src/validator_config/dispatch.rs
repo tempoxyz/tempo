@@ -1,5 +1,5 @@
-use super::{IValidatorConfig, ValidatorConfig, ValidatorConfigError};
-use crate::{Precompile, mutate_void, storage::PrecompileStorageProvider, view, view_result};
+use super::{IValidatorConfig, ValidatorConfig};
+use crate::{Precompile, mutate_void, storage::PrecompileStorageProvider, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -19,40 +19,37 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
                 view::<IValidatorConfig::ownerCall>(calldata, |_call| self.owner())
             }
             IValidatorConfig::getValidatorsCall::SELECTOR => {
-                view_result::<IValidatorConfig::getValidatorsCall, ValidatorConfigError>(
-                    calldata,
-                    |call| self.get_validators(call),
-                )
+                view::<IValidatorConfig::getValidatorsCall>(calldata, |call| {
+                    self.get_validators(call)
+                })
             }
 
             // Mutate functions
             IValidatorConfig::addValidatorCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::addValidatorCall, ValidatorConfigError>(
+                mutate_void::<IValidatorConfig::addValidatorCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.add_validator(s, call),
                 )
             }
             IValidatorConfig::updateValidatorCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::updateValidatorCall, ValidatorConfigError>(
+                mutate_void::<IValidatorConfig::updateValidatorCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.update_validator(s, call),
                 )
             }
             IValidatorConfig::changeValidatorStatusCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::changeValidatorStatusCall, ValidatorConfigError>(
+                mutate_void::<IValidatorConfig::changeValidatorStatusCall>(
                     calldata,
                     msg_sender,
                     |s, call| self.change_validator_status(s, call),
                 )
             }
             IValidatorConfig::changeOwnerCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::changeOwnerCall, ValidatorConfigError>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.change_owner(s, call),
-                )
+                mutate_void::<IValidatorConfig::changeOwnerCall>(calldata, msg_sender, |s, call| {
+                    self.change_owner(s, call)
+                })
             }
 
             _ => Err(PrecompileError::Other(
@@ -73,6 +70,7 @@ mod tests {
         primitives::{Bytes, FixedBytes},
         sol_types::SolValue,
     };
+    use tempo_contracts::precompiles::ValidatorConfigError;
 
     #[test]
     fn test_function_selector_dispatch() {
@@ -83,7 +81,7 @@ mod tests {
 
         // Initialize with owner
         let owner = Address::from([0u8; 20]);
-        validator_config.initialize(owner);
+        validator_config.initialize(owner).unwrap();
 
         // Test invalid selector
         let result = validator_config.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), &sender);
@@ -103,7 +101,7 @@ mod tests {
 
         // Initialize with owner
         let owner = Address::from([0u8; 20]);
-        validator_config.initialize(owner);
+        validator_config.initialize(owner).unwrap();
 
         // Call owner() via dispatch
         let owner_call = IValidatorConfig::ownerCall {};
@@ -127,7 +125,7 @@ mod tests {
 
         // Initialize with owner
         let owner = Address::from([0u8; 20]);
-        validator_config.initialize(owner);
+        validator_config.initialize(owner).unwrap();
 
         // Add validator via dispatch
         let validator_addr = Address::from([1u8; 20]);
@@ -163,7 +161,7 @@ mod tests {
 
         // Initialize with owner
         let owner = Address::from([0u8; 20]);
-        validator_config.initialize(owner);
+        validator_config.initialize(owner).unwrap();
 
         // Try to add validator as non-owner
         let non_owner = Address::from([1u8; 20]);

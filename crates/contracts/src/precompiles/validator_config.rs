@@ -1,5 +1,4 @@
-use alloy::{sol, sol_types::SolInterface};
-use revm::precompile::PrecompileError;
+use alloy::sol;
 
 pub use IValidatorConfig::IValidatorConfigErrors as ValidatorConfigError;
 
@@ -71,11 +70,5 @@ impl ValidatorConfigError {
     /// Creates an error when validator is not found.
     pub const fn validator_not_found() -> Self {
         Self::ValidatorNotFound(IValidatorConfig::ValidatorNotFound {})
-    }
-}
-
-impl From<ValidatorConfigError> for PrecompileError {
-    fn from(val: ValidatorConfigError) -> Self {
-        Self::Other(format!("{:?}", val.selector()))
     }
 }

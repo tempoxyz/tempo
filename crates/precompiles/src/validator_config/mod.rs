@@ -2,7 +2,7 @@ pub mod dispatch;
 
 pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 
-use crate::storage::PrecompileStorageProvider;
+use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 use alloy::primitives::{Address, Bytes, FixedBytes, U256};
 use revm::{interpreter::instructions::utility::IntoAddress, state::Bytecode};
 use tracing::trace;
@@ -74,38 +74,36 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
     }
 
     /// Initialize the precompile with an owner
-    pub fn initialize(&mut self, owner: Address) {
+    pub fn initialize(&mut self, owner: Address) -> Result<(), TempoPrecompileError> {
         trace!(address=%self.precompile_address, %owner, "Initializing validator config precompile");
 
         // must ensure the account is not empty, by setting some code
-        self.storage
-            .set_code(
-                self.precompile_address,
-                Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-            )
-            .expect("TODO: handle error");
+        self.storage.set_code(
+            self.precompile_address,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )?;
 
-        self.storage
-            .sstore(
-                self.precompile_address,
-                slots::OWNER,
-                owner.into_word().into(),
-            )
-            .expect("TODO: handle error");
+        self.storage.sstore(
+            self.precompile_address,
+            slots::OWNER,
+            owner.into_word().into(),
+        )?;
+
+        Ok(())
     }
 
     /// Internal helper to get owner
-    pub fn owner(&mut self) -> Address {
-        self.storage
-            .sload(self.precompile_address, slots::OWNER)
-            .expect("TODO: handle error")
-            .into_address()
+    pub fn owner(&mut self) -> Result<Address, TempoPrecompileError> {
+        Ok(self
+            .storage
+            .sload(self.precompile_address, slots::OWNER)?
+            .into_address())
     }
 
     /// Check if caller is the owner
-    pub fn check_owner(&mut self, caller: &Address) -> Result<(), ValidatorConfigError> {
-        if self.owner() != *caller {
-            return Err(ValidatorConfigError::unauthorized());
+    pub fn check_owner(&mut self, caller: &Address) -> Result<(), TempoPrecompileError> {
+        if self.owner()? != *caller {
+            return Err(ValidatorConfigError::unauthorized())?;
         }
         Ok(())
     }
@@ -115,35 +113,31 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         &mut self,
         sender: &Address,
         call: IValidatorConfig::changeOwnerCall,
-    ) -> Result<(), ValidatorConfigError> {
+    ) -> Result<(), TempoPrecompileError> {
         self.check_owner(sender)?;
-        self.storage
-            .sstore(
-                self.precompile_address,
-                slots::OWNER,
-                call.newOwner.into_word().into(),
-            )
-            .expect("TODO: handle error");
+        self.storage.sstore(
+            self.precompile_address,
+            slots::OWNER,
+            call.newOwner.into_word().into(),
+        )?;
         Ok(())
     }
 
     /// Get the current validator count
-    fn validator_count(&mut self) -> Result<u64, ValidatorConfigError> {
+    fn validator_count(&mut self) -> Result<u64, TempoPrecompileError> {
         Ok(self
             .storage
-            .sload(self.precompile_address, slots::VALIDATOR_COUNT)
-            .expect("TODO: handle error")
+            .sload(self.precompile_address, slots::VALIDATOR_COUNT)?
             .to::<u64>())
     }
 
     /// Check if a validator exists by checking if their key is non-zero
     /// Since ed25519 keys cannot be zero, this is a reliable existence check
-    fn validator_exists(&mut self, validator: &Address) -> Result<bool, ValidatorConfigError> {
+    fn validator_exists(&mut self, validator: &Address) -> Result<bool, TempoPrecompileError> {
         let slot = slots::validator_base_slot(validator);
         let key = self
             .storage
-            .sload(self.precompile_address, slot + slots::VALIDATOR_KEY_OFFSET)
-            .expect("TODO: handle error");
+            .sload(self.precompile_address, slot + slots::VALIDATOR_KEY_OFFSET)?;
 
         Ok(!key.is_zero())
     }
@@ -152,32 +146,27 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
     pub fn get_validators(
         &mut self,
         _call: IValidatorConfig::getValidatorsCall,
-    ) -> Result<Vec<IValidatorConfig::Validator>, ValidatorConfigError> {
+    ) -> Result<Vec<IValidatorConfig::Validator>, TempoPrecompileError> {
         let count = self.validator_count()?;
         let mut validators = Vec::new();
 
         for i in 0..count {
             let validator_address = self
                 .storage
-                .sload(self.precompile_address, slots::validator_at_index_slot(i))
-                .expect("TODO: handle error")
+                .sload(self.precompile_address, slots::validator_at_index_slot(i))?
                 .into_address();
 
             let slot = slots::validator_base_slot(&validator_address);
 
             let key = FixedBytes::<32>::from(
                 self.storage
-                    .sload(self.precompile_address, slot + slots::VALIDATOR_KEY_OFFSET)
-                    .expect("TODO: handle error"),
+                    .sload(self.precompile_address, slot + slots::VALIDATOR_KEY_OFFSET)?,
             );
 
-            let active_and_idx = self
-                .storage
-                .sload(
-                    self.precompile_address,
-                    slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-                )
-                .expect("TODO: handle error");
+            let active_and_idx = self.storage.sload(
+                self.precompile_address,
+                slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
+            )?;
 
             let (active, index) = slots::unpack_active_index(active_and_idx);
 
@@ -200,13 +189,13 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         &mut self,
         sender: &Address,
         call: IValidatorConfig::addValidatorCall,
-    ) -> Result<(), ValidatorConfigError> {
+    ) -> Result<(), TempoPrecompileError> {
         // Only owner can create validators
         self.check_owner(sender)?;
 
         // Check if validator already exists
         if self.validator_exists(&call.newValidatorAddress)? {
-            return Err(ValidatorConfigError::validator_already_exists());
+            return Err(ValidatorConfigError::validator_already_exists())?;
         }
 
         let count = self.validator_count()?;
@@ -215,44 +204,36 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         let slot = slots::validator_base_slot(&call.newValidatorAddress);
 
         // Store key
-        self.storage
-            .sstore(
-                self.precompile_address,
-                slot + slots::VALIDATOR_KEY_OFFSET,
-                U256::from_be_bytes(call.key.0),
-            )
-            .expect("TODO: handle error");
+        self.storage.sstore(
+            self.precompile_address,
+            slot + slots::VALIDATOR_KEY_OFFSET,
+            U256::from_be_bytes(call.key.0),
+        )?;
 
         // Store active + index packed
-        self.storage
-            .sstore(
-                self.precompile_address,
-                slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-                slots::pack_active_index(call.active, count),
-            )
-            .expect("TODO: handle error");
+        self.storage.sstore(
+            self.precompile_address,
+            slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
+            slots::pack_active_index(call.active, count),
+        )?;
 
         // Store ipAddressOrDns
         self.write_string(slot + slots::VALIDATOR_IP_OFFSET, call.ipAddressOrDns)?;
 
         // Set validator in validators array
         let validator_array_slot = slots::validator_at_index_slot(count);
-        self.storage
-            .sstore(
-                self.precompile_address,
-                validator_array_slot,
-                call.newValidatorAddress.into_word().into(),
-            )
-            .expect("TODO: handle error");
+        self.storage.sstore(
+            self.precompile_address,
+            validator_array_slot,
+            call.newValidatorAddress.into_word().into(),
+        )?;
 
         // Increment count
-        self.storage
-            .sstore(
-                self.precompile_address,
-                slots::VALIDATOR_COUNT,
-                U256::from(count + 1),
-            )
-            .expect("TODO: handle error");
+        self.storage.sstore(
+            self.precompile_address,
+            slots::VALIDATOR_COUNT,
+            U256::from(count + 1),
+        )?;
 
         Ok(())
     }
@@ -262,10 +243,10 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         &mut self,
         sender: &Address,
         call: IValidatorConfig::updateValidatorCall,
-    ) -> Result<(), ValidatorConfigError> {
+    ) -> Result<(), TempoPrecompileError> {
         // Validator can update their own info
         if !self.validator_exists(sender)? {
-            return Err(ValidatorConfigError::validator_not_found());
+            return Err(ValidatorConfigError::validator_not_found())?;
         }
 
         let new_slot = slots::validator_base_slot(&call.newValidatorAddress);
@@ -276,86 +257,67 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         // If so, we only need to delete storage at the old slot, since we would update the values at the new slot after
         if call.newValidatorAddress != *sender {
             if self.validator_exists(&call.newValidatorAddress)? {
-                return Err(ValidatorConfigError::validator_already_exists());
+                return Err(ValidatorConfigError::validator_already_exists())?;
             }
 
             // Get old validator's slot
             let old_slot = slots::validator_base_slot(sender);
 
             // Clear old validator's key
-            self.storage
-                .sstore(
-                    self.precompile_address,
-                    old_slot + slots::VALIDATOR_KEY_OFFSET,
-                    U256::ZERO,
-                )
-                .expect("TODO: handle error");
+            self.storage.sstore(
+                self.precompile_address,
+                old_slot + slots::VALIDATOR_KEY_OFFSET,
+                U256::ZERO,
+            )?;
 
             // Unpack active and index
-            (active, index) = slots::unpack_active_index(
-                self.storage
-                    .sload(
-                        self.precompile_address,
-                        old_slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-                    )
-                    .expect("TODO: handle error"),
-            );
+            (active, index) = slots::unpack_active_index(self.storage.sload(
+                self.precompile_address,
+                old_slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
+            )?);
 
             // Clear old validator's active/index
-            self.storage
-                .sstore(
-                    self.precompile_address,
-                    old_slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-                    U256::ZERO,
-                )
-                .expect("TODO: handle error");
+            self.storage.sstore(
+                self.precompile_address,
+                old_slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
+                U256::ZERO,
+            )?;
 
             // Clear old validator's ipAddressOrDns
-            self.storage
-                .sstore(
-                    self.precompile_address,
-                    old_slot + slots::VALIDATOR_IP_OFFSET,
-                    U256::ZERO,
-                )
-                .expect("TODO: handle error");
+            self.storage.sstore(
+                self.precompile_address,
+                old_slot + slots::VALIDATOR_IP_OFFSET,
+                U256::ZERO,
+            )?;
 
             // Update the validators array to point to new address
             let array_slot = slots::validator_at_index_slot(index);
-            self.storage
-                .sstore(
-                    self.precompile_address,
-                    array_slot,
-                    call.newValidatorAddress.into_word().into(),
-                )
-                .expect("TODO: handle error");
+            self.storage.sstore(
+                self.precompile_address,
+                array_slot,
+                call.newValidatorAddress.into_word().into(),
+            )?;
         }
 
-        let key = self
-            .storage
-            .sload(
-                self.precompile_address,
-                new_slot + slots::VALIDATOR_KEY_OFFSET,
-            )
-            .expect("TODO: handle error");
+        let key = self.storage.sload(
+            self.precompile_address,
+            new_slot + slots::VALIDATOR_KEY_OFFSET,
+        )?;
 
         if key != U256::from_be_bytes(call.key.0) {
-            self.storage
-                .sstore(
-                    self.precompile_address,
-                    new_slot + slots::VALIDATOR_KEY_OFFSET,
-                    U256::from_be_bytes(call.key.0),
-                )
-                .expect("TODO: handle error");
+            self.storage.sstore(
+                self.precompile_address,
+                new_slot + slots::VALIDATOR_KEY_OFFSET,
+                U256::from_be_bytes(call.key.0),
+            )?;
         }
 
         if active || index != 0 {
-            self.storage
-                .sstore(
-                    self.precompile_address,
-                    new_slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-                    slots::pack_active_index(active, index),
-                )
-                .expect("TODO: handle error");
+            self.storage.sstore(
+                self.precompile_address,
+                new_slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
+                slots::pack_active_index(active, index),
+            )?;
         }
 
         if self.read_string(new_slot + slots::VALIDATOR_IP_OFFSET)? != call.ipAddressOrDns {
@@ -370,67 +332,57 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         &mut self,
         sender: &Address,
         call: IValidatorConfig::changeValidatorStatusCall,
-    ) -> Result<(), ValidatorConfigError> {
+    ) -> Result<(), TempoPrecompileError> {
         self.check_owner(sender)?;
 
         if !self.validator_exists(&call.validator)? {
-            return Err(ValidatorConfigError::validator_not_found());
+            return Err(ValidatorConfigError::validator_not_found())?;
         }
 
         // Read current packed value to get the index
         let slot = slots::validator_base_slot(&call.validator);
-        let current_value = self
-            .storage
-            .sload(
-                self.precompile_address,
-                slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-            )
-            .expect("TODO: handle error");
+        let current_value = self.storage.sload(
+            self.precompile_address,
+            slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
+        )?;
         let (_, index) = slots::unpack_active_index(current_value);
 
         // Write new packed value with updated active status
         let new_packed_value = slots::pack_active_index(call.active, index);
-        self.storage
-            .sstore(
-                self.precompile_address,
-                slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-                new_packed_value,
-            )
-            .expect("TODO: handle error");
+        self.storage.sstore(
+            self.precompile_address,
+            slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
+            new_packed_value,
+        )?;
 
         Ok(())
     }
 
     // Helper methods for string storage
-    fn read_string(&mut self, slot: U256) -> Result<String, ValidatorConfigError> {
-        let value = self
-            .storage
-            .sload(self.precompile_address, slot)
-            .expect("TODO: handle error");
+    fn read_string(&mut self, slot: U256) -> Result<String, TempoPrecompileError> {
+        let value = self.storage.sload(self.precompile_address, slot)?;
         let bytes = value.to_be_bytes::<32>();
         let len = bytes[31] as usize / 2;
         if len > 31 {
-            return Err(ValidatorConfigError::unauthorized());
+            return Err(ValidatorConfigError::unauthorized())?;
         }
         Ok(String::from_utf8_lossy(&bytes[..len]).to_string())
     }
 
-    fn write_string(&mut self, slot: U256, value: String) -> Result<(), ValidatorConfigError> {
+    fn write_string(&mut self, slot: U256, value: String) -> Result<(), TempoPrecompileError> {
         let bytes = value.as_bytes();
         if bytes.len() > 31 {
-            return Err(ValidatorConfigError::unauthorized());
+            return Err(ValidatorConfigError::unauthorized())?;
         }
         let mut storage_bytes = [0u8; 32];
         storage_bytes[..bytes.len()].copy_from_slice(bytes);
         storage_bytes[31] = (bytes.len() * 2) as u8;
 
-        self.storage
-            .sstore(
-                self.precompile_address,
-                slot,
-                U256::from_be_bytes(storage_bytes),
-            )
-            .expect("TODO: handle error");
+        self.storage.sstore(
+            self.precompile_address,
+            slot,
+            U256::from_be_bytes(storage_bytes),
+        )?;
 
         Ok(())
     }
@@ -453,10 +405,10 @@ mod tests {
         let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
 
         // Initialize with owner1
-        validator_config.initialize(owner1);
+        validator_config.initialize(owner1).unwrap();
 
         // Check that owner is owner1
-        let current_owner = validator_config.owner();
+        let current_owner = validator_config.owner().unwrap();
         assert_eq!(
             current_owner, owner1,
             "Owner should be owner1 after initialization"
@@ -471,7 +423,7 @@ mod tests {
             .expect("Should change owner");
 
         // Check that owner is now owner2
-        let current_owner = validator_config.owner();
+        let current_owner = validator_config.owner().unwrap();
         assert_eq!(current_owner, owner2, "Owner should be owner2 after change");
     }
 
@@ -485,7 +437,7 @@ mod tests {
         let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
 
         // Initialize with owner1
-        validator_config.initialize(owner1);
+        validator_config.initialize(owner1).unwrap();
 
         // Owner1 adds a validator - should succeed
         let key = FixedBytes::<32>::from([0x44; 32]);
@@ -545,7 +497,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap_err(),
-            ValidatorConfigError::unauthorized(),
+            ValidatorConfigError::unauthorized().into(),
             "Should return Unauthorized error"
         );
 
@@ -563,7 +515,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap_err(),
-            ValidatorConfigError::unauthorized(),
+            ValidatorConfigError::unauthorized().into(),
             "Should return Unauthorized error"
         );
     }
@@ -574,7 +526,7 @@ mod tests {
         let owner = Address::from([0x01; 20]);
 
         let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
-        validator_config.initialize(owner);
+        validator_config.initialize(owner).unwrap();
 
         // Add first validator
         let validator1 = Address::from([0x11; 20]);
@@ -604,7 +556,7 @@ mod tests {
         assert!(result.is_err(), "Should not allow duplicate validator");
         assert_eq!(
             result.unwrap_err(),
-            ValidatorConfigError::validator_already_exists(),
+            ValidatorConfigError::validator_already_exists().into(),
             "Should return ValidatorAlreadyExists error"
         );
 
@@ -799,7 +751,7 @@ mod tests {
         let validator = Address::from([0x11; 20]);
 
         let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
-        validator_config.initialize(owner);
+        validator_config.initialize(owner).unwrap();
 
         // Owner adds a validator
         let key = FixedBytes::<32>::from([0x21; 32]);
@@ -831,7 +783,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap_err(),
-            ValidatorConfigError::validator_not_found(),
+            ValidatorConfigError::validator_not_found().into(),
             "Should return ValidatorNotFound error"
         );
     }
