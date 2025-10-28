@@ -7,6 +7,7 @@ use alloy::{
     },
 };
 use clap::Parser;
+use eyre::WrapErr;
 use rayon::prelude::*;
 use reth::revm::{
     context::ContextTr,
@@ -37,7 +38,6 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
-use eyre::WrapErr;
 
 /// Initial validator configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
