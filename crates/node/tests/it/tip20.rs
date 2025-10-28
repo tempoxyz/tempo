@@ -761,7 +761,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     // let opted_in_supply = token.getOptedInSupply().call().await?;
     // assert_eq!(opted_in_supply, alice_amount + bob_amount);
     //
-    // Start reward stream (10 second duration)
+    // Start reward stream
     let start_receipt = token
         .startReward(reward_amount, 10)
         .send()
@@ -769,7 +769,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    // Verify RewardStarted event
     let reward_started_event = start_receipt
         .logs()
         .iter()
@@ -780,11 +779,8 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     let stream_id = reward_started_event;
     // TODO: assert fields
 
-    // Record initial balances
     let alice_balance_initial = token.balanceOf(alice).call().await?;
     let bob_balance_initial = token.balanceOf(bob).call().await?;
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // TODO:
 
