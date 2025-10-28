@@ -1373,19 +1373,26 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    pub fn cancel_stream(
+    pub fn cancel_reward(
         &mut self,
         msg_sender: &Address,
         call: ITIP20::cancelStreamCall,
     ) -> Result<U256, TempoPrecompileError> {
-        // NOTE: bookmark
         let stream_id = call.id.to::<u64>();
         let stream = self.get_stream(stream_id)?;
 
+        if stream.funder.is_zero() {
+            return Err(TIP20Error::stream_inactive().into());
+        }
         if stream.funder != *msg_sender {
-            return Err(TIP20Error::policy_forbids().into());
+            return Err(TIP20Error::not_stream_funder().into());
         }
 
+        if self.storage.timestamp() >= stream.end_time {
+            return Err(TIP20Error::stream_inactive().into());
+        }
+
+        // NOTE: bookmark
         self.accrue()?;
 
         let current_time = self.storage.timestamp();

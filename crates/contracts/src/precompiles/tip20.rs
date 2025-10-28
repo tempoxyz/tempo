@@ -122,7 +122,7 @@ sol! {
         error TransfersDisabled();
         error InvalidAmount();
         error NotStreamFunder();
-        error StreamDoesNotExist();
+        error StreamInactive();
     }
 }
 
@@ -215,7 +215,12 @@ impl TIP20Error {
     }
 
     /// Error for when stream does not exist
-    pub const fn stream_does_not_exist() -> Self {
-        Self::StreamDoesNotExist(ITIP20::StreamDoesNotExist {})
+    pub const fn stream_inactive() -> Self {
+        Self::StreamInactive(ITIP20::StreamInactive {})
+    }
+
+    /// Error for when msg.sedner is not stream funder
+    pub const fn not_stream_funder() -> Self {
+        Self::NotStreamFunder(ITIP20::NotStreamFunder {})
     }
 }
