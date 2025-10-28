@@ -1,10 +1,7 @@
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::{Address, B256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
-use core::{
-    hash::{Hash, Hasher},
-    ops::Deref,
-};
+use core::ops::Deref;
 
 use crate::AASignature;
 
@@ -19,8 +16,10 @@ pub const MAGIC: u8 = 0x05;
 ///
 /// The structure and methods mirror `SignedAuthorization` exactly to maintain
 /// compatibility with the EIP-7702 spec.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub struct AASignedAuthorization {
     /// Inner authorization (reuses alloy's Authorization)
     #[cfg_attr(feature = "serde", serde(flatten))]
@@ -112,14 +111,6 @@ impl AASignedAuthorization {
     }
 }
 
-impl Hash for AASignedAuthorization {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.inner.hash(state);
-        // Hash the signature bytes
-        self.signature.to_bytes().hash(state);
-    }
-}
-
 impl Decodable for AASignedAuthorization {
     fn decode(buf: &mut &[u8]) -> RlpResult<Self> {
         let header = Header::decode(buf)?;
@@ -177,15 +168,14 @@ impl reth_codecs::Compact for AASignedAuthorization {
         B: alloy_rlp::BufMut + AsMut<[u8]>,
     {
         // Encode using RLP
-        let mut rlp_buf = Vec::new();
-        self.encode(&mut rlp_buf);
-        buf.put_slice(&rlp_buf);
-        rlp_buf.len()
+        let start_len = buf.remaining_mut();
+        self.encode(buf);
+        start_len - buf.remaining_mut()
     }
 
     fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-        let rlp_data = &buf[..len];
-        let auth = Self::decode(&mut &rlp_data[..]).expect("valid RLP encoding");
+        let mut buf_slice = &buf[..len];
+        let auth = Self::decode(&mut buf_slice).expect("valid RLP encoding");
         (auth, &buf[len..])
     }
 }
