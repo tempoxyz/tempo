@@ -1,3 +1,4 @@
+use crate::RecoveredSubBlock;
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::{PayloadAttributes, PayloadId};
 use alloy_rpc_types_eth::Withdrawals;
@@ -5,10 +6,8 @@ use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
 use reth_node_api::PayloadBuilderAttributes;
 use std::{
     convert::Infallible,
-    sync::{Arc, atomic, atomic::Ordering},
+    sync::{Arc, Mutex, atomic, atomic::Ordering},
 };
-
-use crate::SignedSubBlock;
 
 /// A handle for a payload interrupt flag.
 ///
@@ -31,7 +30,7 @@ pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
     interrupt: InterruptHandle,
     timestamp_millis_part: u64,
-    subblocks: Vec<SignedSubBlock>,
+    subblocks: Arc<Mutex<Vec<RecoveredSubBlock>>>,
 }
 
 impl TempoPayloadBuilderAttributes {
@@ -41,7 +40,7 @@ impl TempoPayloadBuilderAttributes {
         parent: B256,
         suggested_fee_recipient: Address,
         timestamp_millis: u64,
-        subblocks: Vec<SignedSubBlock>,
+        subblocks: Vec<RecoveredSubBlock>,
     ) -> Self {
         let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
         Self {
@@ -56,7 +55,7 @@ impl TempoPayloadBuilderAttributes {
             },
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
-            subblocks,
+            subblocks: Arc::new(Mutex::new(subblocks)),
         }
     }
 
@@ -77,7 +76,7 @@ impl TempoPayloadBuilderAttributes {
     }
 
     /// Returns the subblocks.
-    pub fn subblocks(&self) -> &[SignedSubBlock] {
+    pub fn subblocks(&self) -> &Mutex<Vec<RecoveredSubBlock>> {
         &self.subblocks
     }
 }
@@ -98,7 +97,7 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
             inner: EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
-            subblocks: Vec::new(),
+            subblocks: Default::default(),
         })
     }
 

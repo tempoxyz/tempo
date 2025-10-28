@@ -7,7 +7,7 @@ mod attrs;
 mod subblock;
 
 pub use attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
-pub use subblock::{SignedSubBlock, SubBlock};
+pub use subblock::{RecoveredSubBlock, SignedSubBlock, SubBlock};
 
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;

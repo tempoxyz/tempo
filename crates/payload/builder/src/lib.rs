@@ -23,9 +23,7 @@ use reth_evm::{
 };
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::PayloadBuilderAttributes;
-use reth_primitives_traits::{
-    Recovered, SignedTransaction, transaction::error::InvalidTransactionError,
-};
+use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State,
     context::{Block, BlockEnv},
@@ -36,7 +34,7 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
@@ -384,14 +382,37 @@ where
             cumulative_gas_used += gas_used;
         }
 
-        'subblocks: for subblock in attributes.subblocks() {
-            for tx in &subblock.transactions {
-                let Ok(tx) = tx.try_clone_into_recovered() else {
-                    continue 'subblocks;
-                };
-                builder
-                    .execute_transaction(tx)
-                    .map_err(PayloadBuilderError::evm)?;
+        let mut selected_subblocks = HashMap::new();
+
+        loop {
+            let Ok(subblocks) = attributes.subblocks().lock() else {
+                break;
+            };
+
+            // Select subblocks to execute while ensuring one subblock per validator
+            let mut to_execute = Vec::new();
+            for subblock in subblocks.iter() {
+                if selected_subblocks.contains_key(&subblock.validator()) {
+                    continue;
+                }
+                to_execute.push(subblock.clone());
+            }
+
+            drop(subblocks);
+
+            for subblock in to_execute {
+                for tx in subblock.transactions_recovered() {
+                    builder
+                        .execute_transaction(tx.cloned())
+                        .map_err(PayloadBuilderError::evm)?;
+                }
+
+                selected_subblocks.insert(subblock.validator(), subblock);
+            }
+
+            // exit the loop if the job was interrupted
+            if attributes.is_interrupted() {
+                break;
             }
         }
 

@@ -1,3 +1,4 @@
+use crate::TempoInvalidTransaction;
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use reth_evm::{
@@ -5,7 +6,6 @@ use reth_evm::{
     revm::context::{
         Transaction, TxEnv,
         either::Either,
-        result::InvalidTransaction,
         transaction::{
             AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization,
             SignedAuthorization,
@@ -61,10 +61,9 @@ pub struct TempoTxEnv {
 
 impl TempoTxEnv {
     /// Resolves fee payer from the signature.
-    pub fn fee_payer(&self) -> Result<Address, InvalidTransaction> {
+    pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
         if let Some(fee_payer) = self.fee_payer {
-            // todo: introduce custom error type or Other variant upstream
-            fee_payer.ok_or(InvalidTransaction::OverflowPaymentInTransaction)
+            fee_payer.ok_or(TempoInvalidTransaction::InvalidFeePayerSignature)
         } else {
             Ok(self.caller())
         }
