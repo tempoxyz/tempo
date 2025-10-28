@@ -149,6 +149,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.cancel_stream(s, call)
                 })
             }
+
+            // TODO: function to get streams
+
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {
                 view::<IRolesAuth::hasRoleCall>(calldata, |call| {

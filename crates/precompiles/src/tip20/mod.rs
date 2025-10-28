@@ -714,7 +714,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         } else {
             let current_time = self.storage.timestamp().to::<u128>();
             let end_time = current_time + call.seconds;
-            let rate = call.amount / U256::from(call.seconds);
+            let rate = (call.amount * ACC_PRECISION) / U256::from(call.seconds);
 
             let stream_id = self.get_next_stream_id()?;
             self.set_next_stream_id(stream_id + 1)?;
@@ -1491,13 +1491,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
     fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TempoPrecompileError> {
         let key = stream_id.to_be_bytes();
-
         let funder_slot = mapping_slot(key, slots::STREAMS);
-        let funder_val = self.storage.sload(self.token_address, funder_slot)?;
-
-        if funder_val == U256::ZERO {
-            return Err(TIP20Error::policy_forbids().into());
-        }
+        let funder = self.storage.sload(self.token_address, funder_slot)?;
 
         let start_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 1));
         let start_time = self
@@ -1516,7 +1511,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         // TODO: add from storage for Reward stream
         Ok(RewardStream {
-            funder: funder_val.into_address(),
+            funder: funder.into_address(),
             start_time,
             end_time,
             rate_per_second_scaled,
@@ -2691,8 +2686,6 @@ mod tests {
 
         let total_after = token.get_total_reward_per_second()?;
         assert_eq!(total_after, U256::ZERO);
-
-        // TODO: assert the exact value
         assert_eq!(remaining, reward_amount);
 
         let stream = token.get_stream(stream_id)?;

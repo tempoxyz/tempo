@@ -122,7 +122,7 @@ sol! {
         error TransfersDisabled();
         error InvalidAmount();
         error NotStreamFunder();
-        error StreamInactive();
+        error StreamDoesNotExist();
     }
 }
 
@@ -212,5 +212,10 @@ impl TIP20Error {
     /// Creates an error for invalid amount.
     pub const fn invalid_amount() -> Self {
         Self::InvalidAmount(ITIP20::InvalidAmount {})
+    }
+
+    /// Error for when stream does not exist
+    pub const fn stream_does_not_exist() -> Self {
+        Self::StreamDoesNotExist(ITIP20::StreamDoesNotExist {})
     }
 }
