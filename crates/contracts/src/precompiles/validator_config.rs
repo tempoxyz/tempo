@@ -58,6 +58,8 @@ sol! {
         error Unauthorized();
         error ValidatorAlreadyExists();
         error ValidatorNotFound();
+
+        error NotHostPort(string field, string backtrace);
     }
 }
 
@@ -75,5 +77,9 @@ impl ValidatorConfigError {
     /// Creates an error when validator is not found.
     pub const fn validator_not_found() -> Self {
         Self::ValidatorNotFound(IValidatorConfig::ValidatorNotFound {})
+    }
+
+    pub fn not_host_port(field: String, backtrace: String) -> Self {
+        Self::NotHostPort(IValidatorConfig::NotHostPort { field, backtrace })
     }
 }

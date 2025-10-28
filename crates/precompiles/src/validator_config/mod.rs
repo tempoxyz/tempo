@@ -1,5 +1,7 @@
 pub mod dispatch;
 
+use std::{fmt::Display, str::FromStr};
+
 pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
@@ -226,12 +228,24 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         )?;
 
         // Store inboundAddress
-        self.write_string(slot + slots::VALIDATOR_IP_OFFSET, call.inboundAddress)?;
+        let inbound = call.inboundAddress.parse::<HostWithPort>().map_err(|err| {
+            ValidatorConfigError::not_host_port("inboundAddress".to_string(), format!("{err:?}"))
+        })?;
+        self.write_string(slot + slots::VALIDATOR_IP_OFFSET, inbound.to_string())?;
 
         // Store outboundAddress
+        let outbound = call
+            .outboundAddress
+            .parse::<HostWithPort>()
+            .map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "outboundAddress".to_string(),
+                    format!("{err:?}"),
+                )
+            })?;
         self.write_string(
             slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
-            call.outboundAddress,
+            outbound.to_string(),
         )?;
 
         // Set validator in validators array
@@ -865,5 +879,53 @@ mod tests {
             ValidatorConfigError::validator_not_found().into(),
             "Should return ValidatorNotFound error"
         );
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum HostWithPortParseError {
+    #[error("failed to parse input as URL")]
+    Url(#[from] url::ParseError),
+    #[error("input did not contain host")]
+    NoHost,
+    #[error("input did not contain port")]
+    NoPort,
+    #[error("input did not match <host>:<port>; only inputs of that form are accepted")]
+    NotHostPort,
+}
+
+/// A string guaranteed to be `<host>:<port>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostWithPort {
+    host: String,
+    port: u16,
+}
+
+impl Display for HostWithPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.host)?;
+        f.write_str(":")?;
+        self.port.fmt(f)
+    }
+}
+
+// FIXME(janis): This might be overkill. Maybe a simple regex here is better.
+impl FromStr for HostWithPort {
+    type Err = HostWithPortParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let url = s.trim().parse::<url::Url>()?;
+
+        let host = url.host_str().ok_or(Self::Err::NoHost)?;
+        let port = url.port().ok_or(Self::Err::NoPort)?;
+
+        let this = Self {
+            host: host.to_string(),
+            port,
+        };
+        if this.to_string() != url.to_string() {
+            return Err(Self::Err::NotHostPort);
+        }
+        Ok(this)
     }
 }
