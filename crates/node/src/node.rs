@@ -296,7 +296,7 @@ where
     }
 }
 
-/// A basic optimism transaction pool.
+/// A basic Tempo transaction pool.
 ///
 /// This contains various settings that can be configured and take precedence over the node's
 /// config.
