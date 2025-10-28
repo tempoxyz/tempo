@@ -40,35 +40,6 @@ pub trait TempoHardforks: EthereumHardforks {
     }
 }
 
-/// Configuration for Tempo-specific hardfork activations
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TempoChainHardforks {
-    /// Activation condition for Adagio hardfork
-    pub adagio: ForkCondition,
-}
-
-impl TempoChainHardforks {
-    /// Creates hardforks with Adagio active at genesis (timestamp 0)
-    pub fn adagio_at_genesis() -> Self {
-        Self {
-            adagio: ForkCondition::Timestamp(0),
-        }
-    }
-
-    /// Retrieves activation condition for a Tempo-specific hardfork
-    pub fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition {
-        match fork {
-            TempoHardfork::Adagio => self.adagio,
-        }
-    }
-
-    /// Convenience method to check if Adagio hardfork is active at a given timestamp
-    pub fn is_adagio_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Adagio)
-            .active_at_timestamp(timestamp)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,37 +56,6 @@ mod tests {
         let fork = TempoHardfork::Adagio;
         // Should implement Hardfork trait
         let _name: &str = Hardfork::name(&fork);
-    }
-
-    #[test]
-    fn test_tempo_chain_hardforks_at_genesis() {
-        use reth_chainspec::ForkCondition;
-
-        let hardforks = TempoChainHardforks::adagio_at_genesis();
-        assert_eq!(hardforks.adagio, ForkCondition::Timestamp(0));
-    }
-
-    #[test]
-    fn test_tempo_hardforks_trait_activation_query() {
-        use reth_chainspec::ForkCondition;
-
-        let hardforks = TempoChainHardforks::adagio_at_genesis();
-
-        // Should be able to query Adagio fork activation
-        let activation = hardforks.tempo_fork_activation(TempoHardfork::Adagio);
-        assert_eq!(activation, ForkCondition::Timestamp(0));
-    }
-
-    #[test]
-    fn test_is_adagio_active_at_timestamp() {
-        let hardforks = TempoChainHardforks::adagio_at_genesis();
-
-        // Adagio is active at timestamp 0
-        assert!(hardforks.is_adagio_active_at_timestamp(0));
-
-        // Adagio is active at any timestamp >= 0
-        assert!(hardforks.is_adagio_active_at_timestamp(1000));
-        assert!(hardforks.is_adagio_active_at_timestamp(u64::MAX));
     }
 
     #[test]
