@@ -917,10 +917,7 @@ impl FromStr for HostWithPort {
         let host = url::Host::parse(maybe_host)?.to_string();
         let port = maybe_port.parse::<u16>()?;
 
-        let this = Self {
-            host: host.to_string(),
-            port,
-        };
+        let this = Self { host, port };
         Ok(this)
     }
 }
