@@ -33,24 +33,9 @@ const DEFAULT_LIMIT: usize = 10;
 /// Maximum limit for pagination
 const MAX_LIMIT: usize = 100;
 
-/// Represents an order along with its orderbook context.
-/// Used when iterating through multiple orderbooks to maintain
-/// the relationship between orders and their parent book.
-struct OrderWithBook {
-    /// The order from the orderbook
-    order: PrecompileOrder,
-    /// Base token address of the orderbook containing this order
-    base: Address,
-    /// Quote token address of the orderbook containing this order
-    quote: Address,
-}
-
-/// Determines which book keys to query based on base and quote token filters.
-///
-/// Returns:
-/// - A single book key if both base and quote tokens are specified
-/// - All book keys from the exchange if filters are partial or absent
-fn get_filtered_book_keys(
+/// Gets book keys to iterate over. If both base and quote are specified, returns only that book.
+/// Otherwise returns all book keys (filtering happens later during iteration).
+fn get_book_keys_for_iteration(
     exchange: &mut StablecoinExchange<'_, EvmPrecompileStorageProvider<'_>>,
     base_token: Option<Address>,
     quote_token: Option<Address>,
@@ -258,7 +243,8 @@ impl<
                 // Determine which books to iterate based on filter
                 let base_token = params.filters.as_ref().and_then(|f| f.base_token);
                 let quote_token = params.filters.as_ref().and_then(|f| f.quote_token);
-                let book_keys = get_filtered_book_keys(&mut exchange, base_token, quote_token)?;
+                let book_keys =
+                    get_book_keys_for_iteration(&mut exchange, base_token, quote_token)?;
 
                 let is_bid = params
                     .filters
@@ -276,7 +262,7 @@ impl<
                     .map(|l| l.min(MAX_LIMIT))
                     .unwrap_or(DEFAULT_LIMIT);
 
-                let mut all_orders: Vec<OrderWithBook> = Vec::new();
+                let mut all_orders: Vec<Order> = Vec::new();
                 let mut next_cursor = None;
 
                 // Iterate through books collecting orders until we reach the limit
@@ -286,16 +272,8 @@ impl<
                             .expect("TODO: errors");
 
                     // Check if this book matches the base/quote filter
-                    if let Some(ref filter) = params.filters {
-                        if filter.base_token.is_some_and(|base| base != orderbook.base) {
-                            continue;
-                        }
-                        if filter
-                            .quote_token
-                            .is_some_and(|quote| quote != orderbook.quote)
-                        {
-                            continue;
-                        }
+                    if !orderbook_matches_tokens(&orderbook, base_token, quote_token) {
+                        continue;
                     }
 
                     let starting_order = if all_orders.is_empty() {
@@ -313,18 +291,17 @@ impl<
                         params.filters.clone(),
                     );
 
-                    let base = orderbook.base;
-                    let quote = orderbook.quote;
-
-                    // Collect orders from this book
+                    // Collect orders from this book, up to limit + 1
                     for order in book_iterator {
-                        all_orders.push(OrderWithBook { order, base, quote });
+                        let rpc_order = self.to_rpc_order(order, &orderbook);
+                        all_orders.push(rpc_order);
 
-                        // Check if we've reached the limit + 1
+                        // stop once we have limit + 1 orders, we can't always use the next order
+                        // ID as the next cursor because of queue and book boundaries
                         if all_orders.len() > limit {
                             // Use the last order for cursor
                             let last = &all_orders[limit];
-                            next_cursor = Some(format!("0x{:x}", last.order.order_id()));
+                            next_cursor = Some(format!("0x{:x}", last.order_id));
                             break;
                         }
                     }
@@ -337,21 +314,7 @@ impl<
 
                 // Truncate to limit
                 all_orders.truncate(limit);
-
-                // Convert orders to RPC format - create temp orderbook for conversion
-                let orders = all_orders
-                    .into_iter()
-                    .map(|item| {
-                        // Create a minimal orderbook for conversion
-                        let book = PrecompileOrderbook {
-                            base: item.base,
-                            quote: item.quote,
-                            best_bid_tick: 0, // Not used in to_rpc_order
-                            best_ask_tick: 0, // Not used in to_rpc_order
-                        };
-                        self.to_rpc_order(item.order, &book)
-                    })
-                    .collect();
+                let orders = all_orders;
 
                 let response = OrdersResponse {
                     next_cursor,
@@ -458,7 +421,7 @@ impl<
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let base_token = params.filters.as_ref().and_then(|f| f.base_token);
             let quote_token = params.filters.as_ref().and_then(|f| f.quote_token);
-            let keys = get_filtered_book_keys(exchange, base_token, quote_token)?;
+            let keys = get_book_keys_for_iteration(exchange, base_token, quote_token)?;
 
             // Find starting position based on cursor
             let start_idx = if let Some(ref cursor_str) = params.cursor {
@@ -624,15 +587,33 @@ impl<
     }
 }
 
-/// Checks if an orderbook matches the given filters
-fn orderbook_matches_filter(book: &PrecompileOrderbook, filter: &OrderbooksFilter) -> bool {
+/// Checks if an orderbook matches the given base and/or quote token filters
+fn orderbook_matches_tokens(
+    book: &PrecompileOrderbook,
+    base_token: Option<Address>,
+    quote_token: Option<Address>,
+) -> bool {
     // Check base token filter
-    if filter.base_token.is_some_and(|base| base != book.base) {
-        return false;
+    if let Some(base) = base_token {
+        if base != book.base {
+            return false;
+        }
     }
 
     // Check quote token filter
-    if filter.quote_token.is_some_and(|quote| quote != book.base) {
+    if let Some(quote) = quote_token {
+        if quote != book.quote {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Checks if an orderbook matches the given filters
+fn orderbook_matches_filter(book: &PrecompileOrderbook, filter: &OrderbooksFilter) -> bool {
+    // Check base and quote token filters
+    if !orderbook_matches_tokens(book, filter.base_token, filter.quote_token) {
         return false;
     }
 
