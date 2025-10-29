@@ -6,7 +6,7 @@ pub use ITIP403Registry::{
 
 sol! {
    #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     interface ITIP403Registry {
         // Enums
         enum PolicyType {

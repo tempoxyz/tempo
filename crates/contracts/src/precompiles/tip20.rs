@@ -4,7 +4,7 @@ use alloy::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     interface IRolesAuth {
         function hasRole(address account, bytes32 role) external view returns (bool);
         function getRoleAdmin(bytes32 role) external view returns (bytes32);
@@ -32,7 +32,7 @@ sol! {
     /// The interface supports both standard token operations and administrative functions
     /// for managing token behavior and compliance requirements.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     #[allow(clippy::too_many_arguments)]
     interface ITIP20 {
         // Standard token functions

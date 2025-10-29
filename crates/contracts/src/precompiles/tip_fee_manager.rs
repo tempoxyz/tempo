@@ -17,7 +17,7 @@ sol! {
     /// - Slots 0-3: TIPFeeAMM storage (pools, pool exists, liquidity data)
     /// - Slots 4+: FeeManager-specific storage (validator tokens, user tokens, collected fees, etc.)
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     interface IFeeManager {
         // Structs
         struct FeeInfo {

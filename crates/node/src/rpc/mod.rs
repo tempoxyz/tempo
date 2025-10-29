@@ -26,10 +26,9 @@ use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
-        AddDevSigners, Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions,
-        LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
-        SpawnBlocking, Trace, estimate::EstimateCall, pending_block::PendingEnvBuilder,
-        spec::SignersForRpc,
+        Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
+        LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
+        estimate::EstimateCall, pending_block::PendingEnvBuilder, spec::SignersForRpc,
     },
 };
 use reth_rpc_eth_types::{
@@ -229,12 +228,6 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> EstimateCall for TempoEthApi<N> {}
-
-impl<N: FullNodeTypes<Types = TempoNode>> AddDevSigners for TempoEthApi<N> {
-    fn with_dev_accounts(&self) {
-        self.inner.with_dev_accounts()
-    }
-}
 
 impl<N: FullNodeTypes<Types = TempoNode>> LoadBlock for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> LoadReceipt for TempoEthApi<N> {}

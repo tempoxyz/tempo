@@ -66,6 +66,7 @@ serde = [
 	"p256/serde",
 ]
 reth-codec = [
+	"serde",
 	"dep:reth-codecs",
 	"dep:reth-db-api",
 	"dep:modular-bitfield",
@@ -101,4 +102,4 @@ rpc = [
 	"dep:reth-rpc-convert",
 	"dep:alloy-network",
 ]
-cli = ["dep:reth-cli-commands"]
+cli = ["dep:reth-cli-commands", "serde", "serde-bincode-compat", "reth-codec"]

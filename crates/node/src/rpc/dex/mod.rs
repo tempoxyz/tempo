@@ -14,15 +14,12 @@ pub mod types;
 #[rpc(server, namespace = "dex")]
 pub trait TempoDexApi {
     #[method(name = "getOrders")]
-    async fn orders(
-        &self,
-        params: Vec<PaginationParams<OrdersFilters>>,
-    ) -> RpcResult<OrdersResponse>;
+    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse>;
 
     #[method(name = "getOrderbooks")]
     async fn orderbooks(
         &self,
-        params: Vec<PaginationParams<OrderbooksFilter>>,
+        params: PaginationParams<OrderbooksFilter>,
     ) -> RpcResult<OrderbooksResponse>;
 }
 
@@ -40,16 +37,13 @@ impl<EthApi> TempoDex<EthApi> {
 
 #[async_trait::async_trait]
 impl<EthApi: RpcNodeCore> TempoDexApiServer for TempoDex<EthApi> {
-    async fn orders(
-        &self,
-        _params: Vec<PaginationParams<OrdersFilters>>,
-    ) -> RpcResult<OrdersResponse> {
+    async fn orders(&self, _params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse> {
         Err(internal_rpc_err("unimplemented"))
     }
 
     async fn orderbooks(
         &self,
-        _params: Vec<PaginationParams<OrderbooksFilter>>,
+        _params: PaginationParams<OrderbooksFilter>,
     ) -> RpcResult<OrderbooksResponse> {
         Err(internal_rpc_err("unimplemented"))
     }

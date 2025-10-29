@@ -71,6 +71,8 @@ pub trait TIPFeeDatabaseExt: Database {
         } else {
             // Look up user's configured fee token in TIPFeeManager storage
             let user_token_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
+            // Load fee manager account to ensure that we can load storage for it.
+            self.basic(TIP_FEE_MANAGER_ADDRESS)?;
             let user_fee_token = self
                 .storage(TIP_FEE_MANAGER_ADDRESS, user_token_slot)?
                 .into_address();
@@ -95,6 +97,8 @@ pub trait TIPFeeDatabaseExt: Database {
 
         // Query the user's balance in the determined fee token's TIP20 contract
         let balance_slot = mapping_slot(fee_payer, tip20::slots::BALANCES);
+        // Load fee token account to ensure that we can load storage for it.
+        self.basic(fee_token)?;
         let balance = self.storage(fee_token, balance_slot)?;
 
         Ok(balance)

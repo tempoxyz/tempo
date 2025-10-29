@@ -3,7 +3,7 @@ use alloy::sol;
 
 sol! {
   #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     interface ITIP20Factory {
         event TokenCreated(address indexed token, uint256 indexed tokenId, string name, string symbol, string currency, address admin);
 

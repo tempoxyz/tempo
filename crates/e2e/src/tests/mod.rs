@@ -3,6 +3,7 @@ use reth_ethereum::{rpc::types::engine::ForkchoiceState, storage::BlockReader as
 
 use crate::ExecutionRuntime;
 
+mod backfill;
 mod dkg;
 mod linkage;
 

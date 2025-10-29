@@ -40,3 +40,10 @@ pub const BID_BITMAPS: U256 = uint!(7_U256);
 /// Mapping of (pair_key, word_index) to ask bitmap data
 /// Used for efficient price discovery in ask direction
 pub const ASK_BITMAPS: U256 = uint!(8_U256);
+
+/// Length of book keys vector
+pub const BOOK_KEYS_LENGTH: U256 = uint!(9_U256);
+
+/// Base slot for book keys vector data
+/// Individual book keys are stored at BOOK_KEYS_BASE + index
+pub const BOOK_KEYS_BASE: U256 = uint!(10_U256);
