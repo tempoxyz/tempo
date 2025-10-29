@@ -40,8 +40,9 @@ use tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
-    tip_fee_manager::IFeeManager,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
+    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
+    tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
     TempoHeader, TempoPrimitives, TempoTxEnvelope,
@@ -133,7 +134,30 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             TEMPO_SYSTEM_TX_SENDER,
         );
 
-        vec![fee_manager_tx, stablecoin_exchange_tx]
+        // Build stablecoin exchange system transaction
+        let rewards_registry_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
+            .abi_encode()
+            .into_iter()
+            .chain(block_env.number.to_be_bytes_vec())
+            .collect();
+
+        let rewards_registry_tx = Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    chain_id,
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 0,
+                    to: TIP20_REWARDS_REGISTRY_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input: rewards_registry_input,
+                },
+                TEMPO_SYSTEM_TX_SIGNATURE,
+            )),
+            TEMPO_SYSTEM_TX_SENDER,
+        );
+
+        vec![fee_manager_tx, stablecoin_exchange_tx, rewards_registry_tx]
     }
 }
 

@@ -1,6 +1,12 @@
 // Module for tip20_rewards_registry precompile
 pub mod dispatch;
 
+use crate::{
+    TIP20_REWARDS_REGISTRY_ADDRESS,
+    error::TempoPrecompileError,
+    storage::{PrecompileStorageProvider, slots::mapping_slot},
+    tip20::{TIP20Token, address_to_token_id_unchecked},
+};
 use alloy::{
     primitives::{Address, Bytes, U256, keccak256},
     sol_types::SolValue,
@@ -9,14 +15,8 @@ use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
 };
-use tempo_contracts::precompiles::TIP20RewardsRegistryError;
 
-use crate::{
-    TIP20_REWARDS_REGISTRY_ADDRESS,
-    error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, slots::mapping_slot},
-    tip20::{TIP20Token, address_to_token_id_unchecked},
-};
+pub use tempo_contracts::precompiles::{ITIP20RewardsRegistry, TIP20RewardsRegistryError};
 
 pub mod slots {
     use alloy::primitives::{U256, uint};
