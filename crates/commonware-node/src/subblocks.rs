@@ -170,21 +170,20 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         self.next_parent_hash = Some(event.proposal.payload.0);
 
         // If next proposer is not us, we need to build a new subblock.
-        if next_proposer != self.signer.public_key() {
-            if let Some(existing) = self.subblock_builder_handle.take() {
-                existing.abort();
-            }
-
-            let transactions = self.subblock_transactions.clone();
-            let node = self.node.clone();
-            let parent_hash = event.proposal.payload.0;
-            let handle =
-                self.context.clone().shared(true).spawn(move |_| {
-                    build_subblock(transactions, node, parent_hash, num_validators)
-                });
-
-            self.subblock_builder_handle = Some(handle);
+        if let Some(existing) = self.subblock_builder_handle.take() {
+            existing.abort();
         }
+
+        let transactions = self.subblock_transactions.clone();
+        let node = self.node.clone();
+        let parent_hash = event.proposal.payload.0;
+        let handle = self
+            .context
+            .clone()
+            .shared(true)
+            .spawn(move |_| build_subblock(transactions, node, parent_hash, num_validators));
+
+        self.subblock_builder_handle = Some(handle);
     }
 }
 
@@ -270,13 +269,17 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                     }
 
                     let signature = self.signer.sign(None, subblock.signature_hash().as_slice());
-                    let signed_subblock = SignedSubBlock {
+                    let subblock = SignedSubBlock {
                         inner: subblock,
                         signature: Bytes::copy_from_slice(signature.as_ref()),
                     };
 
-                    debug!(subblock = ?signed_subblock, ?next_proposer, "sending subblock to the next proposer");
-                    let _ = network_tx.send(Recipients::One(next_proposer.clone()), alloy_rlp::encode(&signed_subblock).into(), true).await;
+                    if next_proposer != &self.signer.public_key() {
+                        debug!(subblock = ?subblock, ?next_proposer, "sending subblock to the next proposer");
+                        let _ = network_tx.send(Recipients::One(next_proposer.clone()), alloy_rlp::encode(&subblock).into(), true).await;
+                    } else {
+                        let _ = self.validated_subblocks_tx.send(subblock.try_into_recovered(B256::from_slice(&self.signer.public_key())).unwrap());
+                    }
                 }
             }
         }

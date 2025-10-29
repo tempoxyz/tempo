@@ -388,12 +388,12 @@ where
 
         let mut selected_subblocks = HashMap::new();
 
+        // Subblocks will most likely arrive after we've started building the payload, 
+        // so we need to wait for a bit to ensure we collect as many as possible.
         loop {
             let Ok(subblocks) = attributes.subblocks().lock() else {
                 break;
             };
-
-            println!("{subblocks:?}");
 
             // Select subblocks to execute while ensuring one subblock per validator
             let mut to_execute = Vec::new();

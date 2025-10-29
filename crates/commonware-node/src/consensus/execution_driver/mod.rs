@@ -344,7 +344,7 @@ impl Inner<Init> {
                 ))
            },
 
-            res = self.clone().propose(context, parent_view, parent_digest, round) => {
+            res = self.clone().propose(context.clone(), parent_view, parent_digest, round) => {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
@@ -405,7 +405,25 @@ impl Inner<Init> {
 
         {
             let mut lock = self.state.latest_proposed_block.write().await;
-            *lock = Some(proposal);
+            *lock = Some(proposal.clone());
+        }
+
+        let is_good = verify_block(
+            context,
+            round.epoch(),
+            self.epoch_length,
+            self.execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .clone(),
+            &proposal,
+            parent_digest.0,
+        )
+        .await
+        .wrap_err("failed verifying block against execution layer")?;
+
+        if !is_good {
+            eyre::bail!("proposal failed validation");
         }
 
         if let Err(error) = self
@@ -555,14 +573,14 @@ impl Inner<Init> {
             loop {
                 context.sleep(Duration::from_millis(100)).await;
 
-                let Ok(new_subblocks) = self.subblocks.get_subblocks(parent.block_hash()).await else {
+                let Ok(new_subblocks) = self.subblocks.get_subblocks(parent.block_hash()).await
+                else {
                     continue;
                 };
                 let Ok(mut subblocks) = attrs.subblocks().lock() else {
                     continue;
                 };
                 *subblocks = new_subblocks;
-                debug!(subblocks = ?subblocks, "updated subblocks");
             }
         });
 
@@ -688,7 +706,7 @@ impl Inner<Init> {
                 .beacon_engine_handle
                 .clone(),
             &block,
-            &parent,
+            parent.hash(),
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
@@ -800,9 +818,7 @@ struct Init {
         block.digest = %block.digest(),
         block.height = block.height(),
         block.timestamp = block.timestamp(),
-        parent.digest = %parent.digest(),
-        parent.height = parent.height(),
-        parent.timestamp = parent.timestamp(),
+        parent.digest = %parent_hash,
     )
 )]
 async fn verify_block<TContext: Pacer>(
@@ -811,22 +827,18 @@ async fn verify_block<TContext: Pacer>(
     epoch_length: u64,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
-    parent: &Block,
+    parent_hash: B256,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
     if !epoch::contains_height(block.height(), epoch, epoch_length) {
         info!("block does not belong to this epoch");
         return Ok(false);
     }
-    if block.parent_digest() != parent.digest() {
+    if block.parent_hash() != parent_hash {
         info!(
             "parent digest stored in block must match the digest of the parent \
             argument but doesn't"
         );
-        return Ok(false);
-    }
-    if block.height() != parent.height().saturating_add(1) {
-        info!("block's height must be +1 that of the parent but isn't");
         return Ok(false);
     }
     let block = block.clone().into_inner();

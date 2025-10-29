@@ -1,18 +1,19 @@
 use std::time::Duration;
 
 use alloy_network::TxSignerSync;
-use alloy_primitives::{Address, B256, b256};
+use alloy_primitives::{Address, B256, TxHash};
 use alloy_signer_local::PrivateKeySigner;
 use commonware_macros::test_traced;
 use commonware_p2p::simulated::Link;
 use commonware_runtime::{
-    Clock, Runner as _,
+    Runner as _,
     deterministic::{self, Runner},
 };
-use futures::future::join_all;
+use futures::{StreamExt, future::join_all};
 use reth_ethereum::{
     chainspec::{ChainSpecProvider, EthChainSpec},
-    provider::{StateProviderFactory, TransactionsProvider},
+    primitives::AlloyBlockHeader,
+    provider::{CanonStateNotification, CanonStateSubscriptions},
 };
 use reth_node_core::primitives::transaction::TxHashRef;
 use tempo_node::primitives::{TempoTxEnvelope, TxAA, transaction::Call};
@@ -43,36 +44,45 @@ fn subblocks_are_included() {
             setup_validators(context.clone(), &execution_runtime, setup).await;
         join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-        let tx = build_subblock_transaction(&nodes[0]);
-        nodes[0].subblocks.add_transaction(tx.clone());
+        let mut stream = nodes[0].node.node.provider.canonical_state_stream();
 
-        context.sleep(Duration::from_secs(2)).await;
+        let mut expected_transactions: Vec<TxHash> = Vec::new();
+        while let Some(update) = stream.next().await {
+            let CanonStateNotification::Commit { new } = update else {
+                unreachable!("unexpected reorg");
+            };
 
-        let tx = nodes[0]
-            .node
-            .node
-            .provider
-            .transaction_by_hash(*tx.tx_hash())
-            .unwrap()
-            .unwrap();
+            // Assert that all expected transactions are included in the block.
+            for tx in expected_transactions.drain(..) {
+                if !new.blocks().iter().any(|(_, block)| {
+                    block
+                        .sealed_block()
+                        .body()
+                        .transactions
+                        .iter()
+                        .any(|t| *t.tx_hash() == *tx)
+                }) {
+                    panic!("transaction {} was not included", tx);
+                }
+            }
+
+            // Exit once we reach height 20.
+            if new.tip().number() == 20 {
+                break;
+            }
+
+            // Send subblock transactions to all nodes.
+            for node in nodes.iter() {
+                for _ in 0..5 {
+                    expected_transactions.push(submit_subblock_tx(node));
+                }
+            }
+        }
     });
 }
 
-fn build_subblock_transaction(node: &ValidatorNode) -> TempoTxEnvelope {
-    let wallet = PrivateKeySigner::from_bytes(&b256!(
-        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-    ))
-    .unwrap();
-
-    let nonce = node
-        .node
-        .node
-        .provider
-        .latest()
-        .unwrap()
-        .account_nonce(&wallet.address())
-        .unwrap()
-        .unwrap_or_default();
+fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
+    let wallet = PrivateKeySigner::random();
 
     let mut tx = TxAA {
         chain_id: node.node.node.provider.chain_spec().chain_id(),
@@ -82,11 +92,14 @@ fn build_subblock_transaction(node: &ValidatorNode) -> TempoTxEnvelope {
             input: Default::default(),
             value: Default::default(),
         }],
-        nonce,
         gas_limit: 100000,
         ..Default::default()
     };
     let signature = wallet.sign_transaction_sync(&mut tx).unwrap();
 
-    TempoTxEnvelope::AA(tx.into_signed(signature.into()))
+    let tx = TempoTxEnvelope::AA(tx.into_signed(signature.into()));
+    let tx_hash = *tx.tx_hash();
+    node.subblocks.add_transaction(tx.clone());
+
+    tx_hash
 }
