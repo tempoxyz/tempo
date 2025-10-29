@@ -6,7 +6,7 @@ pub use tempo_contracts::precompiles::{
 };
 
 use crate::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
     error::TempoPrecompileError,
     storage::{
         PrecompileStorageProvider,
@@ -14,6 +14,7 @@ use crate::{
     },
     tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
+    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::{ITIP403Registry, TIP403Registry},
     tip4217_registry::{ITIP4217Registry, TIP4217Registry},
 };
@@ -707,7 +708,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::invalid_amount().into());
         }
 
-        // TODO: create helper function for this
         let from_balance = self.get_balance(msg_sender)?;
         let new_from_balance = from_balance
             .checked_sub(call.amount)
@@ -715,7 +715,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .ok_or(TIP20Error::insufficient_balance())?;
         self.set_balance(msg_sender, new_from_balance)?;
 
-        // TODO: create helper function for this
         let contract_address = self.token_address;
         let to_balance = self.get_balance(&contract_address)?;
         let new_to_balance = to_balance
@@ -772,6 +771,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
             let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
             self.set_scheduled_rate_decrease_at(end_time, current_decrease + rate)?;
+
+            // Add stream to registry
+            let mut registry = TIP20RewardsRegistry::new(TIP20_REWARDS_REGISTRY_ADDRESS, self.storage);
+            registry.add_stream(&self.token_address, end_time)?;
 
             // Emit reward scheduled event for streaming reward
             self.storage.emit_event(

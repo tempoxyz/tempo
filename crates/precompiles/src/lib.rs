@@ -80,7 +80,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id))
         } else if *address == TIP20_REWARDS_REGISTRY_ADDRESS {
-            Some(TIPRewardsRegistryPrecompile::create(chain_id))
+            Some(TIP20RewardsRegistryPrecompile::create(chain_id))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403RegistryPrecompile::create(chain_id))
         } else if *address == TIP4217_REGISTRY_ADDRESS {
