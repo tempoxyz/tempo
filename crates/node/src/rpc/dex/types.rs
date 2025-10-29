@@ -86,10 +86,8 @@ pub struct OrdersResponse {
 pub struct Order {
     /// Original order amount
     pub amount: B256,
-    /// Address of the base token
-    pub base_token: Address,
     /// Target tick to flip to when order is filled
-    pub flip_tick: u64,
+    pub flip_tick: i16,
     /// Order side: true for buy (bid), false for sell (ask)
     pub is_bid: bool,
     /// Whether this is a flip order that auto-flips when filled
@@ -97,17 +95,23 @@ pub struct Order {
     /// Address of order maker
     pub maker: Address,
     /// Next order ID in FIFO queue
-    pub next: B256,
+    #[serde(with = "alloy_serde::quantity")]
+    pub next: u128,
     /// Unique order ID
-    pub order_id: B256,
+    #[serde(with = "alloy_serde::quantity")]
+    pub order_id: u128,
+    /// Previous order ID in FIFO queue
+    #[serde(with = "alloy_serde::quantity")]
+    pub prev: u128,
+    /// Remaining amount to fill
+    #[serde(with = "alloy_serde::quantity")]
+    pub remaining: u128,
+    /// Price tick
+    pub tick: i16,
+    /// Address of the base token
+    pub base_token: Address,
     /// Address of the quote token
     pub quote_token: Address,
-    /// Previous order ID in FIFO queue
-    pub prev: B256,
-    /// Remaining amount to fill
-    pub remaining: B256,
-    /// Price tick
-    pub tick: u64,
 }
 
 #[cfg(test)]

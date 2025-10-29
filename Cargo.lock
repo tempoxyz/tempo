@@ -11626,6 +11626,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
+ "alloy-serde",
  "async-trait",
  "base64 0.22.1",
  "clap",
