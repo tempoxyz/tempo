@@ -30,10 +30,10 @@ pub mod slots {
     pub const VALIDATOR_KEY_OFFSET: U256 = uint!(0_U256);
     /// Packed: active (bool, lowest byte) + index (u64, next 8 bytes)
     pub const VALIDATOR_ACTIVE_INDEX_OFFSET: U256 = uint!(1_U256);
-    /// Inbound address field offset (string)
+    /// Inbound address field offset (string, uses 9 slots: 2-10)
     pub const VALIDATOR_INBOUND_ADDRESS_OFFSET: U256 = uint!(2_U256);
-    /// Outbound address field offset (string)
-    pub const VALIDATOR_OUTBOUND_ADDRESS_OFFSET: U256 = uint!(3_U256);
+    /// Outbound address field offset (string, uses 9 slots: 11-19)
+    pub const VALIDATOR_OUTBOUND_ADDRESS_OFFSET: U256 = uint!(11_U256);
 
     pub fn validator_at_index_slot(index: u64) -> U256 {
         mapping_slot(index.to_be_bytes(), VALIDATORS_ARRAY)
@@ -316,18 +316,10 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             )?;
 
             // Clear old validator's inboundAddress
-            self.storage.sstore(
-                self.precompile_address,
-                old_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET,
-                U256::ZERO,
-            )?;
+            self.delete_string(old_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET)?;
 
             // Clear old validator's outboundAddress
-            self.storage.sstore(
-                self.precompile_address,
-                old_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
-                U256::ZERO,
-            )?;
+            self.delete_string(old_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET)?;
 
             // Update the validators array to point to new address
             let array_slot = slots::validator_at_index_slot(index);
@@ -359,37 +351,29 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             )?;
         }
 
-        if self.read_string(new_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET)?
-            != call.inboundAddress
-        {
-            ensure_is_host_port(&call.inboundAddress).map_err(|err| {
-                ValidatorConfigError::not_host_port(
-                    "inboundAddress".to_string(),
-                    call.inboundAddress.clone(),
-                    format!("{err:?}"),
-                )
-            })?;
-            self.write_string(
-                new_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET,
-                call.inboundAddress,
-            )?;
-        }
+        ensure_is_host_port(&call.inboundAddress).map_err(|err| {
+            ValidatorConfigError::not_host_port(
+                "inboundAddress".to_string(),
+                call.inboundAddress.clone(),
+                format!("{err:?}"),
+            )
+        })?;
+        self.update_string(
+            new_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET,
+            call.inboundAddress,
+        )?;
 
-        if self.read_string(new_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET)?
-            != call.outboundAddress
-        {
-            ensure_is_host_port(&call.outboundAddress).map_err(|err| {
-                ValidatorConfigError::not_host_port(
-                    "outboundAddress".to_string(),
-                    call.outboundAddress.clone(),
-                    format!("{err:?}"),
-                )
-            })?;
-            self.write_string(
-                new_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
-                call.outboundAddress,
-            )?;
-        }
+        ensure_is_host_port(&call.outboundAddress).map_err(|err| {
+            ValidatorConfigError::not_host_port(
+                "outboundAddress".to_string(),
+                call.outboundAddress.clone(),
+                format!("{err:?}"),
+            )
+        })?;
+        self.update_string(
+            new_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
+            call.outboundAddress,
+        )?;
         Ok(())
     }
 
@@ -426,29 +410,143 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
 
     // Helper methods for string storage
     fn read_string(&mut self, slot: U256) -> Result<String, TempoPrecompileError> {
-        let value = self.storage.sload(self.precompile_address, slot)?;
-        let bytes = value.to_be_bytes::<32>();
-        let len = bytes[31] as usize / 2;
-        if len > 31 {
-            return Err(ValidatorConfigError::unauthorized())?;
+        let first_value = self.storage.sload(self.precompile_address, slot)?;
+        let first_bytes = first_value.to_be_bytes::<32>();
+        let len = u16::from_be_bytes([first_bytes[0], first_bytes[1]]) as usize;
+
+        if len == 0 {
+            return Ok(String::new());
         }
-        Ok(String::from_utf8_lossy(&bytes[..len]).to_string())
+
+        let mut all_bytes = Vec::with_capacity(len);
+        let first_chunk_len = len.min(30);
+        all_bytes.extend_from_slice(&first_bytes[2..2 + first_chunk_len]);
+
+        let mut remaining = len - first_chunk_len;
+        let mut slot_offset = 1;
+        while remaining > 0 {
+            let slot_value = self
+                .storage
+                .sload(self.precompile_address, slot + U256::from(slot_offset))?;
+            let slot_bytes = slot_value.to_be_bytes::<32>();
+            let to_read = remaining.min(32);
+            all_bytes.extend_from_slice(&slot_bytes[..to_read]);
+            remaining -= to_read;
+            slot_offset += 1;
+        }
+
+        Ok(String::from_utf8_lossy(&all_bytes).to_string())
     }
 
     fn write_string(&mut self, slot: U256, value: String) -> Result<(), TempoPrecompileError> {
         let bytes = value.as_bytes();
-        if bytes.len() > 31 {
-            return Err(ValidatorConfigError::unauthorized())?;
-        }
-        let mut storage_bytes = [0u8; 32];
-        storage_bytes[..bytes.len()].copy_from_slice(bytes);
-        storage_bytes[31] = (bytes.len() * 2) as u8;
+        let len = bytes.len();
 
+        let mut first_slot = [0u8; 32];
+        let len_bytes = (len as u16).to_be_bytes();
+        first_slot[0] = len_bytes[0];
+        first_slot[1] = len_bytes[1];
+        let first_chunk_len = len.min(30);
+        first_slot[2..2 + first_chunk_len].copy_from_slice(&bytes[..first_chunk_len]);
         self.storage.sstore(
             self.precompile_address,
             slot,
-            U256::from_be_bytes(storage_bytes),
+            U256::from_be_bytes(first_slot),
         )?;
+
+        if len > 30 {
+            for (i, chunk) in bytes[30..].chunks(32).enumerate() {
+                let mut slot_bytes = [0u8; 32];
+                slot_bytes[..chunk.len()].copy_from_slice(chunk);
+                self.storage.sstore(
+                    self.precompile_address,
+                    slot + U256::from(i + 1),
+                    U256::from_be_bytes(slot_bytes),
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn update_string(&mut self, slot: U256, value: String) -> Result<(), TempoPrecompileError> {
+        let bytes = value.as_bytes();
+        let new_len = bytes.len();
+
+        // Read old length
+        let old_first_value = self.storage.sload(self.precompile_address, slot)?;
+        let old_first_bytes = old_first_value.to_be_bytes::<32>();
+        let old_len = u16::from_be_bytes([old_first_bytes[0], old_first_bytes[1]]) as usize;
+
+        // Prepare new first slot
+        let mut slot_to_store = [0u8; 32];
+        let len_bytes = (new_len as u16).to_be_bytes();
+        slot_to_store[0] = len_bytes[0];
+        slot_to_store[1] = len_bytes[1];
+        let first_chunk_len = new_len.min(30);
+        slot_to_store[2..2 + first_chunk_len].copy_from_slice(&bytes[..first_chunk_len]);
+
+        // Update first slot if changed
+        if old_first_bytes != slot_to_store {
+            self.storage.sstore(
+                self.precompile_address,
+                slot,
+                U256::from_be_bytes(slot_to_store),
+            )?;
+        }
+
+        // Update additional slots if needed
+        if new_len > 30 {
+            for (i, chunk) in bytes[30..].chunks(32).enumerate() {
+                let mut new_slot_bytes = [0u8; 32];
+                new_slot_bytes[..chunk.len()].copy_from_slice(chunk);
+
+                // Only write if different from current value
+                let current_value = self
+                    .storage
+                    .sload(self.precompile_address, slot + U256::from(i + 1))?;
+                if current_value.to_be_bytes::<32>() != new_slot_bytes {
+                    self.storage.sstore(
+                        self.precompile_address,
+                        slot + U256::from(i + 1),
+                        U256::from_be_bytes(new_slot_bytes),
+                    )?;
+                }
+            }
+        }
+
+        // Clear any extra slots if new string is shorter
+        if old_len > new_len {
+            // ceil division but take into account the 2-byte length header
+            let old_total_slots = (old_len + 2).div_ceil(32);
+            let new_total_slots = (new_len + 2).div_ceil(32);
+            for i in new_total_slots..old_total_slots {
+                self.storage
+                    .sstore(self.precompile_address, slot + U256::from(i), U256::ZERO)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn delete_string(&mut self, slot: U256) -> Result<(), TempoPrecompileError> {
+        let first_value = self.storage.sload(self.precompile_address, slot)?;
+        let first_bytes = first_value.to_be_bytes::<32>();
+        let len = u16::from_be_bytes([first_bytes[0], first_bytes[1]]) as usize;
+
+        self.storage
+            .sstore(self.precompile_address, slot, U256::ZERO)?;
+
+        if len > 30 {
+            let num_slots = (len - 30).div_ceil(32);
+            for i in 0..num_slots {
+                self.storage.sstore(
+                    self.precompile_address,
+                    slot + U256::from(i + 1),
+                    U256::ZERO,
+                )?;
+            }
+        }
 
         Ok(())
     }
@@ -596,18 +694,21 @@ mod tests {
         let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
         validator_config.initialize(owner).unwrap();
 
-        // Add first validator
+        // Add first validator with long address (100+ bytes)
         let validator1 = Address::from([0x11; 20]);
         let key1 = FixedBytes::<32>::from([0x21; 32]);
+        let long_host1 = "a".repeat(100);
+        let long_inbound1 = format!("{long_host1}:8000");
+        let long_outbound1 = format!("{long_host1}:9000");
         validator_config
             .add_validator(
                 &owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
                     key: key1,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    inboundAddress: long_inbound1.clone(),
                     active: true,
-                    outboundAddress: "192.168.1.1:9000".to_string(),
+                    outboundAddress: long_outbound1,
                 },
             )
             .expect("Should add validator1");
@@ -705,7 +806,7 @@ mod tests {
         // Verify each validator
         assert_eq!(validators[0].validatorAddress, validator1);
         assert_eq!(validators[0].key, key1);
-        assert_eq!(validators[0].inboundAddress, "192.168.1.1:8000");
+        assert_eq!(validators[0].inboundAddress, long_inbound1);
         assert!(validators[0].active);
 
         assert_eq!(validators[1].validatorAddress, validator2);
@@ -728,16 +829,18 @@ mod tests {
         assert_eq!(validators[4].inboundAddress, "192.168.1.5:8000");
         assert!(validators[4].active);
 
-        // Validator1 updates IP and key (keeps same address)
+        // Validator1 updates from long to short address (tests update_string slot clearing)
         let key1_new = FixedBytes::<32>::from([0x31; 32]);
+        let short_inbound1 = "10.0.0.1:8000".to_string();
+        let short_outbound1 = "10.0.0.1:9000".to_string();
         validator_config
             .update_validator(
                 &validator1,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator1,
                     key: key1_new,
-                    inboundAddress: "10.0.0.1:8000".to_string(),
-                    outboundAddress: "10.0.0.1:9000".to_string(),
+                    inboundAddress: short_inbound1.clone(),
+                    outboundAddress: short_outbound1,
                 },
             )
             .expect("Should update validator1");
@@ -756,16 +859,19 @@ mod tests {
             )
             .expect("Should rotate validator2 address");
 
-        // Validator3 rotates to new address and updates IP, keeps key
+        // Validator3 rotates to new address with long host (tests delete_string on old slot)
         let validator3_new = Address::from([0x23; 20]);
+        let long_host3 = "b".repeat(150);
+        let long_inbound3 = format!("{long_host3}:8000");
+        let long_outbound3 = format!("{long_host3}:9000");
         validator_config
             .update_validator(
                 &validator3,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator3_new,
                     key: key3,
-                    inboundAddress: "10.0.0.3:8000".to_string(),
-                    outboundAddress: "10.0.0.3:9000".to_string(),
+                    inboundAddress: long_inbound3.clone(),
+                    outboundAddress: long_outbound3,
                 },
             )
             .expect("Should rotate validator3 address and update IP");
@@ -781,12 +887,12 @@ mod tests {
         // Sort by validator address
         validators.sort_by_key(|v| v.validatorAddress);
 
-        // Verify validator1 - updated IP and key
+        // Verify validator1 - updated from long to short address
         assert_eq!(validators[0].validatorAddress, validator1);
         assert_eq!(validators[0].key, key1_new, "Key should be updated");
         assert_eq!(
-            validators[0].inboundAddress, "10.0.0.1:8000",
-            "IP should be updated"
+            validators[0].inboundAddress, short_inbound1,
+            "Address should be updated to short"
         );
         assert!(validators[0].active);
 
@@ -811,12 +917,12 @@ mod tests {
         );
         assert!(validators[3].active);
 
-        // Verify validator3_new - rotated address and updated IP, kept key
+        // Verify validator3_new - rotated address with long host, kept key
         assert_eq!(validators[4].validatorAddress, validator3_new);
         assert_eq!(validators[4].key, key3, "Key should be same");
         assert_eq!(
-            validators[4].inboundAddress, "10.0.0.3:8000",
-            "IP should be updated"
+            validators[4].inboundAddress, long_inbound3,
+            "Address should be updated to long"
         );
         assert!(!validators[4].active);
     }
@@ -866,6 +972,249 @@ mod tests {
             "Should return ValidatorNotFound error"
         );
     }
+
+    #[test]
+    fn test_max_length_dns_hostname() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::from([0x01; 20]);
+        let validator = Address::from([0x11; 20]);
+
+        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        validator_config.initialize(owner).unwrap();
+
+        // Create a 253-character hostname (max valid DNS length)
+        // Using valid DNS characters: a-z, 0-9, hyphens, dots
+        let max_host = "a".repeat(253);
+        let inbound_address = format!("{max_host}:8000");
+        let outbound_address = format!("{max_host}:9000");
+
+        // Add validator with max-length hostname - should succeed
+        let key = FixedBytes::<32>::from([0x21; 32]);
+        let result = validator_config.add_validator(
+            &owner,
+            IValidatorConfig::addValidatorCall {
+                newValidatorAddress: validator,
+                key,
+                inboundAddress: inbound_address.clone(),
+                active: true,
+                outboundAddress: outbound_address.clone(),
+            },
+        );
+        assert!(result.is_ok(), "Should accept 253-character hostname");
+
+        // Read back and verify
+        let validators = validator_config
+            .get_validators(IValidatorConfig::getValidatorsCall {})
+            .expect("Should get validators");
+        assert_eq!(validators.len(), 1, "Should have 1 validator");
+        assert_eq!(validators[0].inboundAddress, inbound_address);
+        assert_eq!(validators[0].outboundAddress, outbound_address);
+    }
+
+    #[test]
+    fn test_too_long_dns_hostname() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::from([0x01; 20]);
+        let validator = Address::from([0x11; 20]);
+
+        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        validator_config.initialize(owner).unwrap();
+
+        // Create a 254-character hostname (exceeds max DNS length)
+        let too_long_host = "a".repeat(254);
+        let inbound_address = format!("{too_long_host}:8000");
+        let outbound_address = format!("{too_long_host}:9000");
+
+        // Try to add validator with too-long hostname - should fail
+        let key = FixedBytes::<32>::from([0x21; 32]);
+        let result = validator_config.add_validator(
+            &owner,
+            IValidatorConfig::addValidatorCall {
+                newValidatorAddress: validator,
+                key,
+                inboundAddress: inbound_address,
+                active: true,
+                outboundAddress: outbound_address,
+            },
+        );
+        assert!(
+            result.is_err(),
+            "Should reject 254-character hostname (exceeds DNS limit)"
+        );
+    }
+
+    #[test]
+    fn test_validator_rotation_clears_all_slots() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::from([0x01; 20]);
+        let validator1 = Address::from([0x11; 20]);
+        let validator2 = Address::from([0x22; 20]);
+
+        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        validator_config.initialize(owner).unwrap();
+
+        // Add validator with long addresses that use multiple slots
+        let long_host = "a".repeat(200);
+        let long_inbound = format!("{long_host}:8000");
+        let long_outbound = format!("{long_host}:9000");
+        let key = FixedBytes::<32>::from([0x21; 32]);
+
+        validator_config
+            .add_validator(
+                &owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator1,
+                    key,
+                    inboundAddress: long_inbound,
+                    active: true,
+                    outboundAddress: long_outbound,
+                },
+            )
+            .expect("Should add validator with long addresses");
+
+        // Rotate to new address with shorter addresses
+        validator_config
+            .update_validator(
+                &validator1,
+                IValidatorConfig::updateValidatorCall {
+                    newValidatorAddress: validator2,
+                    key,
+                    inboundAddress: "10.0.0.1:8000".to_string(),
+                    outboundAddress: "10.0.0.1:9000".to_string(),
+                },
+            )
+            .expect("Should rotate validator");
+
+        // Verify old slots are cleared by checking storage directly
+        let old_slot = slots::validator_base_slot(&validator1);
+        let old_inbound_slot = old_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET;
+
+        // Check that first slot is cleared
+        let cleared_value = validator_config
+            .storage
+            .sload(validator_config.precompile_address, old_inbound_slot)
+            .unwrap();
+        assert_eq!(
+            cleared_value,
+            U256::ZERO,
+            "First slot of old inbound address should be cleared"
+        );
+
+        // Check that additional slots are also cleared
+        for i in 1..9 {
+            let slot_value = validator_config
+                .storage
+                .sload(
+                    validator_config.precompile_address,
+                    old_inbound_slot + U256::from(i),
+                )
+                .unwrap();
+            assert_eq!(
+                slot_value,
+                U256::ZERO,
+                "Additional slot {i} of old inbound address should be cleared"
+            );
+        }
+    }
+
+    #[test]
+    fn test_update_string_various_lengths() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::from([0x01; 20]);
+        let validator = Address::from([0x11; 20]);
+
+        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        validator_config.initialize(owner).unwrap();
+
+        // Start with a long address
+        let long_host = "a".repeat(200);
+        let initial_inbound = format!("{long_host}:8000");
+        let key = FixedBytes::<32>::from([0x21; 32]);
+
+        validator_config
+            .add_validator(
+                &owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator,
+                    key,
+                    inboundAddress: initial_inbound.clone(),
+                    active: true,
+                    outboundAddress: "10.0.0.1:9000".to_string(),
+                },
+            )
+            .expect("Should add validator");
+
+        // Update to same value - should still work
+        validator_config
+            .update_validator(
+                &validator,
+                IValidatorConfig::updateValidatorCall {
+                    newValidatorAddress: validator,
+                    key,
+                    inboundAddress: initial_inbound.clone(),
+                    outboundAddress: "10.0.0.1:9000".to_string(),
+                },
+            )
+            .expect("Should update with same address");
+
+        let validators = validator_config
+            .get_validators(IValidatorConfig::getValidatorsCall {})
+            .unwrap();
+        assert_eq!(validators[0].inboundAddress, initial_inbound);
+
+        // Update to shorter address - should clear extra slots
+        let short_inbound = "192.168.1.1:8000".to_string();
+        validator_config
+            .update_validator(
+                &validator,
+                IValidatorConfig::updateValidatorCall {
+                    newValidatorAddress: validator,
+                    key,
+                    inboundAddress: short_inbound.clone(),
+                    outboundAddress: "10.0.0.1:9000".to_string(),
+                },
+            )
+            .expect("Should update to shorter address");
+
+        let validators = validator_config
+            .get_validators(IValidatorConfig::getValidatorsCall {})
+            .unwrap();
+        assert_eq!(validators[0].inboundAddress, short_inbound);
+
+        // Verify extra slots are cleared
+        let slot = slots::validator_base_slot(&validator);
+        let inbound_slot = slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET;
+        for i in 1..9 {
+            let slot_value = validator_config
+                .storage
+                .sload(
+                    validator_config.precompile_address,
+                    inbound_slot + U256::from(i),
+                )
+                .unwrap();
+            assert_eq!(slot_value, U256::ZERO, "Extra slot {i} should be cleared");
+        }
+
+        // Update to medium-length address
+        let medium_host = "b".repeat(100);
+        let medium_inbound = format!("{medium_host}:8000");
+        validator_config
+            .update_validator(
+                &validator,
+                IValidatorConfig::updateValidatorCall {
+                    newValidatorAddress: validator,
+                    key,
+                    inboundAddress: medium_inbound.clone(),
+                    outboundAddress: "10.0.0.1:9000".to_string(),
+                },
+            )
+            .expect("Should update to medium-length address");
+
+        let validators = validator_config
+            .get_validators(IValidatorConfig::getValidatorsCall {})
+            .unwrap();
+        assert_eq!(validators[0].inboundAddress, medium_inbound);
+    }
 }
 
 fn ensure_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
@@ -885,6 +1234,8 @@ enum HostWithPortParseError {
     NoPort,
     #[error("input had too many segments separated by `:`; only <hostname>:<port> is allowed")]
     TooManySegments,
+    #[error("host part of input was too long (max 253 bytes)")]
+    HostTooLong,
 }
 
 /// A string guaranteed to be `<host>:<port>`.
@@ -912,6 +1263,9 @@ impl FromStr for HostWithPort {
         let maybe_port = split.next().ok_or(Self::Err::NoPort)?;
         if split.next().is_some() {
             return Err(Self::Err::TooManySegments);
+        }
+        if maybe_host.len() > 253 {
+            return Err(Self::Err::HostTooLong);
         }
 
         let host = url::Host::parse(maybe_host)?.to_string();
