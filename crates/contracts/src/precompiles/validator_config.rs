@@ -13,7 +13,7 @@ sol! {
     interface IValidatorConfig {
         /// Validator information
         struct Validator {
-            bytes32 key;
+            bytes32 publicKey;
             bool active;
             uint64 index;
             address validatorAddress;
@@ -27,17 +27,17 @@ sol! {
 
         /// Add a new validator (owner only)
         /// @param newValidatorAddress The address of the new validator
-        /// @param key The validator's communication public key
+        /// @param publicKey The validator's communication public publicKey
         /// @param inboundAddress The validator's outbound <hostname>:<port>.
         /// @param outboundAddress The validator's outbound <hostname>:<port>.
-        function addValidator(address newValidatorAddress, bytes32 key, bool active, string calldata inboundAddress, string calldata outboundAddress) external;
+        function addValidator(address newValidatorAddress, bytes32 publicKey, bool active, string calldata inboundAddress, string calldata outboundAddress) external;
 
         /// Update validator information (only validator)
         /// @param newValidatorAddress The new address for this validator
-        /// @param key The validator's new communication public key
+        /// @param publicKey The validator's new communication public publicKey
         /// @param inboundAddress The validator's outbound <hostname>:<port>.
         /// @param outboundAddress The validator's outbound <hostname>:<port>.
-        function updateValidator(address newValidatorAddress, bytes32 key, string calldata inboundAddress, string calldata outboundAddress) external;
+        function updateValidator(address newValidatorAddress, bytes32 publicKey, string calldata inboundAddress, string calldata outboundAddress) external;
 
         /// Change validator active status (owner only)
         /// @param validator The validator address

@@ -129,10 +129,10 @@ mod tests {
 
         // Add validator via dispatch
         let validator_addr = Address::from([1u8; 20]);
-        let key = FixedBytes::<32>::from([0x42; 32]);
+        let public_key = FixedBytes::<32>::from([0x42; 32]);
         let add_call = IValidatorConfig::addValidatorCall {
             newValidatorAddress: validator_addr,
-            key,
+            publicKey: public_key,
             active: true,
             inboundAddress: "192.168.1.1:8000".to_string(),
             outboundAddress: "192.168.1.1:9000".to_string(),
@@ -149,7 +149,7 @@ mod tests {
         let validators = validator_config.get_validators(get_call).unwrap();
         assert_eq!(validators.len(), 1);
         assert_eq!(validators[0].validatorAddress, validator_addr);
-        assert_eq!(validators[0].key, key);
+        assert_eq!(validators[0].publicKey, public_key);
         assert_eq!(validators[0].inboundAddress, "192.168.1.1:8000");
         assert_eq!(validators[0].outboundAddress, "192.168.1.1:9000");
         assert!(validators[0].active);
@@ -168,10 +168,10 @@ mod tests {
         // Try to add validator as non-owner
         let non_owner = Address::from([1u8; 20]);
         let validator_addr = Address::from([2u8; 20]);
-        let key = FixedBytes::<32>::from([0x42; 32]);
+        let public_key = FixedBytes::<32>::from([0x42; 32]);
         let add_call = IValidatorConfig::addValidatorCall {
             newValidatorAddress: validator_addr,
-            key,
+            publicKey: public_key,
             active: true,
             inboundAddress: "192.168.1.1".to_string(),
             outboundAddress: "192.168.1.1".to_string(),

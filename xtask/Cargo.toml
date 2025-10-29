@@ -41,4 +41,3 @@ alloy = { workspace = true, features = [
 ] }
 rayon = "1.10"
 simple-tqdm = { version = "0.2.0", features = ["rayon"] }
-url = "2.5.7"

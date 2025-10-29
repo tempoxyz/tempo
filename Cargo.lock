@@ -11890,7 +11890,6 @@ dependencies = [
  "tempo-precompiles",
  "tokio",
  "toml",
- "url",
 ]
 
 [[package]]
