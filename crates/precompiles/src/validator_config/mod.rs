@@ -1,6 +1,10 @@
 pub mod dispatch;
 
-use std::{fmt::Display, str::FromStr};
+use std::{
+    fmt::Display,
+    net::{AddrParseError, Ipv6Addr},
+    str::FromStr,
+};
 
 pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 
@@ -552,6 +556,30 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum HostWithPortParseError {
+    #[error("failed to parse host segment of input")]
+    HostNotFqdn(#[from] fqdn::Error),
+    #[error("failed to parse port segment of input")]
+    BadPort(#[from] std::num::ParseIntError),
+    #[error("input has no colon and cannot be of the form <host>:<port>")]
+    NoColon,
+}
+
+fn ensure_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
+    // First, attempt to parse it as a socket addr; this covers the ipv4, ipv6 cases.
+    if input.parse::<std::net::SocketAddr>().is_ok() {
+        Ok(())
+    } else {
+        // If that fails, try to parse the parts individually
+        let (maybe_host, maybe_port) = input
+            .rsplit_once(':')
+            .ok_or(HostWithPortParseError::NoColon)?;
+        maybe_host.parse::<fqdn::FQDN>()?;
+        maybe_port.parse::<u16>()?;
+        Ok(())
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,7 +725,7 @@ mod tests {
         // Add first validator with long address (100+ bytes)
         let validator1 = Address::from([0x11; 20]);
         let key1 = FixedBytes::<32>::from([0x21; 32]);
-        let long_host1 = "a".repeat(100);
+        let long_host1 = "a.".repeat(100);
         let long_inbound1 = format!("{long_host1}:8000");
         let long_outbound1 = format!("{long_host1}:9000");
         validator_config
@@ -711,7 +739,7 @@ mod tests {
                     outboundAddress: long_outbound1,
                 },
             )
-            .expect("Should add validator1");
+            .expect("should add validator1");
 
         // Try adding duplicate validator - should fail
         let result = validator_config.add_validator(
@@ -861,7 +889,7 @@ mod tests {
 
         // Validator3 rotates to new address with long host (tests delete_string on old slot)
         let validator3_new = Address::from([0x23; 20]);
-        let long_host3 = "b".repeat(150);
+        let long_host3 = "b.".repeat(125);
         let long_inbound3 = format!("{long_host3}:8000");
         let long_outbound3 = format!("{long_host3}:9000");
         validator_config
@@ -984,23 +1012,27 @@ mod tests {
 
         // Create a 253-character hostname (max valid DNS length)
         // Using valid DNS characters: a-z, 0-9, hyphens, dots
-        let max_host = "a".repeat(253);
-        let inbound_address = format!("{max_host}:8000");
-        let outbound_address = format!("{max_host}:9000");
+        let aaa = "a".repeat(63);
+        let bbb = "b".repeat(63);
+        let ccc = "c".repeat(63);
+        let ddd = "d".repeat(61);
+        let inbound_address = format!("{aaa}.{bbb}.{ccc}.{ddd}:8000");
+        let outbound_address = format!("{aaa}.{bbb}.{ccc}.{ddd}:9000");
 
         // Add validator with max-length hostname - should succeed
         let key = FixedBytes::<32>::from([0x21; 32]);
-        let result = validator_config.add_validator(
-            &owner,
-            IValidatorConfig::addValidatorCall {
-                newValidatorAddress: validator,
-                key,
-                inboundAddress: inbound_address.clone(),
-                active: true,
-                outboundAddress: outbound_address.clone(),
-            },
-        );
-        assert!(result.is_ok(), "Should accept 253-character hostname");
+        validator_config
+            .add_validator(
+                &owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator,
+                    key,
+                    inboundAddress: inbound_address.clone(),
+                    active: true,
+                    outboundAddress: outbound_address.clone(),
+                },
+            )
+            .expect("should accept a 253 character hostname");
 
         // Read back and verify
         let validators = validator_config
@@ -1054,7 +1086,7 @@ mod tests {
         validator_config.initialize(owner).unwrap();
 
         // Add validator with long addresses that use multiple slots
-        let long_host = "a".repeat(200);
+        let long_host = "a.".repeat(100);
         let long_inbound = format!("{long_host}:8000");
         let long_outbound = format!("{long_host}:9000");
         let key = FixedBytes::<32>::from([0x21; 32]);
@@ -1127,7 +1159,7 @@ mod tests {
         validator_config.initialize(owner).unwrap();
 
         // Start with a long address
-        let long_host = "a".repeat(200);
+        let long_host = "a.".repeat(100);
         let initial_inbound = format!("{long_host}:8000");
         let key = FixedBytes::<32>::from([0x21; 32]);
 
@@ -1196,7 +1228,7 @@ mod tests {
         }
 
         // Update to medium-length address
-        let medium_host = "b".repeat(100);
+        let medium_host = "b.".repeat(50);
         let medium_inbound = format!("{medium_host}:8000");
         validator_config
             .update_validator(
@@ -1215,63 +1247,24 @@ mod tests {
             .unwrap();
         assert_eq!(validators[0].inboundAddress, medium_inbound);
     }
-}
 
-fn ensure_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
-    input.parse::<HostWithPort>()?;
-    Ok(())
-}
-
-#[derive(Debug, thiserror::Error)]
-enum HostWithPortParseError {
-    #[error("failed to parse host segment of input")]
-    BadHost(#[from] url::ParseError),
-    #[error("failed to parse port segment of input")]
-    BadPort(#[from] std::num::ParseIntError),
-    #[error("input did not contain a host part")]
-    NoHost,
-    #[error("input did not contain port part")]
-    NoPort,
-    #[error("input had too many segments separated by `:`; only <hostname>:<port> is allowed")]
-    TooManySegments,
-    #[error("host part of input was too long (max 253 bytes)")]
-    HostTooLong,
-}
-
-/// A string guaranteed to be `<host>:<port>`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HostWithPort {
-    host: String,
-    port: u16,
-}
-
-impl Display for HostWithPort {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.host)?;
-        f.write_str(":")?;
-        self.port.fmt(f)
+    #[test]
+    fn ipv4_with_port_is_host_port() {
+        ensure_is_host_port("127.0.0.1:8000").unwrap();
     }
-}
 
-// FIXME(janis): This might be overkill. Maybe a simple regex here is better.
-impl FromStr for HostWithPort {
-    type Err = HostWithPortParseError;
+    #[test]
+    fn ipv6_with_port_is_host_port() {
+        ensure_is_host_port("[::1]:8000").unwrap();
+    }
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut split = s.split(":");
-        let maybe_host = split.next().ok_or(Self::Err::NoHost)?;
-        let maybe_port = split.next().ok_or(Self::Err::NoPort)?;
-        if split.next().is_some() {
-            return Err(Self::Err::TooManySegments);
-        }
-        if maybe_host.len() > 253 {
-            return Err(Self::Err::HostTooLong);
-        }
+    #[test]
+    fn hostname_with_port_is_host_port() {
+        ensure_is_host_port("locahost:8000").unwrap();
+    }
 
-        let host = url::Host::parse(maybe_host)?.to_string();
-        let port = maybe_port.parse::<u16>()?;
-
-        let this = Self { host, port };
-        Ok(this)
+    #[test]
+    fn k8s_style_with_port_is_host_port() {
+        ensure_is_host_port("service.namespace:8000").unwrap();
     }
 }

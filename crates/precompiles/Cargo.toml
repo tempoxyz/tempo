@@ -22,6 +22,11 @@ tracing.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true
 url = "2.5.7"
+# fqdn = { version = "0.4.6", features = ["strict-rfc"] }
+fqdn = { version = "0.4.6", features = [
+  "domain-label-length-limited-to-63",
+  "domain-name-length-limited-to-255",
+] }
 
 [dev-dependencies]
 criterion.workspace = true
