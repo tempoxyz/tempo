@@ -1,8 +1,14 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
-use alloy_primitives::{B256, Bytes, TxHash, U256};
+use alloy_primitives::{B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
+use commonware_codec::DecodeExt;
+use commonware_cryptography::{
+    Verifier,
+    ed25519::{PublicKey, Signature},
+};
+use ed25519_consensus::VerificationKey;
 use reth_evm::{
     Database, Evm, OnStateHook,
     block::{
@@ -14,11 +20,10 @@ use reth_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use reth_revm::{
-    Inspector, State,
-    context::result::{ExecutionResult, Output, ResultAndState, SuccessReason},
-};
+use reth_revm::{Inspector, State, context::result::ResultAndState};
+use std::collections::HashSet;
 use tempo_chainspec::TempoChainSpec;
+use tempo_payload_types::{SubBlock, SubBlockMetadata, SubBlockVersion};
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
     tip_fee_manager::IFeeManager,
@@ -43,6 +48,12 @@ enum BlockSection {
         seen_stablecoin_dex: bool,
         seen_subblocks_signatures: bool,
     },
+}
+
+#[derive(Debug, Clone, Default)]
+struct ValidatorSetInfo {
+    pub participants: Vec<B256>,
+    pub current_validator: B256,
 }
 
 /// Builder for [`TempoReceipt`].
@@ -85,11 +96,13 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     >,
 
     section: BlockSection,
-    seen_subblocks: Vec<(B256, Vec<TxHash>)>,
+    seen_subblocks: Vec<(B256, u64, Vec<TempoTxEnvelope>)>,
+    validator_set: Option<ValidatorSetInfo>,
+    shared_gas_limit: u64,
 
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
-    shared_gas_left: u64,
+    incentive_gas_used: u64,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -103,9 +116,11 @@ where
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         Self {
+            incentive_gas_used: 0,
+            validator_set: None,
             non_payment_gas_left: ctx.general_gas_limit,
-            shared_gas_left: ctx.shared_gas_limit,
             non_shared_gas_left: evm.block().gas_limit - ctx.general_gas_limit,
+            shared_gas_limit: ctx.shared_gas_limit,
             inner: EthBlockExecutor::new(
                 evm,
                 ctx.inner,
@@ -194,7 +209,7 @@ where
             }
 
             let mut buf = &tx.input()[..tx.input().len() - U256::BYTES];
-            if Vec::<Bytes>::decode(&mut buf).is_err() {
+            let Ok(metadata) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
                 return Err(BlockValidationError::msg(
                     "invalid subblocks metadata system transaction",
                 ));
@@ -205,6 +220,8 @@ where
                     "invalid subblocks metadata system transaction",
                 ));
             }
+
+            self.validate_shared_gas(&metadata)?;
 
             seen_subblocks_signatures = true;
         } else {
@@ -218,7 +235,95 @@ where
         })
     }
 
-    fn validate_tx(&self, tx: &TempoTxEnvelope) -> Result<BlockSection, BlockValidationError> {
+    fn validate_shared_gas(
+        &self,
+        metadata: &[SubBlockMetadata],
+    ) -> Result<(), BlockValidationError> {
+        // Skip incentive gas validation if validator set context is not available.
+        let Some(validator_set) = &self.validator_set else {
+            return Ok(());
+        };
+        let gas_per_subblock = self.shared_gas_limit / validator_set.participants.len() as u64;
+
+        let mut incentive_gas = gas_per_subblock;
+        let mut seen = HashSet::new();
+        let mut next_non_empty = 0;
+        for metadata in metadata {
+            if !validator_set.participants.contains(&metadata.validator) {
+                return Err(BlockValidationError::msg("invalid subblock validator"));
+            }
+
+            if metadata.validator == validator_set.current_validator {
+                return Err(BlockValidationError::msg(
+                    "proposer cannot submit subblocks",
+                ));
+            }
+
+            if !seen.insert(metadata.validator) {
+                return Err(BlockValidationError::msg(
+                    "only one subblock per validator is allowed",
+                ));
+            }
+
+            let (gas_used, transactions) = if let Some((validator, gas_used, txs)) =
+                self.seen_subblocks.get(next_non_empty)
+                && validator == &metadata.validator
+            {
+                next_non_empty += 1;
+                (*gas_used, txs.clone())
+            } else {
+                (0, Vec::new())
+            };
+
+            let signature_hash = SubBlock {
+                version: SubBlockVersion::V1,
+                parent_hash: self.inner.ctx.parent_hash,
+                transactions,
+            }
+            .signature_hash();
+
+            let Ok(validator) =
+                VerificationKey::try_from(AsRef::<[u8]>::as_ref(&metadata.validator))
+                    .map(PublicKey::from)
+            else {
+                return Err(BlockValidationError::msg("invalid subblock validator"));
+            };
+
+            let Ok(signature) = Signature::decode(&mut metadata.signature.as_ref()) else {
+                return Err(BlockValidationError::msg("invalid subblock signature"));
+            };
+
+            if !validator.verify(None, signature_hash.as_slice(), &signature) {
+                return Err(BlockValidationError::msg("invalid subblock signature"));
+            }
+
+            if gas_used > gas_per_subblock {
+                return Err(BlockValidationError::msg(
+                    "subblock gas used exceeds gas per subblock",
+                ));
+            }
+
+            incentive_gas += gas_per_subblock - gas_used;
+        }
+
+        if next_non_empty != self.seen_subblocks.len() {
+            return Err(BlockValidationError::msg(
+                "failed to map all non-empty subblocks to metadata",
+            ));
+        }
+
+        if incentive_gas > self.incentive_gas_used {
+            return Err(BlockValidationError::msg("incentive gas limit exceeded"));
+        }
+
+        Ok(())
+    }
+
+    fn validate_tx(
+        &self,
+        tx: &TempoTxEnvelope,
+        gas_used: u64,
+    ) -> Result<BlockSection, BlockValidationError> {
         // Start with processing of transaction kinds that requre specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
@@ -232,7 +337,10 @@ where
                 }),
                 BlockSection::SubBlock { proposer } => {
                     if proposer == tx_proposer
-                        || !self.seen_subblocks.iter().any(|(p, _)| *p == tx_proposer)
+                        || !self
+                            .seen_subblocks
+                            .iter()
+                            .any(|(p, _, _)| *p == tx_proposer)
                     {
                         Ok(BlockSection::SubBlock { proposer })
                     } else {
@@ -245,14 +353,13 @@ where
         } else {
             match self.section {
                 BlockSection::NonShared => {
-                    if tx.gas_limit() > self.non_shared_gas_left {
-                        Err(BlockValidationError::msg(
-                            "transaction gas limit exceeds available non-shared gas",
-                        ))
-                    } else if !tx.is_payment() && tx.gas_limit() > self.non_payment_gas_left {
-                        Err(BlockValidationError::msg(
-                            "transaction gas limit exceeds non-payment gas limit",
-                        ))
+                    if gas_used > self.non_shared_gas_left
+                        || (!tx.is_payment() && gas_used > self.non_payment_gas_left)
+                    {
+                        // Assume that this transaction wants to make use of gas incentive section
+                        //
+                        // This would only be possible if no non-empty subblocks were included.
+                        Ok(BlockSection::GasIncentive)
                     } else {
                         Ok(BlockSection::NonShared)
                     }
@@ -260,19 +367,9 @@ where
                 BlockSection::SubBlock { .. } => {
                     // If we were just processing a subblock, assume that this transaction wants to make
                     // use of gas incentive section, thus concluding subblocks execution.
-                    if tx.gas_limit() <= self.shared_gas_left {
-                        Ok(BlockSection::GasIncentive)
-                    } else {
-                        Err(BlockValidationError::msg("not enough shared gas"))
-                    }
+                    Ok(BlockSection::GasIncentive)
                 }
-                BlockSection::GasIncentive => {
-                    if tx.gas_limit() <= self.shared_gas_left {
-                        Ok(BlockSection::GasIncentive)
-                    } else {
-                        Err(BlockValidationError::msg("not enough incentive gas"))
-                    }
-                }
+                BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
                 BlockSection::System { .. } => {
                     trace!(target: "tempo::block", tx_hash = ?*tx.tx_hash(), "Rejecting: regular transaction after system transaction");
                     Err(BlockValidationError::msg(
@@ -301,47 +398,7 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<ResultAndState, BlockExecutionError> {
-        self.validate_tx(tx.tx())?;
-
-        let err = match self.inner.execute_transaction_without_commit(&tx) {
-            Ok(result) => return Ok(result),
-            Err(err) => err,
-        };
-
-        // Allow subblock transactions to fail with nonce too low if their nonce was valid at the top of the block.
-        if tx.tx().subblock_proposer().is_some()
-            && let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                error, ..
-            }) = &err
-            && error.is_nonce_too_low()
-        {
-            let nonce_before_block = self
-                .evm_mut()
-                .db_mut()
-                .transition_state
-                .as_ref()
-                .ok_or(BlockExecutionError::msg("missing transition state"))?
-                .transitions
-                .get(tx.signer())
-                .and_then(|acc| acc.previous_info.as_ref())
-                .map(|info| info.nonce)
-                .unwrap_or_default();
-
-            if nonce_before_block < tx.tx().nonce() {
-                return Ok(ResultAndState {
-                    result: ExecutionResult::Success {
-                        reason: SuccessReason::Stop,
-                        gas_used: Default::default(),
-                        gas_refunded: Default::default(),
-                        logs: Default::default(),
-                        output: Output::Call(Default::default()),
-                    },
-                    state: Default::default(),
-                });
-            }
-        }
-
-        Err(err)
+        self.inner.execute_transaction_without_commit(tx)
     }
 
     fn commit_transaction(
@@ -349,9 +406,11 @@ where
         output: ResultAndState,
         tx: impl ExecutableTx<Self>,
     ) -> Result<u64, BlockExecutionError> {
+        let next_section = self.validate_tx(tx.tx(), output.result.gas_used())?;
+
         let gas_used = self.inner.commit_transaction(output, &tx)?;
 
-        self.section = self.validate_tx(tx.tx())?;
+        self.section = next_section;
 
         match self.section {
             BlockSection::NonShared => {
@@ -361,25 +420,23 @@ where
                 }
             }
             BlockSection::SubBlock { proposer } => {
-                // subtract transaction gas limit from the shared gas
-                self.shared_gas_left -= tx.tx().gas_limit();
-
                 // record subblock transactions to verify later
                 let last_subblock = if let Some(last) = self
                     .seen_subblocks
                     .last_mut()
-                    .filter(|(p, _)| *p == proposer)
+                    .filter(|(p, _, _)| *p == proposer)
                 {
                     last
                 } else {
-                    self.seen_subblocks.push((proposer, vec![]));
+                    self.seen_subblocks.push((proposer, 0, Vec::new()));
                     self.seen_subblocks.last_mut().unwrap()
                 };
 
-                last_subblock.1.push(*tx.tx().tx_hash());
+                last_subblock.1 += tx.tx().gas_limit();
+                last_subblock.2.push(tx.tx().clone());
             }
             BlockSection::GasIncentive => {
-                self.shared_gas_left -= gas_used;
+                self.incentive_gas_used += gas_used;
             }
             BlockSection::System { .. } => {
                 // no gas spending

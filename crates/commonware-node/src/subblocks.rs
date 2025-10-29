@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::{consensus::Digest, epoch::manager::EpochContext};
 use alloy_consensus::{BlockHeader, Transaction};
 use alloy_primitives::{B256, BlockHash, Bytes, map::HashMap};
@@ -21,7 +19,6 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{Receiver, Recipients, Sender};
 use commonware_runtime::{Handle, Spawner};
-use eyre::OptionExt;
 use futures::future::OptionFuture;
 use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
@@ -29,10 +26,8 @@ use reth_primitives_traits::SignedTransaction;
 use reth_provider::{BlockReader, ProviderError, StateProviderFactory};
 use reth_revm::database::StateProviderDatabase;
 use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR};
-use tempo_payload_types::{
-    RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockMetadata, SubBlockVersion,
-};
-use tempo_primitives::{Block, TempoTxEnvelope};
+use tempo_payload_types::{RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion};
+use tempo_primitives::TempoTxEnvelope;
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, warn};
 
@@ -403,120 +398,6 @@ async fn validate_subblock(
     }
 
     let _ = validated_subblocks_tx.send(subblock);
-
-    Ok(())
-}
-
-/// Validates that block contains a transaction with subblocks metadata that matches the subblocks in the block.
-pub fn validate_block_subblocks(
-    block: &Block,
-    participants: &[PublicKey],
-    proposer: PublicKey,
-) -> eyre::Result<()> {
-    // Decode subblocks metadata from a system transaction.
-    let metadata = block
-        .body
-        .transactions()
-        .rev()
-        .find_map(|tx| {
-            if tx.is_system_tx()
-                && tx.to().is_some_and(|to| to.is_zero())
-                && let Ok(metadata) = Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref())
-            {
-                Some(metadata)
-            } else {
-                None
-            }
-        })
-        .ok_or_eyre("missing subblocks metadata system transaction")?;
-
-    // Validate that metadata contains valid and unique entries.
-    let mut seen = HashSet::new();
-    for metadata in &metadata {
-        if !participants
-            .iter()
-            .any(|p| p.as_ref() == metadata.validator)
-        {
-            return Err(eyre::eyre!(
-                "invalid subblock metadata: validator not in participants"
-            ));
-        }
-
-        if metadata.validator == proposer.as_ref() {
-            return Err(eyre::eyre!("proposer cannot submit subblocks"));
-        }
-
-        if !seen.insert(metadata.validator) {
-            return Err(eyre::eyre!("only one subblock per validator is allowed"));
-        }
-    }
-
-    // Find all non-empty subblocks present in the block.
-    let mut non_empty_subblocks: Vec<(B256, Vec<_>)> = Vec::new();
-    let mut is_last_tx_subblock = false;
-    for tx in &block.body.transactions {
-        if let Some(tx_proposer) = tx.subblock_proposer()
-            && tx_proposer != proposer.as_ref()
-        {
-            if !is_last_tx_subblock && !non_empty_subblocks.is_empty() {
-                return Err(eyre::eyre!("subblocks must be contiguous"));
-            }
-            if let Some(last) = non_empty_subblocks.last_mut()
-                && last.0 == tx_proposer
-            {
-                last.1.push(tx);
-            } else {
-                non_empty_subblocks.push((tx_proposer, vec![tx]));
-            }
-
-            is_last_tx_subblock = true
-        } else {
-            is_last_tx_subblock = false;
-        }
-    }
-
-    // Map each non-empty subblock to its metadata.
-    let mut next_non_empty = 0;
-    for metadata in metadata {
-        let transactions = if let Some((validator, transactions)) =
-            non_empty_subblocks.get(next_non_empty)
-            && validator == &metadata.validator
-        {
-            next_non_empty += 1;
-            transactions.as_slice()
-        } else {
-            // If next non-empty subblock does not match the metadata, assume that we've encountered an empty subblock.
-            &[]
-        };
-
-        let signature_hash = SubBlock {
-            version: SubBlockVersion::V1,
-            parent_hash: block.parent_hash(),
-            transactions: transactions.iter().map(|tx| (*tx).clone()).collect(),
-        }
-        .signature_hash();
-
-        let Some(validator) = participants
-            .iter()
-            .find(|p| p.as_ref() == metadata.validator)
-        else {
-            return Err(eyre::eyre!("invalid subblock validator"));
-        };
-
-        let Ok(signature) = Signature::decode(&mut metadata.signature.as_ref()) else {
-            return Err(eyre::eyre!("invalid signature"));
-        };
-
-        if !validator.verify(None, signature_hash.as_slice(), &signature) {
-            return Err(eyre::eyre!("invalid signature"));
-        }
-    }
-
-    if next_non_empty != non_empty_subblocks.len() {
-        return Err(eyre::eyre!(
-            "failed to map all non-empty subblocks to metadata"
-        ));
-    }
 
     Ok(())
 }
