@@ -7,7 +7,7 @@ use tempo_evm::TempoEvmConfig;
 use tempo_primitives::TempoHeader;
 pub use types::{
     FilterRange, Order, OrdersFilters, OrdersResponse, OrdersSort, OrdersSortOrder,
-    PaginationParams,
+    PaginationParams, Tick,
 };
 
 use alloy_primitives::{Address, Sealable};
@@ -86,7 +86,7 @@ impl<
         let provider = self.eth_api.provider();
         let header = provider
             .header_by_id(at)
-            .map_err(|e| format!("Failed to get header: {}"))?
+            .map_err(|e| format!("Failed to get header: {e}"))?
             .ok_or_else(|| "Header not found".to_string())?;
 
         let block_hash = header.hash_slow();
@@ -123,17 +123,98 @@ impl<
         })
     }
 
+    /// Converts a precompile orderbook to RPC orderbook format
+    fn to_rpc_orderbook(&self, book: &PrecompileOrderbook) -> Orderbook {
+        let book_key = compute_book_key(book.base, book.quote);
+        let spread = if book.best_ask_tick != i16::MAX && book.best_bid_tick != i16::MIN {
+            book.best_ask_tick - book.best_bid_tick
+        } else {
+            0
+        };
+
+        Orderbook {
+            base_token: book.base,
+            quote_token: book.quote,
+            book_key,
+            best_ask_tick: book.best_ask_tick,
+            best_bid_tick: book.best_bid_tick,
+            spread,
+        }
+    }
+
+    /// Checks if a tick value is within the specified range
+    fn tick_in_range(tick: Tick, range: &FilterRange<Tick>) -> bool {
+        let mut in_range = true;
+        if let Some(min) = range.min {
+            in_range = in_range && tick >= min;
+        }
+        if let Some(max) = range.max {
+            in_range = in_range && tick <= max;
+        }
+        in_range
+    }
+
     /// Returns the orderbooks that should be filtered based on the filter params.
     pub fn pick_orderbooks(&self, filter: OrderbooksFilter) -> Vec<PrecompileOrderbook> {
+        // If both base and quote are specified, get just that specific orderbook
         if let (Some(base), Some(quote)) = (filter.base_token, filter.quote_token) {
             return vec![self.get_orderbook(base, quote)];
         }
 
-        for _book in self.get_all_books() {
-            // filter
-        }
+        // Get all orderbooks and filter them
+        let all_books = self.get_all_books();
 
-        todo!()
+        all_books
+            .into_iter()
+            .filter(|book| {
+                // Filter by base token if specified
+                if let Some(base) = filter.base_token {
+                    if book.base != base {
+                        return false;
+                    }
+                }
+
+                // Filter by quote token if specified
+                if let Some(quote) = filter.quote_token {
+                    if book.quote != quote {
+                        return false;
+                    }
+                }
+
+                // Filter by best ask tick range
+                if let Some(ref ask_range) = filter.best_ask_tick {
+                    // Only filter if the book has a valid ask (not i16::MAX)
+                    if book.best_ask_tick != i16::MAX
+                        && !Self::tick_in_range(book.best_ask_tick, ask_range)
+                    {
+                        return false;
+                    }
+                }
+
+                // Filter by best bid tick range
+                if let Some(ref bid_range) = filter.best_bid_tick {
+                    // Only filter if the book has a valid bid (not i16::MIN)
+                    if book.best_bid_tick != i16::MIN
+                        && !Self::tick_in_range(book.best_bid_tick, bid_range)
+                    {
+                        return false;
+                    }
+                }
+
+                // Filter by spread range
+                if let Some(ref spread_range) = filter.spread {
+                    // Calculate spread only if both ticks are valid
+                    if book.best_ask_tick != i16::MAX && book.best_bid_tick != i16::MIN {
+                        let spread = book.best_ask_tick - book.best_bid_tick;
+                        if !Self::tick_in_range(spread, spread_range) {
+                            return false;
+                        }
+                    }
+                }
+
+                true
+            })
+            .collect()
     }
 
     /// Returns all orderbooks.
