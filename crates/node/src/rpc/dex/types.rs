@@ -53,14 +53,10 @@ pub enum OrdersSortOrder {
 pub struct OrdersFilters {
     /// Filter by specific base token
     pub base_token: Option<Address>,
-    /// Created timestamp (seconds) in range
-    pub created_at: Option<FilterRange<u64>>,
     /// Filter by order side (true=buy, false=sell)
     pub is_bid: Option<bool>,
     /// Filter flip orders
     pub is_flip: Option<bool>,
-    /// Last filled timestamp (seconds) in range
-    pub last_filled_at: Option<FilterRange<u64>>,
     /// Filter by maker address
     pub maker: Option<Address>,
     /// Filter by quote token
@@ -92,16 +88,12 @@ pub struct Order {
     pub amount: B256,
     /// Address of the base token
     pub base_token: Address,
-    /// Timestamp when order was created
-    pub created_at: u64,
     /// Target tick to flip to when order is filled
     pub flip_tick: u64,
     /// Order side: true for buy (bid), false for sell (ask)
     pub is_bid: bool,
     /// Whether this is a flip order that auto-flips when filled
     pub is_flip: bool,
-    /// Timestamp of most recent fill (null if never filled)
-    pub last_filled_at: Option<u64>,
     /// Address of order maker
     pub maker: Address,
     /// Next order ID in FIFO queue
