@@ -81,16 +81,14 @@ pub struct FilterRange<T> {
 impl<T: PartialOrd> FilterRange<T> {
     /// Checks if a value is within this range (inclusive)
     pub fn in_range(&self, value: T) -> bool {
-        if let Some(ref min) = self.min {
-            if value < *min {
-                return false;
-            }
+        if self.min.as_ref().is_some_and(|min| &value < min) {
+            return false;
         }
-        if let Some(ref max) = self.max {
-            if value > *max {
-                return false;
-            }
+
+        if self.max.as_ref().is_some_and(|max| &value > max) {
+            return false;
         }
+
         true
     }
 }

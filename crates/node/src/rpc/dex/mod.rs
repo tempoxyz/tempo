@@ -1,3 +1,4 @@
+use alloy::hex;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 pub use books::{Orderbook, OrderbooksFilter, OrderbooksParam, OrderbooksResponse};
 use reth_ethereum::evm::revm::database::StateProviderDatabase;
@@ -18,7 +19,8 @@ use reth_rpc_eth_api::RpcNodeCore;
 
 use tempo_precompiles::{
     stablecoin_exchange::{
-        Orderbook as PrecompileOrderbook, StablecoinExchange, orderbook::compute_book_key,
+        Order as PrecompileOrder, Orderbook as PrecompileOrderbook, PriceLevel, StablecoinExchange,
+        TickBitmap, orderbook::compute_book_key,
     },
     storage::evm::EvmPrecompileStorageProvider,
 };
@@ -26,65 +28,14 @@ use tempo_precompiles::{
 mod books;
 pub mod types;
 
-/// Checks if an orderbook matches the given filters
-fn orderbook_matches_filter(book: &PrecompileOrderbook, filter: &OrderbooksFilter) -> bool {
-    // Check base token filter
-    if let Some(base) = filter.base_token
-        && book.base != base
-    {
-        return false;
-    }
+/// Default limit for pagination
+const DEFAULT_LIMIT: usize = 10;
 
-    // Check quote token filter
-    if let Some(quote) = filter.quote_token
-        && book.quote != quote
-    {
-        return false;
-    }
-
-    // Check best ask tick range
-    if let Some(ref ask_range) = filter.best_ask_tick {
-        // Only filter if the book has a valid ask (not i16::MAX)
-        if book.best_ask_tick != i16::MAX && !ask_range.in_range(book.best_ask_tick) {
-            return false;
-        }
-    }
-
-    // Check best bid tick range
-    if let Some(ref bid_range) = filter.best_bid_tick {
-        // Only filter if the book has a valid bid (not i16::MIN)
-        if book.best_bid_tick != i16::MIN && !bid_range.in_range(book.best_bid_tick) {
-            return false;
-        }
-    }
-
-    // Check spread range
-    if let Some(ref spread_range) = filter.spread {
-        // Calculate spread only if both ticks are valid
-        if book.best_ask_tick != i16::MAX && book.best_bid_tick != i16::MIN {
-            let spread = book.best_ask_tick - book.best_bid_tick;
-            if !spread_range.in_range(spread) {
-                return false;
-            }
-        }
-    }
-
-    true
-}
-
-#[rpc(server, namespace = "dex")]
-pub trait TempoDexApi {
-    #[method(name = "getOrders")]
-    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse>;
-
-    #[method(name = "getOrderbooks")]
-    async fn orderbooks(
-        &self,
-        params: PaginationParams<OrderbooksFilter>,
-    ) -> RpcResult<OrderbooksResponse>;
-}
+/// Maximum limit for pagination
+const MAX_LIMIT: usize = 100;
 
 /// Result of paginated query containing items and optional cursor for next page
+// TODO: remove this, useless
 pub struct PaginatedResult<T> {
     /// The items for this page
     pub items: Vec<T>,
@@ -93,6 +44,7 @@ pub struct PaginatedResult<T> {
 }
 
 /// Trait for items that can provide a cursor value for pagination
+// TODO: remove this, useless
 trait CursorProvider {
     /// Returns the cursor value for this item
     fn cursor_value(&self) -> String;
@@ -102,6 +54,141 @@ impl CursorProvider for PrecompileOrderbook {
     fn cursor_value(&self) -> String {
         // Use book key as cursor for orderbooks
         format!("0x{}", compute_book_key(self.base, self.quote))
+    }
+}
+
+/// An iterator over orders for a specific orderbook
+pub struct BookIterator<'a, 'b> {
+    // TODO: add filter
+    /// Whether or not to iterate over bids or asks.
+    bids: bool,
+    /// Book key
+    book_key: B256,
+    /// Address of the exchange
+    exchange_address: Address,
+    /// Starting order ID
+    starting_order: Option<u128>,
+    /// Current order ID
+    order: Option<u128>,
+    /// Orderbook information
+    orderbook: PrecompileOrderbook,
+    /// Inner precompile storage
+    storage: &'b mut EvmPrecompileStorageProvider<'a>,
+}
+
+impl<'a, 'b> BookIterator<'a, 'b> {
+    /// Create a new book iterator, optionally with the given order ID as the starting order.
+    fn new(
+        storage: &'b mut EvmPrecompileStorageProvider<'a>,
+        orderbook: PrecompileOrderbook,
+        exchange_address: Address,
+        bids: bool,
+        starting_order: Option<u128>,
+    ) -> Self {
+        let book_key = compute_book_key(orderbook.base, orderbook.quote);
+        Self {
+            book_key,
+            exchange_address,
+            order: None,
+            starting_order,
+            orderbook,
+            storage,
+            bids,
+        }
+    }
+}
+
+impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
+    type Item = PrecompileOrder;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // If we have a starting order, use that to initialize
+        if let Some(starting_order) = self.starting_order {
+            let current_order =
+                PrecompileOrder::from_storage(starting_order, self.storage, self.exchange_address)
+                    .expect("TODO: errors");
+        };
+
+        // If there is no current order we get the first one based on the best bid or ask tick
+        let current_id = match &self.order {
+            Some(order) => *order,
+            None => {
+                let tick = if self.bids {
+                    self.orderbook.best_bid_tick
+                } else {
+                    self.orderbook.best_ask_tick
+                };
+
+                let price_level = PriceLevel::from_storage(
+                    self.storage,
+                    self.exchange_address,
+                    self.book_key,
+                    tick,
+                    self.bids,
+                )
+                .expect("TODO: errors");
+
+                // if the best bid level is empty then there are no more bids and we should stop the
+                // iteration
+                // TODO: double check this
+                if price_level.is_empty() {
+                    return None;
+                }
+
+                price_level.head
+            }
+        };
+
+        let current_order =
+            PrecompileOrder::from_storage(current_id, self.storage, self.exchange_address)
+                .expect("TODO: errors");
+
+        // Now get the order after this one.
+        let next_order = if current_order.next() != 0 {
+            current_order.next()
+        } else {
+            let tick = current_order.tick();
+
+            // check that there are other bitmaps after this order
+            let mut bitmap = TickBitmap::new(self.storage, self.exchange_address, self.book_key);
+
+            // find the next tick
+            let (next_tick, more_ticks) = if self.bids {
+                bitmap.next_initialized_bid_tick(tick)
+            } else {
+                bitmap.next_initialized_ask_tick(tick)
+            };
+
+            // if there are no more ticks then we can exit
+            if !more_ticks {
+                return None;
+            }
+
+            // get the price level for this tick so we can get the head of the price level
+            let price_level = PriceLevel::from_storage(
+                self.storage,
+                self.exchange_address,
+                self.book_key,
+                next_tick,
+                self.bids,
+            )
+            .expect("TODO: errors");
+            if price_level.is_empty() {
+                return None;
+            }
+
+            // return the head of the price level as the next order
+            price_level.head
+        };
+
+        // set the current order
+        self.order = Some(next_order);
+
+        // return the order
+        Some(
+            PrecompileOrder::from_storage(next_order, self.storage, self.exchange_address)
+                .expect("TODO: errors"),
+        )
     }
 }
 
@@ -117,6 +204,18 @@ impl<EthApi> TempoDex<EthApi> {
     }
 }
 
+#[rpc(server, namespace = "dex")]
+pub trait TempoDexApi {
+    #[method(name = "getOrders")]
+    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse>;
+
+    #[method(name = "getOrderbooks")]
+    async fn orderbooks(
+        &self,
+        params: PaginationParams<OrderbooksFilter>,
+    ) -> RpcResult<OrderbooksResponse>;
+}
+
 #[async_trait::async_trait]
 impl<
     EthApi: RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
@@ -128,8 +227,52 @@ impl<
     /// The cursor for this method is the **Order ID** (u128).
     /// - When provided in the request, returns orders starting after the given order ID
     /// - Returns `next_cursor` in the response containing the last order ID for the next page
-    async fn orders(&self, _params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse> {
-        Err(internal_rpc_err("unimplemented"))
+    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse> {
+        let response = self
+            .with_storage_at_block(BlockNumberOrTag::Latest.into(), |storage| {
+                let mut exchange = StablecoinExchange::new(storage);
+                // TODO: filtering books by order filter
+                let orderbook_id = exchange.get_book_keys().expect("TODO: errors")[0];
+                let exchange_address = exchange.address();
+
+                let orderbook =
+                    PrecompileOrderbook::from_storage(orderbook_id, storage, exchange_address)
+                        .expect("TODO: errors");
+
+                let book_iterator =
+                    BookIterator::new(storage, orderbook, exchange_address, true, None);
+                // TODO: fix starting point bug in iterator so this works properly.
+                // Right now it will return gaps because if we init the iterator with an order ID as
+                // cursor then it will not return that as the first element.
+                //
+                // ideally we have a non-option current field, and an option init field in the
+                // BookIterator
+                let limit = 10;
+                let orders = book_iterator.into_iter().take(limit).collect::<Vec<_>>();
+
+                // since we ask for limit + 1, if we get limit elements then the iterator has ended and
+                // we have nothing to set as the next cursor
+                let next_cursor = if orders.len() == limit {
+                    // NOTE: the len is greater than one
+                    let last = orders.last().unwrap();
+                    let next_id = last.next();
+                    if next_id == 0 {
+                        None
+                    } else {
+                        Some(format!("0x{next_id:x}"))
+                    }
+                } else {
+                    None
+                };
+
+                let response = OrdersResponse {
+                    next_cursor,
+                    orders: vec![],
+                };
+                Ok(response)
+            })
+            .expect("TODO: proper errors");
+        Ok(response)
     }
 
     /// Returns orderbooks based on pagination parameters.
@@ -170,12 +313,6 @@ impl<
     pub fn provider(&self) -> &EthApi::Provider {
         self.eth_api.provider()
     }
-
-    /// Default limit for pagination
-    const DEFAULT_LIMIT: usize = 10;
-
-    /// Maximum limit for pagination
-    const MAX_LIMIT: usize = 100;
 
     /// Parses a cursor string into a B256 for orderbooks
     fn parse_orderbook_cursor(cursor: &str) -> Result<B256, String> {
@@ -382,4 +519,46 @@ impl<
         })
         .expect("TODO: remove")
     }
+}
+
+/// Checks if an orderbook matches the given filters
+fn orderbook_matches_filter(book: &PrecompileOrderbook, filter: &OrderbooksFilter) -> bool {
+    // Check base token filter
+    if filter.base_token.is_some_and(|base| base != book.base) {
+        return false;
+    }
+
+    // Check quote token filter
+    if filter.quote_token.is_some_and(|quote| quote != book.base) {
+        return false;
+    }
+
+    // Check best ask tick range
+    if let Some(ref ask_range) = filter.best_ask_tick {
+        // Only filter if the book has a valid ask (not i16::MAX)
+        if book.best_ask_tick != i16::MAX && !ask_range.in_range(book.best_ask_tick) {
+            return false;
+        }
+    }
+
+    // Check best bid tick range
+    if let Some(ref bid_range) = filter.best_bid_tick {
+        // Only filter if the book has a valid bid (not i16::MIN)
+        if book.best_bid_tick != i16::MIN && !bid_range.in_range(book.best_bid_tick) {
+            return false;
+        }
+    }
+
+    // Check spread range
+    if let Some(ref spread_range) = filter.spread {
+        // Calculate spread only if both ticks are valid
+        if book.best_ask_tick != i16::MAX && book.best_bid_tick != i16::MIN {
+            let spread = book.best_ask_tick - book.best_bid_tick;
+            if !spread_range.in_range(spread) {
+                return false;
+            }
+        }
+    }
+
+    true
 }
