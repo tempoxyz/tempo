@@ -1,14 +1,14 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
 use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use reth_codecs::Compact;
-use reth_primitives_traits::{InMemorySize, serde_bincode_compat::RlpBincode};
+use reth_primitives_traits::InMemorySize;
 
 /// Tempo block header.
 ///
 /// Encoded as `rlp([inner, general_gas_limit])` meaning that any new
 /// fields added to the inner header will only affect the first list element.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable, Compact)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable)]
+#[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -43,7 +43,8 @@ impl AsRef<Self> for TempoHeader {
     }
 }
 
-impl RlpBincode for TempoHeader {}
+#[cfg(feature = "serde-bincode-compat")]
+impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoHeader {}
 
 impl BlockHeader for TempoHeader {
     fn parent_hash(&self) -> B256 {
@@ -150,17 +151,19 @@ impl Sealable for TempoHeader {
 
 impl reth_primitives_traits::BlockHeader for TempoHeader {}
 
+#[cfg(feature = "reth-codec")]
 impl reth_db_api::table::Compress for TempoHeader {
     type Compressed = Vec<u8>;
 
     fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        let _ = Compact::to_compact(self, buf);
+        let _ = reth_codecs::Compact::to_compact(self, buf);
     }
 }
 
+#[cfg(feature = "reth-codec")]
 impl reth_db_api::table::Decompress for TempoHeader {
     fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        let (obj, _) = Compact::from_compact(value, value.len());
+        let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
         Ok(obj)
     }
 }

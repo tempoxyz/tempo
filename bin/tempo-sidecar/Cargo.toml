@@ -18,6 +18,8 @@ alloy = { workspace = true, default-features = false, features = [
     "reqwest-rustls-tls",
     "signers",
     "signer-local",
+    "signer-mnemonic",
+    "rand",
 ] }
 dashmap = "6.1"
 eyre.workspace = true

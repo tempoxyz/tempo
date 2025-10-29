@@ -13,6 +13,7 @@ use reth_evm::{
         interpreter::interpreter::EthInterpreter,
     },
 };
+use tempo_precompiles::extend_tempo_precompiles;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv, DB>;
@@ -32,13 +33,16 @@ pub struct TempoEvm<DB: Database, I>(
 );
 
 impl<DB: Database, I> TempoEvm<DB, I> {
-    /// Create a new Optimism EVM.
+    /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
+        let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
+        extend_tempo_precompiles(&mut precompiles, ctx.cfg.chain_id);
+
         Self(Evm {
             ctx,
             inspector,
             instruction: instructions::tempo_instructions(),
-            precompiles: PrecompilesMap::from_static(EthPrecompiles::default().precompiles),
+            precompiles,
             frame_stack: FrameStack::new(),
         })
     }
