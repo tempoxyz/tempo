@@ -3,6 +3,7 @@ pub use books::{Orderbook, OrderbooksFilter, OrderbooksParam, OrderbooksResponse
 use reth_ethereum::evm::revm::database::StateProviderDatabase;
 use reth_evm::{EvmInternals, revm::database::CacheDB};
 use reth_provider::{BlockReaderIdExt, StateProviderFactory};
+use std::str::FromStr;
 use tempo_evm::TempoEvmConfig;
 use tempo_primitives::TempoHeader;
 pub use types::{
@@ -25,6 +26,39 @@ use tempo_precompiles::{
 
 mod books;
 pub mod types;
+
+/// Fields that orderbooks can be sorted by
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderbookSortField {
+    BaseToken,
+    QuoteToken,
+    BestAskTick,
+    BestBidTick,
+    Spread,
+    BookKey,
+}
+
+impl Default for OrderbookSortField {
+    fn default() -> Self {
+        Self::BookKey
+    }
+}
+
+impl FromStr for OrderbookSortField {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "baseToken" => Ok(Self::BaseToken),
+            "quoteToken" => Ok(Self::QuoteToken),
+            "bestAskTick" => Ok(Self::BestAskTick),
+            "bestBidTick" => Ok(Self::BestBidTick),
+            "spread" => Ok(Self::Spread),
+            "bookKey" => Ok(Self::BookKey),
+            _ => Err(format!("Unknown sort field: {}", s)),
+        }
+    }
+}
 
 #[rpc(server, namespace = "dex")]
 pub trait TempoDexApi {
@@ -76,6 +110,11 @@ impl<
         self.eth_api.provider()
     }
 
+    /// Default limit for pagination
+    const DEFAULT_LIMIT: usize = 10;
+    /// Maximum limit for pagination
+    const MAX_LIMIT: usize = 100;
+
     /// Creates an `EvmPrecompileStorageProvider` at the given block.
     /// This handles the boilerplate of creating the EVM context and state provider.
     fn with_storage_at_block<F, R>(&self, at: BlockId, f: F) -> Result<R, String>
@@ -121,6 +160,122 @@ impl<
             let mut exchange = StablecoinExchange::new(storage);
             f(&mut exchange)
         })
+    }
+
+    /// Applies limit to a vector of items
+    fn apply_limit<T>(items: Vec<T>, limit: Option<usize>) -> Vec<T> {
+        let limit = limit
+            .map(|l| l.min(Self::MAX_LIMIT))
+            .unwrap_or(Self::DEFAULT_LIMIT);
+        items.into_iter().take(limit).collect()
+    }
+
+    /// Sorts orderbooks based on the sort parameters
+    fn sort_orderbooks(
+        mut books: Vec<PrecompileOrderbook>,
+        sort: Option<OrdersSort>,
+    ) -> Vec<PrecompileOrderbook> {
+        if let Some(sort_params) = sort {
+            let ascending = matches!(sort_params.order, OrdersSortOrder::Asc);
+
+            // Parse the sort field, defaulting to BookKey if unknown
+            let sort_field = OrderbookSortField::from_str(&sort_params.on).unwrap_or_default();
+
+            match sort_field {
+                OrderbookSortField::BaseToken => {
+                    books.sort_by(|a, b| {
+                        let cmp = a.base.cmp(&b.base);
+                        if ascending { cmp } else { cmp.reverse() }
+                    });
+                }
+                OrderbookSortField::QuoteToken => {
+                    books.sort_by(|a, b| {
+                        let cmp = a.quote.cmp(&b.quote);
+                        if ascending { cmp } else { cmp.reverse() }
+                    });
+                }
+                OrderbookSortField::BestAskTick => {
+                    books.sort_by(|a, b| {
+                        // Handle i16::MAX as "no ask" - sort them last
+                        let a_val = if a.best_ask_tick == i16::MAX {
+                            None
+                        } else {
+                            Some(a.best_ask_tick)
+                        };
+                        let b_val = if b.best_ask_tick == i16::MAX {
+                            None
+                        } else {
+                            Some(b.best_ask_tick)
+                        };
+                        let cmp = a_val.cmp(&b_val);
+                        if ascending { cmp } else { cmp.reverse() }
+                    });
+                }
+                OrderbookSortField::BestBidTick => {
+                    books.sort_by(|a, b| {
+                        // Handle i16::MIN as "no bid" - sort them last
+                        let a_val = if a.best_bid_tick == i16::MIN {
+                            None
+                        } else {
+                            Some(a.best_bid_tick)
+                        };
+                        let b_val = if b.best_bid_tick == i16::MIN {
+                            None
+                        } else {
+                            Some(b.best_bid_tick)
+                        };
+                        let cmp = a_val.cmp(&b_val);
+                        if ascending { cmp } else { cmp.reverse() }
+                    });
+                }
+                OrderbookSortField::Spread => {
+                    books.sort_by(|a, b| {
+                        let a_spread = if a.best_ask_tick != i16::MAX && a.best_bid_tick != i16::MIN
+                        {
+                            Some(a.best_ask_tick - a.best_bid_tick)
+                        } else {
+                            None
+                        };
+                        let b_spread = if b.best_ask_tick != i16::MAX && b.best_bid_tick != i16::MIN
+                        {
+                            Some(b.best_ask_tick - b.best_bid_tick)
+                        } else {
+                            None
+                        };
+                        let cmp = a_spread.cmp(&b_spread);
+                        if ascending { cmp } else { cmp.reverse() }
+                    });
+                }
+                OrderbookSortField::BookKey => {
+                    books.sort_by(|a, b| {
+                        let a_key = compute_book_key(a.base, a.quote);
+                        let b_key = compute_book_key(b.base, b.quote);
+                        let cmp = a_key.cmp(&b_key);
+                        if ascending { cmp } else { cmp.reverse() }
+                    });
+                }
+            }
+        }
+        books
+    }
+
+    /// Applies pagination parameters (filtering, sorting, limiting) to orderbooks
+    pub fn apply_pagination_to_orderbooks(
+        &self,
+        params: PaginationParams<OrderbooksFilter>,
+    ) -> Vec<PrecompileOrderbook> {
+        // Get filtered orderbooks
+        let books = if let Some(filter) = params.filters {
+            self.pick_orderbooks(filter)
+        } else {
+            self.get_all_books()
+        };
+
+        // Apply sorting
+        let sorted_books = Self::sort_orderbooks(books, params.sort);
+
+        // Apply limit
+        Self::apply_limit(sorted_books, params.limit)
     }
 
     /// Converts a precompile orderbook to RPC orderbook format
