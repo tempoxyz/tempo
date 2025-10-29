@@ -10,7 +10,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
 
-use crate::utils::setup_test_token;
+use crate::utils::{await_receipts, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
@@ -706,46 +706,23 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .connect_http(http_url.clone());
     let bob_token = ITIP20::new(*token.address(), bob_provider);
 
-    // Mint tokens to participants
+    let mut pending = vec![];
+
     let alice_amount = U256::from(1000e18);
     let bob_amount = U256::from(500e18);
     let reward_amount = U256::from(300e18);
 
-    token
-        .mint(alice, alice_amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    pending.push(token.mint(alice, alice_amount).send().await?);
+    pending.push(token.mint(bob, bob_amount).send().await?);
+    pending.push(token.mint(admin, reward_amount).send().await?);
+    pending.push(alice_token.setRewardRecipient(alice).send().await?);
+    pending.push(bob_token.setRewardRecipient(bob).send().await?);
+    await_receipts(&mut pending).await?;
 
-    token
-        .mint(bob, bob_amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Mint reward tokens to admin
-    token
-        .mint(admin, reward_amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    alice_token
-        .setRewardRecipient(alice)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    bob_token
-        .setRewardRecipient(bob)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    // Check balances before finalizing streams
+    let alice_balance_before_finalize = alice_token.balanceOf(alice).call().await?;
+    let bob_balance_before_finalize = bob_token.balanceOf(bob).call().await?;
+    let admin_balance_before_finalize = token.balanceOf(admin).call().await?;
 
     // Start reward stream
     let start_receipt = token
@@ -755,50 +732,25 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let reward_started_event = start_receipt
+    let _reward_started_event = start_receipt
         .logs()
         .iter()
         .filter_map(|log| ITIP20::RewardScheduled::decode_log(&log.inner).ok())
         .next()
         .expect("RewardStarted event should be emitted");
 
-    // Transfer some tokens to trigger reward distribution calculations
-    alice_token
-        .transfer(bob, U256::from(100e18))
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    // Wait for reward stream duration to elapse
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-    bob_token
-        .transfer(alice, U256::from(50e18))
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    // Transfer some tokens to trigger reward distribution calculations
+    pending.push(alice_token.transfer(bob, U256::from(100e18)).send().await?);
+    pending.push(bob_token.transfer(alice, U256::from(50e18)).send().await?);
+    await_receipts(&mut pending).await?;
 
     // Check balances before finalizing streams
     let alice_balance_before_finalize = alice_token.balanceOf(alice).call().await?;
     let bob_balance_before_finalize = bob_token.balanceOf(bob).call().await?;
     let admin_balance_before_finalize = token.balanceOf(admin).call().await?;
-
-    // Wait for reward stream duration to elapse
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-    // Trigger reward distribution by doing a small transfer
-    alice_token
-        .transfer(bob, U256::from(1))
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    bob_token
-        .transfer(alice, U256::from(1))
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
 
     // Check balances after finalizing streams and reward distribution
     let alice_balance_after = alice_token.balanceOf(alice).call().await?;
