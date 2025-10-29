@@ -3,7 +3,6 @@ pub use books::{Orderbook, OrderbooksFilter, OrderbooksParam, OrderbooksResponse
 use reth_ethereum::evm::revm::database::StateProviderDatabase;
 use reth_evm::{EvmInternals, revm::database::CacheDB};
 use reth_provider::{BlockReaderIdExt, StateProviderFactory};
-use std::str::FromStr;
 use tempo_evm::TempoEvmConfig;
 use tempo_primitives::TempoHeader;
 pub use types::{
@@ -11,7 +10,7 @@ pub use types::{
     PaginationParams, Tick,
 };
 
-use alloy_primitives::{Address, Sealable};
+use alloy_primitives::{Address, B256, Sealable};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_api::{ConfigureEvm, NodePrimitives};
 use reth_node_core::rpc::result::internal_rpc_err;
@@ -27,37 +26,50 @@ use tempo_precompiles::{
 mod books;
 pub mod types;
 
-/// Fields that orderbooks can be sorted by
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderbookSortField {
-    BaseToken,
-    QuoteToken,
-    BestAskTick,
-    BestBidTick,
-    Spread,
-    BookKey,
-}
-
-impl Default for OrderbookSortField {
-    fn default() -> Self {
-        Self::BookKey
+/// Checks if an orderbook matches the given filters
+fn orderbook_matches_filter(book: &PrecompileOrderbook, filter: &OrderbooksFilter) -> bool {
+    // Check base token filter
+    if let Some(base) = filter.base_token
+        && book.base != base
+    {
+        return false;
     }
-}
 
-impl FromStr for OrderbookSortField {
-    type Err = String;
+    // Check quote token filter
+    if let Some(quote) = filter.quote_token
+        && book.quote != quote
+    {
+        return false;
+    }
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "baseToken" => Ok(Self::BaseToken),
-            "quoteToken" => Ok(Self::QuoteToken),
-            "bestAskTick" => Ok(Self::BestAskTick),
-            "bestBidTick" => Ok(Self::BestBidTick),
-            "spread" => Ok(Self::Spread),
-            "bookKey" => Ok(Self::BookKey),
-            _ => Err(format!("Unknown sort field: {}", s)),
+    // Check best ask tick range
+    if let Some(ref ask_range) = filter.best_ask_tick {
+        // Only filter if the book has a valid ask (not i16::MAX)
+        if book.best_ask_tick != i16::MAX && !ask_range.in_range(book.best_ask_tick) {
+            return false;
         }
     }
+
+    // Check best bid tick range
+    if let Some(ref bid_range) = filter.best_bid_tick {
+        // Only filter if the book has a valid bid (not i16::MIN)
+        if book.best_bid_tick != i16::MIN && !bid_range.in_range(book.best_bid_tick) {
+            return false;
+        }
+    }
+
+    // Check spread range
+    if let Some(ref spread_range) = filter.spread {
+        // Calculate spread only if both ticks are valid
+        if book.best_ask_tick != i16::MAX && book.best_bid_tick != i16::MIN {
+            let spread = book.best_ask_tick - book.best_bid_tick;
+            if !spread_range.in_range(spread) {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 #[rpc(server, namespace = "dex")]
@@ -70,6 +82,27 @@ pub trait TempoDexApi {
         &self,
         params: PaginationParams<OrderbooksFilter>,
     ) -> RpcResult<OrderbooksResponse>;
+}
+
+/// Result of paginated query containing items and optional cursor for next page
+pub struct PaginatedResult<T> {
+    /// The items for this page
+    pub items: Vec<T>,
+    /// Cursor for the next page, if there are more items
+    pub next_cursor: Option<String>,
+}
+
+/// Trait for items that can provide a cursor value for pagination
+trait CursorProvider {
+    /// Returns the cursor value for this item
+    fn cursor_value(&self) -> String;
+}
+
+impl CursorProvider for PrecompileOrderbook {
+    fn cursor_value(&self) -> String {
+        // Use book key as cursor for orderbooks
+        format!("0x{}", compute_book_key(self.base, self.quote))
+    }
 }
 
 /// The JSON-RPC handlers for the `dex_` namespace.
@@ -95,7 +128,6 @@ impl<
     /// The cursor for this method is the **Order ID** (u128).
     /// - When provided in the request, returns orders starting after the given order ID
     /// - Returns `next_cursor` in the response containing the last order ID for the next page
-    /// - Orders are sorted by order ID when no other sort is specified
     async fn orders(&self, _params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse> {
         Err(internal_rpc_err("unimplemented"))
     }
@@ -105,13 +137,28 @@ impl<
     /// ## Cursor
     /// The cursor for this method is the **Book Key** (B256).
     /// - When provided in the request, returns orderbooks starting after the given book key
-    /// - Returns `next_cursor` in the response containing the last book key for the next page  
-    /// - Orderbooks are sorted by book key when no other sort is specified
+    /// - Returns `next_cursor` in the response containing the last book key for the next page
     async fn orderbooks(
         &self,
-        _params: PaginationParams<OrderbooksFilter>,
+        params: PaginationParams<OrderbooksFilter>,
     ) -> RpcResult<OrderbooksResponse> {
-        Err(internal_rpc_err("unimplemented"))
+        // Get paginated orderbooks
+        let paginated_result = self
+            .apply_pagination_to_orderbooks(params)
+            .map_err(|e| internal_rpc_err(format!("Failed to get orderbooks: {e}")))?;
+
+        // Convert PrecompileOrderbooks to RPC Orderbooks
+        let orderbooks = paginated_result
+            .items
+            .into_iter()
+            .map(|book| self.to_rpc_orderbook(&book))
+            .collect();
+
+        // Create response with next cursor
+        Ok(OrderbooksResponse {
+            next_cursor: paginated_result.next_cursor,
+            orderbooks,
+        })
     }
 }
 
@@ -126,8 +173,16 @@ impl<
 
     /// Default limit for pagination
     const DEFAULT_LIMIT: usize = 10;
+
     /// Maximum limit for pagination
     const MAX_LIMIT: usize = 100;
+
+    /// Parses a cursor string into a B256 for orderbooks
+    fn parse_orderbook_cursor(cursor: &str) -> Result<B256, String> {
+        cursor
+            .parse::<B256>()
+            .map_err(|e| format!("Invalid cursor format: {e}"))
+    }
 
     /// Creates an `EvmPrecompileStorageProvider` at the given block.
     /// This handles the boilerplate of creating the EVM context and state provider.
@@ -176,138 +231,84 @@ impl<
         })
     }
 
-    /// Applies limit to a vector of items.
+    /// Applies pagination parameters (filtering, limiting) to orderbooks.
     ///
-    /// ## Cursor Considerations
-    /// When implementing cursor-based pagination:
-    /// - Apply limit AFTER filtering by cursor position
-    /// - Return limit + 1 items to determine if there's a next page
-    /// - Use the last item's ID/key as the next_cursor value
-    fn apply_limit<T>(items: Vec<T>, limit: Option<usize>) -> Vec<T> {
-        let limit = limit
-            .map(|l| l.min(Self::MAX_LIMIT))
-            .unwrap_or(Self::DEFAULT_LIMIT);
-        items.into_iter().take(limit).collect()
-    }
-
-    /// Sorts orderbooks based on the sort parameters.
-    ///
-    /// ## Cursor Considerations
-    /// When implementing cursor-based pagination:
-    /// - The cursor (book key) position depends on the sort field
-    /// - For non-bookKey sorts, may need secondary sort by bookKey for stable ordering
-    /// - Cursor comparison logic will vary based on the active sort field
-    fn sort_orderbooks(
-        mut books: Vec<PrecompileOrderbook>,
-        sort: Option<OrdersSort>,
-    ) -> Vec<PrecompileOrderbook> {
-        if let Some(sort_params) = sort {
-            let ascending = matches!(sort_params.order, OrdersSortOrder::Asc);
-
-            // Parse the sort field, defaulting to BookKey if unknown
-            let sort_field = OrderbookSortField::from_str(&sort_params.on).unwrap_or_default();
-
-            match sort_field {
-                OrderbookSortField::BaseToken => {
-                    books.sort_by(|a, b| {
-                        let cmp = a.base.cmp(&b.base);
-                        if ascending { cmp } else { cmp.reverse() }
-                    });
-                }
-                OrderbookSortField::QuoteToken => {
-                    books.sort_by(|a, b| {
-                        let cmp = a.quote.cmp(&b.quote);
-                        if ascending { cmp } else { cmp.reverse() }
-                    });
-                }
-                OrderbookSortField::BestAskTick => {
-                    books.sort_by(|a, b| {
-                        // Handle i16::MAX as "no ask" - sort them last
-                        let a_val = if a.best_ask_tick == i16::MAX {
-                            None
-                        } else {
-                            Some(a.best_ask_tick)
-                        };
-                        let b_val = if b.best_ask_tick == i16::MAX {
-                            None
-                        } else {
-                            Some(b.best_ask_tick)
-                        };
-                        let cmp = a_val.cmp(&b_val);
-                        if ascending { cmp } else { cmp.reverse() }
-                    });
-                }
-                OrderbookSortField::BestBidTick => {
-                    books.sort_by(|a, b| {
-                        // Handle i16::MIN as "no bid" - sort them last
-                        let a_val = if a.best_bid_tick == i16::MIN {
-                            None
-                        } else {
-                            Some(a.best_bid_tick)
-                        };
-                        let b_val = if b.best_bid_tick == i16::MIN {
-                            None
-                        } else {
-                            Some(b.best_bid_tick)
-                        };
-                        let cmp = a_val.cmp(&b_val);
-                        if ascending { cmp } else { cmp.reverse() }
-                    });
-                }
-                OrderbookSortField::Spread => {
-                    books.sort_by(|a, b| {
-                        let a_spread = if a.best_ask_tick != i16::MAX && a.best_bid_tick != i16::MIN
-                        {
-                            Some(a.best_ask_tick - a.best_bid_tick)
-                        } else {
-                            None
-                        };
-                        let b_spread = if b.best_ask_tick != i16::MAX && b.best_bid_tick != i16::MIN
-                        {
-                            Some(b.best_ask_tick - b.best_bid_tick)
-                        } else {
-                            None
-                        };
-                        let cmp = a_spread.cmp(&b_spread);
-                        if ascending { cmp } else { cmp.reverse() }
-                    });
-                }
-                OrderbookSortField::BookKey => {
-                    books.sort_by(|a, b| {
-                        let a_key = compute_book_key(a.base, a.quote);
-                        let b_key = compute_book_key(b.base, b.quote);
-                        let cmp = a_key.cmp(&b_key);
-                        if ascending { cmp } else { cmp.reverse() }
-                    });
-                }
-            }
-        }
-        books
-    }
-
-    /// Applies pagination parameters (filtering, sorting, limiting) to orderbooks.
-    ///
-    /// ## Cursor Support (Not Yet Implemented)
-    /// When cursor support is added:
-    /// - The cursor should be a B256 book key
-    /// - Results should start after the cursor position based on the current sort order
-    /// - The method should return both the filtered results and the next cursor value
+    /// Returns a paginated result with items and optional next cursor.
     pub fn apply_pagination_to_orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
-    ) -> Vec<PrecompileOrderbook> {
-        // Get filtered orderbooks
-        let books = if let Some(filter) = params.filters {
-            self.pick_orderbooks(filter)
-        } else {
-            self.get_all_books()
-        };
+    ) -> Result<PaginatedResult<PrecompileOrderbook>, String> {
+        self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
+            let keys = if let Some(ref filter) = params.filters {
+                // If specific base and quote are provided, we have just one key
+                if let (Some(base), Some(quote)) = (filter.base_token, filter.quote_token) {
+                    vec![compute_book_key(base, quote)]
+                } else {
+                    // Get all keys
+                    exchange
+                        .get_book_keys()
+                        .map_err(|e| format!("Failed to get book keys: {e}"))?
+                }
+            } else {
+                // Get all book keys
+                exchange
+                    .get_book_keys()
+                    .map_err(|e| format!("Failed to get book keys: {e}"))?
+            };
 
-        // Apply sorting
-        let sorted_books = Self::sort_orderbooks(books, params.sort);
+            // Find starting position based on cursor
+            let start_idx = if let Some(ref cursor_str) = params.cursor {
+                let cursor_key = Self::parse_orderbook_cursor(cursor_str)?;
 
-        // Apply limit
-        Self::apply_limit(sorted_books, params.limit)
+                keys.iter()
+                    .position(|k| *k == cursor_key)
+                    .expect("TODO: error for when the user inputs a cursor that doesnt exist")
+            } else {
+                0
+            };
+
+            // Convert keys to orderbooks, starting from cursor position
+            let mut orderbooks = Vec::new();
+            let limit = params
+                .limit
+                .map(|l| l.min(Self::MAX_LIMIT))
+                .unwrap_or(Self::DEFAULT_LIMIT);
+
+            // Take limit + 1 to check if there's a next page
+            for key in keys.into_iter().skip(start_idx).take(limit + 1) {
+                let book = exchange
+                    .books(key)
+                    .map_err(|e| format!("Failed to get book: {e}"))?;
+
+                // Apply filters if present
+                if let Some(ref filter) = params.filters
+                    && !orderbook_matches_filter(&book, filter)
+                {
+                    continue;
+                }
+
+                orderbooks.push(book);
+
+                // Stop if we have enough items
+                if orderbooks.len() > limit {
+                    break;
+                }
+            }
+
+            // Get the next page / cursor
+            let has_next_page = orderbooks.len() > limit;
+            let next_cursor = if has_next_page {
+                // Use the last item's cursor as the next cursor
+                orderbooks.get(limit).map(|book| book.cursor_value())
+            } else {
+                None
+            };
+
+            // Return only up to limit items
+            let items = orderbooks.into_iter().take(limit).collect();
+
+            Ok(PaginatedResult { items, next_cursor })
+        })
     }
 
     /// Converts a precompile orderbook to RPC orderbook format.
@@ -334,12 +335,6 @@ impl<
     }
 
     /// Returns the orderbooks that should be filtered based on the filter params.
-    ///
-    /// ## Cursor Considerations
-    /// This method returns ALL matching orderbooks without cursor support.
-    /// When adding cursor support:
-    /// - Filter results should be further filtered by cursor position
-    /// - The cursor (book key) comparison depends on the sort order
     pub fn pick_orderbooks(&self, filter: OrderbooksFilter) -> Vec<PrecompileOrderbook> {
         // If both base and quote are specified, get just that specific orderbook
         if let (Some(base), Some(quote)) = (filter.base_token, filter.quote_token) {
@@ -351,60 +346,11 @@ impl<
 
         all_books
             .into_iter()
-            .filter(|book| {
-                // Filter by base token if specified
-                if let Some(base) = filter.base_token {
-                    if book.base != base {
-                        return false;
-                    }
-                }
-
-                // Filter by quote token if specified
-                if let Some(quote) = filter.quote_token {
-                    if book.quote != quote {
-                        return false;
-                    }
-                }
-
-                // Filter by best ask tick range
-                if let Some(ref ask_range) = filter.best_ask_tick {
-                    // Only filter if the book has a valid ask (not i16::MAX)
-                    if book.best_ask_tick != i16::MAX && !ask_range.in_range(book.best_ask_tick) {
-                        return false;
-                    }
-                }
-
-                // Filter by best bid tick range
-                if let Some(ref bid_range) = filter.best_bid_tick {
-                    // Only filter if the book has a valid bid (not i16::MIN)
-                    if book.best_bid_tick != i16::MIN && !bid_range.in_range(book.best_bid_tick) {
-                        return false;
-                    }
-                }
-
-                // Filter by spread range
-                if let Some(ref spread_range) = filter.spread {
-                    // Calculate spread only if both ticks are valid
-                    if book.best_ask_tick != i16::MAX && book.best_bid_tick != i16::MIN {
-                        let spread = book.best_ask_tick - book.best_bid_tick;
-                        if !spread_range.in_range(spread) {
-                            return false;
-                        }
-                    }
-                }
-
-                true
-            })
+            .filter(|book| orderbook_matches_filter(book, &filter))
             .collect()
     }
 
     /// Returns all orderbooks.
-    ///
-    /// ## Cursor Considerations  
-    /// This method returns ALL orderbooks without pagination.
-    /// When adding cursor support, consider:
-    /// - Fetching only required orderbooks based on cursor position
-    /// - Or filtering the full list post-fetch based on cursor
     pub fn get_all_books(&self) -> Vec<PrecompileOrderbook> {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let mut books = Vec::new();
