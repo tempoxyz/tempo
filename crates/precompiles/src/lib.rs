@@ -27,7 +27,7 @@ use crate::{
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20},
     tip20_factory::TIP20Factory,
-    tip20_rewards_registry::TIPRewardsRegistry,
+    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     tip4217_registry::TIP4217Registry,
 };
@@ -144,10 +144,10 @@ impl TIP4217RegistryPrecompile {
     }
 }
 
-pub struct TIPRewardsRegistryPrecompile;
-impl TIPRewardsRegistryPrecompile {
+pub struct TIP20RewardsRegistryPrecompile;
+impl TIP20RewardsRegistryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("TIPRewardsRegistry", |input| TIPRewardsRegistry::new(
+        tempo_precompile!("TIP20RewardsRegistry", |input| TIP20RewardsRegistry::new(
             TIP20_REWARDS_REGISTRY_ADDRESS,
             &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
         ))

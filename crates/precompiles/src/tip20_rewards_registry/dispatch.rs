@@ -1,4 +1,4 @@
-use crate::{Precompile, mutate, view};
+use crate::{Precompile, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::ITIP20RewardsRegistry;
@@ -17,7 +17,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20RewardsRegistry<'a, S
 
         match selector {
             ITIP20RewardsRegistry::finalizeStreamsCall::SELECTOR => {
-                mutate::<ITIP20RewardsRegistry::finalizeStreamsCall>(
+                mutate_void::<ITIP20RewardsRegistry::finalizeStreamsCall>(
                     calldata,
                     msg_sender,
                     |sender, _call| self.finalize_streams(sender),

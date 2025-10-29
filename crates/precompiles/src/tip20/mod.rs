@@ -780,13 +780,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                     funder: *msg_sender,
                     id: stream_id,
                     amount: call.amount,
-                    durationSeconds: call.seconds,
+                    durationSeconds: call.seconds as u64,
                 })
                 .into_log_data(),
             )?;
 
-            // NOTE: there is a diff with the reference contract where this returns the next id ++
-            // rather than the current next id
             Ok(stream_id)
         }
     }
@@ -1502,11 +1500,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(refund)
     }
 
-    pub fn finalize_streams(&mut self, msg_sender: &Address) -> Result<(), TempoPrecompileError> {
-        if *msg_sender != Address::ZERO {
-            todo!("system tx error")
-        }
-
+    pub fn finalize_streams(&mut self) -> Result<(), TempoPrecompileError> {
         let end_time = self.storage.timestamp().to::<u128>();
         let rate_decrease = self.get_scheduled_rate_decrease_at(end_time);
 
@@ -2998,7 +2992,7 @@ mod tests {
         token.storage.set_timestamp(U256::from(end_time));
 
         let total_before = token.get_total_reward_per_second()?;
-        token.finalize_streams(&Address::ZERO)?;
+        token.finalize_streams()?;
         let total_after = token.get_total_reward_per_second()?;
 
         assert!(total_after < total_before);
@@ -3147,7 +3141,7 @@ mod tests {
             .storage
             .set_timestamp(current_timestamp + uint!(10_U256));
 
-        token.finalize_streams(&Address::ZERO)?;
+        token.finalize_streams()?;
         token.transfer(
             &alice,
             ITIP20::transferCall {
@@ -3165,7 +3159,7 @@ mod tests {
             .storage
             .set_timestamp(current_timestamp + uint!(20_U256));
 
-        token.finalize_streams(&Address::ZERO)?;
+        token.finalize_streams()?;
         token.transfer(
             &alice,
             ITIP20::transferCall {

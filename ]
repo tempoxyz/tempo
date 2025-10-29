@@ -2,20 +2,17 @@
 pub mod dispatch;
 
 use alloy::{
-    primitives::{Address, Bytes, U256, keccak256},
+    primitives::{Address, Bytes, U256, uint},
     sol_types::SolValue,
 };
-use revm::{
-    interpreter::instructions::utility::{IntoAddress, IntoU256},
-    state::Bytecode,
-};
+use alloy_primitives::keccak256;
+use revm::state::Bytecode;
 use tempo_contracts::precompiles::TIP20RewardsRegistryError;
 
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS,
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, slots::mapping_slot},
-    tip20::{TIP20Token, address_to_token_id_unchecked},
 };
 
 pub mod slots {
@@ -107,42 +104,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         Ok(())
     }
 
-    /// Appends a TIP20 token address to the array corresponding with `timestamp` in storage.
-    pub fn push_stream_ending_at_timestamp(
-        &mut self,
-        address: &Address,
-        timestamp: u128,
-    ) -> Result<(), TempoPrecompileError> {
-        let array_slot = mapping_slot(timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
-        let length = self.storage.sload(self.address, array_slot)?;
-
-        // Push the token address to the array and increment the array length
-        let element_slot = array_slot + length;
-        self.storage
-            .sstore(self.address, element_slot, address.into_u256())?;
-        self.storage
-            .sstore(self.address, array_slot, length + U256::ONE)
-    }
-
-    /// Gets all TIP20 token addresses with streams ending at `timestamp` from storage
     pub fn get_streams_ending_at_timestamp(
         &mut self,
         timestamp: u128,
     ) -> Result<Vec<Address>, TempoPrecompileError> {
-        let array_slot = mapping_slot(timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
-        let length = self.storage.sload(self.address, array_slot)?;
-
-        let mut tokens = Vec::new();
-        for i in 0..length.to::<u64>() {
-            let element_slot = array_slot + U256::from(i);
-            let token_addr = self
-                .storage
-                .sload(self.address, element_slot)?
-                .into_address();
-            tokens.push(token_addr);
-        }
-
-        Ok(tokens)
+        todo!()
     }
 
     /// Finalize streams for all tokens ending at the current timestamp
@@ -151,23 +117,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             return Err(TIP20RewardsRegistryError::unauthorized().into());
         }
 
-        // TODO: FIXME: check here for if already processed for this given timestamp
-
         let current_timestamp = self.storage.timestamp().to::<u128>();
-        let mut next_timestamp = self.get_last_updated_timestamp()? + 1;
+        let mut current_timestamp = self.get_last_updated_timestamp()? + 1;
 
-        // Loop through all streams ending at current timestamp and finalize each token stream
-        while current_timestamp >= next_timestamp {
-            let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
-            for addr in tokens {
-                let token_id = address_to_token_id_unchecked(&addr);
-                let mut token = TIP20Token::new(token_id, self.storage);
-                token.finalize_streams()?;
-            }
-            next_timestamp += 1;
+        while  >= timestamp {
+            let tokens = self.get_streams_ending_at_timestamp(timestamp)?;
+            // TODO: finalize each stream
+
+            last_updated_timestamp += 1;
         }
 
-        self.set_last_updated_timestamp(next_timestamp)?;
+        self.set_last_updated_timestamp(timestamp)?;
 
         Ok(())
     }
