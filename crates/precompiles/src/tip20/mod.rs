@@ -1023,12 +1023,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::insufficient_balance().into());
         }
 
-        dbg!("accrue");
         // Accrue and handle TIP20 rewards
         self.accrue()?;
-        dbg!("handle sender awards");
         self.handle_sender_rewards(from, amount)?;
-        dbg!("handle receiver awards");
         self.handle_receiver_rewards(to, amount)?;
 
         // Adjust balances

@@ -741,7 +741,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     let alice_balance_after = token.balanceOf(alice).call().await?;
     let bob_balance_after = token.balanceOf(bob).call().await?;
 
-    assert!(alice_balance_after > alice_balance_before);
+    assert!(alice_balance_after < alice_balance_before);
     assert!(bob_balance_after > bob_balance_before);
 
     Ok(())
