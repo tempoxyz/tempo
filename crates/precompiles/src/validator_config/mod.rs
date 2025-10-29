@@ -1254,7 +1254,7 @@ mod tests {
 
     #[test]
     fn hostname_with_port_is_host_port() {
-        ensure_is_host_port("locahost:8000").unwrap();
+        ensure_is_host_port("localhost:8000").unwrap();
     }
 
     #[test]
