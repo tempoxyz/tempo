@@ -62,8 +62,8 @@ pub mod slots {
     // TODO: roles policy
 
     // Roles Auth slots
-    pub const HAS_ROLE: U256 = uint!(0_U256);
-    pub const ROLE_ADMIN: U256 = uint!(1_U256);
+    pub const ROLES_BASE_SLOT: U256 = uint!(0_U256);
+    pub const ROLE_ADMIN_BASE_SLOT: U256 = uint!(1_U256);
 
     // TIP20 variables
     pub const NAME: U256 = uint!(2_U256);
@@ -903,8 +903,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         RolesAuthContract::new(
             self.storage,
             self.token_address,
-            slots::HAS_ROLE,
-            slots::ROLE_ADMIN,
+            slots::ROLES_BASE_SLOT,
+            slots::ROLE_ADMIN_BASE_SLOT,
         )
     }
 
