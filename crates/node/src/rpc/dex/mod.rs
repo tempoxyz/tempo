@@ -232,7 +232,9 @@ impl<
                 let mut exchange = StablecoinExchange::new(storage);
                 // TODO: filtering books by order filter
                 let orderbook_id = exchange.get_book_keys().expect("TODO: errors")[0];
+                println!("first book: {orderbook_id:?}");
                 let exchange_address = exchange.address();
+                println!("exchange_address: {exchange_address:?}");
 
                 let orderbook =
                     PrecompileOrderbook::from_storage(orderbook_id, storage, exchange_address)
@@ -241,18 +243,22 @@ impl<
                 let book_iterator =
                     BookIterator::new(storage, orderbook, exchange_address, true, None);
                 let limit = 10;
-                let orders = book_iterator
+                let mut orders = book_iterator
                     .into_iter()
                     .take(limit + 1)
                     .collect::<Vec<_>>();
+
+                println!("exchange_address: {exchange_address:?}");
 
                 // we have to use the last order to properly populate next_cursor, because if we
                 // were to take just `limit` items and use the next ID from the last returned
                 // cursor, it could be on the boundary of a price level where no `next` exists.
                 let next_cursor = if orders.len() == limit + 1 {
+                    // pop the final order so that it's not included in the response
                     // NOTE: the len is greater than one
-                    let last = orders.last().unwrap();
+                    let last = orders.pop().unwrap();
                     let next_id = last.order_id();
+
                     Some(format!("0x{next_id:x}"))
                 } else {
                     None
@@ -260,7 +266,7 @@ impl<
 
                 let response = OrdersResponse {
                     next_cursor,
-                    orders: vec![],
+                    orders,
                 };
                 Ok(response)
             })
@@ -439,6 +445,16 @@ impl<
 
             Ok(PaginatedResult { items, next_cursor })
         })
+    }
+
+
+    /// Converts a precompile order to a rpc order.
+    ///
+    /// Uses the orderbook to determine base and quote token.
+    fn to_rpc_order(&self, order: PrecompileOrder, book: PrecompileOrderbook) -> Order {
+        let PrecompileOrder { order_id, maker, book_key, is_bid, tick, amount, remaining, prev, next, is_flip, flip_tick } = order;
+
+        Order { amount, base_token: book.base, flip_tick, is_bid, is_flip, maker, next, order_id, quote_token: book.quote, prev, remaining, tick }
     }
 
     /// Converts a precompile orderbook to RPC orderbook format.
