@@ -1,4 +1,3 @@
-use alloy::hex;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 pub use books::{Orderbook, OrderbooksFilter, OrderbooksParam, OrderbooksResponse};
 use reth_ethereum::evm::revm::database::StateProviderDatabase;
@@ -96,6 +95,38 @@ impl<'a, 'b> BookIterator<'a, 'b> {
             bids,
         }
     }
+
+    /// Get a PrecompileOrder from an order ID
+    pub fn get_order(&mut self, order_id: u128) -> PrecompileOrder {
+        PrecompileOrder::from_storage(order_id, self.storage, self.exchange_address)
+            .expect("TODO: errors")
+    }
+
+    /// Get a PriceLevel from a tick
+    pub fn get_price_level(&mut self, tick: i16) -> PriceLevel {
+        PriceLevel::from_storage(
+            self.storage,
+            self.exchange_address,
+            self.book_key,
+            tick,
+            self.bids,
+        )
+        .expect("TODO: errors")
+    }
+
+    /// Get the next initialized tick after the given tick
+    /// Returns None if there are no more ticks
+    pub fn get_next_tick(&mut self, tick: i16) -> Option<i16> {
+        let mut bitmap = TickBitmap::new(self.storage, self.exchange_address, self.book_key);
+
+        let (next_tick, more_ticks) = if self.bids {
+            bitmap.next_initialized_bid_tick(tick)
+        } else {
+            bitmap.next_initialized_ask_tick(tick)
+        };
+
+        if more_ticks { Some(next_tick) } else { None }
+    }
 }
 
 impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
@@ -103,10 +134,9 @@ impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
 
     fn next(&mut self) -> Option<Self::Item> {
         // If we have a starting order, use that to initialize
-        if let Some(starting_order) = self.starting_order {
-            let current_order =
-                PrecompileOrder::from_storage(starting_order, self.storage, self.exchange_address)
-                    .expect("TODO: errors");
+        if let Some(starting_order) = self.starting_order.take() {
+            let current_order = self.get_order(starting_order);
+            return Some(current_order);
         };
 
         // If there is no current order we get the first one based on the best bid or ask tick
@@ -119,14 +149,7 @@ impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
                     self.orderbook.best_ask_tick
                 };
 
-                let price_level = PriceLevel::from_storage(
-                    self.storage,
-                    self.exchange_address,
-                    self.book_key,
-                    tick,
-                    self.bids,
-                )
-                .expect("TODO: errors");
+                let price_level = self.get_price_level(tick);
 
                 // if the best bid level is empty then there are no more bids and we should stop the
                 // iteration
@@ -139,9 +162,7 @@ impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
             }
         };
 
-        let current_order =
-            PrecompileOrder::from_storage(current_id, self.storage, self.exchange_address)
-                .expect("TODO: errors");
+        let current_order = self.get_order(current_id);
 
         // Now get the order after this one.
         let next_order = if current_order.next() != 0 {
@@ -149,30 +170,11 @@ impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
         } else {
             let tick = current_order.tick();
 
-            // check that there are other bitmaps after this order
-            let mut bitmap = TickBitmap::new(self.storage, self.exchange_address, self.book_key);
-
             // find the next tick
-            let (next_tick, more_ticks) = if self.bids {
-                bitmap.next_initialized_bid_tick(tick)
-            } else {
-                bitmap.next_initialized_ask_tick(tick)
-            };
-
-            // if there are no more ticks then we can exit
-            if !more_ticks {
-                return None;
-            }
+            let next_tick = self.get_next_tick(tick)?;
 
             // get the price level for this tick so we can get the head of the price level
-            let price_level = PriceLevel::from_storage(
-                self.storage,
-                self.exchange_address,
-                self.book_key,
-                next_tick,
-                self.bids,
-            )
-            .expect("TODO: errors");
+            let price_level = self.get_price_level(next_tick);
             if price_level.is_empty() {
                 return None;
             }
@@ -185,10 +187,7 @@ impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
         self.order = Some(next_order);
 
         // return the order
-        Some(
-            PrecompileOrder::from_storage(next_order, self.storage, self.exchange_address)
-                .expect("TODO: errors"),
-        )
+        Some(self.get_order(next_order))
     }
 }
 
@@ -408,8 +407,8 @@ impl<
             let mut orderbooks = Vec::new();
             let limit = params
                 .limit
-                .map(|l| l.min(Self::MAX_LIMIT))
-                .unwrap_or(Self::DEFAULT_LIMIT);
+                .map(|l| l.min(MAX_LIMIT))
+                .unwrap_or(DEFAULT_LIMIT);
 
             // Take limit + 1 to check if there's a next page
             for key in keys.into_iter().skip(start_idx).take(limit + 1) {
