@@ -1,14 +1,13 @@
 // Module for tip20_rewards_registry precompile
 pub mod dispatch;
 
-use alloy_primitives::Bytes;
+use alloy::primitives::{Address, Bytes, U256, uint};
 use revm::state::Bytecode;
-pub use tempo_contracts::precompiles::ITIPRewardsRegistry;
+use tempo_contracts::precompiles::TIP20RewardsRegistryError;
 
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS, error::TempoPrecompileError, storage::PrecompileStorageProvider,
 };
-use alloy::primitives::{Address, U256, uint};
 
 pub mod slots {
     use alloy::primitives::{U256, uint};
@@ -21,12 +20,12 @@ pub mod slots {
 
 /// TIPRewardsRegistry precompile that tracks stream end times
 /// Maps timestamp -> Vec of token addresses with streams ending at that time
-pub struct TIPRewardsRegistry<'a, S: PrecompileStorageProvider> {
+pub struct TIP20RewardsRegistry<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
     registry_address: Address,
 }
 
-impl<'a, S: PrecompileStorageProvider> TIPRewardsRegistry<'a, S> {
+impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     pub fn new(registry_address: Address, storage: &'a mut S) -> Self {
         Self {
             storage,
@@ -47,13 +46,19 @@ impl<'a, S: PrecompileStorageProvider> TIPRewardsRegistry<'a, S> {
 
     /// Get the last updated timestamp
     fn get_last_updated_timestamp(&mut self) -> Result<u128, TempoPrecompileError> {
-        let val = self.storage.sload(self.registry_address, slots::LAST_UPDATED_TIMESTAMP)?;
+        let val = self
+            .storage
+            .sload(self.registry_address, slots::LAST_UPDATED_TIMESTAMP)?;
         Ok(val.to::<u128>())
     }
 
     /// Set the last updated timestamp
     fn set_last_updated_timestamp(&mut self, timestamp: u128) -> Result<(), TempoPrecompileError> {
-        self.storage.sstore(self.registry_address, slots::LAST_UPDATED_TIMESTAMP, U256::from(timestamp))
+        self.storage.sstore(
+            self.registry_address,
+            slots::LAST_UPDATED_TIMESTAMP,
+            U256::from(timestamp),
+        )
     }
 
     /// Helper to compute slot for streams_ending_at[timestamp]
@@ -76,7 +81,11 @@ impl<'a, S: PrecompileStorageProvider> TIPRewardsRegistry<'a, S> {
     }
 
     /// Add a token to the registry for a given stream end time
-    pub fn add_stream(&mut self, token: Address, end_time: u128) -> Result<(), TempoPrecompileError> {
+    pub fn add_stream(
+        &mut self,
+        token: Address,
+        end_time: u128,
+    ) -> Result<(), TempoPrecompileError> {
         // Check if already registered
         let registered_slot = Self::stream_registered_slot(token, end_time);
         let registered = self.storage.sload(self.registry_address, registered_slot)?;
@@ -87,7 +96,8 @@ impl<'a, S: PrecompileStorageProvider> TIPRewardsRegistry<'a, S> {
         }
 
         // Mark as registered
-        self.storage.sstore(self.registry_address, registered_slot, U256::ONE)?;
+        self.storage
+            .sstore(self.registry_address, registered_slot, U256::ONE)?;
 
         // Get current list of tokens for this end time
         let slot = Self::streams_ending_at_slot(end_time);
@@ -120,7 +130,10 @@ impl<'a, S: PrecompileStorageProvider> TIPRewardsRegistry<'a, S> {
     }
 
     /// Get all tokens with streams ending at the given timestamp
-    pub fn get_tokens_ending_at(&mut self, timestamp: u128) -> Result<Vec<Address>, TempoPrecompileError> {
+    pub fn get_tokens_ending_at(
+        &mut self,
+        timestamp: u128,
+    ) -> Result<Vec<Address>, TempoPrecompileError> {
         let slot = Self::streams_ending_at_slot(timestamp);
         let data = self.storage.sload(self.registry_address, slot)?;
 
@@ -137,33 +150,24 @@ impl<'a, S: PrecompileStorageProvider> TIPRewardsRegistry<'a, S> {
     }
 
     /// Finalize streams for all tokens ending at the current timestamp
-    pub fn finalize_streams(&mut self) -> Result<Vec<Address>, TempoPrecompileError> {
+    pub fn finalize_streams(&mut self, sender: &Address) -> Result<(), TempoPrecompileError> {
+        if *sender != Address::ZERO {
+            return Err(TIP20RewardsRegistryError::unauthorized().into());
+        }
+
         let timestamp = self.storage.timestamp().to::<u128>();
         let tokens = self.get_tokens_ending_at(timestamp)?;
 
         // Clear the mapping entries for this timestamp
         let slot = Self::streams_ending_at_slot(timestamp);
-        self.storage.sstore(self.registry_address, slot, U256::ZERO)?;
+        self.storage
+            .sstore(self.registry_address, slot, U256::ZERO)?;
 
         // Update last finalized timestamp
         self.set_last_updated_timestamp(timestamp)?;
 
-        // TODO: Call finalize_streams on each token's TIP20 precompile
-        // This will be done by the caller after getting the list of tokens
+        // TODO: loop and call finalize streams
 
-        Ok(tokens)
-    }
-
-    /// Finalize streams with system call check
-    pub fn finalize_streams_checked(
-        &mut self,
-        msg_sender: &Address,
-    ) -> Result<Vec<Address>, TempoPrecompileError> {
-        if *msg_sender != Address::ZERO {
-            return Err(TempoPrecompileError::Fatal(
-                "Only system can call finalize_streams".to_string(),
-            ));
-        }
-        self.finalize_streams()
+        Ok(())
     }
 }

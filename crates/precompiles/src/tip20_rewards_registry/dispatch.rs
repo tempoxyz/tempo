@@ -1,11 +1,11 @@
-use crate::{Precompile, view, mutate};
+use crate::{Precompile, mutate, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::ITIP20RewardsRegistry;
 
-use crate::storage::PrecompileStorageProvider;
-use crate::tip20_rewards_registry::{ITIPRewardsRegistry, TIPRewardsRegistry};
+use crate::{storage::PrecompileStorageProvider, tip20_rewards_registry::TIP20RewardsRegistry};
 
-impl<'a, S: PrecompileStorageProvider> Precompile for TIPRewardsRegistry<'a, S> {
+impl<'a, S: PrecompileStorageProvider> Precompile for TIP20RewardsRegistry<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
@@ -16,20 +16,12 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIPRewardsRegistry<'a, S> 
             .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
 
         match selector {
-            ITIPRewardsRegistry::addStreamCall::SELECTOR => {
-                mutate::<ITIPRewardsRegistry::addStreamCall>(calldata, msg_sender, |_, call| {
-                    self.add_stream(call.token, call.endTime)
-                })
-            }
-            ITIPRewardsRegistry::getStreamsEndingAtTimestampCall::SELECTOR => {
-                view::<ITIPRewardsRegistry::getStreamsEndingAtTimestampCall>(calldata, |call| {
-                    self.get_tokens_ending_at(call.timestamp)
-                })
-            }
-            ITIPRewardsRegistry::finalizeStreamsCall::SELECTOR => {
-                mutate::<ITIPRewardsRegistry::finalizeStreamsCall>(calldata, msg_sender, |sender, _call| {
-                    self.finalize_streams_checked(sender)
-                })
+            ITIP20RewardsRegistry::finalizeStreamsCall::SELECTOR => {
+                mutate::<ITIP20RewardsRegistry::finalizeStreamsCall>(
+                    calldata,
+                    msg_sender,
+                    |sender, _call| self.finalize_streams(sender),
+                )
             }
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),

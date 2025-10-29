@@ -2,8 +2,8 @@ use crate::tip20::TIP20Error;
 use alloy::sol_types::SolInterface;
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
-    FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError, TIP403RegistryError,
-    TIPAccountRegistrarError, TIPFeeAMMError,
+    FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
+    TIP20RewardsRegistryError, TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
 };
 
 // TODO: add error type for overflow/underflow
@@ -17,6 +17,10 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 token
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
+
+    /// Error from TIP20RewardsRegisry
+    #[error("TIP20 rewards registry error: {0:?}")]
+    TIP20RewardsRegisry(TIP20RewardsRegistryError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -58,6 +62,12 @@ impl From<StablecoinExchangeError> for TempoPrecompileError {
 impl From<TIP20Error> for TempoPrecompileError {
     fn from(err: TIP20Error) -> Self {
         Self::TIP20(err)
+    }
+}
+
+impl From<TIP20RewardsRegistryError> for TempoPrecompileError {
+    fn from(err: TIP20RewardsRegistryError) -> Self {
+        Self::TIP20RewardsRegisry(err)
     }
 }
 
@@ -120,6 +130,7 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                 let bytes = match err {
                     TPErr::StablecoinExchange(e) => e.abi_encode().into(),
                     TPErr::TIP20(e) => e.abi_encode().into(),
+                    TPErr::TIP20RewardsRegisry(e) => e.abi_encode().into(),
                     TPErr::RolesAuthError(e) => e.abi_encode().into(),
                     TPErr::TIP403RegistryError(e) => e.abi_encode().into(),
                     TPErr::TIPAccountRegistrarError(e) => e.abi_encode().into(),
