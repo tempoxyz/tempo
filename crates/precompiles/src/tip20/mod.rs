@@ -736,7 +736,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let current_rpt = self.get_reward_per_token_stored()?;
             self.set_reward_per_token_stored(current_rpt + delta_rpt)?;
 
-            // TODO: emit reward scheduled event
+            // Emit reward scheduled event for immediate payout
+            self.storage.emit_event(
+                self.token_address,
+                TIP20Event::RewardScheduled(ITIP20::RewardScheduled {
+                    funder: *msg_sender,
+                    id: 0,
+                    amount: call.amount,
+                    durationSeconds: 0,
+                })
+                .into_log_data(),
+            )?;
 
             Ok(0)
         } else {
@@ -763,7 +773,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
             self.set_scheduled_rate_decrease_at(end_time, current_decrease + rate)?;
 
-            // TODO: emit reward sceheduled event
+            // Emit reward scheduled event for streaming reward
+            self.storage.emit_event(
+                self.token_address,
+                TIP20Event::RewardScheduled(ITIP20::RewardScheduled {
+                    funder: *msg_sender,
+                    id: stream_id,
+                    amount: call.amount,
+                    durationSeconds: call.seconds,
+                })
+                .into_log_data(),
+            )?;
 
             // NOTE: there is a diff with the reference contract where this returns the next id ++
             // rather than the current next id
@@ -1375,7 +1395,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             self.set_user_reward_per_token_paid(&call.recipient, rpt)?;
         }
 
-        // TODO: emit reward recipient set
+        // Emit reward recipient set event
+        self.storage.emit_event(
+            self.token_address,
+            TIP20Event::RewardRecipientSet(ITIP20::RewardRecipientSet {
+                holder: *msg_sender,
+                recipient: call.recipient,
+            })
+            .into_log_data(),
+        )?;
 
         Ok(())
     }
@@ -1460,7 +1488,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             }
         }
 
-        // TODO: emit reward canceled
+        // Emit reward canceled event
+        self.storage.emit_event(
+            self.token_address,
+            TIP20Event::RewardCanceled(ITIP20::RewardCanceled {
+                funder: stream.funder,
+                id: stream_id,
+                refund,
+            })
+            .into_log_data(),
+        )?;
 
         Ok(refund)
     }
