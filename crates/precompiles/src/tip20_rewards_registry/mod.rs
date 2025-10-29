@@ -149,30 +149,33 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
     /// Finalize streams for all tokens ending at the current timestamp
     pub fn finalize_streams(&mut self, sender: &Address) -> Result<(), TempoPrecompileError> {
-        // if *sender != Address::ZERO {
-        //     return Err(TIP20RewardsRegistryError::unauthorized().into());
-        // }
-        //
-        // let current_timestamp = self.storage.timestamp().to::<u128>();
-        // let last_updated_timestamp = self.get_last_updated_timestamp()?;
-        // if current_timestamp == last_updated_timestamp {
-        //     // NOTE: should we return an error here?
-        //     return Ok(());
-        // }
-        //
-        // let mut next_timestamp = last_updated_timestamp + 1;
-        // // Loop through all streams ending at current timestamp and finalize each token stream
-        // while current_timestamp >= next_timestamp {
-        //     let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
-        //     for addr in tokens {
-        //         let token_id = address_to_token_id_unchecked(&addr);
-        //         let mut token = TIP20Token::new(token_id, self.storage);
-        //         token.finalize_streams()?;
-        //     }
-        //     next_timestamp += 1;
-        // }
-        //
-        // self.set_last_updated_timestamp(next_timestamp)?;
+        if *sender != Address::ZERO {
+            return Err(TIP20RewardsRegistryError::unauthorized().into());
+        }
+
+        let current_timestamp = self.storage.timestamp().to::<u128>();
+        let mut last_updated_timestamp = self.get_last_updated_timestamp()?;
+        if last_updated_timestamp == 0 {
+            last_updated_timestamp = current_timestamp - 1;
+        }
+
+        if current_timestamp == last_updated_timestamp {
+            return Ok(());
+        }
+
+        let mut next_timestamp = last_updated_timestamp + 1;
+        // Loop through all streams ending at current timestamp and finalize each token stream
+        while current_timestamp >= next_timestamp {
+            let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
+            for addr in tokens {
+                let token_id = address_to_token_id_unchecked(&addr);
+                let mut token = TIP20Token::new(token_id, self.storage);
+                token.finalize_streams()?;
+            }
+            next_timestamp += 1;
+        }
+
+        self.set_last_updated_timestamp(next_timestamp)?;
 
         Ok(())
     }
