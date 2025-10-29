@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{consensus::Digest, epoch::manager::EpochContext};
 use alloy_consensus::{BlockHeader, Transaction};
 use alloy_primitives::{B256, BlockHash, Bytes, map::HashMap};
@@ -19,6 +21,7 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{Receiver, Recipients, Sender};
 use commonware_runtime::{Handle, Spawner};
+use eyre::OptionExt;
 use futures::future::OptionFuture;
 use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
@@ -26,8 +29,10 @@ use reth_primitives_traits::SignedTransaction;
 use reth_provider::{BlockReader, ProviderError, StateProviderFactory};
 use reth_revm::database::StateProviderDatabase;
 use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR};
-use tempo_payload_types::{RecoveredSubBlock, SignedSubBlock, SubBlock};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_payload_types::{
+    RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockMetadata, SubBlockVersion,
+};
+use tempo_primitives::{Block, TempoTxEnvelope};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, warn};
 
@@ -170,20 +175,21 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         self.next_parent_hash = Some(event.proposal.payload.0);
 
         // If next proposer is not us, we need to build a new subblock.
-        if let Some(existing) = self.subblock_builder_handle.take() {
-            existing.abort();
+        if next_proposer != self.signer.public_key() {
+            if let Some(existing) = self.subblock_builder_handle.take() {
+                existing.abort();
+            }
+
+            let transactions = self.subblock_transactions.clone();
+            let node = self.node.clone();
+            let parent_hash = event.proposal.payload.0;
+            let handle =
+                self.context.clone().shared(true).spawn(move |_| {
+                    build_subblock(transactions, node, parent_hash, num_validators)
+                });
+
+            self.subblock_builder_handle = Some(handle);
         }
-
-        let transactions = self.subblock_transactions.clone();
-        let node = self.node.clone();
-        let parent_hash = event.proposal.payload.0;
-        let handle = self
-            .context
-            .clone()
-            .shared(true)
-            .spawn(move |_| build_subblock(transactions, node, parent_hash, num_validators));
-
-        self.subblock_builder_handle = Some(handle);
     }
 }
 
@@ -261,7 +267,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                     let subblock = if let Ok(Ok(subblock)) = our_subblock {
                         subblock
                     } else {
-                        SubBlock { parent_hash: next_parent_hash, transactions: Default::default() }
+                        SubBlock { version: SubBlockVersion::V1, parent_hash: next_parent_hash, transactions: Default::default() }
                     };
 
                     if subblock.parent_hash != next_parent_hash {
@@ -269,17 +275,13 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                     }
 
                     let signature = self.signer.sign(None, subblock.signature_hash().as_slice());
-                    let subblock = SignedSubBlock {
+                    let signed_subblock = SignedSubBlock {
                         inner: subblock,
                         signature: Bytes::copy_from_slice(signature.as_ref()),
                     };
 
-                    if next_proposer != &self.signer.public_key() {
-                        debug!(subblock = ?subblock, ?next_proposer, "sending subblock to the next proposer");
-                        let _ = network_tx.send(Recipients::One(next_proposer.clone()), alloy_rlp::encode(&subblock).into(), true).await;
-                    } else {
-                        let _ = self.validated_subblocks_tx.send(subblock.try_into_recovered(B256::from_slice(&self.signer.public_key())).unwrap());
-                    }
+                    debug!(subblock = ?signed_subblock, ?next_proposer, "sending subblock to the next proposer");
+                    let _ = network_tx.send(Recipients::One(next_proposer.clone()), alloy_rlp::encode(&signed_subblock).into(), true).await;
                 }
             }
         }
@@ -350,6 +352,7 @@ async fn build_subblock(
     }
 
     Ok(SubBlock {
+        version: SubBlockVersion::V1,
         parent_hash,
         transactions: selected_transactions,
     })
@@ -400,6 +403,120 @@ async fn validate_subblock(
     }
 
     let _ = validated_subblocks_tx.send(subblock);
+
+    Ok(())
+}
+
+/// Validates that block contains a transaction with subblocks metadata that matches the subblocks in the block.
+pub fn validate_block_subblocks(
+    block: &Block,
+    participants: &[PublicKey],
+    proposer: PublicKey,
+) -> eyre::Result<()> {
+    // Decode subblocks metadata from a system transaction.
+    let metadata = block
+        .body
+        .transactions()
+        .rev()
+        .find_map(|tx| {
+            if tx.is_system_tx()
+                && tx.to().is_some_and(|to| to.is_zero())
+                && let Ok(metadata) = Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref())
+            {
+                Some(metadata)
+            } else {
+                None
+            }
+        })
+        .ok_or_eyre("missing subblocks metadata system transaction")?;
+
+    // Validate that metadata contains valid and unique entries.
+    let mut seen = HashSet::new();
+    for metadata in &metadata {
+        if !participants
+            .iter()
+            .any(|p| p.as_ref() == metadata.validator)
+        {
+            return Err(eyre::eyre!(
+                "invalid subblock metadata: validator not in participants"
+            ));
+        }
+
+        if metadata.validator == proposer.as_ref() {
+            return Err(eyre::eyre!("proposer cannot submit subblocks"));
+        }
+
+        if !seen.insert(metadata.validator) {
+            return Err(eyre::eyre!("only one subblock per validator is allowed"));
+        }
+    }
+
+    // Find all non-empty subblocks present in the block.
+    let mut non_empty_subblocks: Vec<(B256, Vec<_>)> = Vec::new();
+    let mut is_last_tx_subblock = false;
+    for tx in &block.body.transactions {
+        if let Some(tx_proposer) = tx.subblock_proposer()
+            && tx_proposer != proposer.as_ref()
+        {
+            if !is_last_tx_subblock && !non_empty_subblocks.is_empty() {
+                return Err(eyre::eyre!("subblocks must be contiguous"));
+            }
+            if let Some(last) = non_empty_subblocks.last_mut()
+                && last.0 == tx_proposer
+            {
+                last.1.push(tx);
+            } else {
+                non_empty_subblocks.push((tx_proposer, vec![tx]));
+            }
+
+            is_last_tx_subblock = true
+        } else {
+            is_last_tx_subblock = false;
+        }
+    }
+
+    // Map each non-empty subblock to its metadata.
+    let mut next_non_empty = 0;
+    for metadata in metadata {
+        let transactions = if let Some((validator, transactions)) =
+            non_empty_subblocks.get(next_non_empty)
+            && validator == &metadata.validator
+        {
+            next_non_empty += 1;
+            transactions.as_slice()
+        } else {
+            // If next non-empty subblock does not match the metadata, assume that we've encountered an empty subblock.
+            &[]
+        };
+
+        let signature_hash = SubBlock {
+            version: SubBlockVersion::V1,
+            parent_hash: block.parent_hash(),
+            transactions: transactions.iter().map(|tx| (*tx).clone()).collect(),
+        }
+        .signature_hash();
+
+        let Some(validator) = participants
+            .iter()
+            .find(|p| p.as_ref() == metadata.validator)
+        else {
+            return Err(eyre::eyre!("invalid subblock validator"));
+        };
+
+        let Ok(signature) = Signature::decode(&mut metadata.signature.as_ref()) else {
+            return Err(eyre::eyre!("invalid signature"));
+        };
+
+        if !validator.verify(None, signature_hash.as_slice(), &signature) {
+            return Err(eyre::eyre!("invalid signature"));
+        }
+    }
+
+    if next_non_empty != non_empty_subblocks.len() {
+        return Err(eyre::eyre!(
+            "failed to map all non-empty subblocks to metadata"
+        ));
+    }
 
     Ok(())
 }

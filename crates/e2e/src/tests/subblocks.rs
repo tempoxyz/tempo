@@ -62,7 +62,7 @@ fn subblocks_are_included() {
                         .iter()
                         .any(|t| *t.tx_hash() == *tx)
                 }) {
-                    panic!("transaction {} was not included", tx);
+                    panic!("transaction {tx} was not included");
                 }
             }
 
@@ -99,7 +99,7 @@ fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
 
     let tx = TempoTxEnvelope::AA(tx.into_signed(signature.into()));
     let tx_hash = *tx.tx_hash();
-    node.subblocks.add_transaction(tx.clone());
+    node.subblocks.add_transaction(tx);
 
     tx_hash
 }

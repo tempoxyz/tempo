@@ -11578,6 +11578,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-evm",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-sol-types",
  "derive_more",
  "reth-chainspec",

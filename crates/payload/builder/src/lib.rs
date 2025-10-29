@@ -6,7 +6,7 @@
 mod metrics;
 
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
 use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
@@ -35,14 +35,13 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::{
-    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-use tempo_payload_types::TempoPayloadBuilderAttributes;
+use tempo_payload_types::{SubBlockMetadata, TempoPayloadBuilderAttributes};
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
     tip_fee_manager::IFeeManager,
@@ -88,7 +87,11 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     /// Returns a vector of system transactions that must be executed at the end of each block:
     /// 1. Fee manager executeBlock - processes collected fees
     /// 2. Stablecoin exchange executeBlock - commits pending orders
-    fn build_seal_block_txs(&self, block_env: &BlockEnv) -> Vec<Recovered<TempoTxEnvelope>> {
+    fn build_seal_block_txs(
+        &self,
+        block_env: &BlockEnv,
+        subblocks: Vec<SubBlockMetadata>,
+    ) -> Vec<Recovered<TempoTxEnvelope>> {
         let chain_id = Some(self.provider.chain_spec().chain().id());
 
         // Build fee manager system transaction
@@ -137,7 +140,32 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             TEMPO_SYSTEM_TX_SENDER,
         );
 
-        vec![fee_manager_tx, stablecoin_exchange_tx]
+        let subblocks_input = alloy_rlp::encode(&subblocks)
+            .into_iter()
+            .chain(block_env.number.to_be_bytes_vec())
+            .collect();
+
+        let subblocks_signatures_tx = Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    chain_id,
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 0,
+                    to: Address::ZERO.into(),
+                    value: U256::ZERO,
+                    input: subblocks_input,
+                },
+                TEMPO_SYSTEM_TX_SIGNATURE,
+            )),
+            TEMPO_SYSTEM_TX_SENDER,
+        );
+
+        vec![
+            fee_manager_tx,
+            stablecoin_exchange_tx,
+            subblocks_signatures_tx,
+        ]
     }
 }
 
@@ -386,9 +414,9 @@ where
             cumulative_gas_used += gas_used;
         }
 
-        let mut selected_subblocks = HashMap::new();
+        let mut selected_subblocks: Vec<SubBlockMetadata> = Vec::new();
 
-        // Subblocks will most likely arrive after we've started building the payload, 
+        // Subblocks will most likely arrive after we've started building the payload,
         // so we need to wait for a bit to ensure we collect as many as possible.
         loop {
             let Ok(subblocks) = attributes.subblocks().lock() else {
@@ -398,7 +426,10 @@ where
             // Select subblocks to execute while ensuring one subblock per validator
             let mut to_execute = Vec::new();
             for subblock in subblocks.iter() {
-                if selected_subblocks.contains_key(&subblock.validator()) {
+                if selected_subblocks
+                    .iter()
+                    .any(|s| s.validator == subblock.validator())
+                {
                     continue;
                 }
                 to_execute.push(subblock.clone());
@@ -413,7 +444,7 @@ where
                         .map_err(PayloadBuilderError::evm)?;
                 }
 
-                selected_subblocks.insert(subblock.validator(), subblock);
+                selected_subblocks.push(subblock.metadata());
             }
 
             // exit the loop if the job was interrupted
@@ -445,7 +476,7 @@ where
         }
 
         // Include system transactions in the block
-        for system_tx in self.build_seal_block_txs(builder.evm().block()) {
+        for system_tx in self.build_seal_block_txs(builder.evm().block(), selected_subblocks) {
             builder
                 .execute_transaction(system_tx)
                 .map_err(PayloadBuilderError::evm)?;

@@ -1,6 +1,7 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
-use alloy_primitives::{B256, Bytes, TxHash};
+use alloy_primitives::{B256, Bytes, TxHash, U256};
+use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use reth_evm::{
     Database, Evm, OnStateHook,
@@ -40,6 +41,7 @@ enum BlockSection {
     System {
         seen_fee_manager: bool,
         seen_stablecoin_dex: bool,
+        seen_subblocks_signatures: bool,
     },
 }
 
@@ -120,13 +122,19 @@ where
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
-        let (mut seen_fee_manager, mut seen_stablecoin_dex) = match self.section {
-            BlockSection::System {
-                seen_fee_manager,
-                seen_stablecoin_dex,
-            } => (seen_fee_manager, seen_stablecoin_dex),
-            _ => (false, false),
-        };
+        let (mut seen_fee_manager, mut seen_stablecoin_dex, mut seen_subblocks_signatures) =
+            match self.section {
+                BlockSection::System {
+                    seen_fee_manager,
+                    seen_stablecoin_dex,
+                    seen_subblocks_signatures,
+                } => (
+                    seen_fee_manager,
+                    seen_stablecoin_dex,
+                    seen_subblocks_signatures,
+                ),
+                _ => (false, false, false),
+            };
 
         let block = self.evm().block().number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
@@ -170,6 +178,35 @@ where
             }
 
             seen_stablecoin_dex = true;
+        } else if to.is_zero() {
+            if seen_subblocks_signatures {
+                return Err(BlockValidationError::msg(
+                    "duplicate subblocks metadata system transaction",
+                ));
+            }
+
+            if tx.input().len() < U256::BYTES
+                || tx.input()[tx.input().len() - U256::BYTES..] != block
+            {
+                return Err(BlockValidationError::msg(
+                    "invalid subblocks metadata system transaction",
+                ));
+            }
+
+            let mut buf = &tx.input()[..tx.input().len() - U256::BYTES];
+            if Vec::<Bytes>::decode(&mut buf).is_err() {
+                return Err(BlockValidationError::msg(
+                    "invalid subblocks metadata system transaction",
+                ));
+            };
+
+            if !buf.is_empty() {
+                return Err(BlockValidationError::msg(
+                    "invalid subblocks metadata system transaction",
+                ));
+            }
+
+            seen_subblocks_signatures = true;
         } else {
             return Err(BlockValidationError::msg("invalid system transaction"));
         }
@@ -177,6 +214,7 @@ where
         Ok(BlockSection::System {
             seen_fee_manager,
             seen_stablecoin_dex,
+            seen_subblocks_signatures,
         })
     }
 
@@ -358,6 +396,7 @@ where
             != (BlockSection::System {
                 seen_fee_manager: true,
                 seen_stablecoin_dex: true,
+                seen_subblocks_signatures: true,
             })
         {
             return Err(BlockValidationError::msg("system transactions not seen in block").into());

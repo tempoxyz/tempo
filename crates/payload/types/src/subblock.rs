@@ -1,24 +1,70 @@
 use alloy_primitives::{Address, B256, Bytes, keccak256};
-use alloy_rlp::{Encodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::{BufMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use alloy_rpc_types_eth::TransactionTrait;
 use reth_primitives_traits::{Recovered, crypto::RecoveryError};
 use tempo_primitives::TempoTxEnvelope;
 
-#[derive(Debug, Clone, RlpEncodable, RlpDecodable)]
+/// Magic byte for the subblock signature hash.
+const SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE: u8 = 0x77;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubBlockVersion {
+    /// Subblock version 1.
+    V1 = 1,
+}
+
+impl From<SubBlockVersion> for u8 {
+    fn from(value: SubBlockVersion) -> Self {
+        value as Self
+    }
+}
+
+impl TryFrom<u8> for SubBlockVersion {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::V1),
+            _ => Err(value),
+        }
+    }
+}
+
+impl Encodable for SubBlockVersion {
+    fn encode(&self, out: &mut dyn BufMut) {
+        u8::from(*self).encode(out);
+    }
+
+    fn length(&self) -> usize {
+        u8::from(*self).length()
+    }
+}
+
+impl Decodable for SubBlockVersion {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        u8::decode(buf)?
+            .try_into()
+            .map_err(|_| alloy_rlp::Error::Custom("invalid subblock version"))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct SubBlock {
+    /// Version of the subblock.
+    pub version: SubBlockVersion,
+    /// Transactions included in the subblock.
+    pub transactions: Vec<TempoTxEnvelope>,
     /// Hash of the parent block. This subblock can only be included as
     /// part of the block building on top of the specified parent.
     pub parent_hash: B256,
-    /// Transactions included in the subblock.
-    pub transactions: Vec<TempoTxEnvelope>,
 }
 
 impl SubBlock {
     /// Returns the hash for the signature.
     pub fn signature_hash(&self) -> B256 {
         let mut buf = Vec::new();
-        self.parent_hash.encode(&mut buf);
-        self.transactions.encode(&mut buf);
+        buf.put_u8(SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE);
+        self.rlp_encode_fields(&mut buf);
         keccak256(&buf)
     }
 
@@ -26,10 +72,28 @@ impl SubBlock {
     pub fn occupied_gas(&self) -> u64 {
         self.transactions.iter().map(|tx| tx.gas_limit()).sum()
     }
+
+    fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
+        self.version.encode(out);
+        self.transactions.encode(out);
+        self.parent_hash.encode(out);
+    }
+
+    fn rlp_encoded_fields_length(&self) -> usize {
+        self.version.length() + self.transactions.length() + self.parent_hash.length()
+    }
+
+    fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        Ok(Self {
+            version: Decodable::decode(buf)?,
+            transactions: Decodable::decode(buf)?,
+            parent_hash: Decodable::decode(buf)?,
+        })
+    }
 }
 
 /// A subblock with a signature.
-#[derive(Debug, Clone, RlpEncodable, RlpDecodable, derive_more::Deref, derive_more::DerefMut)]
+#[derive(Debug, Clone, derive_more::Deref, derive_more::DerefMut)]
 pub struct SignedSubBlock {
     /// The subblock.
     #[deref]
@@ -52,6 +116,59 @@ impl SignedSubBlock {
             senders,
             validator,
         })
+    }
+
+    fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
+        self.inner.rlp_encode_fields(out);
+        self.signature.encode(out);
+    }
+
+    fn rlp_encoded_fields_length(&self) -> usize {
+        self.inner.rlp_encoded_fields_length() + self.signature.length()
+    }
+
+    fn rlp_header(&self) -> alloy_rlp::Header {
+        alloy_rlp::Header {
+            list: true,
+            payload_length: self.rlp_encoded_fields_length(),
+        }
+    }
+
+    fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        Ok(Self {
+            inner: SubBlock::rlp_decode_fields(buf)?,
+            signature: Decodable::decode(buf)?,
+        })
+    }
+}
+
+impl Encodable for SignedSubBlock {
+    fn encode(&self, out: &mut dyn BufMut) {
+        self.rlp_header().encode(out);
+        self.rlp_encode_fields(out);
+    }
+
+    fn length(&self) -> usize {
+        self.rlp_header().length_with_payload()
+    }
+}
+
+impl Decodable for SignedSubBlock {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+
+        let remaining = buf.len();
+
+        let this = Self::rlp_decode_fields(buf)?;
+
+        if buf.len() + header.payload_length != remaining {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+
+        Ok(this)
     }
 }
 
@@ -84,4 +201,21 @@ impl RecoveredSubBlock {
     pub fn validator(&self) -> B256 {
         self.validator
     }
+
+    /// Returns the metadata for the subblock.
+    pub fn metadata(&self) -> SubBlockMetadata {
+        SubBlockMetadata {
+            validator: self.validator(),
+            signature: self.signature.clone(),
+        }
+    }
+}
+
+/// Metadata for an included subblock.
+#[derive(Debug, Clone, RlpEncodable, RlpDecodable)]
+pub struct SubBlockMetadata {
+    /// Validator that submitted the subblock.
+    pub validator: B256,
+    /// Signature of the subblock.
+    pub signature: Bytes,
 }
