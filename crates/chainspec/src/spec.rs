@@ -3,9 +3,8 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use reth_chainspec::{
-    BaseFeeParams, Chain, ChainHardforks, ChainSpec, DepositContract, EthChainSpec,
-    EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks,
-    Head,
+    BaseFeeParams, Chain, ChainSpec, DepositContract, EthChainSpec, EthereumHardfork,
+    EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks, Head,
 };
 use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
@@ -111,61 +110,15 @@ impl TempoChainSpec {
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
-        // Collect Tempo hardforks to insert with their activation times
-        let mut tempo_forks_to_insert: Vec<_> = [tempo_genesis_info.adagio_time.map(|time| {
-            (
-                TempoHardfork::Adagio.boxed(),
-                ForkCondition::Timestamp(time),
-                time,
-            )
-        })]
+        // Collect Tempo hardforks to insert
+        let tempo_forks: Vec<_> = [tempo_genesis_info
+            .adagio_time
+            .map(|time| (TempoHardfork::Adagio, ForkCondition::Timestamp(time)))]
         .into_iter()
         .flatten()
         .collect();
 
-        // Sort Tempo hardforks by activation time (required for correct merge)
-        tempo_forks_to_insert.sort_by_key(|(_, _, time)| *time);
-
-        // Merge Ethereum and Tempo hardforks in sorted order (single pass)
-        let mut all_forks = Vec::new();
-        let mut tempo_idx = 0;
-
-        for (fork, condition) in base_spec.hardforks.forks_iter() {
-            // Get activation time for this Ethereum fork
-            let eth_activation = match condition {
-                ForkCondition::Timestamp(ts) => ts,
-                ForkCondition::Block(block) => block,
-                ForkCondition::TTD { fork_block, .. } => fork_block.unwrap_or(0),
-                ForkCondition::Never => u64::MAX,
-            };
-
-            // Insert any Tempo forks that activate before this Ethereum fork
-            while tempo_idx < tempo_forks_to_insert.len() {
-                let (_, _, tempo_time) = &tempo_forks_to_insert[tempo_idx];
-                if *tempo_time < eth_activation {
-                    let (boxed_fork, condition, _) = tempo_forks_to_insert[tempo_idx].clone();
-                    all_forks.push((boxed_fork, condition));
-                    tempo_idx += 1;
-                } else {
-                    break;
-                }
-            }
-
-            // Add the Ethereum fork
-            if let Some(eth_fork) = EthereumHardfork::VARIANTS
-                .iter()
-                .find(|f| f.name() == fork.name())
-            {
-                all_forks.push((eth_fork.boxed(), condition));
-            }
-        }
-
-        // Add any remaining Tempo forks (that activate after all Ethereum forks)
-        for (boxed_fork, condition, _) in tempo_forks_to_insert.iter().skip(tempo_idx).cloned() {
-            all_forks.push((boxed_fork, condition));
-        }
-
-        base_spec.hardforks = ChainHardforks::new(all_forks);
+        base_spec.hardforks.extend(tempo_forks);
 
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
@@ -187,7 +140,6 @@ impl From<ChainSpec> for TempoChainSpec {
                 timestamp_millis_part: inner.timestamp * 1000,
                 inner,
             }),
-            tempo_hardforks: TempoChainHardforks::adagio_at_genesis(),
         }
     }
 }
