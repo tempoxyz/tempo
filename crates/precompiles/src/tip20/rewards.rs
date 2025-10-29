@@ -27,7 +27,7 @@ use revm::{
     state::Bytecode,
 };
 use std::sync::LazyLock;
-use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
+use tempo_contracts::precompiles::{INonce::abi::functions, ITIP20, TIP20Error, TIP20Event};
 use tracing::trace;
 
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
@@ -114,16 +114,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
             let current_time = self.storage.timestamp().to::<u128>();
             let end_time = current_time + call.seconds;
-            self.set_stream(
+
+            RewardStream::new(
                 stream_id,
-                RewardStream {
-                    funder: *msg_sender,
-                    start_time: current_time as u64,
-                    end_time: end_time as u64,
-                    rate_per_second_scaled: rate,
-                    amount_total: call.amount,
-                },
-            )?;
+                *msg_sender,
+                current_time as u64,
+                end_time as u64,
+                rate,
+                call.amount,
+            )
+            .store(self.storage, self.token_address)?;
 
             let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
             self.set_scheduled_rate_decrease_at(end_time, current_decrease + rate)?;
@@ -339,7 +339,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         call: ITIP20::cancelRewardCall,
     ) -> Result<U256, TempoPrecompileError> {
         let stream_id = call.id.to::<u64>();
-        let stream = self.get_stream(stream_id)?;
+        let stream = RewardStream::from_storage(stream_id, self.storage, self.token_address)?;
+
         let current_time = self.storage.timestamp();
 
         if stream.funder.is_zero() {
@@ -378,7 +379,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .checked_sub(stream.rate_per_second_scaled)
             .expect("TODO: handle error");
         self.set_scheduled_rate_decrease_at(end_time, rate_decrease)?;
-        self.delete_stream(stream_id)?;
+
+        stream.delete(self.storage, self.token_address)?;
 
         // Attempt to transfer remaining funds to funder
         let mut refund = U256::ZERO;
@@ -543,27 +545,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage.sstore(self.token_address, slot, amount)
     }
 
-    // TODO: update to RewardStream::delete()
-    fn delete_stream(&mut self, stream_id: u64) -> Result<(), TempoPrecompileError> {
-        let key = stream_id.to_be_bytes();
-
-        let funder_slot = mapping_slot(key, slots::STREAMS);
-        self.storage
-            .sstore(self.token_address, funder_slot, U256::ZERO)?;
-
-        let start_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 1));
-        self.storage
-            .sstore(self.token_address, start_slot, U256::ZERO)?;
-
-        let end_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 2));
-        self.storage
-            .sstore(self.token_address, end_slot, U256::ZERO)?;
-
-        let rate_slot = mapping_slot(key, U256::from(slots::STREAMS.to::<u128>() + 3));
-        self.storage
-            .sstore(self.token_address, rate_slot, U256::ZERO)
-    }
-
     fn get_scheduled_rate_decrease_at(&mut self, end_time: u128) -> U256 {
         let slot = mapping_slot(end_time.to_be_bytes(), slots::SCHEDULED_RATE_DECREASE);
         self.storage
@@ -589,10 +570,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage
             .sstore(self.token_address, slots::TOTAL_REWARD_PER_SECOND, value)
     }
+
+    fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TempoPrecompileError> {
+        RewardStream::from_storage(stream_id, self.storage, self.token_address)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct RewardStream {
+    stream_id: u64,
     pub funder: Address,
     pub start_time: u64,
     pub end_time: u64,
@@ -606,6 +592,24 @@ impl RewardStream {
     pub const STREAM_END_TIME_OFFSET: U256 = uint!(2_U256);
     pub const STREAM_RATE_OFFSET: U256 = uint!(3_U256);
     pub const STREAM_AMOUNT_TOTAL_OFFSET: U256 = uint!(4_U256);
+
+    pub fn new(
+        stream_id: u64,
+        funder: Address,
+        start_time: u64,
+        end_time: u64,
+        rate_per_second_scaled: U256,
+        amount_total: U256,
+    ) -> Self {
+        Self {
+            stream_id,
+            funder,
+            start_time,
+            end_time,
+            rate_per_second_scaled,
+            amount_total,
+        }
+    }
 
     pub fn from_storage<S: PrecompileStorageProvider>(
         stream_id: u64,
@@ -646,6 +650,7 @@ impl RewardStream {
         )?;
 
         Ok(Self {
+            stream_id,
             funder,
             start_time,
             end_time,
@@ -656,11 +661,10 @@ impl RewardStream {
 
     pub fn store<S: PrecompileStorageProvider>(
         &self,
-        stream_id: u64,
         storage: &mut S,
         token_address: Address,
     ) -> Result<(), TempoPrecompileError> {
-        let key = stream_id.to_be_bytes();
+        let key = self.stream_id.to_be_bytes();
 
         storage.sstore(
             token_address,
@@ -696,11 +700,11 @@ impl RewardStream {
     }
 
     pub fn delete<S: PrecompileStorageProvider>(
-        stream_id: u64,
+        &self,
         storage: &mut S,
         token_address: Address,
     ) -> Result<(), TempoPrecompileError> {
-        let key = stream_id.to_be_bytes();
+        let key = self.stream_id.to_be_bytes();
 
         storage.sstore(
             token_address,
