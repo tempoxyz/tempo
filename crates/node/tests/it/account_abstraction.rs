@@ -55,7 +55,7 @@ async fn fund_address_with_fee_tokens(
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![],
+        aa_authorization_list: vec![],
     };
 
     // Sign and send the funding transaction
@@ -539,7 +539,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![],
+        aa_authorization_list: vec![],
     };
 
     println!("Created AA transaction with secp256k1 signature");
@@ -626,7 +626,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![],
+        aa_authorization_list: vec![],
     };
 
     // Sign and encode transaction
@@ -677,7 +677,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![],
+        aa_authorization_list: vec![],
     };
 
     // Sign and encode transaction
@@ -770,7 +770,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![],
+        aa_authorization_list: vec![],
     };
 
     println!("Created AA transaction for WebAuthn signature");
@@ -961,7 +961,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![],
+        aa_authorization_list: vec![],
     };
 
     // ===========================================
@@ -1321,7 +1321,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![],
+        aa_authorization_list: vec![],
     };
 
     // Sign with P256
@@ -1546,7 +1546,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![],
+        aa_authorization_list: vec![],
     };
 
     println!("Created AA transaction with fee payer placeholder");
@@ -1673,7 +1673,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![],
+        aa_authorization_list: vec![],
     };
 
     println!("Created AA transaction with empty call batch");
@@ -1816,7 +1816,7 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_aa_eip7702_authorization_list() -> eyre::Result<()> {
+async fn test_aa_eip7702_aa_authorization_list() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     println!("\n=== Testing EIP-7702 Authorization List with AA Signatures ===\n");
@@ -1910,12 +1910,12 @@ async fn test_aa_eip7702_authorization_list() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
-        authorization_list: vec![auth1_signed, auth2_signed, auth3_signed], // All 3 authorizations
+        aa_authorization_list: vec![auth1_signed, auth2_signed, auth3_signed], // All 3 authorizations
     };
 
     println!(
         "  Created tx with {} authorizations (Secp256k1, P256, WebAuthn)",
-        tx.authorization_list.len()
+        tx.aa_authorization_list.len()
     );
 
     // Sign the transaction with sender's secp256k1 key
@@ -1961,11 +1961,11 @@ async fn test_aa_eip7702_authorization_list() -> eyre::Result<()> {
         println!("\n--- Verifying authorization list in transaction ---");
         println!(
             "  Authorization list length: {}",
-            aa_tx.tx().authorization_list.len()
+            aa_tx.tx().aa_authorization_list.len()
         );
 
         // Verify each authorization can be recovered
-        for (i, aa_auth) in aa_tx.tx().authorization_list.iter().enumerate() {
+        for (i, aa_auth) in aa_tx.tx().aa_authorization_list.iter().enumerate() {
             match aa_auth.recover_authority() {
                 Ok(authority) => {
                     println!("  ✓ Authorization {} recovered: {}", i + 1, authority);

@@ -152,7 +152,7 @@ impl TempoTxEnvelope {
     /// Returns the AA authorization list if present (for AA transactions)
     pub fn aa_authorization_list(&self) -> Option<&[crate::transaction::AASignedAuthorization]> {
         match self {
-            Self::AA(tx) => Some(&tx.tx().authorization_list),
+            Self::AA(tx) => Some(&tx.tx().aa_authorization_list),
             _ => None,
         }
     }

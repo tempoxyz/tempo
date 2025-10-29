@@ -372,7 +372,7 @@ where
     ///
     /// The default implementation only processes authorization lists for TransactionType::Eip7702 (0x04).
     /// This override extends support to AA transactions (type 0x76) by checking for the presence
-    /// of an authorization_list in the aa_tx_env.
+    /// of an aa_authorization_list in the aa_tx_env.
     #[inline]
     fn apply_eip7702_auth_list(&self, evm: &mut Self::Evm) -> Result<u64, Self::Error> {
         let ctx = evm.ctx();
@@ -382,13 +382,13 @@ where
             .tx()
             .aa_tx_env
             .as_ref()
-            .map(|aa_env| !aa_env.authorization_list.is_empty())
+            .map(|aa_env| !aa_env.aa_authorization_list.is_empty())
             .unwrap_or(false);
 
         // If it's an AA transaction with authorization list, we need to apply it manually
         // since the default implementation only checks for TransactionType::Eip7702
         if has_aa_auth_list {
-            // TODO: @rakita could we have a helper function for this logic in revm?
+            // TODO(@rakita) could we have a helper function for this logic in revm?
             // For AA transactions, we need to apply the authorization list ourselves
             // because pre_execution::apply_eip7702_auth_list returns early for non-0x04 tx types
 
@@ -398,7 +398,7 @@ where
             let aa_tx_env = tx.aa_tx_env.as_ref().unwrap();
             let mut refunded_accounts = 0;
 
-            for authorization in &aa_tx_env.authorization_list {
+            for authorization in &aa_tx_env.aa_authorization_list {
                 // 1. Verify the chain id is either 0 or the chain's current ID.
                 let auth_chain_id = authorization.chain_id;
                 if !auth_chain_id.is_zero() && auth_chain_id != U256::from(chain_id) {
@@ -698,7 +698,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     calls: &[tempo_primitives::transaction::Call],
     signature: &AASignature,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
-    authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
+    aa_authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
     spec: RevmSpecId,
 ) -> InitialAndFloorGas {
     let mut gas = InitialAndFloorGas::default();
@@ -714,9 +714,9 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_gas += COLD_ACCOUNT_ACCESS_COST * calls.len() as u64;
 
     // 4. Authorization list costs (EIP-7702)
-    gas.initial_gas += authorization_list.len() as u64 * eip7702::PER_EMPTY_ACCOUNT_COST;
+    gas.initial_gas += aa_authorization_list.len() as u64 * eip7702::PER_EMPTY_ACCOUNT_COST;
     // Add signature verification costs for each authorization
-    for aa_auth in authorization_list {
+    for aa_auth in aa_authorization_list {
         gas.initial_gas += aa_signature_verification_gas(aa_auth.signature());
     }
 
@@ -806,7 +806,7 @@ where
         calls,
         &aa_env.signature,
         tx.access_list(),
-        &aa_env.authorization_list,
+        &aa_env.aa_authorization_list,
         spec,
     );
 
@@ -1155,7 +1155,7 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
-            authorization_list: vec![],
+            aa_authorization_list: vec![],
         };
 
         // Calculate AA gas
@@ -1163,7 +1163,7 @@ mod tests {
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>, // no access list
-            &aa_env.authorization_list,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1216,14 +1216,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: calls.clone(),
-            authorization_list: vec![],
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.authorization_list,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1270,14 +1270,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
-            authorization_list: vec![],
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.authorization_list,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1313,14 +1313,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
-            authorization_list: vec![],
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.authorization_list,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1356,14 +1356,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
-            authorization_list: vec![],
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.authorization_list,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1400,7 +1400,7 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
-            authorization_list: vec![],
+            aa_authorization_list: vec![],
         };
 
         // Test without access list
@@ -1408,7 +1408,7 @@ mod tests {
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.authorization_list,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1444,14 +1444,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
-            authorization_list: vec![],
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.authorization_list,
+            &aa_env.aa_authorization_list,
             spec,
         );
 

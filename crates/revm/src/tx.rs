@@ -31,7 +31,7 @@ pub struct AATxEnv {
     pub aa_calls: Vec<Call>,
 
     /// Authorization list (EIP-7702 with AA signatures)
-    pub authorization_list: Vec<AASignedAuthorization>,
+    pub aa_authorization_list: Vec<AASignedAuthorization>,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -257,7 +257,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_payer_signature,
             valid_before,
             valid_after,
-            authorization_list,
+            aa_authorization_list,
         } = tx;
 
         // Extract to/value/input from calls (use first call or defaults)
@@ -285,7 +285,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
                 access_list: access_list.clone(),
                 // Convert AA authorization list to RecoveredAuthorization
-                authorization_list: authorization_list
+                authorization_list: aa_authorization_list
                     .iter()
                     .map(|aa_auth| {
                         let authority = aa_auth
@@ -311,7 +311,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_before: *valid_before,
                 valid_after: *valid_after,
                 aa_calls: calls.clone(),
-                authorization_list: authorization_list.clone(),
+                aa_authorization_list: aa_authorization_list.clone(),
             })),
         }
     }
