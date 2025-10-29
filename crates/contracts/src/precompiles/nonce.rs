@@ -9,7 +9,7 @@ sol! {
     /// are handled directly by account state. Each account can have multiple
     /// independent nonce sequences identified by a nonce key.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     interface INonce {
         /// Get the current nonce for a specific account and nonce key
         /// @param account The account address
