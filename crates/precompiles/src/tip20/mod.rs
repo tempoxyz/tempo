@@ -1507,7 +1507,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let end_time = self.storage.timestamp().to::<u128>();
         let rate_decrease = self.get_scheduled_rate_decrease_at(end_time);
 
-        // TODO: should we return an error here or just retrun early
+        // TODO: should we return an error here or just return early
         if rate_decrease == U256::ZERO {
             return Ok(());
         }

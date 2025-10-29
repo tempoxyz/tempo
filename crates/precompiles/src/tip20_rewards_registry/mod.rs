@@ -22,10 +22,10 @@ pub mod slots {
     use alloy::primitives::{U256, uint};
 
     pub const LAST_UPDATED_TIMESTAMP: U256 = uint!(0_U256);
-    // Mapping of (uint128 => []address) to inidicate all tip20 tokens with reward streams
+    // Mapping of (uint128 => []address) to indicate all tip20 tokens with reward streams
     // ending at the specified timestamp
     pub const STREAMS_ENDING_AT: U256 = uint!(1_U256);
-    // Mapping of (bytes32 => bool) to inidicate if a rewards stream exists.
+    // Mapping of (bytes32 => bool) to indicate if a rewards stream exists.
     // Mapping key is derived via keccak256(abi.encode(tip20_address, end_time))
     pub const STREAM_REGISTERED: U256 = uint!(2_U256);
 }

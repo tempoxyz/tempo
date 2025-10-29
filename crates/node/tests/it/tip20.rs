@@ -776,12 +776,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .next()
         .expect("RewardStarted event should be emitted");
 
-    let stream_id = reward_started_event;
-    // TODO: assert fields
-
-    let alice_balance_initial = token.balanceOf(alice).call().await?;
-    let bob_balance_initial = token.balanceOf(bob).call().await?;
-
     // TODO:
 
     Ok(())

@@ -18,9 +18,9 @@ pub enum TempoPrecompileError {
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
 
-    /// Error from TIP20RewardsRegisry
+    /// Error from TIP20RewardsRegistry
     #[error("TIP20 rewards registry error: {0:?}")]
-    TIP20RewardsRegisry(TIP20RewardsRegistryError),
+    TIP20RewardsRegistry(TIP20RewardsRegistryError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -67,7 +67,7 @@ impl From<TIP20Error> for TempoPrecompileError {
 
 impl From<TIP20RewardsRegistryError> for TempoPrecompileError {
     fn from(err: TIP20RewardsRegistryError) -> Self {
-        Self::TIP20RewardsRegisry(err)
+        Self::TIP20RewardsRegistry(err)
     }
 }
 
@@ -130,7 +130,7 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                 let bytes = match err {
                     TPErr::StablecoinExchange(e) => e.abi_encode().into(),
                     TPErr::TIP20(e) => e.abi_encode().into(),
-                    TPErr::TIP20RewardsRegisry(e) => e.abi_encode().into(),
+                    TPErr::TIP20RewardsRegistry(e) => e.abi_encode().into(),
                     TPErr::RolesAuthError(e) => e.abi_encode().into(),
                     TPErr::TIP403RegistryError(e) => e.abi_encode().into(),
                     TPErr::TIPAccountRegistrarError(e) => e.abi_encode().into(),
