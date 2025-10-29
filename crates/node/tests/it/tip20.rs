@@ -733,7 +733,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    // Set reward recipients
     alice_token
         .setRewardRecipient(alice)
         .send()
@@ -748,9 +747,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    // let opted_in_supply = token.getOptedInSupply().call().await?;
-    // assert_eq!(opted_in_supply, alice_amount + bob_amount);
-    //
     // Start reward stream
     let start_receipt = token
         .startReward(reward_amount, 2)
@@ -776,36 +772,22 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 
     bob_token
         .transfer(alice, U256::from(50e18))
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
         .send()
         .await?
         .get_receipt()
         .await?;
-
-    // Wait for reward stream duration to elapse (2 seconds)
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // Check balances before finalizing streams
     let alice_balance_before_finalize = alice_token.balanceOf(alice).call().await?;
     let bob_balance_before_finalize = bob_token.balanceOf(bob).call().await?;
     let admin_balance_before_finalize = token.balanceOf(admin).call().await?;
 
-    // Finalize streams to distribute rewards
-    token
-        .finalizeStreams()
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    // Wait for reward stream duration to elapse
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // Trigger reward distribution by doing a small transfer
     alice_token
         .transfer(bob, U256::from(1))
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
         .send()
         .await?
         .get_receipt()
@@ -813,8 +795,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 
     bob_token
         .transfer(alice, U256::from(1))
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
         .send()
         .await?
         .get_receipt()
@@ -825,27 +805,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     let bob_balance_after = bob_token.balanceOf(bob).call().await?;
     let admin_balance_after = token.balanceOf(admin).call().await?;
 
-    // Verify that rewards were distributed
-    println!(
-        "Alice balance before finalize: {}",
-        alice_balance_before_finalize
-    );
-    println!("Alice balance after finalize: {}", alice_balance_after);
-    println!(
-        "Bob balance before finalize: {}",
-        bob_balance_before_finalize
-    );
-    println!("Bob balance after finalize: {}", bob_balance_after);
-    println!(
-        "Admin balance before finalize: {}",
-        admin_balance_before_finalize
-    );
-    println!("Admin balance after finalize: {}", admin_balance_after);
-
-    // Alice and Bob should have received rewards proportional to their stake
-    // Since Alice has 1000e18 tokens and Bob has 500e18 tokens (after transfers)
-    // Alice should get 2/3 of rewards, Bob should get 1/3 of rewards
-    // Total rewards: 300e18, so Alice gets ~200e18, Bob gets ~100e18
     assert!(
         alice_balance_after > alice_balance_before_finalize,
         "Alice should have received rewards"
