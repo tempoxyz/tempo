@@ -1,34 +1,12 @@
 use crate::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
-    storage::{
-        PrecompileStorageProvider,
-        slots::{double_mapping_slot, mapping_slot},
-    },
-    tip20::{
-        TIP20Token,
-        roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
-    },
-    tip20_factory::TIP20Factory,
+    storage::{PrecompileStorageProvider, slots::mapping_slot},
+    tip20::TIP20Token,
     tip20_rewards_registry::TIP20RewardsRegistry,
-    tip403_registry::{ITIP403Registry, TIP403Registry},
-    tip4217_registry::{ITIP4217Registry, TIP4217Registry},
 };
-use alloy::{
-    consensus::crypto::secp256k1 as eth_secp256k1,
-    hex,
-    primitives::{
-        Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256, uint,
-    },
-    sol_types::SolStruct,
-};
-use revm::{
-    interpreter::instructions::utility::{IntoAddress, IntoU256},
-    state::Bytecode,
-};
-use std::sync::LazyLock;
-use tempo_contracts::precompiles::{INonce::abi::functions, ITIP20, TIP20Error, TIP20Event};
-use tracing::trace;
+use alloy::primitives::{Address, IntoLogData, U256, uint};
+use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
@@ -432,7 +410,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let end_time = self.storage.timestamp().to::<u128>();
         let rate_decrease = self.get_scheduled_rate_decrease_at(end_time);
 
-        // TODO: should we return an error here or just return early
         if rate_decrease == U256::ZERO {
             return Ok(());
         }
@@ -571,7 +548,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .sstore(self.token_address, slots::TOTAL_REWARD_PER_SECOND, value)
     }
 
-    fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TempoPrecompileError> {
+    pub fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TempoPrecompileError> {
         RewardStream::from_storage(stream_id, self.storage, self.token_address)
     }
 }
@@ -754,15 +731,11 @@ impl From<RewardStream> for ITIP20::RewardStream {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, FixedBytes, U256, keccak256};
-    use alloy_signer::SignerSync;
-    use alloy_signer_local::PrivateKeySigner;
-
     use super::*;
     use crate::{
-        DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider,
-        tip20::ISSUER_ROLE, tip20_factory::ITIP20Factory,
+        LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE,
     };
+    use alloy::primitives::{Address, U256};
 
     #[test]
     fn test_start_reward() -> eyre::Result<()> {

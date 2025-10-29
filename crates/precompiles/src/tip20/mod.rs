@@ -15,7 +15,6 @@ use crate::{
     },
     tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
-    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::{ITIP403Registry, TIP403Registry},
     tip4217_registry::{ITIP4217Registry, TIP4217Registry},
 };
@@ -24,7 +23,6 @@ use alloy::{
     hex,
     primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
     sol_types::SolStruct,
-    uint,
 };
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
