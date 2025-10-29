@@ -14,6 +14,7 @@ use crate::{
     },
     tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
+    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::{ITIP403Registry, TIP403Registry},
     tip4217_registry::{ITIP4217Registry, TIP4217Registry},
 };
@@ -707,7 +708,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::invalid_amount().into());
         }
 
-        // TODO: create helper function for this
         let from_balance = self.get_balance(msg_sender)?;
         let new_from_balance = from_balance
             .checked_sub(call.amount)
@@ -715,7 +715,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .ok_or(TIP20Error::insufficient_balance())?;
         self.set_balance(msg_sender, new_from_balance)?;
 
-        // TODO: create helper function for this
         let contract_address = self.token_address;
         let to_balance = self.get_balance(&contract_address)?;
         let new_to_balance = to_balance
@@ -773,6 +772,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
             self.set_scheduled_rate_decrease_at(end_time, current_decrease + rate)?;
 
+            // Add stream to registry
+            let mut registry = TIP20RewardsRegistry::new(self.storage);
+            registry.add_stream(&self.token_address, end_time)?;
+
             // Emit reward scheduled event for streaming reward
             self.storage.emit_event(
                 self.token_address,
@@ -780,13 +783,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                     funder: *msg_sender,
                     id: stream_id,
                     amount: call.amount,
-                    durationSeconds: call.seconds,
+                    durationSeconds: call.seconds as u64,
                 })
                 .into_log_data(),
             )?;
 
-            // NOTE: there is a diff with the reference contract where this returns the next id ++
-            // rather than the current next id
             Ok(stream_id)
         }
     }
@@ -1502,11 +1503,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(refund)
     }
 
-    pub fn finalize_streams(&mut self, msg_sender: &Address) -> Result<(), TempoPrecompileError> {
-        if *msg_sender != Address::ZERO {
-            todo!("system tx error")
-        }
-
+    pub fn finalize_streams(&mut self) -> Result<(), TempoPrecompileError> {
         let end_time = self.storage.timestamp().to::<u128>();
         let rate_decrease = self.get_scheduled_rate_decrease_at(end_time);
 
@@ -2998,7 +2995,7 @@ mod tests {
         token.storage.set_timestamp(U256::from(end_time));
 
         let total_before = token.get_total_reward_per_second()?;
-        token.finalize_streams(&Address::ZERO)?;
+        token.finalize_streams()?;
         let total_after = token.get_total_reward_per_second()?;
 
         assert!(total_after < total_before);
@@ -3147,7 +3144,7 @@ mod tests {
             .storage
             .set_timestamp(current_timestamp + uint!(10_U256));
 
-        token.finalize_streams(&Address::ZERO)?;
+        token.finalize_streams()?;
         token.transfer(
             &alice,
             ITIP20::transferCall {
@@ -3165,7 +3162,7 @@ mod tests {
             .storage
             .set_timestamp(current_timestamp + uint!(20_U256));
 
-        token.finalize_streams(&Address::ZERO)?;
+        token.finalize_streams()?;
         token.transfer(
             &alice,
             ITIP20::transferCall {
