@@ -89,10 +89,24 @@ impl<
     EthApi: RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
 > TempoDexApiServer for TempoDex<EthApi>
 {
+    /// Returns orders based on pagination parameters.
+    ///
+    /// ## Cursor
+    /// The cursor for this method is the **Order ID** (u128).
+    /// - When provided in the request, returns orders starting after the given order ID
+    /// - Returns `next_cursor` in the response containing the last order ID for the next page
+    /// - Orders are sorted by order ID when no other sort is specified
     async fn orders(&self, _params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse> {
         Err(internal_rpc_err("unimplemented"))
     }
 
+    /// Returns orderbooks based on pagination parameters.
+    ///
+    /// ## Cursor
+    /// The cursor for this method is the **Book Key** (B256).
+    /// - When provided in the request, returns orderbooks starting after the given book key
+    /// - Returns `next_cursor` in the response containing the last book key for the next page  
+    /// - Orderbooks are sorted by book key when no other sort is specified
     async fn orderbooks(
         &self,
         _params: PaginationParams<OrderbooksFilter>,
@@ -162,7 +176,13 @@ impl<
         })
     }
 
-    /// Applies limit to a vector of items
+    /// Applies limit to a vector of items.
+    ///
+    /// ## Cursor Considerations
+    /// When implementing cursor-based pagination:
+    /// - Apply limit AFTER filtering by cursor position
+    /// - Return limit + 1 items to determine if there's a next page
+    /// - Use the last item's ID/key as the next_cursor value
     fn apply_limit<T>(items: Vec<T>, limit: Option<usize>) -> Vec<T> {
         let limit = limit
             .map(|l| l.min(Self::MAX_LIMIT))
@@ -170,7 +190,13 @@ impl<
         items.into_iter().take(limit).collect()
     }
 
-    /// Sorts orderbooks based on the sort parameters
+    /// Sorts orderbooks based on the sort parameters.
+    ///
+    /// ## Cursor Considerations
+    /// When implementing cursor-based pagination:
+    /// - The cursor (book key) position depends on the sort field
+    /// - For non-bookKey sorts, may need secondary sort by bookKey for stable ordering
+    /// - Cursor comparison logic will vary based on the active sort field
     fn sort_orderbooks(
         mut books: Vec<PrecompileOrderbook>,
         sort: Option<OrdersSort>,
@@ -259,7 +285,13 @@ impl<
         books
     }
 
-    /// Applies pagination parameters (filtering, sorting, limiting) to orderbooks
+    /// Applies pagination parameters (filtering, sorting, limiting) to orderbooks.
+    ///
+    /// ## Cursor Support (Not Yet Implemented)
+    /// When cursor support is added:
+    /// - The cursor should be a B256 book key
+    /// - Results should start after the cursor position based on the current sort order
+    /// - The method should return both the filtered results and the next cursor value
     pub fn apply_pagination_to_orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
@@ -278,7 +310,11 @@ impl<
         Self::apply_limit(sorted_books, params.limit)
     }
 
-    /// Converts a precompile orderbook to RPC orderbook format
+    /// Converts a precompile orderbook to RPC orderbook format.
+    ///
+    /// ## Cursor Field
+    /// The `book_key` field in the returned Orderbook serves as the cursor
+    /// for pagination when requesting subsequent pages.
     fn to_rpc_orderbook(&self, book: &PrecompileOrderbook) -> Orderbook {
         let book_key = compute_book_key(book.base, book.quote);
         let spread = if book.best_ask_tick != i16::MAX && book.best_bid_tick != i16::MIN {
@@ -298,6 +334,12 @@ impl<
     }
 
     /// Returns the orderbooks that should be filtered based on the filter params.
+    ///
+    /// ## Cursor Considerations
+    /// This method returns ALL matching orderbooks without cursor support.
+    /// When adding cursor support:
+    /// - Filter results should be further filtered by cursor position
+    /// - The cursor (book key) comparison depends on the sort order
     pub fn pick_orderbooks(&self, filter: OrderbooksFilter) -> Vec<PrecompileOrderbook> {
         // If both base and quote are specified, get just that specific orderbook
         if let (Some(base), Some(quote)) = (filter.base_token, filter.quote_token) {
@@ -357,6 +399,12 @@ impl<
     }
 
     /// Returns all orderbooks.
+    ///
+    /// ## Cursor Considerations  
+    /// This method returns ALL orderbooks without pagination.
+    /// When adding cursor support, consider:
+    /// - Fetching only required orderbooks based on cursor position
+    /// - Or filtering the full list post-fetch based on cursor
     pub fn get_all_books(&self) -> Vec<PrecompileOrderbook> {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let mut books = Vec::new();
@@ -375,6 +423,10 @@ impl<
     }
 
     /// Returns an orderbook based on the base and quote tokens.
+    ///
+    /// ## Note
+    /// Single orderbook fetches don't require cursor pagination.
+    /// This is used when filters specify both base and quote tokens.
     pub fn get_orderbook(&self, base: Address, quote: Address) -> PrecompileOrderbook {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let book_key = compute_book_key(base, quote);

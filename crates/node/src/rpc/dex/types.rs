@@ -7,10 +7,14 @@ pub type Tick = i16;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaginationParams<Filters> {
-    /// Cursor for pagination. Based on orderId.
+    /// Cursor for pagination.
+    ///
+    /// The cursor format depends on the endpoint:
+    /// - `dex_getOrders`: Order ID (u128 encoded as string)
+    /// - `dex_getOrderbooks`: Book Key (B256 encoded as hex string)
     ///
     /// Defaults to first entry based on the sort and filter configuration.
-    /// Use the `nextCursor` in response to get the next set of orders.
+    /// Use the `nextCursor` in response to get the next set of results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 
