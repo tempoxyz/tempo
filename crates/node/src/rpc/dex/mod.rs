@@ -142,18 +142,6 @@ impl<
         }
     }
 
-    /// Checks if a tick value is within the specified range
-    fn tick_in_range(tick: Tick, range: &FilterRange<Tick>) -> bool {
-        let mut in_range = true;
-        if let Some(min) = range.min {
-            in_range = in_range && tick >= min;
-        }
-        if let Some(max) = range.max {
-            in_range = in_range && tick <= max;
-        }
-        in_range
-    }
-
     /// Returns the orderbooks that should be filtered based on the filter params.
     pub fn pick_orderbooks(&self, filter: OrderbooksFilter) -> Vec<PrecompileOrderbook> {
         // If both base and quote are specified, get just that specific orderbook
@@ -184,9 +172,7 @@ impl<
                 // Filter by best ask tick range
                 if let Some(ref ask_range) = filter.best_ask_tick {
                     // Only filter if the book has a valid ask (not i16::MAX)
-                    if book.best_ask_tick != i16::MAX
-                        && !Self::tick_in_range(book.best_ask_tick, ask_range)
-                    {
+                    if book.best_ask_tick != i16::MAX && !ask_range.in_range(book.best_ask_tick) {
                         return false;
                     }
                 }
@@ -194,9 +180,7 @@ impl<
                 // Filter by best bid tick range
                 if let Some(ref bid_range) = filter.best_bid_tick {
                     // Only filter if the book has a valid bid (not i16::MIN)
-                    if book.best_bid_tick != i16::MIN
-                        && !Self::tick_in_range(book.best_bid_tick, bid_range)
-                    {
+                    if book.best_bid_tick != i16::MIN && !bid_range.in_range(book.best_bid_tick) {
                         return false;
                     }
                 }
@@ -206,7 +190,7 @@ impl<
                     // Calculate spread only if both ticks are valid
                     if book.best_ask_tick != i16::MAX && book.best_bid_tick != i16::MIN {
                         let spread = book.best_ask_tick - book.best_bid_tick;
-                        if !Self::tick_in_range(spread, spread_range) {
+                        if !spread_range.in_range(spread) {
                             return false;
                         }
                     }

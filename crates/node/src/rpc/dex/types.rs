@@ -74,6 +74,23 @@ pub struct FilterRange<T> {
     pub max: Option<T>,
 }
 
+impl<T: PartialOrd> FilterRange<T> {
+    /// Checks if a value is within this range (inclusive)
+    pub fn in_range(&self, value: T) -> bool {
+        if let Some(ref min) = self.min {
+            if value < *min {
+                return false;
+            }
+        }
+        if let Some(ref max) = self.max {
+            if value > *max {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrdersResponse {
