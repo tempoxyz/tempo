@@ -728,7 +728,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         if call.seconds == 0 {
             let opted_in_supply = self.get_opted_in_supply()?;
             if opted_in_supply.is_zero() {
-                return Ok(0);
+                return Err(TIP20Error::no_reward_supplied().into());
             }
 
             let delta_rpt = (call.amount * ACC_PRECISION) / opted_in_supply;

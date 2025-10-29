@@ -122,6 +122,7 @@ sol! {
         error TransfersDisabled();
         error InvalidAmount();
         error NotStreamFunder();
+        error NoRewardSupplied();
         error StreamInactive();
     }
 }
@@ -222,5 +223,10 @@ impl TIP20Error {
     /// Error for when msg.sedner is not stream funder
     pub const fn not_stream_funder() -> Self {
         Self::NotStreamFunder(ITIP20::NotStreamFunder {})
+    }
+
+    /// Error for when opted in supply is 0
+    pub const fn no_reward_supplied() -> Self {
+        Self::NoRewardSupplied(ITIP20::NoRewardSupplied {})
     }
 }
