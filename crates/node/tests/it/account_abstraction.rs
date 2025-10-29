@@ -1816,7 +1816,7 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_aa_eip7702_aa_authorization_list() -> eyre::Result<()> {
+async fn test_aa_authorization_list() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     println!("\n=== Testing EIP-7702 Authorization List with AA Signatures ===\n");
@@ -1888,35 +1888,46 @@ async fn test_aa_eip7702_aa_authorization_list() -> eyre::Result<()> {
         "Authority 3 should have no code before delegation"
     );
     // ========================================================================
-    // Create AA transaction with authorization list
+    // Create AA transaction with authorization list using RPC
     // ========================================================================
-    println!("\n--- Creating AA transaction with authorization list ---");
+    println!("\n--- Creating AA transaction with authorization list via RPC ---");
 
     let recipient = Address::random();
-    let tx = TxAA {
-        chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000, // Higher gas for authorization list processing
+
+    // Create transaction request using RPC interface
+    use alloy::rpc::types::TransactionRequest;
+    use tempo_node::rpc::TempoTransactionRequest;
+
+    let tx_request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(sender_addr),
+            to: Some(recipient.into()),
+            value: Some(U256::ZERO),
+            gas: Some(300_000), // Higher gas for authorization list processing
+            max_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
+            max_priority_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
+            nonce: Some(provider.get_transaction_count(sender_addr).await?),
+            chain_id: Some(chain_id),
+            ..Default::default()
+        },
         calls: vec![Call {
             to: recipient.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 0,
-        nonce: provider.get_transaction_count(sender_addr).await?,
-        fee_token: None,
-        fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
         aa_authorization_list: vec![auth1_signed, auth2_signed, auth3_signed], // All 3 authorizations
+        ..Default::default()
     };
 
     println!(
-        "  Created tx with {} authorizations (Secp256k1, P256, WebAuthn)",
-        tx.aa_authorization_list.len()
+        "  Created tx request with {} authorizations (Secp256k1, P256, WebAuthn)",
+        tx_request.aa_authorization_list.len()
     );
+
+    // Build the AA transaction from the request
+    let tx = tx_request
+        .build_aa()
+        .map_err(|e| eyre::eyre!("Failed to build AA tx: {:?}", e))?;
 
     // Sign the transaction with sender's secp256k1 key
     let tx_sig_hash = tx.signature_hash();
@@ -1943,7 +1954,7 @@ async fn test_aa_eip7702_aa_authorization_list() -> eyre::Result<()> {
     );
     println!("  ✓ Encoding/decoding roundtrip successful");
 
-    // Inject transaction and mine block
+    // Submit transaction via RPC
     setup.node.rpc.inject_tx(encoded.clone().into()).await?;
     let payload = setup.node.advance_block().await?;
 

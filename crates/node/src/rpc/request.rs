@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{
     AASignature, SignatureType, TempoTxEnvelope, TxAA, TxFeeToken,
-    transaction::{Call, TempoTypedTransaction},
+    transaction::{AASignedAuthorization, Call, TempoTypedTransaction},
 };
 use tempo_revm::{AATxEnv, TempoTxEnv};
 
@@ -43,6 +43,10 @@ pub struct TempoTransactionRequest {
     /// Optional key-specific data for gas estimation (e.g., webauthn authenticator data).
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
     pub key_data: Option<Bytes>,
+
+    /// Optional AA authorization list for AA transactions (supports multiple signature types)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aa_authorization_list: Vec<AASignedAuthorization>,
 }
 
 impl TempoTransactionRequest {
@@ -145,6 +149,7 @@ impl TempoTransactionRequest {
             fee_token: self.fee_token,
             access_list: self.inner.access_list.unwrap_or_default(),
             calls,
+            aa_authorization_list: self.aa_authorization_list,
             ..Default::default()
         })
     }
@@ -173,6 +178,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                 calls,
                 key_type,
                 key_data,
+                aa_authorization_list,
             } = self;
             let envelope =
                 match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(inner.clone())
@@ -185,6 +191,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             calls,
                             key_type,
                             key_data,
+                            aa_authorization_list,
                         }));
                     }
                 };
@@ -198,6 +205,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                         calls,
                         key_type,
                         key_data,
+                        aa_authorization_list,
                     })
                 })?)
         }
@@ -218,13 +226,14 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             calls,
             key_type,
             key_data,
+            aa_authorization_list,
         } = self;
         Ok(TempoTxEnv {
             inner: inner.try_into_tx_env(cfg_env, &block_env.inner)?,
             fee_token,
             is_system_tx: false,
             fee_payer: None,
-            aa_tx_env: (!calls.is_empty()).then(|| {
+            aa_tx_env: (!calls.is_empty() || !aa_authorization_list.is_empty()).then(|| {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 let mock_signature = key_type
@@ -235,6 +244,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 Box::new(AATxEnv {
                     aa_calls: calls,
                     signature: mock_signature,
+                    aa_authorization_list,
                     ..Default::default()
                 })
             }),
@@ -350,9 +360,7 @@ impl From<TransactionRequest> for TempoTransactionRequest {
         Self {
             inner: value,
             fee_token: None,
-            calls: vec![],
-            key_type: None,
-            key_data: None,
+            ..Default::default()
         }
     }
 }
@@ -421,9 +429,7 @@ impl<T: TransactionTrait + FeeToken> From<Signed<T>> for TempoTransactionRequest
         Self {
             fee_token: value.tx().fee_token(),
             inner: TransactionRequest::from_transaction(value),
-            calls: vec![],
-            key_type: None,
-            key_data: None,
+            ..Default::default()
         }
     }
 }
@@ -452,6 +458,7 @@ impl From<tempo_primitives::AASigned> for TempoTransactionRequest {
                 transaction_type: Some(tx.ty()),
             },
             calls: tx.calls,
+            aa_authorization_list: tx.aa_authorization_list,
             key_type: None,
             key_data: None,
         }
@@ -464,37 +471,27 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
             TempoTypedTransaction::Legacy(tx) => Self {
                 inner: tx.into(),
                 fee_token: None,
-                calls: vec![],
-                key_type: None,
-                key_data: None,
+                ..Default::default()
             },
             TempoTypedTransaction::Eip2930(tx) => Self {
                 inner: tx.into(),
                 fee_token: None,
-                calls: vec![],
-                key_type: None,
-                key_data: None,
+                ..Default::default()
             },
             TempoTypedTransaction::Eip1559(tx) => Self {
                 inner: tx.into(),
                 fee_token: None,
-                calls: vec![],
-                key_type: None,
-                key_data: None,
+                ..Default::default()
             },
             TempoTypedTransaction::Eip7702(tx) => Self {
                 inner: tx.into(),
                 fee_token: None,
-                calls: vec![],
-                key_type: None,
-                key_data: None,
+                ..Default::default()
             },
             TempoTypedTransaction::FeeToken(tx) => Self {
                 fee_token: tx.fee_token,
                 inner: TransactionRequest::from_transaction(tx),
-                calls: vec![],
-                key_type: None,
-                key_data: None,
+                ..Default::default()
             },
             TempoTypedTransaction::AA(tx) => tx.into(),
         }
