@@ -227,27 +227,29 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         )?;
 
         // Store inboundAddress
-        let inbound = call.inboundAddress.parse::<HostWithPort>().map_err(|err| {
-            ValidatorConfigError::not_host_port("inboundAddress".to_string(), format!("{err:?}"))
+        ensure_is_host_port(&call.inboundAddress).map_err(|err| {
+            ValidatorConfigError::not_host_port(
+                "inboundAddress".to_string(),
+                call.inboundAddress.clone(),
+                format!("{err:?}"),
+            )
         })?;
         self.write_string(
             slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET,
-            inbound.to_string(),
+            call.inboundAddress,
         )?;
 
         // Store outboundAddress
-        let outbound = call
-            .outboundAddress
-            .parse::<HostWithPort>()
-            .map_err(|err| {
-                ValidatorConfigError::not_host_port(
-                    "outboundAddress".to_string(),
-                    format!("{err:?}"),
-                )
-            })?;
+        ensure_is_host_port(&call.outboundAddress).map_err(|err| {
+            ValidatorConfigError::not_host_port(
+                "outboundAddress".to_string(),
+                call.outboundAddress.clone(),
+                format!("{err:?}"),
+            )
+        })?;
         self.write_string(
             slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
-            outbound.to_string(),
+            call.outboundAddress,
         )?;
 
         // Set validator in validators array
@@ -360,6 +362,13 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         if self.read_string(new_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET)?
             != call.inboundAddress
         {
+            ensure_is_host_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
             self.write_string(
                 new_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET,
                 call.inboundAddress,
@@ -369,6 +378,13 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         if self.read_string(new_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET)?
             != call.outboundAddress
         {
+            ensure_is_host_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
             self.write_string(
                 new_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
                 call.outboundAddress,
@@ -496,9 +512,9 @@ mod tests {
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator1,
                 key,
-                inboundAddress: "192.168.1.1".to_string(),
+                inboundAddress: "192.168.1.1:8000".to_string(),
                 active: true,
-                outboundAddress: "192.168.1.1".to_string(),
+                outboundAddress: "192.168.1.1:9000".to_string(),
             },
         );
         assert!(result.is_ok(), "Owner should be able to add validator");
@@ -589,9 +605,9 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
                     key: key1,
-                    inboundAddress: "192.168.1.1".to_string(),
+                    inboundAddress: "192.168.1.1:8000".to_string(),
                     active: true,
-                    outboundAddress: "192.168.1.1".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
                 },
             )
             .expect("Should add validator1");
@@ -623,9 +639,9 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator2,
                     key: key2,
-                    inboundAddress: "192.168.1.2".to_string(),
+                    inboundAddress: "192.168.1.2:8000".to_string(),
                     active: true,
-                    outboundAddress: "192.168.1.2".to_string(),
+                    outboundAddress: "192.168.1.2:9000".to_string(),
                 },
             )
             .expect("Should add validator2");
@@ -638,9 +654,9 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator3,
                     key: key3,
-                    inboundAddress: "192.168.1.3".to_string(),
+                    inboundAddress: "192.168.1.3:8000".to_string(),
                     active: false,
-                    outboundAddress: "192.168.1.3".to_string(),
+                    outboundAddress: "192.168.1.3:9000".to_string(),
                 },
             )
             .expect("Should add validator3");
@@ -653,9 +669,9 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator4,
                     key: key4,
-                    inboundAddress: "192.168.1.4".to_string(),
+                    inboundAddress: "192.168.1.4:8000".to_string(),
                     active: true,
-                    outboundAddress: "192.168.1.4".to_string(),
+                    outboundAddress: "192.168.1.4:9000".to_string(),
                 },
             )
             .expect("Should add validator4");
@@ -668,9 +684,9 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator5,
                     key: key5,
-                    inboundAddress: "192.168.1.5".to_string(),
+                    inboundAddress: "192.168.1.5:8000".to_string(),
                     active: true,
-                    outboundAddress: "192.168.1.5".to_string(),
+                    outboundAddress: "192.168.1.5:9000".to_string(),
                 },
             )
             .expect("Should add validator5");
@@ -689,27 +705,27 @@ mod tests {
         // Verify each validator
         assert_eq!(validators[0].validatorAddress, validator1);
         assert_eq!(validators[0].key, key1);
-        assert_eq!(validators[0].inboundAddress, "192.168.1.1");
+        assert_eq!(validators[0].inboundAddress, "192.168.1.1:8000");
         assert!(validators[0].active);
 
         assert_eq!(validators[1].validatorAddress, validator2);
         assert_eq!(validators[1].key, key2);
-        assert_eq!(validators[1].inboundAddress, "192.168.1.2");
+        assert_eq!(validators[1].inboundAddress, "192.168.1.2:8000");
         assert!(validators[1].active);
 
         assert_eq!(validators[2].validatorAddress, validator3);
         assert_eq!(validators[2].key, key3);
-        assert_eq!(validators[2].inboundAddress, "192.168.1.3");
+        assert_eq!(validators[2].inboundAddress, "192.168.1.3:8000");
         assert!(!validators[2].active);
 
         assert_eq!(validators[3].validatorAddress, validator4);
         assert_eq!(validators[3].key, key4);
-        assert_eq!(validators[3].inboundAddress, "192.168.1.4");
+        assert_eq!(validators[3].inboundAddress, "192.168.1.4:8000");
         assert!(validators[3].active);
 
         assert_eq!(validators[4].validatorAddress, validator5);
         assert_eq!(validators[4].key, key5);
-        assert_eq!(validators[4].inboundAddress, "192.168.1.5");
+        assert_eq!(validators[4].inboundAddress, "192.168.1.5:8000");
         assert!(validators[4].active);
 
         // Validator1 updates IP and key (keeps same address)
@@ -720,8 +736,8 @@ mod tests {
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator1,
                     key: key1_new,
-                    inboundAddress: "10.0.0.1".to_string(),
-                    outboundAddress: "10.0.0.1".to_string(),
+                    inboundAddress: "10.0.0.1:8000".to_string(),
+                    outboundAddress: "10.0.0.1:9000".to_string(),
                 },
             )
             .expect("Should update validator1");
@@ -734,8 +750,8 @@ mod tests {
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator2_new,
                     key: key2,
-                    inboundAddress: "192.168.1.2".to_string(),
-                    outboundAddress: "192.168.1.2".to_string(),
+                    inboundAddress: "192.168.1.2:8000".to_string(),
+                    outboundAddress: "192.168.1.2:9000".to_string(),
                 },
             )
             .expect("Should rotate validator2 address");
@@ -748,8 +764,8 @@ mod tests {
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator3_new,
                     key: key3,
-                    inboundAddress: "10.0.0.3".to_string(),
-                    outboundAddress: "10.0.0.3".to_string(),
+                    inboundAddress: "10.0.0.3:8000".to_string(),
+                    outboundAddress: "10.0.0.3:9000".to_string(),
                 },
             )
             .expect("Should rotate validator3 address and update IP");
@@ -769,7 +785,7 @@ mod tests {
         assert_eq!(validators[0].validatorAddress, validator1);
         assert_eq!(validators[0].key, key1_new, "Key should be updated");
         assert_eq!(
-            validators[0].inboundAddress, "10.0.0.1",
+            validators[0].inboundAddress, "10.0.0.1:8000",
             "IP should be updated"
         );
         assert!(validators[0].active);
@@ -777,20 +793,20 @@ mod tests {
         // Verify validator4 - unchanged
         assert_eq!(validators[1].validatorAddress, validator4);
         assert_eq!(validators[1].key, key4);
-        assert_eq!(validators[1].inboundAddress, "192.168.1.4");
+        assert_eq!(validators[1].inboundAddress, "192.168.1.4:8000");
         assert!(validators[1].active);
 
         // Verify validator5 - unchanged
         assert_eq!(validators[2].validatorAddress, validator5);
         assert_eq!(validators[2].key, key5);
-        assert_eq!(validators[2].inboundAddress, "192.168.1.5");
+        assert_eq!(validators[2].inboundAddress, "192.168.1.5:8000");
         assert!(validators[2].active);
 
         // Verify validator2_new - rotated address, kept IP and key
         assert_eq!(validators[3].validatorAddress, validator2_new);
         assert_eq!(validators[3].key, key2, "Key should be same");
         assert_eq!(
-            validators[3].inboundAddress, "192.168.1.2",
+            validators[3].inboundAddress, "192.168.1.2:8000",
             "IP should be same"
         );
         assert!(validators[3].active);
@@ -799,7 +815,7 @@ mod tests {
         assert_eq!(validators[4].validatorAddress, validator3_new);
         assert_eq!(validators[4].key, key3, "Key should be same");
         assert_eq!(
-            validators[4].inboundAddress, "10.0.0.3",
+            validators[4].inboundAddress, "10.0.0.3:8000",
             "IP should be updated"
         );
         assert!(!validators[4].active);
@@ -822,9 +838,9 @@ mod tests {
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
                     key,
-                    inboundAddress: "192.168.1.1".to_string(),
+                    inboundAddress: "192.168.1.1:8000".to_string(),
                     active: true,
-                    outboundAddress: "192.168.1.1".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
                 },
             )
             .expect("Should add validator");
@@ -852,16 +868,23 @@ mod tests {
     }
 }
 
+fn ensure_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
+    input.parse::<HostWithPort>()?;
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 enum HostWithPortParseError {
-    #[error("failed to parse input as URL")]
-    Url(#[from] url::ParseError),
-    #[error("input did not contain host")]
+    #[error("failed to parse host segment of input")]
+    BadHost(#[from] url::ParseError),
+    #[error("failed to parse port segment of input")]
+    BadPort(#[from] std::num::ParseIntError),
+    #[error("input did not contain a host part")]
     NoHost,
-    #[error("input did not contain port")]
+    #[error("input did not contain port part")]
     NoPort,
-    #[error("input did not match <host>:<port>; only inputs of that form are accepted")]
-    NotHostPort,
+    #[error("input had too many segments separated by `:`; only <hostname>:<port> is allowed")]
+    TooManySegments,
 }
 
 /// A string guaranteed to be `<host>:<port>`.
@@ -884,18 +907,20 @@ impl FromStr for HostWithPort {
     type Err = HostWithPortParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let url = s.trim().parse::<url::Url>()?;
+        let mut split = s.split(":");
+        let maybe_host = split.next().ok_or(Self::Err::NoHost)?;
+        let maybe_port = split.next().ok_or(Self::Err::NoPort)?;
+        if split.next().is_some() {
+            return Err(Self::Err::TooManySegments);
+        }
 
-        let host = url.host_str().ok_or(Self::Err::NoHost)?;
-        let port = url.port().ok_or(Self::Err::NoPort)?;
+        let host = url::Host::parse(maybe_host)?.to_string();
+        let port = maybe_port.parse::<u16>()?;
 
         let this = Self {
             host: host.to_string(),
             port,
         };
-        if this.to_string() != url.to_string() {
-            return Err(Self::Err::NotHostPort);
-        }
         Ok(this)
     }
 }

@@ -57,7 +57,7 @@ sol! {
         error ValidatorAlreadyExists();
         error ValidatorNotFound();
 
-        error NotHostPort(string field, string backtrace);
+        error NotHostPort(string field, string input, string backtrace);
     }
 }
 
@@ -77,7 +77,11 @@ impl ValidatorConfigError {
         Self::ValidatorNotFound(IValidatorConfig::ValidatorNotFound {})
     }
 
-    pub fn not_host_port(field: String, backtrace: String) -> Self {
-        Self::NotHostPort(IValidatorConfig::NotHostPort { field, backtrace })
+    pub fn not_host_port(field: String, input: String, backtrace: String) -> Self {
+        Self::NotHostPort(IValidatorConfig::NotHostPort {
+            field,
+            input,
+            backtrace,
+        })
     }
 }
