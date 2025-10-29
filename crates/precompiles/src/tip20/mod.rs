@@ -1465,7 +1465,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(refund)
     }
 
-    // NOTE: bookmark
     pub fn finalize_streams(&mut self, msg_sender: &Address) -> Result<(), TempoPrecompileError> {
         if *msg_sender != Address::ZERO {
             todo!("system tx error")
@@ -1474,9 +1473,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let end_time = self.storage.timestamp().to::<u128>();
         let rate_decrease = self.get_scheduled_rate_decrease_at(end_time);
 
+        // TODO: should we return an error here or just retrun early
         if rate_decrease == U256::ZERO {
-            // TODO: No streams
-            return Err(TIP20Error::invalid_amount().into());
+            return Ok(());
         }
 
         self.accrue()?;
@@ -3122,13 +3121,14 @@ mod tests {
 
         // Assert balances after first half elapsed
         let alice_balance_mid = token.get_balance(&alice)?;
-        let expected_mid_balance =
-            alice_balance_before + (reward_amount / uint!(2_U256)) - U256::ONE;
-        assert_eq!(alice_balance_mid, expected_mid_balance);
+        let expected_balance = alice_balance_before + (reward_amount / uint!(2_U256)) - U256::ONE;
+        assert_eq!(alice_balance_mid, expected_balance);
 
         token
             .storage
             .set_timestamp(current_timestamp + uint!(20_U256));
+
+        token.finalize_streams(&Address::ZERO)?;
         token.transfer(
             &alice,
             ITIP20::transferCall {
@@ -3139,8 +3139,8 @@ mod tests {
 
         // Assert balances
         let alice_balance_after = token.get_balance(&alice)?;
-        let expected_final_balance = alice_balance_before + reward_amount - U256::from(2);
-        assert_eq!(alice_balance_after, expected_final_balance);
+        let expected_balance = alice_balance_before + reward_amount - U256::from(2);
+        assert_eq!(alice_balance_after, expected_balance);
 
         // Confirm that stream is finished
         let total_reward_per_second = token.get_total_reward_per_second()?;
