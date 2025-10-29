@@ -18,18 +18,17 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIPRewardsRegistry<'a, S> 
         match selector {
             ITIPRewardsRegistry::addStreamCall::SELECTOR => {
                 mutate::<ITIPRewardsRegistry::addStreamCall>(calldata, msg_sender, |_, call| {
-                    self.add_stream(call.token, call.endTime);
-                    Ok(())
+                    self.add_stream(call.token, call.endTime)
                 })
             }
-            ITIPRewardsRegistry::getTokensEndingAtCall::SELECTOR => {
-                view::<ITIPRewardsRegistry::getTokensEndingAtCall>(calldata, |call| {
-                    Ok(self.get_tokens_ending_at(call.timestamp))
+            ITIPRewardsRegistry::getStreamsEndingAtTimestampCall::SELECTOR => {
+                view::<ITIPRewardsRegistry::getStreamsEndingAtTimestampCall>(calldata, |call| {
+                    self.get_tokens_ending_at(call.timestamp)
                 })
             }
             ITIPRewardsRegistry::finalizeStreamsCall::SELECTOR => {
-                mutate::<ITIPRewardsRegistry::finalizeStreamsCall>(calldata, msg_sender, |sender, call| {
-                    self.finalize_streams_checked(sender, call.timestamp)
+                mutate::<ITIPRewardsRegistry::finalizeStreamsCall>(calldata, msg_sender, |sender, _call| {
+                    self.finalize_streams_checked(sender)
                 })
             }
             _ => Err(PrecompileError::Other(
