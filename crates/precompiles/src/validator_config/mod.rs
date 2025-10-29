@@ -1,11 +1,5 @@
 pub mod dispatch;
 
-use std::{
-    fmt::Display,
-    net::{AddrParseError, Ipv6Addr},
-    str::FromStr,
-};
-
 pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
