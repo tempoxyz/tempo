@@ -33,32 +33,40 @@ const DEFAULT_LIMIT: usize = 10;
 /// Maximum limit for pagination
 const MAX_LIMIT: usize = 100;
 
-/// Result of paginated query containing items and optional cursor for next page
-// TODO: remove this, useless
-pub struct PaginatedResult<T> {
-    /// The items for this page
-    pub items: Vec<T>,
-    /// Cursor for the next page, if there are more items
-    pub next_cursor: Option<String>,
+/// Represents an order along with its orderbook context.
+/// Used when iterating through multiple orderbooks to maintain
+/// the relationship between orders and their parent book.
+struct OrderWithBook {
+    /// The order from the orderbook
+    order: PrecompileOrder,
+    /// Base token address of the orderbook containing this order
+    base: Address,
+    /// Quote token address of the orderbook containing this order
+    quote: Address,
 }
 
-/// Trait for items that can provide a cursor value for pagination
-// TODO: remove this, useless
-trait CursorProvider {
-    /// Returns the cursor value for this item
-    fn cursor_value(&self) -> String;
-}
-
-impl CursorProvider for PrecompileOrderbook {
-    fn cursor_value(&self) -> String {
-        // Use book key as cursor for orderbooks
-        format!("0x{}", compute_book_key(self.base, self.quote))
+/// Determines which book keys to query based on base and quote token filters.
+///
+/// Returns:
+/// - A single book key if both base and quote tokens are specified
+/// - All book keys from the exchange if filters are partial or absent
+fn get_filtered_book_keys(
+    exchange: &mut StablecoinExchange<'_, EvmPrecompileStorageProvider<'_>>,
+    base_token: Option<Address>,
+    quote_token: Option<Address>,
+) -> Result<Vec<B256>, String> {
+    match (base_token, quote_token) {
+        (Some(base), Some(quote)) => Ok(vec![compute_book_key(base, quote)]),
+        _ => exchange
+            .get_book_keys()
+            .map_err(|e| format!("Failed to get book keys: {e}")),
     }
 }
 
 /// An iterator over orders for a specific orderbook
 pub struct BookIterator<'a, 'b> {
-    // TODO: add filter
+    /// Optional filter to apply to orders
+    filter: Option<OrdersFilters>,
     /// Whether or not to iterate over bids or asks.
     bids: bool,
     /// Book key
@@ -83,9 +91,11 @@ impl<'a, 'b> BookIterator<'a, 'b> {
         exchange_address: Address,
         bids: bool,
         starting_order: Option<u128>,
+        filter: Option<OrdersFilters>,
     ) -> Self {
         let book_key = compute_book_key(orderbook.base, orderbook.quote);
         Self {
+            filter,
             book_key,
             exchange_address,
             order: None,
@@ -127,17 +137,14 @@ impl<'a, 'b> BookIterator<'a, 'b> {
 
         if more_ticks { Some(next_tick) } else { None }
     }
-}
 
-impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
-    type Item = PrecompileOrder;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Find the next order in the orderbook, starting from current position.
+    /// Returns the order ID of the next order, or None if no more orders.
+    fn find_next_order(&mut self) -> Option<u128> {
         // If we have a starting order, use that to initialize
         if let Some(starting_order) = self.starting_order.take() {
-            let current_order = self.get_order(starting_order);
-            return Some(current_order);
-        };
+            return Some(starting_order);
+        }
 
         // If there is no current order we get the first one based on the best bid or ask tick
         let Some(current_id) = self.order else {
@@ -151,22 +158,18 @@ impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
 
             // if the best bid level is empty then there are no more bids and we should stop the
             // iteration
-            // TODO: double check this
             if price_level.is_empty() {
                 return None;
             }
 
-            let current_order = self.get_order(price_level.head);
-
-            self.order = Some(price_level.head);
-            return Some(current_order);
+            return Some(price_level.head);
         };
 
         let current_order = self.get_order(current_id);
 
         // Now get the order after this one.
-        let next_order = if current_order.next() != 0 {
-            current_order.next()
+        if current_order.next() != 0 {
+            Some(current_order.next())
         } else {
             let tick = current_order.tick();
 
@@ -180,14 +183,34 @@ impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
             }
 
             // return the head of the price level as the next order
-            price_level.head
-        };
+            Some(price_level.head)
+        }
+    }
+}
 
-        // set the current order
-        self.order = Some(next_order);
+impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
+    type Item = PrecompileOrder;
 
-        // return the order
-        Some(self.get_order(next_order))
+    fn next(&mut self) -> Option<Self::Item> {
+        // keep searching until we find an order that matches the filter
+        while let Some(order_id) = self.find_next_order() {
+            let order = self.get_order(order_id);
+
+            // update current position
+            self.order = Some(order_id);
+
+            // check if order passes filter
+            if let Some(ref filter) = self.filter {
+                if order_matches_filter(&order, filter) {
+                    return Some(order);
+                }
+            } else {
+                // no filter, return the order
+                return Some(order);
+            }
+        }
+
+        None
     }
 }
 
@@ -230,45 +253,104 @@ impl<
         let response = self
             .with_storage_at_block(BlockNumberOrTag::Latest.into(), |storage| {
                 let mut exchange = StablecoinExchange::new(storage);
-                // TODO: filtering books by order filter
-                let orderbook_id = exchange.get_book_keys().expect("TODO: errors")[0];
                 let exchange_address = exchange.address();
 
-                let orderbook =
-                    PrecompileOrderbook::from_storage(orderbook_id, storage, exchange_address)
-                        .expect("TODO: errors");
+                // Determine which books to iterate based on filter
+                let base_token = params.filters.as_ref().and_then(|f| f.base_token);
+                let quote_token = params.filters.as_ref().and_then(|f| f.quote_token);
+                let book_keys = get_filtered_book_keys(&mut exchange, base_token, quote_token)?;
 
-                // for now if both is_bid and is_ask are set just use is_bid
                 let is_bid = params
                     .filters
                     .as_ref()
                     .is_none_or(|f| f.is_bid.unwrap_or(false));
 
-                let book_iterator =
-                    BookIterator::new(storage, &orderbook, exchange_address, is_bid, None);
-                let limit = 10;
-                let mut orders = book_iterator
+                let cursor = params
+                    .cursor
+                    .map(|cursor| parse_order_cursor(&cursor))
+                    .transpose()
+                    .expect("TODO: errors");
+
+                let limit = params
+                    .limit
+                    .map(|l| l.min(MAX_LIMIT))
+                    .unwrap_or(DEFAULT_LIMIT);
+
+                let mut all_orders: Vec<OrderWithBook> = Vec::new();
+                let mut next_cursor = None;
+
+                // Iterate through books collecting orders until we reach the limit
+                for book_key in book_keys {
+                    let orderbook =
+                        PrecompileOrderbook::from_storage(book_key, storage, exchange_address)
+                            .expect("TODO: errors");
+
+                    // Check if this book matches the base/quote filter
+                    if let Some(ref filter) = params.filters {
+                        if filter.base_token.is_some_and(|base| base != orderbook.base) {
+                            continue;
+                        }
+                        if filter
+                            .quote_token
+                            .is_some_and(|quote| quote != orderbook.quote)
+                        {
+                            continue;
+                        }
+                    }
+
+                    let starting_order = if all_orders.is_empty() {
+                        cursor // Use cursor only for the first book
+                    } else {
+                        None
+                    };
+
+                    let book_iterator = BookIterator::new(
+                        storage,
+                        &orderbook,
+                        exchange_address,
+                        is_bid,
+                        starting_order,
+                        params.filters.clone(),
+                    );
+
+                    let base = orderbook.base;
+                    let quote = orderbook.quote;
+
+                    // Collect orders from this book
+                    for order in book_iterator {
+                        all_orders.push(OrderWithBook { order, base, quote });
+
+                        // Check if we've reached the limit + 1
+                        if all_orders.len() > limit {
+                            // Use the last order for cursor
+                            let last = &all_orders[limit];
+                            next_cursor = Some(format!("0x{:x}", last.order.order_id()));
+                            break;
+                        }
+                    }
+
+                    // If we have enough orders, stop iterating through books
+                    if all_orders.len() > limit {
+                        break;
+                    }
+                }
+
+                // Truncate to limit
+                all_orders.truncate(limit);
+
+                // Convert orders to RPC format - create temp orderbook for conversion
+                let orders = all_orders
                     .into_iter()
-                    .take(limit + 1)
-                    .collect::<Vec<_>>();
-
-                // we have to use the last order to properly populate next_cursor, because if we
-                // were to take just `limit` items and use the next ID from the last returned
-                // cursor, it could be on the boundary of a price level where no `next` exists.
-                let next_cursor = if orders.len() == limit + 1 {
-                    // pop the final order so that it's not included in the response
-                    // NOTE: the len is greater than one
-                    let last = orders.pop().unwrap();
-                    let next_id = last.order_id();
-
-                    Some(format!("0x{next_id:x}"))
-                } else {
-                    None
-                };
-
-                let orders = orders
-                    .into_iter()
-                    .map(|order| self.to_rpc_order(order, &orderbook))
+                    .map(|item| {
+                        // Create a minimal orderbook for conversion
+                        let book = PrecompileOrderbook {
+                            base: item.base,
+                            quote: item.quote,
+                            best_bid_tick: 0, // Not used in to_rpc_order
+                            best_ask_tick: 0, // Not used in to_rpc_order
+                        };
+                        self.to_rpc_order(item.order, &book)
+                    })
                     .collect();
 
                 let response = OrdersResponse {
@@ -292,20 +374,19 @@ impl<
         params: PaginationParams<OrderbooksFilter>,
     ) -> RpcResult<OrderbooksResponse> {
         // Get paginated orderbooks
-        let paginated_result = self
+        let (items, next_cursor) = self
             .apply_pagination_to_orderbooks(params)
             .map_err(|e| internal_rpc_err(format!("Failed to get orderbooks: {e}")))?;
 
         // Convert PrecompileOrderbooks to RPC Orderbooks
-        let orderbooks = paginated_result
-            .items
+        let orderbooks = items
             .into_iter()
             .map(|book| self.to_rpc_orderbook(&book))
             .collect();
 
         // Create response with next cursor
         Ok(OrderbooksResponse {
-            next_cursor: paginated_result.next_cursor,
+            next_cursor,
             orderbooks,
         })
     }
@@ -318,13 +399,6 @@ impl<
     /// Access the underlying provider.
     pub fn provider(&self) -> &EthApi::Provider {
         self.eth_api.provider()
-    }
-
-    /// Parses a cursor string into a B256 for orderbooks
-    fn parse_orderbook_cursor(cursor: &str) -> Result<B256, String> {
-        cursor
-            .parse::<B256>()
-            .map_err(|e| format!("Invalid cursor format: {e}"))
     }
 
     /// Creates an `EvmPrecompileStorageProvider` at the given block.
@@ -376,32 +450,19 @@ impl<
 
     /// Applies pagination parameters (filtering, limiting) to orderbooks.
     ///
-    /// Returns a paginated result with items and optional next cursor.
+    /// Returns orderbooks and optional next cursor.
     pub fn apply_pagination_to_orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
-    ) -> Result<PaginatedResult<PrecompileOrderbook>, String> {
+    ) -> Result<(Vec<PrecompileOrderbook>, Option<String>), String> {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
-            let keys = if let Some(ref filter) = params.filters {
-                // If specific base and quote are provided, we have just one key
-                if let (Some(base), Some(quote)) = (filter.base_token, filter.quote_token) {
-                    vec![compute_book_key(base, quote)]
-                } else {
-                    // Get all keys
-                    exchange
-                        .get_book_keys()
-                        .map_err(|e| format!("Failed to get book keys: {e}"))?
-                }
-            } else {
-                // Get all book keys
-                exchange
-                    .get_book_keys()
-                    .map_err(|e| format!("Failed to get book keys: {e}"))?
-            };
+            let base_token = params.filters.as_ref().and_then(|f| f.base_token);
+            let quote_token = params.filters.as_ref().and_then(|f| f.quote_token);
+            let keys = get_filtered_book_keys(exchange, base_token, quote_token)?;
 
             // Find starting position based on cursor
             let start_idx = if let Some(ref cursor_str) = params.cursor {
-                let cursor_key = Self::parse_orderbook_cursor(cursor_str)?;
+                let cursor_key = parse_orderbook_cursor(cursor_str)?;
 
                 keys.iter()
                     .position(|k| *k == cursor_key)
@@ -442,7 +503,9 @@ impl<
             let has_next_page = orderbooks.len() > limit;
             let next_cursor = if has_next_page {
                 // Use the last item's cursor as the next cursor
-                orderbooks.get(limit).map(|book| book.cursor_value())
+                orderbooks
+                    .get(limit)
+                    .map(|book| format!("0x{}", compute_book_key(book.base, book.quote)))
             } else {
                 None
             };
@@ -450,7 +513,7 @@ impl<
             // Return only up to limit items
             let items = orderbooks.into_iter().take(limit).collect();
 
-            Ok(PaginatedResult { items, next_cursor })
+            Ok((items, next_cursor))
         })
     }
 
@@ -601,4 +664,66 @@ fn orderbook_matches_filter(book: &PrecompileOrderbook, filter: &OrderbooksFilte
     }
 
     true
+}
+
+/// Checks if an order matches the given filters
+fn order_matches_filter(order: &PrecompileOrder, filter: &OrdersFilters) -> bool {
+    // Note: base_token and quote_token filtering is handled at the book level,
+    // not at the individual order level
+
+    // Check bid/ask side filter
+    if filter.is_bid.is_some_and(|is_bid| is_bid != order.is_bid) {
+        return false;
+    }
+
+    // Check flip filter
+    if filter
+        .is_flip
+        .is_some_and(|is_flip| is_flip != order.is_flip)
+    {
+        return false;
+    }
+
+    // Check maker filter
+    if filter.maker.is_some_and(|maker| maker != order.maker) {
+        return false;
+    }
+
+    // Check remaining amount range
+    if filter
+        .remaining
+        .as_ref()
+        .is_some_and(|remaining_range| !remaining_range.in_range(order.remaining))
+    {
+        return false;
+    }
+
+    // Check tick range
+    if filter
+        .tick
+        .as_ref()
+        .is_some_and(|tick_range| !tick_range.in_range(order.tick))
+    {
+        return false;
+    }
+
+    true
+}
+
+/// Parses a cursor string into a u128 for orders
+fn parse_order_cursor(cursor: &str) -> Result<u128, String> {
+    // TODO: just make this better, there must be a util for this that we have already in alloy or
+    // ruint or something
+    if let Some(hex_val) = cursor.strip_prefix("0x") {
+        u128::from_str_radix(hex_val, 16).map_err(|e| format!("Invalid cursor format: {e}"))
+    } else {
+        Err("Must be a hex string".to_string())
+    }
+}
+
+/// Parses a cursor string into a B256 for orderbooks
+fn parse_orderbook_cursor(cursor: &str) -> Result<B256, String> {
+    cursor
+        .parse::<B256>()
+        .map_err(|e| format!("Invalid cursor format: {e}"))
 }
