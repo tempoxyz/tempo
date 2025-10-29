@@ -86,7 +86,7 @@ sol! {
         function startReward(uint256 amount, uint128 seconds) external returns (uint64);
         function setRewardRecipient(address recipient) external;
         function cancelReward(uint256 id) external returns (uint256);
-        function finalizeStreams(uint64 timestamp) external;
+        function finalizeStreams() external;
 
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);

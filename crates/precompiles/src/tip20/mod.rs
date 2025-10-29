@@ -1349,12 +1349,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         self.set_reward_recipient_of(msg_sender, call.recipient)?;
         if call.recipient == Address::ZERO {
-            // TODO: opt out
             let opted_in_supply = self
                 .get_opted_in_supply()?
                 .checked_sub(balance)
                 .expect("TODO: handle error");
-            self.set_opted_in_supply(opted_in_supply);
+            self.set_opted_in_supply(opted_in_supply)?;
         } else {
             let delegated = self.get_delegated_balance(&call.recipient)?;
             if delegated > U256::ZERO {
@@ -1467,27 +1466,26 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     // NOTE: bookmark
-    pub fn finalize_streams(
-        &mut self,
-        msg_sender: &Address,
-        call: ITIP20::finalizeStreamsCall,
-    ) -> Result<(), TempoPrecompileError> {
+    pub fn finalize_streams(&mut self, msg_sender: &Address) -> Result<(), TempoPrecompileError> {
         if *msg_sender != Address::ZERO {
             todo!("system tx error")
         }
 
-        let end_time = call.timestamp as u128;
+        let end_time = self.storage.timestamp().to::<u128>();
         let rate_decrease = self.get_scheduled_rate_decrease_at(end_time);
 
         if rate_decrease == U256::ZERO {
+            // TODO: No streams
             return Err(TIP20Error::invalid_amount().into());
         }
 
         self.accrue()?;
 
-        let current_total = self.get_total_reward_per_second()?;
-        let new_total = current_total.saturating_sub(rate_decrease);
-        self.set_total_reward_per_second(new_total)?;
+        let total_rps = self
+            .get_total_reward_per_second()?
+            .checked_sub(rate_decrease)
+            .expect("TODO: handle error");
+        self.set_total_reward_per_second(total_rps)?;
 
         self.set_scheduled_rate_decrease_at(end_time, U256::ZERO)?;
 
@@ -2964,12 +2962,7 @@ mod tests {
         token.storage.set_timestamp(U256::from(end_time));
 
         let total_before = token.get_total_reward_per_second()?;
-        token.finalize_streams(
-            &Address::ZERO,
-            ITIP20::finalizeStreamsCall {
-                timestamp: end_time as u64,
-            },
-        )?;
+        token.finalize_streams(&Address::ZERO)?;
         let total_after = token.get_total_reward_per_second()?;
 
         assert!(total_after < total_before);
@@ -3039,8 +3032,6 @@ mod tests {
 
         assert_eq!(id, 0);
 
-        let alice_balance_after = token.get_balance(&alice)?;
-
         let bob = Address::random();
         token.transfer(
             &alice,
@@ -3057,11 +3048,9 @@ mod tests {
             alice_balance_before + reward_amount - U256::from(1)
         );
 
-        // No ongoing reward streams
         let total_reward_per_second = token.get_total_reward_per_second()?;
         assert_eq!(total_reward_per_second, U256::ZERO);
 
-        // Verify opted-in supply
         let opted_in_supply = token.get_opted_in_supply()?;
         assert_eq!(opted_in_supply, mint_amount - U256::ONE);
 
@@ -3073,7 +3062,6 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
-        let bob = Address::random();
         let token_id = 1;
 
         let mut token = TIP20Token::new(token_id, &mut storage);
@@ -3082,84 +3070,81 @@ mod tests {
         let mut roles = token.get_roles_contract();
         roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
 
-        let alice_amount = U256::from(1000e18);
-        let bob_amount = U256::from(500e18);
+        // Mint tokens to Alice and have her opt in as reward recipient
+        let mint_amount = U256::from(1000e18);
         token.mint(
             &admin,
             ITIP20::mintCall {
                 to: alice,
-                amount: alice_amount,
-            },
-        )?;
-
-        token.mint(
-            &admin,
-            ITIP20::mintCall {
-                to: bob,
-                amount: bob_amount,
+                amount: mint_amount,
             },
         )?;
 
         token.set_reward_recipient(&alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
-        token.set_reward_recipient(&bob, ITIP20::setRewardRecipientCall { recipient: bob })?;
-        assert_eq!(token.get_opted_in_supply()?, U256::from(1500e18));
 
-        let reward_amount = U256::from(300e18);
-        token
-            .mint(
-                &admin,
-                ITIP20::mintCall {
-                    to: admin,
-                    amount: reward_amount,
-                },
-            )
-            .unwrap();
-
-        let alice_balance_before = token.get_balance(&alice)?;
-        let bob_balance_before = token.get_balance(&bob)?;
-
-        token.start_reward(
+        // Mint reward tokens to admin
+        let reward_amount = U256::from(100e18);
+        token.mint(
             &admin,
-            ITIP20::startRewardCall {
+            ITIP20::mintCall {
+                to: admin,
                 amount: reward_amount,
-                seconds: 0,
             },
         )?;
 
-        // TODO: update to use transfer
-        token.update_rewards(&alice)?;
-        token.update_rewards(&bob)?;
+        let alice_balance_before = token.get_balance(&alice)?;
 
+        // Start streaming reward for 20 seconds
+        let stream_id = token.start_reward(
+            &admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 20,
+            },
+        )?;
+
+        assert_eq!(stream_id, 1);
+
+        // Simulate 10 blocks
+        let current_timestamp = token.storage.timestamp();
+        token
+            .storage
+            .set_timestamp(current_timestamp + uint!(10_U256));
+
+        token.finalize_streams(&Address::ZERO)?;
+        token.transfer(
+            &alice,
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(1),
+            },
+        )?;
+
+        // Assert balances after first half elapsed
+        let alice_balance_mid = token.get_balance(&alice)?;
+        let expected_mid_balance =
+            alice_balance_before + (reward_amount / uint!(2_U256)) - U256::ONE;
+        assert_eq!(alice_balance_mid, expected_mid_balance);
+
+        token
+            .storage
+            .set_timestamp(current_timestamp + uint!(20_U256));
+        token.transfer(
+            &alice,
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(1),
+            },
+        )?;
+
+        // Assert balances
         let alice_balance_after = token.get_balance(&alice)?;
-        let bob_balance_after = token.get_balance(&bob)?;
+        let expected_final_balance = alice_balance_before + reward_amount - U256::from(2);
+        assert_eq!(alice_balance_after, expected_final_balance);
 
-        let alice_reward = alice_balance_after - alice_balance_before;
-        let bob_reward = bob_balance_after - bob_balance_before;
-
-        let expected_alice_reward = U256::from(200e18);
-        let expected_bob_reward = U256::from(100e18);
-        assert_eq!(alice_reward, expected_alice_reward);
-        assert_eq!(bob_reward, expected_bob_reward);
-
-        // Check total reward per second is 0 after instant distribution
+        // Confirm that stream is finished
         let total_reward_per_second = token.get_total_reward_per_second()?;
         assert_eq!(total_reward_per_second, U256::ZERO);
-
-        assert_eq!(token.get_opted_in_supply()?, U256::from(1500e18));
-
-        assert_eq!(token.get_delegated_balance(&alice)?, alice_amount);
-        assert_eq!(token.get_delegated_balance(&bob)?, bob_amount);
-
-        // Check user reward per token paid is updated for both users
-        let reward_per_token_stored = token.get_reward_per_token_stored()?;
-        assert_eq!(
-            token.get_user_reward_per_token_paid(&alice)?,
-            reward_per_token_stored
-        );
-        assert_eq!(
-            token.get_user_reward_per_token_paid(&bob)?,
-            reward_per_token_stored
-        );
 
         Ok(())
     }
