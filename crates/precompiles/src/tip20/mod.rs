@@ -6,7 +6,7 @@ pub use tempo_contracts::precompiles::{
 };
 
 use crate::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     storage::{
         PrecompileStorageProvider,
