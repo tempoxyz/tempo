@@ -695,33 +695,20 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .connect_http(http_url.clone());
     let alice_token = ITIP20::new(*token.address(), alice_provider);
 
-    let bob_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(2)
-        .unwrap()
-        .build()
-        .unwrap();
-    let bob = bob_wallet.address();
-    let bob_provider = ProviderBuilder::new()
-        .wallet(bob_wallet)
-        .connect_http(http_url.clone());
-    let bob_token = ITIP20::new(*token.address(), bob_provider);
-
     let mut pending = vec![];
 
-    let alice_amount = U256::from(1000e18);
-    let bob_amount = U256::from(500e18);
+    let mint_amount = U256::from(1000e18);
     let reward_amount = U256::from(300e18);
 
-    pending.push(token.mint(alice, alice_amount).send().await?);
-    pending.push(token.mint(bob, bob_amount).send().await?);
+    let bob = Address::random();
+    pending.push(token.mint(alice, mint_amount).send().await?);
     pending.push(token.mint(admin, reward_amount).send().await?);
-    pending.push(alice_token.setRewardRecipient(alice).send().await?);
-    pending.push(bob_token.setRewardRecipient(bob).send().await?);
+    pending.push(alice_token.setRewardRecipient(bob).send().await?);
     await_receipts(&mut pending).await?;
 
     // Check balances before finalizing streams
-    let alice_balance_before = alice_token.balanceOf(alice).call().await?;
-    let bob_balance_before = bob_token.balanceOf(bob).call().await?;
+    let alice_balance_before = token.balanceOf(alice).call().await?;
+    let bob_balance_before = token.balanceOf(bob).call().await?;
 
     // Start reward stream
     let start_receipt = token
@@ -742,13 +729,17 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // Transfer some tokens to trigger reward distribution calculations
-    pending.push(alice_token.transfer(bob, U256::from(100e18)).send().await?);
-    pending.push(bob_token.transfer(alice, U256::from(50e18)).send().await?);
+    pending.push(
+        alice_token
+            .transfer(Address::random(), U256::from(100e18))
+            .send()
+            .await?,
+    );
     await_receipts(&mut pending).await?;
 
     // Check balances after finalizing streams and reward distribution
-    let alice_balance_after = alice_token.balanceOf(alice).call().await?;
-    let bob_balance_after = bob_token.balanceOf(bob).call().await?;
+    let alice_balance_after = token.balanceOf(alice).call().await?;
+    let bob_balance_after = token.balanceOf(bob).call().await?;
 
     assert!(alice_balance_after > alice_balance_before);
     assert!(bob_balance_after > bob_balance_before);

@@ -1023,9 +1023,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::insufficient_balance().into());
         }
 
+        dbg!("accrue");
         // Accrue and handle TIP20 rewards
         self.accrue()?;
+        dbg!("handle sender awards");
         self.handle_sender_rewards(from, amount)?;
+        dbg!("handle receiver awards");
         self.handle_receiver_rewards(to, amount)?;
 
         // Adjust balances
@@ -1317,15 +1320,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let reward_per_token_stored = self.get_reward_per_token_stored()?;
         let user_reward_per_token_paid = self.get_user_reward_per_token_paid(recipient)?;
 
-        let accrued =
+        let mut accrued =
             (delegated * (reward_per_token_stored - user_reward_per_token_paid)) / ACC_PRECISION;
+
+        self.set_user_reward_per_token_paid(recipient, reward_per_token_stored)?;
 
         if accrued > U256::ZERO {
             let token_address = self.token_address;
             let contract_balance = self.get_balance(&token_address)?;
 
             if accrued > contract_balance {
-                return Err(TIP20Error::insufficient_balance().into());
+                accrued = contract_balance;
             }
 
             let new_contract_balance = contract_balance - accrued;
@@ -1335,7 +1340,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let new_recipient_balance = recipient_balance + accrued;
             self.set_balance(recipient, new_recipient_balance)?;
 
-            self.set_user_reward_per_token_paid(recipient, reward_per_token_stored)?;
+            self.storage.emit_event(
+                self.token_address,
+                TIP20Event::Transfer(ITIP20::Transfer {
+                    from: token_address,
+                    to: *recipient,
+                    amount: accrued,
+                })
+                .into_log_data(),
+            )?;
         }
 
         Ok(())
