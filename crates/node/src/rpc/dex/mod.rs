@@ -240,26 +240,20 @@ impl<
 
                 let book_iterator =
                     BookIterator::new(storage, orderbook, exchange_address, true, None);
-                // TODO: fix starting point bug in iterator so this works properly.
-                // Right now it will return gaps because if we init the iterator with an order ID as
-                // cursor then it will not return that as the first element.
-                //
-                // ideally we have a non-option current field, and an option init field in the
-                // BookIterator
                 let limit = 10;
-                let orders = book_iterator.into_iter().take(limit).collect::<Vec<_>>();
+                let orders = book_iterator
+                    .into_iter()
+                    .take(limit + 1)
+                    .collect::<Vec<_>>();
 
-                // since we ask for limit + 1, if we get limit elements then the iterator has ended and
-                // we have nothing to set as the next cursor
-                let next_cursor = if orders.len() == limit {
+                // we have to use the last order to properly populate next_cursor, because if we
+                // were to take just `limit` items and use the next ID from the last returned
+                // cursor, it could be on the boundary of a price level where no `next` exists.
+                let next_cursor = if orders.len() == limit + 1 {
                     // NOTE: the len is greater than one
                     let last = orders.last().unwrap();
-                    let next_id = last.next();
-                    if next_id == 0 {
-                        None
-                    } else {
-                        Some(format!("0x{next_id:x}"))
-                    }
+                    let next_id = last.order_id();
+                    Some(format!("0x{next_id:x}"))
                 } else {
                     None
                 };
