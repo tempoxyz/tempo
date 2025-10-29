@@ -29,6 +29,7 @@ use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR};
 use tempo_payload_types::{RecoveredSubBlock, SignedSubBlock, SubBlock};
 use tempo_primitives::TempoTxEnvelope;
 use tokio::sync::{mpsc, oneshot, watch};
+use tracing::{debug, warn};
 
 /// Actions processed by the subblocks service.
 #[derive(Debug)]
@@ -224,8 +225,14 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                     // Spawn task to validate the subblock.
                     let node = self.node.clone();
                     let validated_subblocks_tx = self.validated_subblocks_tx.clone();
-                    self.context.clone().shared(true).spawn(move |_| {
-                        validate_subblock(sender, node, subblock, next_parent_hash, validated_subblocks_tx)
+                    self.context.clone().shared(true).spawn(move |_| async move {
+                        if let Err(err) = validate_subblock(sender.clone(), node, subblock, next_parent_hash, validated_subblocks_tx).await {
+                            warn!(
+                                %sender,
+                                %err,
+                                "received invalid subblock"
+                            );
+                        }
                     });
                 }
                 // Handle validated subblocks.
@@ -235,11 +242,15 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                         return;
                     }
 
+                    debug!(subblock = ?subblock, "validated subblock");
+
                     self.subblocks.insert(subblock.validator(), subblock);
                 }
                 // Handle built subblocks.
                 Some(our_subblock) = OptionFuture::from(self.subblock_builder_handle.as_mut()) => {
                     self.subblock_builder_handle = None;
+
+                    debug!(subblock = ?our_subblock, "built subblock");
 
                     let Some(next_parent_hash) = self.next_parent_hash else {
                         continue;
@@ -264,6 +275,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                         signature: Bytes::copy_from_slice(signature.as_ref()),
                     };
 
+                    debug!(subblock = ?signed_subblock, ?next_proposer, "sending subblock to the next proposer");
                     let _ = network_tx.send(Recipients::One(next_proposer.clone()), alloy_rlp::encode(&signed_subblock).into(), true).await;
                 }
             }

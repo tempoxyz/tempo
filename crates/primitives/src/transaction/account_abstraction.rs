@@ -111,12 +111,11 @@ impl Decodable for Call {
 /// - Gas sponsorship via fee payer
 /// - Scheduled transactions (validBefore/validAfter)
 /// - EIP-7702 authorization lists
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[doc(alias = "AATransaction", alias = "TransactionAA")]
-#[derive(Default)]
 pub struct TxAA {
     /// EIP-155: Simple replay attack protection
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]

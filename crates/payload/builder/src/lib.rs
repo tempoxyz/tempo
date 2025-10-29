@@ -34,7 +34,11 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
@@ -389,6 +393,8 @@ where
                 break;
             };
 
+            println!("{subblocks:?}");
+
             // Select subblocks to execute while ensuring one subblock per validator
             let mut to_execute = Vec::new();
             for subblock in subblocks.iter() {
@@ -413,6 +419,9 @@ where
             // exit the loop if the job was interrupted
             if attributes.is_interrupted() {
                 break;
+            } else {
+                // sleep for 100ms to let the subblocks to be collected
+                std::thread::sleep(Duration::from_millis(100));
             }
         }
 

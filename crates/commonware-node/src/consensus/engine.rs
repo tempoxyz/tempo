@@ -33,7 +33,7 @@ use crate::{
     config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
     dkg,
     epoch::{self, Coordinator, SchemeProvider},
-    subblocks::SubBlocksService,
+    subblocks::{SubBlocksHandle, SubBlocksService},
 };
 
 use super::block::Block;
@@ -257,6 +257,7 @@ where
             epoch_manager,
 
             subblocks,
+            subblocks_handle,
         })
     }
 }
@@ -301,6 +302,7 @@ where
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
 
     subblocks: SubBlocksService<TContext>,
+    subblocks_handle: SubBlocksHandle,
 }
 
 impl<TBlocker, TContext> Engine<TBlocker, TContext>
@@ -433,5 +435,10 @@ where
         // TODO: look into adding error context so that we know which
         // component failed.
         .wrap_err("one of the consensus engine's actors failed")
+    }
+
+    /// Returns a handle to the subblocks service.
+    pub fn subblocks_handle(&self) -> SubBlocksHandle {
+        self.subblocks_handle.clone()
     }
 }

@@ -128,52 +128,48 @@ where
             _ => (false, false),
         };
 
-        if tx.to() == Some(TIP_FEE_MANAGER_ADDRESS) {
+        let block = self.evm().block().number.to_be_bytes_vec();
+        let to = tx.to().unwrap_or_default();
+        if to == TIP_FEE_MANAGER_ADDRESS {
             if seen_fee_manager {
                 return Err(BlockValidationError::msg(
                     "duplicate fee manager system transaction",
                 ));
-            } else {
-                seen_fee_manager = true;
             }
-        } else if tx.to() == Some(STABLECOIN_EXCHANGE_ADDRESS) {
-            if seen_stablecoin_dex {
-                return Err(BlockValidationError::msg(
-                    "duplicate stablecoin DEX system transaction",
-                ));
-            } else {
-                seen_stablecoin_dex = true;
-            }
-        }
 
-        let block = self.evm().block().number.to_be_bytes_vec();
-        let to = tx.to().unwrap_or_default();
-        if to == TIP_FEE_MANAGER_ADDRESS {
             let fee_input = IFeeManager::executeBlockCall
                 .abi_encode()
                 .into_iter()
                 .chain(block)
                 .collect::<Bytes>();
-            if *tx.input() == fee_input && seen_fee_manager {
+
+            if *tx.input() != fee_input {
                 return Err(BlockValidationError::msg(
-                    "duplicate fee manager system transaction",
+                    "invalid fee manager system transaction",
                 ));
-            } else {
-                seen_fee_manager = true
             }
+
+            seen_fee_manager = true;
         } else if to == STABLECOIN_EXCHANGE_ADDRESS {
+            if seen_stablecoin_dex {
+                return Err(BlockValidationError::msg(
+                    "duplicate stablecoin DEX system transaction",
+                ));
+            }
+
             let dex_input = IStablecoinExchange::executeBlockCall {}
                 .abi_encode()
                 .into_iter()
                 .chain(block)
                 .collect::<Bytes>();
-            if *tx.input() == dex_input && seen_stablecoin_dex {
+
+            if *tx.input() != dex_input {
                 return Err(BlockValidationError::msg(
-                    "duplicate stablecoin DEX system transaction",
+                    "invalid stablecoin DEX system transaction",
                 ));
-            } else {
-                seen_stablecoin_dex = true;
             }
+
+            seen_stablecoin_dex = true;
         } else {
             return Err(BlockValidationError::msg("invalid system transaction"));
         }

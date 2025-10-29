@@ -30,10 +30,14 @@ futures.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 commonware-macros.workspace = true
 tracing-subscriber.workspace = true
+
+alloy-signer-local.workspace = true
+alloy-network.workspace = true
 
 [lints]
 workspace = true
