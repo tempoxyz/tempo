@@ -998,7 +998,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         amount: U256,
     ) -> Result<(), TempoPrecompileError> {
         let from_balance = self.get_balance(from)?;
-
         if amount > from_balance {
             return Err(TIP20Error::insufficient_balance().into());
         }
@@ -1009,9 +1008,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.handle_receiver_rewards(to, amount)?;
 
         // Adjust balances
+        let from_balance = self.get_balance(from)?;
         let new_from_balance = from_balance
             .checked_sub(amount)
             .ok_or(TIP20Error::insufficient_balance())?;
+
         self.set_balance(from, new_from_balance)?;
 
         if *to != Address::ZERO {
@@ -3038,6 +3039,8 @@ mod tests {
 
         assert_eq!(id, 0);
 
+        let alice_balance_after = token.get_balance(&alice)?;
+
         let bob = Address::random();
         token.transfer(
             &alice,
@@ -3060,7 +3063,7 @@ mod tests {
 
         // Verify opted-in supply
         let opted_in_supply = token.get_opted_in_supply()?;
-        assert_eq!(opted_in_supply, mint_amount);
+        assert_eq!(opted_in_supply, mint_amount - U256::ONE);
 
         Ok(())
     }
