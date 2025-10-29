@@ -32,7 +32,7 @@ impl HashMapStorageProvider {
         let account = self.accounts.entry(address).or_default();
         account.nonce = nonce;
     }
-    
+
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.timestamp = timestamp;
     }
