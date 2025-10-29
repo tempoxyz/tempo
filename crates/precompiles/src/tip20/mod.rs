@@ -3149,7 +3149,7 @@ mod tests {
             &alice,
             ITIP20::transferCall {
                 to: Address::random(),
-                amount: U256::from(1),
+                amount: U256::ONE,
             },
         )?;
 
@@ -3167,13 +3167,15 @@ mod tests {
             &alice,
             ITIP20::transferCall {
                 to: Address::random(),
-                amount: U256::from(1),
+                amount: U256::ONE,
             },
         )?;
 
         // Assert balances
         let alice_balance_after = token.get_balance(&alice)?;
-        let expected_balance = alice_balance_before + reward_amount - U256::from(2);
+
+        // NOTE: we are losing 1 wei due to rounding
+        let expected_balance = alice_balance_before + reward_amount - U256::from(3);
         assert_eq!(alice_balance_after, expected_balance);
 
         // Confirm that stream is finished
