@@ -70,7 +70,7 @@ pub struct BookIterator<'a, 'b> {
     /// Current order ID
     order: Option<u128>,
     /// Orderbook information
-    orderbook: PrecompileOrderbook,
+    orderbook: &'b PrecompileOrderbook,
     /// Inner precompile storage
     storage: &'b mut EvmPrecompileStorageProvider<'a>,
 }
@@ -79,7 +79,7 @@ impl<'a, 'b> BookIterator<'a, 'b> {
     /// Create a new book iterator, optionally with the given order ID as the starting order.
     fn new(
         storage: &'b mut EvmPrecompileStorageProvider<'a>,
-        orderbook: PrecompileOrderbook,
+        orderbook: &'b PrecompileOrderbook,
         exchange_address: Address,
         bids: bool,
         starting_order: Option<u128>,
@@ -140,26 +140,26 @@ impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
         };
 
         // If there is no current order we get the first one based on the best bid or ask tick
-        let current_id = match &self.order {
-            Some(order) => *order,
-            None => {
-                let tick = if self.bids {
-                    self.orderbook.best_bid_tick
-                } else {
-                    self.orderbook.best_ask_tick
-                };
+        let Some(current_id) = self.order else {
+            let tick = if self.bids {
+                self.orderbook.best_bid_tick
+            } else {
+                self.orderbook.best_ask_tick
+            };
 
-                let price_level = self.get_price_level(tick);
+            let price_level = self.get_price_level(tick);
 
-                // if the best bid level is empty then there are no more bids and we should stop the
-                // iteration
-                // TODO: double check this
-                if price_level.is_empty() {
-                    return None;
-                }
-
-                price_level.head
+            // if the best bid level is empty then there are no more bids and we should stop the
+            // iteration
+            // TODO: double check this
+            if price_level.is_empty() {
+                return None;
             }
+
+            let current_order = self.get_order(price_level.head);
+
+            self.order = Some(price_level.head);
+            return Some(current_order);
         };
 
         let current_order = self.get_order(current_id);
@@ -232,23 +232,25 @@ impl<
                 let mut exchange = StablecoinExchange::new(storage);
                 // TODO: filtering books by order filter
                 let orderbook_id = exchange.get_book_keys().expect("TODO: errors")[0];
-                println!("first book: {orderbook_id:?}");
                 let exchange_address = exchange.address();
-                println!("exchange_address: {exchange_address:?}");
 
                 let orderbook =
                     PrecompileOrderbook::from_storage(orderbook_id, storage, exchange_address)
                         .expect("TODO: errors");
 
+                // for now if both is_bid and is_ask are set just use is_bid
+                let is_bid = params
+                    .filters
+                    .as_ref()
+                    .is_none_or(|f| f.is_bid.unwrap_or(false));
+
                 let book_iterator =
-                    BookIterator::new(storage, orderbook, exchange_address, true, None);
+                    BookIterator::new(storage, &orderbook, exchange_address, is_bid, None);
                 let limit = 10;
                 let mut orders = book_iterator
                     .into_iter()
                     .take(limit + 1)
                     .collect::<Vec<_>>();
-
-                println!("exchange_address: {exchange_address:?}");
 
                 // we have to use the last order to properly populate next_cursor, because if we
                 // were to take just `limit` items and use the next ID from the last returned
@@ -263,6 +265,11 @@ impl<
                 } else {
                     None
                 };
+
+                let orders = orders
+                    .into_iter()
+                    .map(|order| self.to_rpc_order(order, &orderbook))
+                    .collect();
 
                 let response = OrdersResponse {
                     next_cursor,
@@ -447,14 +454,38 @@ impl<
         })
     }
 
-
     /// Converts a precompile order to a rpc order.
     ///
     /// Uses the orderbook to determine base and quote token.
-    fn to_rpc_order(&self, order: PrecompileOrder, book: PrecompileOrderbook) -> Order {
-        let PrecompileOrder { order_id, maker, book_key, is_bid, tick, amount, remaining, prev, next, is_flip, flip_tick } = order;
+    fn to_rpc_order(&self, order: PrecompileOrder, book: &PrecompileOrderbook) -> Order {
+        let PrecompileOrder {
+            order_id,
+            maker,
+            book_key: _,
+            is_bid,
+            tick,
+            amount,
+            remaining,
+            prev,
+            next,
+            is_flip,
+            flip_tick,
+        } = order;
 
-        Order { amount, base_token: book.base, flip_tick, is_bid, is_flip, maker, next, order_id, quote_token: book.quote, prev, remaining, tick }
+        Order {
+            amount,
+            base_token: book.base,
+            flip_tick,
+            is_bid,
+            is_flip,
+            maker,
+            next,
+            order_id,
+            quote_token: book.quote,
+            prev,
+            remaining,
+            tick,
+        }
     }
 
     /// Converts a precompile orderbook to RPC orderbook format.

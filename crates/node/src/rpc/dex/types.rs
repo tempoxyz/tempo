@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256};
+use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 
 pub type OrdersParams = PaginationParams<OrdersFilters>;
@@ -104,7 +104,8 @@ pub struct OrdersResponse {
 #[serde(rename_all = "camelCase")]
 pub struct Order {
     /// Original order amount
-    pub amount: B256,
+    #[serde(with = "alloy_serde::quantity")]
+    pub amount: u128,
     /// Target tick to flip to when order is filled
     pub flip_tick: i16,
     /// Order side: true for buy (bid), false for sell (ask)
