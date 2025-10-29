@@ -376,7 +376,7 @@ fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> ey
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
-    TIP20RewardsRegistry::new(provider).initialize()?;
+    TIP20RewardsRegistry::new(&mut provider).initialize()?;
 
     Ok(())
 }
