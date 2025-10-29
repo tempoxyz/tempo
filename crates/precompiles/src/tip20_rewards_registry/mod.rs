@@ -151,11 +151,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             return Err(TIP20RewardsRegistryError::unauthorized().into());
         }
 
-        // TODO: FIXME: check here for if already processed for this given timestamp
-
         let current_timestamp = self.storage.timestamp().to::<u128>();
-        let mut next_timestamp = self.get_last_updated_timestamp()? + 1;
+        let last_updated_timestamp = self.get_last_updated_timestamp()?;
+        if current_timestamp == last_updated_timestamp {
+            return Err(TIP20RewardsRegistryError::streams_already_finalized().into());
+        }
 
+        let mut next_timestamp = last_updated_timestamp + 1;
         // Loop through all streams ending at current timestamp and finalize each token stream
         while current_timestamp >= next_timestamp {
             let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
