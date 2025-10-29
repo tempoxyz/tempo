@@ -909,7 +909,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, FixedBytes, U256, keccak256};
+    use alloy::primitives::{Address, FixedBytes, U256};
 
     use super::*;
     use crate::{

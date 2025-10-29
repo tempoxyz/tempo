@@ -1024,24 +1024,6 @@ mod tests {
     }
 
     #[test]
-    fn test_nonces() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
-        let admin = Address::random();
-        let user = Address::random();
-
-        linking_usd.initialize(&admin).unwrap();
-
-        // Test nonces (should start at 0)
-        let nonce = linking_usd
-            .token
-            .nonces(ITIP20::noncesCall { owner: user })
-            .expect("Could not get nonce");
-        assert_eq!(nonce, U256::ZERO);
-        Ok(())
-    }
-
-    #[test]
     fn test_change_transfer_policy_id() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut linking_usd = LinkingUSD::new(&mut storage);
