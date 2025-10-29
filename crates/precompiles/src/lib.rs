@@ -148,7 +148,6 @@ pub struct TIP20RewardsRegistryPrecompile;
 impl TIP20RewardsRegistryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("TIP20RewardsRegistry", |input| TIP20RewardsRegistry::new(
-            TIP20_REWARDS_REGISTRY_ADDRESS,
             &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
         ))
     }

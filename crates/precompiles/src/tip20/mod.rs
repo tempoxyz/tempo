@@ -773,7 +773,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             self.set_scheduled_rate_decrease_at(end_time, current_decrease + rate)?;
 
             // Add stream to registry
-            let mut registry = TIP20RewardsRegistry::new(TIP20_REWARDS_REGISTRY_ADDRESS, self.storage);
+            let mut registry = TIP20RewardsRegistry::new(self.storage);
             registry.add_stream(&self.token_address, end_time)?;
 
             // Emit reward scheduled event for streaming reward

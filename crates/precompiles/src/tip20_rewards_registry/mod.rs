@@ -38,8 +38,11 @@ pub struct TIP20RewardsRegistry<'a, S: PrecompileStorageProvider> {
 }
 
 impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
-    pub fn new(address: Address, storage: &'a mut S) -> Self {
-        Self { storage, address }
+    pub fn new(storage: &'a mut S) -> Self {
+        Self {
+            storage,
+            address: TIP20_REWARDS_REGISTRY_ADDRESS,
+        }
     }
 
     /// Initializes the TIP20 rewards registry contract.
