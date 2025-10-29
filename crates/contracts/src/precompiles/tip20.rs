@@ -82,6 +82,16 @@ sol! {
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
         function DOMAIN_SEPARATOR() external view returns (bytes32);
 
+
+
+        struct RewardStream {
+            address funder;
+            uint64 startTime;
+            uint64 endTime;
+            uint256 ratePerSecondScaled;
+            uint256 amountTotal;
+        }
+
         // Reward Functions
         function startReward(uint256 amount, uint128 seconds) external returns (uint64);
         function setRewardRecipient(address recipient) external;
