@@ -53,6 +53,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 return Err(TIP20Error::no_opted_in_supply().into());
             }
 
+            // TODO: use checked math here
             let delta_rpt = (call.amount * ACC_PRECISION) / opted_in_supply;
             let current_rpt = self.get_reward_per_token_stored()?;
             self.set_reward_per_token_stored(current_rpt + delta_rpt)?;
@@ -71,6 +72,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
             Ok(0)
         } else {
+            // TODO: use checked math here
             let rate = (call.amount * ACC_PRECISION) / U256::from(call.seconds);
             let stream_id = self.get_next_stream_id()?;
             self.set_next_stream_id(stream_id + 1)?;
@@ -105,7 +107,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                     funder: *msg_sender,
                     id: stream_id,
                     amount: call.amount,
-                    durationSeconds: call.seconds as u64,
+                    durationSeconds: call.seconds as u32,
                 })
                 .into_log_data(),
             )?;
@@ -187,6 +189,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         let total_reward_per_second = self.get_total_reward_per_second()?;
         if total_reward_per_second > U256::ZERO {
+            // TODO: use checked math here
             let delta_rpt = (total_reward_per_second * elapsed) / opted_in_supply;
             let current_rpt = self.get_reward_per_token_stored()?;
             self.set_reward_per_token_stored(current_rpt + delta_rpt)?;
@@ -209,6 +212,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let reward_per_token_stored = self.get_reward_per_token_stored()?;
         let user_reward_per_token_paid = self.get_user_reward_per_token_paid(recipient)?;
 
+        // TODO: use checked math here
         let mut accrued =
             (delegated * (reward_per_token_stored - user_reward_per_token_paid)) / ACC_PRECISION;
 
@@ -369,6 +373,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             U256::ZERO
         };
 
+        // TODO: use checked math here
         let mut distributed = (stream.rate_per_second_scaled * elapsed) / ACC_PRECISION;
         distributed = distributed.min(stream.amount_total);
         let remaining = stream.amount_total - distributed;
@@ -592,7 +597,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Gets the total reward per second rate from storage.
-    fn get_total_reward_per_second(&mut self) -> Result<U256, TempoPrecompileError> {
+    pub fn get_total_reward_per_second(&mut self) -> Result<U256, TempoPrecompileError> {
         self.storage
             .sload(self.token_address, slots::TOTAL_REWARD_PER_SECOND)
     }
