@@ -4,7 +4,7 @@ use crate::{
     engine::TempoEngineValidator,
     rpc::{
         TempoAmm, TempoAmmApiServer, TempoDex, TempoDexApiServer, TempoEthApiBuilder, TempoEthExt,
-        TempoEthExtApiServer, TempoToken, TempoTokenApiServer,
+        TempoEthExtApiServer, TempoPolicy, TempoPolicyApiServer, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
@@ -148,11 +148,13 @@ where
                 let dex = TempoDex::new(eth_api.clone());
                 let amm = TempoAmm::new(eth_api.clone());
                 let token = TempoToken::new(eth_api.clone());
+                let policy = TempoPolicy::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api);
 
                 modules.merge_configured(dex.into_rpc())?;
                 modules.merge_configured(amm.into_rpc())?;
                 modules.merge_configured(token.into_rpc())?;
+                modules.merge_configured(policy.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
 
                 Ok(())

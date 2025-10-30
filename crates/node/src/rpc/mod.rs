@@ -1,11 +1,13 @@
 pub mod amm;
 pub mod dex;
 pub mod eth_ext;
+pub mod policy;
 pub mod token;
 
 pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
+pub use policy::{TempoPolicy, TempoPolicyApiServer};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 pub use token::{TempoToken, TempoTokenApiServer};
 
