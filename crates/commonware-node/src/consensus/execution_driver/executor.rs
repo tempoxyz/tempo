@@ -10,7 +10,10 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
-use commonware_consensus::marshal::{self, ingress::mailbox::Identifier};
+use commonware_consensus::{
+    Block as _,
+    marshal::{self, ingress::mailbox::Identifier},
+};
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use eyre::{WrapErr as _, bail, ensure, eyre};
@@ -21,7 +24,7 @@ use futures::{
 use reth_provider::BlockNumReader as _;
 use tempo_commonware_node_cryptography::{BlsScheme, Digest};
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, info, instrument, warn};
+use tracing::{Level, Span, debug, info, instrument, warn};
 
 use crate::consensus::block::Block;
 
@@ -62,8 +65,16 @@ impl Builder {
             mailbox: from_execution_driver,
             marshal,
             my_mailbox,
+            last_canonicalized: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct LastCanonicalized {
+    forkchoice: ForkchoiceState,
+    head_height: u64,
+    finalized_height: u64,
 }
 
 pub(super) struct Executor<TContext> {
@@ -88,6 +99,8 @@ pub(super) struct Executor<TContext> {
     /// The mailbox passed to other parts of the system to forward messages to
     /// the agent.
     my_mailbox: ExecutorMailbox,
+
+    last_canonicalized: Option<LastCanonicalized>,
 }
 
 impl<TContext> Executor<TContext>
@@ -106,7 +119,7 @@ where
         // XXX: `run_pre_event_loop_init` is emitting an errror event on failure.
         if self.run_pre_event_loop_init().await.is_err() {
             return;
-        }
+        };
 
         loop {
             select! {
@@ -202,7 +215,7 @@ where
                 let _ = self.canonicalize(cause, head, finalized).await;
             }
             Command::ForwardFinalized { block, response } => {
-                let _ = self.forward_block(*block, response, cause).await;
+                let _ = self.forward_finalized(*block, response, cause).await;
             }
         }
     }
@@ -224,28 +237,72 @@ where
             finalized.height = finalized.0,
             finalized.digest = %finalized.1,
         ),
-        ret,
-        err(Display),
+        err,
     )]
     async fn canonicalize(
-        &self,
+        &mut self,
         cause: Span,
         head: (u64, Digest),
         finalized: (u64, Digest),
-    ) -> eyre::Result<PayloadStatus> {
+    ) -> eyre::Result<()> {
         assert!(
             head.0 >= finalized.0,
-            "finalized head must never exceed tip",
+            "invariant violated: finalized head must never exceed tip",
         );
 
-        let forkchoice_state = ForkchoiceState {
-            head_block_hash: head.1.0,
-            safe_block_hash: finalized.1.0,
-            finalized_block_hash: finalized.1.0,
+        // Compare with the last send forkchoice state: if either head or
+        // finalized are newer, don't update the other.
+        let last_canonicalized = match &self.last_canonicalized {
+            None => LastCanonicalized {
+                forkchoice: ForkchoiceState {
+                    head_block_hash: head.1.0,
+                    safe_block_hash: finalized.1.0,
+                    finalized_block_hash: finalized.1.0,
+                },
+                head_height: head.0,
+                finalized_height: finalized.0,
+            },
+            Some(last_canonicalized) => {
+                // Only take the new finalized hash if the head is higher.
+                // Reason: the finalized hash must not change.
+                let (finalized_height, finalized_block_hash) =
+                    if finalized.0 > last_canonicalized.finalized_height {
+                        (finalized.0, finalized.1.0)
+                    } else {
+                        (
+                            last_canonicalized.finalized_height,
+                            last_canonicalized.forkchoice.finalized_block_hash,
+                        )
+                    };
+
+                // Take the head hash if the height is higher or the same.
+                // Reason: the head hash is allowed to change.
+                let (head_height, head_block_hash) = if head.0 >= last_canonicalized.head_height {
+                    (head.0, head.1.0)
+                } else {
+                    (
+                        last_canonicalized.head_height,
+                        last_canonicalized.forkchoice.head_block_hash,
+                    )
+                };
+
+                LastCanonicalized {
+                    forkchoice: ForkchoiceState {
+                        head_block_hash,
+                        safe_block_hash: finalized_block_hash,
+                        finalized_block_hash,
+                    },
+                    head_height,
+                    finalized_height,
+                }
+            }
         };
+
         info!(
-            head_block_hash = %forkchoice_state.head_block_hash,
-            finalized_block_hash = %forkchoice_state.finalized_block_hash,
+            head_block_hash = %last_canonicalized.forkchoice.head_block_hash,
+            head_block_height = last_canonicalized.head_height,
+            finalized_block_hash = %last_canonicalized.forkchoice.finalized_block_hash,
+            finalized_block_height = last_canonicalized.finalized_height,
             "sending forkchoice-update",
         );
         let fcu_response = self
@@ -253,7 +310,7 @@ where
             .add_ons_handle
             .beacon_engine_handle
             .fork_choice_updated(
-                forkchoice_state,
+                last_canonicalized.forkchoice,
                 None,
                 reth_node_builder::EngineApiMessageVersion::V3,
             )
@@ -261,12 +318,19 @@ where
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")?;
 
+        debug!(
+            payload_status = %fcu_response.payload_status,
+            "execution layer reported FCU status",
+        );
+
         if fcu_response.is_invalid() {
             return Err(eyre::Report::msg(fcu_response.payload_status)
                 .wrap_err("execution layer responded with error for forkchoice-update"));
         }
 
-        Ok(fcu_response.payload_status)
+        self.last_canonicalized.replace(last_canonicalized);
+
+        Ok(())
     }
 
     /// Finalizes `block` by sending it to the execution layer.
@@ -295,12 +359,38 @@ where
         err(level = Level::WARN),
         ret,
     )]
-    async fn forward_block(
+    async fn forward_finalized(
         &mut self,
         block: Block,
         response: oneshot::Sender<()>,
         cause: Span,
     ) -> eyre::Result<()> {
+        let LastCanonicalized {
+            forkchoice,
+            head_height,
+            finalized_height,
+        } = self
+            .last_canonicalized
+            .clone()
+            .expect("must always be set in the event loop handlers");
+
+        // If we get a finalized block ahead of the last finalized hash sent to
+        // the executionl layer, canonicalize the finalized hash.
+        //
+        // If the finalized block is also ahead of the head hash, then also
+        // update that.
+        if block.height() > finalized_height {
+            let finalized = (block.height(), block.digest());
+            let head = if finalized.0 > head_height {
+                finalized.clone()
+            } else {
+                (head_height, Digest(forkchoice.head_block_hash))
+            };
+            self.canonicalize(Span::current(), head, finalized)
+                .await
+                .wrap_err("failed canonicalizing finalized block")?;
+        }
+
         let block = block.into_inner();
         let payload_status = self
             .execution_node
