@@ -61,17 +61,17 @@ const VIEW_FUNC_GAS: u64 = 100;
 const MUTATE_FUNC_GAS: u64 = 1000;
 
 pub trait Precompile {
-    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult;
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64) {
     precompiles.set_precompile_lookup(move |address: &Address| {
-        if is_tip20(address) {
-            let token_id = address_to_token_id_unchecked(address);
+        if is_tip20(*address) {
+            let token_id = address_to_token_id_unchecked(*address);
             if token_id == 0 {
                 Some(LinkingUSDPrecompile::create(chain_id))
             } else {
-                Some(TIP20Precompile::create(address, chain_id))
+                Some(TIP20Precompile::create(*address, chain_id))
             }
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id))
@@ -106,7 +106,7 @@ macro_rules! tempo_precompile {
                     DelegateCallNotAllowed {}.abi_encode().into(),
                 ));
             }
-            $impl.call($input.data, &$input.caller)
+            $impl.call($input.data, $input.caller)
         })
     };
 }
@@ -158,7 +158,7 @@ impl TIP20FactoryPrecompile {
 
 pub struct TIP20Precompile;
 impl TIP20Precompile {
-    pub fn create(address: &Address, chain_id: u64) -> DynPrecompile {
+    pub fn create(address: Address, chain_id: u64) -> DynPrecompile {
         let token_id = address_to_token_id_unchecked(address);
         tempo_precompile!("TIP20Token", |input| TIP20Token::new(
             token_id,
@@ -210,8 +210,8 @@ fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> 
 #[inline]
 pub fn mutate<T: SolCall>(
     calldata: &[u8],
-    sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<T::Return>,
+    sender: Address,
+    f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(
@@ -226,8 +226,8 @@ pub fn mutate<T: SolCall>(
 #[inline]
 fn mutate_void<T: SolCall>(
     calldata: &[u8],
-    sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<()>,
+    sender: Address,
+    f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(

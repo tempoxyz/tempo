@@ -15,7 +15,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         b.iter(|| {
@@ -30,7 +30,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         b.iter(|| {
@@ -45,7 +45,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         b.iter(|| {
@@ -60,7 +60,7 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         b.iter(|| {
@@ -76,13 +76,13 @@ fn tip20_metadata(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: user,
                     amount: U256::from(1000),
@@ -105,13 +105,13 @@ fn tip20_view(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: user,
                     amount: U256::from(1000),
@@ -134,11 +134,11 @@ fn tip20_view(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         token
             .approve(
-                &owner,
+                owner,
                 ITIP20::approveCall {
                     spender,
                     amount: U256::from(500),
@@ -159,7 +159,7 @@ fn tip20_view(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         b.iter(|| {
@@ -174,7 +174,7 @@ fn tip20_view(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         b.iter(|| {
@@ -189,7 +189,7 @@ fn tip20_view(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         b.iter(|| {
@@ -207,15 +207,15 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
 
         let amount = U256::from(100);
         b.iter(|| {
             let token = black_box(&mut token);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP20::mintCall { to: user, amount });
             token.mint(admin, call).unwrap();
         });
@@ -226,14 +226,14 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
         // Pre-mint tokens for burning
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: admin,
                     amount: U256::MAX,
@@ -244,7 +244,7 @@ fn tip20_mutate(c: &mut Criterion) {
         let amount = U256::from(1);
         b.iter(|| {
             let token = black_box(&mut token);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP20::burnCall { amount });
             token.burn(admin, call).unwrap();
         });
@@ -257,13 +257,13 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         let amount = U256::from(500);
         b.iter(|| {
             let token = black_box(&mut token);
-            let owner = black_box(&owner);
+            let owner = black_box(owner);
             let call = black_box(ITIP20::approveCall { spender, amount });
             let result = token.approve(owner, call).unwrap();
             black_box(result);
@@ -277,14 +277,14 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
         // Pre-mint tokens for transfers
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: from,
                     amount: U256::MAX,
@@ -295,7 +295,7 @@ fn tip20_mutate(c: &mut Criterion) {
         let amount = U256::from(1);
         b.iter(|| {
             let token = black_box(&mut token);
-            let from = black_box(&from);
+            let from = black_box(from);
             let call = black_box(ITIP20::transferCall { to, amount });
             let result = token.transfer(from, call).unwrap();
             black_box(result);
@@ -310,14 +310,14 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
         // Pre-mint tokens and set allowance
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: owner,
                     amount: U256::MAX,
@@ -326,7 +326,7 @@ fn tip20_mutate(c: &mut Criterion) {
             .unwrap();
         token
             .approve(
-                &owner,
+                owner,
                 ITIP20::approveCall {
                     spender,
                     amount: U256::MAX,
@@ -338,7 +338,7 @@ fn tip20_mutate(c: &mut Criterion) {
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let spender = black_box(&spender);
+            let spender = black_box(spender);
             let call = black_box(ITIP20::transferFromCall {
                 from: owner,
                 to: recipient,
@@ -357,14 +357,14 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(&admin, *ISSUER_ROLE);
+        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
         // Pre-mint tokens for transfers
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: from,
                     amount: U256::MAX,
@@ -375,7 +375,7 @@ fn tip20_mutate(c: &mut Criterion) {
         let amount = U256::from(1);
         b.iter(|| {
             let token = black_box(&mut token);
-            let from = black_box(&from);
+            let from = black_box(from);
             let call = black_box(ITIP20::transferWithMemoCall { to, amount, memo });
             token.transfer_with_memo(from, call).unwrap();
         });
@@ -386,14 +386,14 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(&admin, *PAUSE_ROLE);
+        let _ = roles.grant_role_internal(admin, *PAUSE_ROLE);
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP20::pauseCall {});
             token.pause(admin, call).unwrap();
         });
@@ -404,14 +404,14 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(&admin, *UNPAUSE_ROLE);
+        let _ = roles.grant_role_internal(admin, *UNPAUSE_ROLE);
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP20::unpauseCall {});
             token.unpause(admin, call).unwrap();
         });
@@ -422,13 +422,13 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let counter = U256::from(10000);
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP20::setSupplyCapCall {
                 newSupplyCap: counter,
             });
@@ -441,13 +441,13 @@ fn tip20_mutate(c: &mut Criterion) {
         let mut storage = HashMapStorageProvider::new(1);
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let policy_id = 2;
 
         b.iter(|| {
             let token = black_box(&mut token);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: policy_id,
             });
@@ -485,7 +485,7 @@ fn tip20_factory_mutate(c: &mut Criterion) {
 
         b.iter(|| {
             let factory = black_box(&mut factory);
-            let sender = black_box(&sender);
+            let sender = black_box(sender);
             let call = black_box(create_call.clone());
             let result = factory.create_token(sender, call).unwrap();
             black_box(result);
@@ -511,7 +511,7 @@ fn tip403_registry_view(c: &mut Criterion) {
         let mut registry = TIP403Registry::new(&mut storage);
         let policy_id = registry
             .create_policy(
-                &admin,
+                admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
@@ -536,7 +536,7 @@ fn tip403_registry_view(c: &mut Criterion) {
         let mut registry = TIP403Registry::new(&mut storage);
         let policy_id = registry
             .create_policy(
-                &admin,
+                admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
@@ -564,9 +564,9 @@ fn tip403_registry_mutate(c: &mut Criterion) {
 
         b.iter(|| {
             let registry = black_box(&mut registry);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP403Registry::createPolicyCall {
-                admin: *admin,
+                admin,
                 policyType: ITIP403Registry::PolicyType::WHITELIST,
             });
             let result = registry.create_policy(admin, call).unwrap();
@@ -584,9 +584,9 @@ fn tip403_registry_mutate(c: &mut Criterion) {
 
         b.iter(|| {
             let registry = black_box(&mut registry);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP403Registry::createPolicyWithAccountsCall {
-                admin: *admin,
+                admin,
                 policyType: ITIP403Registry::PolicyType::WHITELIST,
                 accounts: accounts.clone(),
             });
@@ -601,7 +601,7 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         let mut registry = TIP403Registry::new(&mut storage);
         let policy_id = registry
             .create_policy(
-                &admin,
+                admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
@@ -611,10 +611,10 @@ fn tip403_registry_mutate(c: &mut Criterion) {
 
         b.iter(|| {
             let registry = black_box(&mut registry);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP403Registry::setPolicyAdminCall {
                 policyId: policy_id,
-                admin: *admin,
+                admin,
             });
             registry.set_policy_admin(admin, call).unwrap();
         });
@@ -627,7 +627,7 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         let mut registry = TIP403Registry::new(&mut storage);
         let policy_id = registry
             .create_policy(
-                &admin,
+                admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
@@ -637,7 +637,7 @@ fn tip403_registry_mutate(c: &mut Criterion) {
 
         b.iter(|| {
             let registry = black_box(&mut registry);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP403Registry::modifyPolicyWhitelistCall {
                 policyId: policy_id,
                 account: user,
@@ -654,7 +654,7 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         let mut registry = TIP403Registry::new(&mut storage);
         let policy_id = registry
             .create_policy(
-                &admin,
+                admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
                     policyType: ITIP403Registry::PolicyType::BLACKLIST,
@@ -664,7 +664,7 @@ fn tip403_registry_mutate(c: &mut Criterion) {
 
         b.iter(|| {
             let registry = black_box(&mut registry);
-            let admin = black_box(&admin);
+            let admin = black_box(admin);
             let call = black_box(ITIP403Registry::modifyPolicyBlacklistCall {
                 policyId: policy_id,
                 account: user,

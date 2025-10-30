@@ -5,7 +5,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 use crate::tip_account_registrar::{ITipAccountRegistrar, TipAccountRegistrar};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S> {
-    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
