@@ -18,7 +18,7 @@ use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Block as _,
-    marshal::ingress::mailbox::Identifier,
+    marshal::{SchemeProvider as _, ingress::mailbox::Identifier},
     types::{Epoch, Round, View},
 };
 use commonware_macros::select;
@@ -52,7 +52,7 @@ use super::{
 use crate::{
     consensus::{Digest, block::Block},
     dkg::PublicOutcome,
-    epoch,
+    epoch::{self, SchemeProvider},
     subblocks::SubBlocksHandle,
 };
 
@@ -101,6 +101,8 @@ where
 
                 execution_node: config.execution_node,
                 subblocks: config.subblocks,
+
+                scheme_provider: config.scheme_provider,
 
                 state: Uninit(()),
             },
@@ -207,6 +209,7 @@ struct Inner<TState> {
     genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
     subblocks: SubBlocksHandle,
+    scheme_provider: SchemeProvider,
 
     state: TState,
 }
@@ -385,6 +388,7 @@ impl Inner<Init> {
                 .clone(),
             &proposal,
             parent_digest.0,
+            &self.scheme_provider,
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
@@ -674,6 +678,7 @@ impl Inner<Init> {
                 .clone(),
             &block,
             parent.hash(),
+            &self.scheme_provider,
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
@@ -748,6 +753,7 @@ impl Inner<Uninit> {
                 executor_mailbox: executor.mailbox().clone(),
             },
             subblocks: self.subblocks,
+            scheme_provider: self.scheme_provider,
         };
 
         executor.start();
@@ -795,6 +801,7 @@ async fn verify_block<TContext: Pacer>(
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
     parent_hash: B256,
+    scheme_provider: &SchemeProvider,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
     if !epoch::contains_height(block.height(), epoch, epoch_length) {
@@ -808,9 +815,22 @@ async fn verify_block<TContext: Pacer>(
         );
         return Ok(false);
     }
+    let scheme = scheme_provider
+        .scheme(epoch)
+        .ok_or_eyre("epoch's scheme not found")?;
     let block = block.clone().into_inner();
+    let execution_data = TempoExecutionData {
+        block,
+        validator_set: Some(
+            scheme
+                .participants()
+                .into_iter()
+                .map(|p| B256::from_slice(&p))
+                .collect(),
+        ),
+    };
     let payload_status = engine
-        .new_payload(TempoExecutionData(block))
+        .new_payload(execution_data)
         .pace(&context, Duration::from_millis(50))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;

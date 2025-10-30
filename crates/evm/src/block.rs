@@ -50,11 +50,6 @@ enum BlockSection {
     },
 }
 
-#[derive(Debug, Clone, Default)]
-struct ValidatorSetInfo {
-    pub participants: Vec<B256>,
-}
-
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
@@ -96,7 +91,7 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
 
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
-    validator_set: Option<ValidatorSetInfo>,
+    validator_set: Option<Vec<B256>>,
     shared_gas_limit: u64,
 
     non_shared_gas_left: u64,
@@ -116,7 +111,7 @@ where
     ) -> Self {
         Self {
             incentive_gas_used: 0,
-            validator_set: None,
+            validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit - ctx.general_gas_limit,
             shared_gas_limit: ctx.shared_gas_limit,
@@ -242,13 +237,13 @@ where
         let Some(validator_set) = &self.validator_set else {
             return Ok(());
         };
-        let gas_per_subblock = self.shared_gas_limit / validator_set.participants.len() as u64;
+        let gas_per_subblock = self.shared_gas_limit / validator_set.len() as u64;
 
         let mut incentive_gas = gas_per_subblock;
         let mut seen = HashSet::new();
         let mut next_non_empty = 0;
         for metadata in metadata {
-            if !validator_set.participants.contains(&metadata.validator) {
+            if !validator_set.contains(&metadata.validator) {
                 return Err(BlockValidationError::msg("invalid subblock validator"));
             }
 

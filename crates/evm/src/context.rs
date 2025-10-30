@@ -1,4 +1,5 @@
 use alloy_evm::eth::EthBlockExecutionCtx;
+use alloy_primitives::B256;
 use reth_evm::NextBlockEnvAttributes;
 
 /// Execution context for Tempo block.
@@ -11,6 +12,10 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub general_gas_limit: u64,
     /// Shared gas limit for the block.
     pub shared_gas_limit: u64,
+    /// Validator set for the block.
+    ///
+    /// Only set for blocks requiring 
+    pub validator_set: Option<Vec<B256>>,
 }
 
 /// Context required for next block environment.

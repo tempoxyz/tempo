@@ -177,7 +177,9 @@ pub struct ExecutionNode {
 
 // TODO(janis): allow configuring this.
 fn chainspec() -> Arc<TempoChainSpec> {
-    tempo_chainspec::spec::ADAGIO.clone()
+    Arc::new(TempoChainSpec::from_genesis(
+        serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap(),
+    ))
 }
 
 // TODO(janis): would be nicer if we could identify the node somehow?

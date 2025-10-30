@@ -192,6 +192,7 @@ where
             new_payload_wait_time: self.new_payload_wait_time,
             subblocks: subblocks_handle.clone(),
             epoch_length: self.epoch_length,
+            scheme_provider: scheme_provider.clone(),
         })
         .await
         .wrap_err("failed initializing application actor")?;
@@ -207,7 +208,7 @@ where
                 mailbox_size: self.mailbox_size,
                 subblocks: subblocks_handle.clone(),
                 marshal: marshal_mailbox,
-                scheme_provider,
+                scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),

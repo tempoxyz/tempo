@@ -16,7 +16,7 @@ mod ingress;
 pub(super) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use crate::subblocks::SubBlocksHandle;
+use crate::{epoch::SchemeProvider, subblocks::SubBlocksHandle};
 
 pub(super) async fn init<TContext>(
     config: Config<TContext>,
@@ -58,4 +58,7 @@ pub(super) struct Config<TContext> {
     /// `E*H+1` to and including `(E+1)*H` make up the epoch. The block at
     /// `E*H` is said to be the genesis (or parent) of the epoch.
     pub(super) epoch_length: u64,
+
+    /// The scheme provider to use for the application.
+    pub(crate) scheme_provider: SchemeProvider,
 }

@@ -37,6 +37,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                     inner,
                     general_gas_limit,
                     shared_gas_limit,
+                    validator_set: _,
                 },
             parent,
             transactions,
