@@ -4,7 +4,7 @@ use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, k
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 
-use crate::{AASignature, AASigned};
+use crate::transaction::{AASignature, AASigned, AASignedAuthorization};
 
 /// Account abstraction transaction type byte (0x76)
 pub const AA_TX_TYPE_ID: u8 = 0x76;
@@ -111,12 +111,11 @@ impl Decodable for Call {
 /// - Gas sponsorship via fee payer
 /// - Scheduled transactions (validBefore/validAfter)
 /// - EIP-7702 authorization lists
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[doc(alias = "AATransaction", alias = "TransactionAA")]
-#[derive(Default)]
 pub struct TxAA {
     /// EIP-155: Simple replay attack protection
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
@@ -169,6 +168,9 @@ pub struct TxAA {
     /// Transaction can only be included in a block after this timestamp
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub valid_after: Option<u64>,
+
+    /// Authorization list (EIP-7702 style with AA signatures)
+    pub aa_authorization_list: Vec<AASignedAuthorization>,
 }
 
 impl TxAA {
@@ -199,6 +201,18 @@ impl TxAA {
             return Err("only protocol nonce (nonce_key = 0) is currently supported");
         }
 
+        // Authorization list validation: Cannot have Create in any call when aa_authorization_list is non-empty
+        // This follows EIP-7702 semantics - when using delegation
+        if !self.aa_authorization_list.is_empty() {
+            for call in &self.calls {
+                if call.to.is_create() {
+                    return Err(
+                        "calls cannot contain Create when aa_authorization_list is non-empty",
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -218,7 +232,8 @@ impl TxAA {
         mem::size_of::<u64>() + // nonce
         mem::size_of::<Option<Signature>>() + // fee_payer_signature
         mem::size_of::<u64>() + // valid_before
-        mem::size_of::<Option<u64>>() // valid_after
+        mem::size_of::<Option<u64>>() + // valid_after
+        self.aa_authorization_list.iter().map(|auth| auth.size()).sum::<usize>() // authorization_list
     }
 
     /// Convert the transaction into a signed transaction
@@ -298,7 +313,9 @@ impl TxAA {
             } else {
                 1 // EMPTY_STRING_CODE
             } +
-            signature_length(&self.fee_payer_signature)
+            signature_length(&self.fee_payer_signature) +
+            // authorization_list
+            self.aa_authorization_list.length()
     }
 
     fn rlp_encode_fields(
@@ -349,6 +366,9 @@ impl TxAA {
         }
 
         encode_signature(&self.fee_payer_signature, out);
+
+        // Encode authorization_list
+        self.aa_authorization_list.encode(out);
     }
 
     /// Public version for normal RLP encoding
@@ -442,6 +462,8 @@ impl TxAA {
             return Err(alloy_rlp::Error::InputTooShort);
         };
 
+        let aa_authorization_list = Decodable::decode(buf)?;
+
         let tx = Self {
             chain_id,
             fee_token,
@@ -455,6 +477,7 @@ impl TxAA {
             fee_payer_signature,
             valid_before,
             valid_after,
+            aa_authorization_list,
         };
 
         // Validate the transaction
@@ -714,6 +737,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             fee_payer_signature,
             valid_before,
             valid_after,
+            aa_authorization_list: vec![],
         })
     }
 }
@@ -779,6 +803,7 @@ mod tests {
         let tx1 = TxAA {
             valid_before: Some(100),
             valid_after: Some(50),
+            aa_authorization_list: vec![],
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
@@ -788,6 +813,7 @@ mod tests {
         let tx2 = TxAA {
             valid_before: Some(50),
             valid_after: Some(100),
+            aa_authorization_list: vec![],
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
@@ -797,6 +823,7 @@ mod tests {
         let tx3 = TxAA {
             valid_before: Some(100),
             valid_after: Some(100),
+            aa_authorization_list: vec![],
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
@@ -806,6 +833,7 @@ mod tests {
         let tx4 = TxAA {
             valid_before: Some(100),
             valid_after: None,
+            aa_authorization_list: vec![],
             calls: vec![dummy_call],
             ..Default::default()
         };
@@ -867,6 +895,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
             valid_after: Some(500000),
+            aa_authorization_list: vec![],
         };
 
         // Encode
@@ -917,6 +946,7 @@ mod tests {
             fee_payer_signature: None,
             valid_before: Some(1000),
             valid_after: None,
+            aa_authorization_list: vec![],
         };
 
         // Encode
@@ -1070,6 +1100,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
             valid_after: None,
+            aa_authorization_list: vec![],
             access_list: Default::default(),
         };
 
@@ -1147,6 +1178,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
             valid_after: None,
+            aa_authorization_list: vec![],
             access_list: Default::default(),
         };
 
@@ -1189,6 +1221,7 @@ mod tests {
             fee_payer_signature: None, // No fee payer
             valid_before: Some(1000),
             valid_after: None,
+            aa_authorization_list: vec![],
             access_list: Default::default(),
         };
 
@@ -1249,6 +1282,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
             valid_after: None,
+            aa_authorization_list: vec![],
             access_list: Default::default(),
         };
 
@@ -1311,6 +1345,7 @@ mod tests {
             fee_payer_signature: None,
             valid_before: Some(1000),
             valid_after: None,
+            aa_authorization_list: vec![],
             access_list: Default::default(),
         };
 
@@ -1408,6 +1443,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
             valid_after: Some(500000),
+            aa_authorization_list: vec![],
         };
 
         // Encode the transaction normally

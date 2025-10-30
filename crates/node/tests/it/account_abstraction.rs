@@ -55,6 +55,7 @@ async fn fund_address_with_fee_tokens(
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
+        aa_authorization_list: vec![],
     };
 
     // Sign and send the funding transaction
@@ -225,6 +226,202 @@ async fn setup_test_with_funded_account() -> eyre::Result<(
     Ok((setup, provider, signer, signer_addr))
 }
 
+/// Helper function to compute authorization signature hash (EIP-7702)
+fn compute_authorization_signature_hash(auth: &alloy_eips::eip7702::Authorization) -> B256 {
+    use alloy_rlp::Encodable as _;
+    let mut sig_buf = Vec::new();
+    sig_buf.push(tempo_primitives::transaction::aa_authorization::MAGIC);
+    auth.encode(&mut sig_buf);
+    alloy::primitives::keccak256(&sig_buf)
+}
+
+/// Helper function to create a signed Secp256k1 authorization
+fn create_secp256k1_authorization<T>(
+    chain_id: u64,
+    delegate_address: Address,
+    signer: &T,
+) -> eyre::Result<(
+    tempo_primitives::transaction::AASignedAuthorization,
+    Address,
+)>
+where
+    T: SignerSync + alloy::signers::Signer,
+{
+    use alloy_eips::eip7702::Authorization;
+    use tempo_primitives::transaction::AASignedAuthorization;
+
+    let authority_addr = signer.address();
+
+    let auth = Authorization {
+        chain_id: alloy_primitives::U256::from(chain_id),
+        address: delegate_address,
+        nonce: 0,
+    };
+
+    let sig_hash = compute_authorization_signature_hash(&auth);
+    let signature = signer.sign_hash_sync(&sig_hash)?;
+    let aa_sig = tempo_primitives::transaction::aa_signature::AASignature::Secp256k1(signature);
+    let signed_auth = AASignedAuthorization::new_unchecked(auth, aa_sig);
+
+    Ok((signed_auth, authority_addr))
+}
+
+/// Helper function to create a signed P256 authorization
+fn create_p256_authorization(
+    chain_id: u64,
+    delegate_address: Address,
+) -> eyre::Result<(
+    tempo_primitives::transaction::AASignedAuthorization,
+    Address,
+    p256::ecdsa::SigningKey,
+)> {
+    use alloy_eips::eip7702::Authorization;
+    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
+    use sha2::{Digest, Sha256};
+    use tempo_primitives::transaction::{
+        AASignedAuthorization,
+        aa_signature::{AASignature, P256SignatureWithPreHash},
+    };
+
+    let signing_key = SigningKey::random(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    // Extract P256 public key coordinates
+    let encoded_point = verifying_key.to_encoded_point(false);
+    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
+    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+
+    // Derive P256 address
+    let authority_addr =
+        tempo_primitives::transaction::aa_signature::derive_p256_address(&pub_key_x, &pub_key_y);
+
+    let auth = Authorization {
+        chain_id: alloy_primitives::U256::from(chain_id),
+        address: delegate_address,
+        nonce: 0,
+    };
+
+    let sig_hash = compute_authorization_signature_hash(&auth);
+
+    // Sign with P256 (using pre-hash)
+    let pre_hashed = Sha256::digest(sig_hash.as_slice());
+    let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
+    let sig_bytes = signature.to_bytes();
+
+    let aa_sig = AASignature::P256(P256SignatureWithPreHash {
+        r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
+        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        pub_key_x,
+        pub_key_y,
+        pre_hash: true,
+    });
+    let signed_auth = AASignedAuthorization::new_unchecked(auth, aa_sig);
+
+    Ok((signed_auth, authority_addr, signing_key))
+}
+
+/// Helper function to create a signed WebAuthn authorization
+fn create_webauthn_authorization(
+    chain_id: u64,
+    delegate_address: Address,
+) -> eyre::Result<(
+    tempo_primitives::transaction::AASignedAuthorization,
+    Address,
+    p256::ecdsa::SigningKey,
+)> {
+    use alloy_eips::eip7702::Authorization;
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
+    use sha2::{Digest, Sha256};
+    use tempo_primitives::transaction::{
+        AASignedAuthorization,
+        aa_signature::{AASignature, WebAuthnSignature},
+    };
+
+    let signing_key = SigningKey::random(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    // Extract WebAuthn public key coordinates
+    let encoded_point = verifying_key.to_encoded_point(false);
+    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
+    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+
+    // Derive WebAuthn address (same derivation as P256)
+    let authority_addr =
+        tempo_primitives::transaction::aa_signature::derive_p256_address(&pub_key_x, &pub_key_y);
+
+    let auth = Authorization {
+        chain_id: alloy_primitives::U256::from(chain_id),
+        address: delegate_address,
+        nonce: 0,
+    };
+
+    let sig_hash = compute_authorization_signature_hash(&auth);
+
+    // Create WebAuthn signature
+    let mut authenticator_data = vec![0u8; 37];
+    authenticator_data[0..32].copy_from_slice(&[0xBB; 32]); // rpIdHash
+    authenticator_data[32] = 0x01; // UP flag set
+    authenticator_data[33..37].copy_from_slice(&[0, 0, 0, 0]); // signCount
+
+    let challenge_b64url = URL_SAFE_NO_PAD.encode(sig_hash.as_slice());
+    let client_data_json = format!(
+        r#"{{"type":"webauthn.get","challenge":"{challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
+    );
+
+    // Compute WebAuthn message hash
+    let client_data_hash = Sha256::digest(client_data_json.as_bytes());
+    let mut final_hasher = Sha256::new();
+    final_hasher.update(&authenticator_data);
+    final_hasher.update(client_data_hash);
+    let message_hash = final_hasher.finalize();
+
+    // Sign with P256
+    let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&message_hash)?;
+    let sig_bytes = signature.to_bytes();
+
+    // Construct WebAuthn data
+    let mut webauthn_data = Vec::new();
+    webauthn_data.extend_from_slice(&authenticator_data);
+    webauthn_data.extend_from_slice(client_data_json.as_bytes());
+
+    let aa_sig = AASignature::WebAuthn(WebAuthnSignature {
+        webauthn_data: Bytes::from(webauthn_data),
+        r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
+        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        pub_key_x,
+        pub_key_y,
+    });
+    let signed_auth = AASignedAuthorization::new_unchecked(auth, aa_sig);
+
+    Ok((signed_auth, authority_addr, signing_key))
+}
+
+/// Helper function to verify EIP-7702 delegation code
+fn verify_delegation_code(code: &Bytes, expected_delegate: Address, authority_name: &str) {
+    // EIP-7702 delegation code format: 0xef0100 || address (23 bytes total)
+    // 0xef = magic byte, 0x01 = version, 0x00 = reserved
+    assert_eq!(
+        code.len(),
+        23,
+        "{authority_name} should have EIP-7702 delegation code (23 bytes), got {} bytes",
+        code.len()
+    );
+    assert_eq!(
+        &code[0..3],
+        &[0xef, 0x01, 0x00],
+        "{authority_name} should have correct EIP-7702 magic bytes [0xef, 0x01, 0x00], got [{:02x}, {:02x}, {:02x}]",
+        code[0],
+        code[1],
+        code[2]
+    );
+    assert_eq!(
+        &code[3..23],
+        expected_delegate.as_slice(),
+        "{authority_name} should delegate to correct address {expected_delegate}"
+    );
+}
+
 /// Helper function to set up P256 test infrastructure with funded account
 /// Returns: (setup, provider, signing_key, pub_key_x, pub_key_y, signer_addr, funder_signer, funder_addr, chain_id)
 async fn setup_test_with_p256_funded_account(
@@ -342,6 +539,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
+        aa_authorization_list: vec![],
     };
 
     println!("Created AA transaction with secp256k1 signature");
@@ -428,6 +626,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
+        aa_authorization_list: vec![],
     };
 
     // Sign and encode transaction
@@ -478,6 +677,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
+        aa_authorization_list: vec![],
     };
 
     // Sign and encode transaction
@@ -570,6 +770,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
+        aa_authorization_list: vec![],
     };
 
     println!("Created AA transaction for WebAuthn signature");
@@ -760,6 +961,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
+        aa_authorization_list: vec![],
     };
 
     // ===========================================
@@ -1119,6 +1321,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
+        aa_authorization_list: vec![],
     };
 
     // Sign with P256
@@ -1343,6 +1546,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
+        aa_authorization_list: vec![],
     };
 
     println!("Created AA transaction with fee payer placeholder");
@@ -1469,6 +1673,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
         valid_before: Some(u64::MAX),
         valid_after: None,
         access_list: Default::default(),
+        aa_authorization_list: vec![],
     };
 
     println!("Created AA transaction with empty call batch");
@@ -1607,5 +1812,221 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
         "WebAuthn should cost more than P256"
     );
     println!("  ✓ WebAuthn adds signature verification + calldata gas");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_authorization_list() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing EIP-7702 Authorization List with AA Signatures ===\n");
+
+    // Setup test node with funded account
+    let (mut setup, provider, sender_signer, sender_addr) =
+        setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+
+    println!("Transaction sender: {sender_addr}");
+
+    // The delegate address that all EOAs will delegate to (using default 7702 delegate)
+    let delegate_address = tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+    println!("Delegate address: {delegate_address}");
+
+    // ========================================================================
+    // Authority 1: Secp256k1 signature
+    // ========================================================================
+    println!("\n--- Authority 1: Secp256k1 ---");
+
+    let auth1_signer = alloy::signers::local::PrivateKeySigner::random();
+    let (auth1_signed, auth1_addr) =
+        create_secp256k1_authorization(chain_id, delegate_address, &auth1_signer)?;
+    println!("Authority 1 address: {auth1_addr}");
+    println!("  ✓ Created Secp256k1 authorization");
+
+    // ========================================================================
+    // Authority 2: P256 signature
+    // ========================================================================
+    println!("\n--- Authority 2: P256 ---");
+
+    let (auth2_signed, auth2_addr, _auth2_signing_key) =
+        create_p256_authorization(chain_id, delegate_address)?;
+    println!("Authority 2 address: {auth2_addr}");
+    println!("  ✓ Created P256 authorization");
+
+    // ========================================================================
+    // Authority 3: WebAuthn signature
+    // ========================================================================
+    println!("\n--- Authority 3: WebAuthn ---");
+
+    let (auth3_signed, auth3_addr, _auth3_signing_key) =
+        create_webauthn_authorization(chain_id, delegate_address)?;
+    println!("Authority 3 address: {auth3_addr}");
+    println!("  ✓ Created WebAuthn authorization");
+
+    // ========================================================================
+    // Verify BEFORE state: All authority accounts should have no code
+    // ========================================================================
+    println!("\n--- Verifying BEFORE state ---");
+
+    let auth1_code_before = provider.get_code_at(auth1_addr).await?;
+    let auth2_code_before = provider.get_code_at(auth2_addr).await?;
+    let auth3_code_before = provider.get_code_at(auth3_addr).await?;
+
+    assert_eq!(
+        auth1_code_before.len(),
+        0,
+        "Authority 1 should have no code before delegation"
+    );
+    assert_eq!(
+        auth2_code_before.len(),
+        0,
+        "Authority 2 should have no code before delegation"
+    );
+    assert_eq!(
+        auth3_code_before.len(),
+        0,
+        "Authority 3 should have no code before delegation"
+    );
+    // ========================================================================
+    // Create AA transaction with authorization list using RPC
+    // ========================================================================
+    println!("\n--- Creating AA transaction with authorization list via RPC ---");
+
+    let recipient = Address::random();
+
+    // Create transaction request using RPC interface
+    use alloy::rpc::types::TransactionRequest;
+    use tempo_node::rpc::TempoTransactionRequest;
+
+    let tx_request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(sender_addr),
+            to: Some(recipient.into()),
+            value: Some(U256::ZERO),
+            gas: Some(300_000), // Higher gas for authorization list processing
+            max_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
+            max_priority_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
+            nonce: Some(provider.get_transaction_count(sender_addr).await?),
+            chain_id: Some(chain_id),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        aa_authorization_list: vec![auth1_signed, auth2_signed, auth3_signed], // All 3 authorizations
+        ..Default::default()
+    };
+
+    println!(
+        "  Created tx request with {} authorizations (Secp256k1, P256, WebAuthn)",
+        tx_request.aa_authorization_list.len()
+    );
+
+    // Build the AA transaction from the request
+    let tx = tx_request
+        .build_aa()
+        .map_err(|e| eyre::eyre!("Failed to build AA tx: {:?}", e))?;
+
+    // Sign the transaction with sender's secp256k1 key
+    let tx_sig_hash = tx.signature_hash();
+    let tx_signature = sender_signer.sign_hash_sync(&tx_sig_hash)?;
+    let tx_aa_signature = AASignature::Secp256k1(tx_signature);
+    let signed_tx = AASigned::new_unhashed(tx, tx_aa_signature);
+
+    // Convert to envelope and encode
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    println!(
+        "  Encoded transaction: {} bytes (type: 0x{:02x})",
+        encoded.len(),
+        encoded[0]
+    );
+
+    // Test encoding/decoding roundtrip
+    let decoded = TempoTxEnvelope::decode_2718(&mut encoded.as_slice())?;
+    assert!(
+        matches!(decoded, TempoTxEnvelope::AA(_)),
+        "Should decode as AA transaction"
+    );
+    println!("  ✓ Encoding/decoding roundtrip successful");
+
+    // Submit transaction via RPC
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
+    let payload = setup.node.advance_block().await?;
+
+    println!(
+        "  ✓ Transaction mined in block {}",
+        payload.block().inner.number
+    );
+
+    // Verify transaction via RPC
+    verify_tx_in_block_via_rpc(&provider, &encoded, &envelope).await?;
+
+    // Verify the authorization list was included in the transaction and get recovered addresses
+    let mut recovered_authorities = Vec::new();
+    if let TempoTxEnvelope::AA(aa_tx) = &envelope {
+        println!("\n--- Verifying authorization list in transaction ---");
+        println!(
+            "  Authorization list length: {}",
+            aa_tx.tx().aa_authorization_list.len()
+        );
+
+        // Verify each authorization can be recovered
+        for (i, aa_auth) in aa_tx.tx().aa_authorization_list.iter().enumerate() {
+            match aa_auth.recover_authority() {
+                Ok(authority) => {
+                    println!("  ✓ Authorization {} recovered: {}", i + 1, authority);
+                    recovered_authorities.push(authority);
+                }
+                Err(e) => {
+                    println!("  ✗ Authorization {} recovery failed: {:?}", i + 1, e);
+                    panic!("Authorization recovery failed");
+                }
+            }
+        }
+    }
+
+    // Verify that recovered authorities match expected addresses
+    assert_eq!(
+        recovered_authorities[0], auth1_addr,
+        "Secp256k1 authority should match expected address"
+    );
+    assert_eq!(
+        recovered_authorities[1], auth2_addr,
+        "P256 authority should match expected address"
+    );
+    assert_eq!(
+        recovered_authorities[2], auth3_addr,
+        "WebAuthn authority should match expected address"
+    );
+
+    // ========================================================================
+    // Verify AFTER state: All authority accounts should have delegation code
+    // ========================================================================
+    println!("\n--- Verifying AFTER state ---");
+
+    let auth1_code_after = provider.get_code_at(recovered_authorities[0]).await?;
+    let auth2_code_after = provider.get_code_at(recovered_authorities[1]).await?;
+    let auth3_code_after = provider.get_code_at(recovered_authorities[2]).await?;
+
+    // Verify each authority has correct EIP-7702 delegation code
+    verify_delegation_code(
+        &auth1_code_after,
+        delegate_address,
+        "Authority 1 (Secp256k1)",
+    );
+    verify_delegation_code(&auth2_code_after, delegate_address, "Authority 2 (P256)");
+    verify_delegation_code(
+        &auth3_code_after,
+        delegate_address,
+        "Authority 3 (WebAuthn)",
+    );
+
+    println!("verification successful");
+
     Ok(())
 }

@@ -5,9 +5,7 @@ use commonware_consensus::{
     simplex::{self, signing_scheme::bls12381_threshold::Scheme, types::Voter},
     types::Epoch,
 };
-use commonware_cryptography::{
-    Signer as _, bls12381::primitives::variant::MinSig, ed25519::PublicKey,
-};
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_p2p::{
     Blocker, Receiver, Recipients, Sender,
@@ -234,22 +232,21 @@ where
             "an engine for the entered epoch is already running; ignoring",
         );
 
-        // Register the new signing scheme with the scheme provider.
-        let scheme = if let Some(share) = share {
-            Scheme::new(participants.as_ref(), &public, share)
-        } else {
-            Scheme::verifier(participants.as_ref(), &public)
-        };
-        assert!(self.config.scheme_provider.register(epoch, scheme.clone()));
-
         self.metrics
             .latest_participants
             .set(participants.len() as i64);
+
+        // Register the new signing scheme with the scheme provider.
+        let scheme = if let Some(share) = share {
+            Scheme::new(participants, &public, share)
+        } else {
+            Scheme::verifier(participants, &public)
+        };
+        assert!(self.config.scheme_provider.register(epoch, scheme.clone()));
+
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
             simplex::Config {
-                me: self.config.me.public_key(),
-                participants,
                 scheme,
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
@@ -357,7 +354,7 @@ where
         );
 
         // Forward the finalization to the sender. This operation is best-effort.
-        let message = Voter::<Scheme<MinSig>, Digest>::Finalization(finalization);
+        let message = Voter::<Scheme<PublicKey, MinSig>, Digest>::Finalization(finalization);
         let res = recovered_global_sender
             .send(
                 epoch,

@@ -435,6 +435,7 @@ mod serde_impl {
                 fee_payer_signature: None,
                 valid_before: None,
                 valid_after: None,
+                aa_authorization_list: vec![],
             };
 
             // Create a secp256k1 signature

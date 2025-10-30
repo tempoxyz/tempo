@@ -4,6 +4,7 @@ use commonware_consensus::{
     types::{Epoch, Round, View},
 };
 
+use commonware_cryptography::ed25519::PublicKey;
 use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
@@ -91,7 +92,7 @@ impl From<Finalized> for Message {
 }
 
 impl Automaton for Mailbox {
-    type Context = Context<Self::Digest>;
+    type Context = Context<Self::Digest, PublicKey>;
 
     type Digest = Digest;
 

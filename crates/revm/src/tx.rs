@@ -11,7 +11,8 @@ use revm::context::{
     },
 };
 use tempo_primitives::{
-    AASignature, AASigned, TempoTxEnvelope, TxAA, TxFeeToken, transaction::Call,
+    AASignature, AASigned, TempoTxEnvelope, TxAA, TxFeeToken,
+    transaction::{AASignedAuthorization, Call},
 };
 
 /// Account Abstraction transaction environment.
@@ -28,6 +29,9 @@ pub struct AATxEnv {
 
     /// Multiple calls for AA transactions
     pub aa_calls: Vec<Call>,
+
+    /// Authorization list (EIP-7702 with AA signatures)
+    pub aa_authorization_list: Vec<AASignedAuthorization>,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -253,6 +257,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_payer_signature,
             valid_before,
             valid_after,
+            aa_authorization_list,
         } = tx;
 
         // Extract to/value/input from calls (use first call or defaults)
@@ -279,8 +284,19 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
                 access_list: access_list.clone(),
-                // AA transactions don't support EIP-7702 authorization lists per spec
-                authorization_list: Default::default(),
+                // Convert AA authorization list to RecoveredAuthorization
+                authorization_list: aa_authorization_list
+                    .iter()
+                    .map(|aa_auth| {
+                        let authority = aa_auth
+                            .recover_authority()
+                            .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid);
+                        Either::Right(RecoveredAuthorization::new_unchecked(
+                            aa_auth.inner().clone(),
+                            authority,
+                        ))
+                    })
+                    .collect(),
                 ..Default::default()
             },
             fee_token: *fee_token,
@@ -295,6 +311,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_before: *valid_before,
                 valid_after: *valid_after,
                 aa_calls: calls.clone(),
+                aa_authorization_list: aa_authorization_list.clone(),
             })),
         }
     }

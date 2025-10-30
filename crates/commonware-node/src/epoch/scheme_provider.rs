@@ -13,8 +13,9 @@ use commonware_resolver::p2p;
 use commonware_utils::set::Ordered;
 
 #[derive(Clone)]
+#[expect(clippy::type_complexity)]
 pub(crate) struct SchemeProvider {
-    inner: Arc<Mutex<HashMap<Epoch, Arc<Scheme<MinSig>>>>>,
+    inner: Arc<Mutex<HashMap<Epoch, Arc<Scheme<PublicKey, MinSig>>>>>,
 }
 
 impl SchemeProvider {
@@ -24,7 +25,7 @@ impl SchemeProvider {
         }
     }
 
-    pub(crate) fn register(&self, epoch: Epoch, scheme: Scheme<MinSig>) -> bool {
+    pub(crate) fn register(&self, epoch: Epoch, scheme: Scheme<PublicKey, MinSig>) -> bool {
         self.inner
             .lock()
             .unwrap()
@@ -38,7 +39,7 @@ impl SchemeProvider {
 }
 
 impl marshal::SchemeProvider for SchemeProvider {
-    type Scheme = Scheme<MinSig>;
+    type Scheme = Scheme<PublicKey, MinSig>;
 
     fn scheme(&self, epoch: Epoch) -> Option<Arc<Self::Scheme>> {
         self.inner.lock().unwrap().get(&epoch).cloned()

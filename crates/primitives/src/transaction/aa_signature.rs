@@ -2,7 +2,7 @@ use super::account_abstraction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
-use alloy_rlp::{BufMut, Encodable};
+use alloy_rlp::{BufMut, Decodable, Encodable};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     EncodedPoint,
@@ -72,6 +72,13 @@ impl Encodable for AASignature {
 
     fn length(&self) -> usize {
         self.to_bytes().length()
+    }
+}
+
+impl Decodable for AASignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let bytes: Bytes = Decodable::decode(buf)?;
+        Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -180,6 +187,15 @@ impl AASignature {
             Self::Secp256k1(_) => SignatureType::Secp256k1,
             Self::P256(_) => SignatureType::P256,
             Self::WebAuthn(_) => SignatureType::WebAuthn,
+        }
+    }
+
+    /// Get the in-memory size of the signature
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
+            Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
+            Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
         }
     }
 

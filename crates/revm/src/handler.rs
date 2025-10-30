@@ -26,7 +26,7 @@ use revm::{
         instructions::utility::IntoAddress,
         interpreter::EthInterpreter,
     },
-    primitives::hardfork::SpecId as RevmSpecId,
+    primitives::{KECCAK_EMPTY, eip7702, hardfork::SpecId as RevmSpecId},
     state::Bytecode,
 };
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::FeeManagerError};
@@ -48,6 +48,24 @@ const P256_VERIFY_GAS: u64 = 5_000;
 /// Hashed account code of default 7702 delegate deployment
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
     b256!("e7b3e4597bdbdd0cc4eb42f9b799b580f23068f54e472bb802cb71efb1570482");
+
+/// Calculates the gas cost for verifying an AA signature.
+///
+/// Returns the additional gas required beyond the base transaction cost:
+/// - Secp256k1: 0 (already included in base 21k)
+/// - P256: 5000 gas
+/// - WebAuthn: 5000 gas + calldata cost for webauthn_data
+#[inline]
+fn aa_signature_verification_gas(signature: &AASignature) -> u64 {
+    match signature {
+        AASignature::Secp256k1(_) => 0,
+        AASignature::P256(_) => P256_VERIFY_GAS,
+        AASignature::WebAuthn(webauthn_sig) => {
+            let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, true);
+            P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
+        }
+    }
+}
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
@@ -350,6 +368,105 @@ where
         }
     }
 
+    /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
+    ///
+    /// The default implementation only processes authorization lists for TransactionType::Eip7702 (0x04).
+    /// This override extends support to AA transactions (type 0x76) by checking for the presence
+    /// of an aa_authorization_list in the aa_tx_env.
+    #[inline]
+    fn apply_eip7702_auth_list(&self, evm: &mut Self::Evm) -> Result<u64, Self::Error> {
+        let ctx = evm.ctx();
+
+        // Check if this is an AA transaction with an authorization list
+        let has_aa_auth_list = ctx
+            .tx()
+            .aa_tx_env
+            .as_ref()
+            .map(|aa_env| !aa_env.aa_authorization_list.is_empty())
+            .unwrap_or(false);
+
+        // If it's an AA transaction with authorization list, we need to apply it manually
+        // since the default implementation only checks for TransactionType::Eip7702
+        if has_aa_auth_list {
+            // TODO(@rakita) could we have a helper function for this logic in revm?
+            // For AA transactions, we need to apply the authorization list ourselves
+            // because pre_execution::apply_eip7702_auth_list returns early for non-0x04 tx types
+
+            let chain_id = ctx.cfg().chain_id();
+            let (tx, journal) = evm.ctx().tx_journal_mut();
+
+            let aa_tx_env = tx.aa_tx_env.as_ref().unwrap();
+            let mut refunded_accounts = 0;
+
+            for authorization in &aa_tx_env.aa_authorization_list {
+                // 1. Verify the chain id is either 0 or the chain's current ID.
+                let auth_chain_id = authorization.chain_id;
+                if !auth_chain_id.is_zero() && auth_chain_id != U256::from(chain_id) {
+                    continue;
+                }
+
+                // 2. Verify the `nonce` is less than `2**64 - 1`.
+                if authorization.nonce == u64::MAX {
+                    continue;
+                }
+
+                // 3. Recover authority from AA signature
+                let authority = match authorization.recover_authority() {
+                    Ok(addr) => addr,
+                    Err(_) => continue,
+                };
+
+                // 4. Add `authority` to `accessed_addresses` (warm the account)
+                let mut authority_acc = journal.load_account_code(authority)?;
+
+                // 5. Verify the code of `authority` is either empty or already delegated.
+                if let Some(bytecode) = &authority_acc.info.code {
+                    // if it is not empty and it is not eip7702
+                    if !bytecode.is_empty() && !bytecode.is_eip7702() {
+                        continue;
+                    }
+                }
+
+                // 6. Verify the nonce of `authority` is equal to `nonce`.
+                if authorization.nonce != authority_acc.info.nonce {
+                    continue;
+                }
+
+                // 7. Add gas refund if authority already exists
+                if !(authority_acc.is_empty()
+                    && authority_acc.is_loaded_as_not_existing_not_touched())
+                {
+                    refunded_accounts += 1;
+                }
+
+                // 8. Set the code of `authority` to be `0xef0100 || address`
+                //  * As a special case, if `address` is `0x0000000000000000000000000000000000000000` do not write the designation.
+                //    Clear the accounts code and reset the account's code hash to the empty hash `0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470`.
+                let address = authorization.address;
+                let (bytecode, hash) = if address.is_zero() {
+                    (Bytecode::default(), KECCAK_EMPTY)
+                } else {
+                    let bytecode = Bytecode::new_eip7702(address);
+                    let hash = bytecode.hash_slow();
+                    (bytecode, hash)
+                };
+                authority_acc.info.code_hash = hash;
+                authority_acc.info.code = Some(bytecode);
+
+                // 9. Increase the nonce of `authority` by one.
+                authority_acc.info.nonce = authority_acc.info.nonce.saturating_add(1);
+                authority_acc.mark_touch();
+            }
+
+            let refunded_gas =
+                refunded_accounts * (eip7702::PER_EMPTY_ACCOUNT_COST - eip7702::PER_AUTH_BASE_COST);
+            return Ok(refunded_gas);
+        }
+
+        // For standard EIP-7702 transactions, use the default implementation
+        pre_execution::apply_eip7702_auth_list(evm.ctx())
+    }
+
     #[inline]
     fn validate_against_state_and_deduct_caller(
         &self,
@@ -581,6 +698,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     calls: &[tempo_primitives::transaction::Call],
     signature: &AASignature,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
+    aa_authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
     spec: RevmSpecId,
 ) -> InitialAndFloorGas {
     let mut gas = InitialAndFloorGas::default();
@@ -589,24 +707,18 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_gas += 21_000;
 
     // 2. Signature verification gas
-    let signature_gas = match signature {
-        AASignature::Secp256k1(_) => 0,          // Included in base 21k
-        AASignature::P256(_) => P256_VERIFY_GAS, // 5000 gas
-        AASignature::WebAuthn(webauthn_sig) => {
-            // P256 verification + calldata gas for webauthn_data
-            let tokens = get_tokens_in_calldata(
-                &webauthn_sig.webauthn_data,
-                spec.is_enabled_in(RevmSpecId::ISTANBUL),
-            );
-            P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
-        }
-    };
-    gas.initial_gas += signature_gas;
+    gas.initial_gas += aa_signature_verification_gas(signature);
 
     // 3. Per-call overhead: cold account access
-    // TODO: Maybe we should optimize this for the user, and only charge cold access cost
     // if the `to` address has not appeared in the call batch before.
     gas.initial_gas += COLD_ACCOUNT_ACCESS_COST * calls.len() as u64;
+
+    // 4. Authorization list costs (EIP-7702)
+    gas.initial_gas += aa_authorization_list.len() as u64 * eip7702::PER_EMPTY_ACCOUNT_COST;
+    // Add signature verification costs for each authorization
+    for aa_auth in aa_authorization_list {
+        gas.initial_gas += aa_signature_verification_gas(aa_auth.signature());
+    }
 
     // 4. Per-call costs
     let mut total_tokens = 0u64;
@@ -649,8 +761,6 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     // 6. Floor gas  using revm helper
     gas.floor_gas = calc_tx_floor_cost(total_tokens); // tokens * 10 + 21000
 
-    // TODO: Add 7702 gas costs here, once we implement it.
-
     gas
 }
 
@@ -692,8 +802,13 @@ where
     }
 
     // Calculate batch intrinsic gas using helper
-    let mut batch_gas =
-        calculate_aa_batch_intrinsic_gas(calls, &aa_env.signature, tx.access_list(), spec);
+    let mut batch_gas = calculate_aa_batch_intrinsic_gas(
+        calls,
+        &aa_env.signature,
+        tx.access_list(),
+        &aa_env.aa_authorization_list,
+        spec,
+    );
 
     if evm.ctx.cfg.is_eip7623_disabled() {
         batch_gas.floor_gas = 0u64;
@@ -1040,6 +1155,7 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
+            aa_authorization_list: vec![],
         };
 
         // Calculate AA gas
@@ -1047,6 +1163,7 @@ mod tests {
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>, // no access list
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1099,12 +1216,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: calls.clone(),
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1151,12 +1270,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1192,12 +1313,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1233,12 +1356,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1275,6 +1400,7 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
+            aa_authorization_list: vec![],
         };
 
         // Test without access list
@@ -1282,6 +1408,7 @@ mod tests {
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
@@ -1317,12 +1444,14 @@ mod tests {
             valid_before: None,
             valid_after: None,
             aa_calls: vec![call],
+            aa_authorization_list: vec![],
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
+            &aa_env.aa_authorization_list,
             spec,
         );
 
