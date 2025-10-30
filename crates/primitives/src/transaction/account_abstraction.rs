@@ -24,6 +24,7 @@ pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum SignatureType {
     Secp256k1,
     P256,
@@ -106,6 +107,248 @@ impl Decodable for Call {
         Ok(this)
     }
 }
+
+/// Token spending limit for access keys
+///
+/// Defines a per-token spending limit for an access key provisioned via key_authorization.
+/// This limit is enforced by the AccountKeychain precompile when the key is used.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+pub struct TokenLimit {
+    /// TIP20 token address
+    pub token: Address,
+
+    /// Maximum spending amount for this token (enforced over the key's lifetime)
+    pub limit: U256,
+}
+
+impl TokenLimit {
+    /// Returns the RLP header for this token limit
+    #[inline]
+    fn rlp_header(&self) -> alloy_rlp::Header {
+        let payload_length = self.token.length() + self.limit.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+    }
+}
+
+impl Encodable for TokenLimit {
+    fn encode(&self, out: &mut dyn BufMut) {
+        self.rlp_header().encode(out);
+        self.token.encode(out);
+        self.limit.encode(out);
+    }
+
+    fn length(&self) -> usize {
+        self.rlp_header().length_with_payload()
+    }
+}
+
+impl Decodable for TokenLimit {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+        let remaining = buf.len();
+
+        if header.payload_length > remaining {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+
+        let this = Self {
+            token: Decodable::decode(buf)?,
+            limit: Decodable::decode(buf)?,
+        };
+
+        if buf.len() + header.payload_length != remaining {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+
+        Ok(this)
+    }
+}
+
+#[cfg(feature = "reth-codec")]
+impl reth_codecs::Compact for TokenLimit {
+    fn to_compact<B>(&self, buf: &mut B) -> usize
+    where
+        B: BufMut + AsMut<[u8]>,
+    {
+        let mut len = 0;
+        len += self.token.to_compact(buf);
+        len += self.limit.to_compact(buf);
+        len
+    }
+
+    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
+        let (token, buf) = Address::from_compact(buf, len);
+        let (limit, buf) = U256::from_compact(buf, len);
+        (Self { token, limit }, buf)
+    }
+}
+
+/// Key authorization for provisioning access keys
+///
+/// Used in TxAA to add a new key to the AccountKeychain precompile.
+/// The transaction must be signed by the root key to authorize adding this access key.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+pub struct KeyAuthorization {
+    /// Unix timestamp when key expires (0 = never expires)
+    pub expiry: u64,
+
+    /// TIP20 spending limits for this key
+    pub limits: Vec<TokenLimit>,
+
+    /// The type of they key (secp256k1, P256, WebAuthn)
+    pub key_type: SignatureType,
+
+    /// Key identifier, is the address derived from the public key of the key type.
+    pub key_id: Address,
+
+    /// Signature authorizing this key (signed by root key)
+    pub signature: AASignature,
+}
+
+impl KeyAuthorization {
+    /// Returns the RLP header for this key authorization
+    #[inline]
+    fn rlp_header(&self) -> alloy_rlp::Header {
+        let key_type_byte: u8 = match self.key_type {
+            SignatureType::Secp256k1 => 0,
+            SignatureType::P256 => 1,
+            SignatureType::WebAuthn => 2,
+        };
+        let payload_length = self.expiry.length()
+            + self.limits.length()
+            + key_type_byte.length()
+            + self.key_id.length()
+            + self.signature.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+    }
+}
+
+impl Encodable for KeyAuthorization {
+    fn encode(&self, out: &mut dyn BufMut) {
+        self.rlp_header().encode(out);
+        self.expiry.encode(out);
+        self.limits.encode(out);
+        let key_type_byte: u8 = match self.key_type {
+            SignatureType::Secp256k1 => 0,
+            SignatureType::P256 => 1,
+            SignatureType::WebAuthn => 2,
+        };
+        key_type_byte.encode(out);
+        self.key_id.encode(out);
+        self.signature.encode(out);
+    }
+
+    fn length(&self) -> usize {
+        self.rlp_header().length_with_payload()
+    }
+}
+
+impl Decodable for KeyAuthorization {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+        let remaining = buf.len();
+
+        if header.payload_length > remaining {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+
+        let expiry: u64 = Decodable::decode(buf)?;
+        let limits: Vec<TokenLimit> = Decodable::decode(buf)?;
+        let key_type_byte: u8 = Decodable::decode(buf)?;
+        let key_type = match key_type_byte {
+            0 => SignatureType::Secp256k1,
+            1 => SignatureType::P256,
+            2 => SignatureType::WebAuthn,
+            _ => return Err(alloy_rlp::Error::Custom("Invalid signature type")),
+        };
+        let key_id: Address = Decodable::decode(buf)?;
+        let signature_bytes: Bytes = Decodable::decode(buf)?;
+        let signature =
+            AASignature::from_bytes(&signature_bytes).map_err(|e| alloy_rlp::Error::Custom(e))?;
+
+        let this = Self {
+            expiry,
+            limits,
+            key_type,
+            key_id,
+            signature,
+        };
+
+        if buf.len() + header.payload_length != remaining {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+
+        Ok(this)
+    }
+}
+
+#[cfg(feature = "reth-codec")]
+impl reth_codecs::Compact for KeyAuthorization {
+    fn to_compact<B>(&self, buf: &mut B) -> usize
+    where
+        B: BufMut + AsMut<[u8]>,
+    {
+        let mut len = 0;
+        len += self.expiry.to_compact(buf);
+        len += self.limits.to_compact(buf);
+        let key_type_byte: u8 = match self.key_type {
+            SignatureType::Secp256k1 => 0,
+            SignatureType::P256 => 1,
+            SignatureType::WebAuthn => 2,
+        };
+        len += key_type_byte.to_compact(buf);
+        len += self.key_id.to_compact(buf);
+        let signature_bytes = self.signature.to_bytes();
+        len += signature_bytes.to_compact(buf);
+        len
+    }
+
+    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
+        let (expiry, buf) = u64::from_compact(buf, len);
+        let (limits, buf) = Vec::<TokenLimit>::from_compact(buf, len);
+        let (key_type_byte, buf) = u8::from_compact(buf, len);
+        let key_type = match key_type_byte {
+            0 => SignatureType::Secp256k1,
+            1 => SignatureType::P256,
+            2 => SignatureType::WebAuthn,
+            _ => SignatureType::Secp256k1, // Default to Secp256k1 for invalid values
+        };
+        let (key_id, buf) = Address::from_compact(buf, len);
+        let (signature_bytes, buf) = Bytes::from_compact(buf, len);
+        let signature = AASignature::from_bytes(&signature_bytes).unwrap_or_else(|_| {
+            AASignature::Secp256k1(alloy_primitives::Signature::test_signature())
+        });
+        (
+            Self {
+                expiry,
+                limits,
+                key_type,
+                key_id,
+                signature,
+            },
+            buf,
+        )
+    }
+}
+
 /// Account abstraction transaction following the Tempo spec.
 ///
 /// This transaction type supports:
@@ -170,9 +413,17 @@ pub struct TxAA {
     /// Transaction can only be included in a block after this timestamp
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub valid_after: Option<u64>,
+    
+    /// Optional key authorization for provisioning a new access key
+    ///
+    /// When present, this transaction will add the specified key to the AccountKeychain precompile,
+    /// before verifying the transaction signature.
+    /// The authorization must be signed with the root key, the tx can be signed by the Keychain signature.
+    pub key_authorization: Option<KeyAuthorization>,
 
     /// Authorization list (EIP-7702 style with AA signatures)
     pub aa_authorization_list: Vec<AASignedAuthorization>,
+
 }
 
 impl TxAA {
@@ -229,7 +480,20 @@ impl TxAA {
         mem::size_of::<Option<Signature>>() + // fee_payer_signature
         mem::size_of::<u64>() + // valid_before
         mem::size_of::<Option<u64>>() + // valid_after
+        // key_authorization (optional)
+        if let Some(key_auth) = &self.key_authorization {
+            mem::size_of::<u64>() + // expiry
+            mem::size_of::<SignatureType>() + // key_type
+            mem::size_of::<Address>() + // key_id
+            key_auth.signature.to_bytes().len() + // signature
+            key_auth.limits.iter().map(|_limit| {
+                mem::size_of::<Address>() + mem::size_of::<U256>()
+            }).sum::<usize>()
+        } else {
+            mem::size_of::<Option<KeyAuthorization>>()
+        } + 
         self.aa_authorization_list.iter().map(|auth| auth.size()).sum::<usize>() // authorization_list
+
     }
 
     /// Convert the transaction into a signed transaction
@@ -306,8 +570,15 @@ impl TxAA {
                 1 // EMPTY_STRING_CODE
             } +
             signature_length(&self.fee_payer_signature) +
+            // key_authorization (optional)
+            if let Some(key_auth) = &self.key_authorization {
+                key_auth.length()
+            } else {
+                1 // EMPTY_STRING_CODE
+            } + 
             // authorization_list
             self.aa_authorization_list.length()
+
     }
 
     fn rlp_encode_fields(
@@ -345,8 +616,15 @@ impl TxAA {
 
         encode_signature(&self.fee_payer_signature, out);
 
+        // Encode key_authorization
+        if let Some(key_auth) = &self.key_authorization {
+            key_auth.encode(out);
+        } else {
+            out.put_u8(EMPTY_STRING_CODE);
+        }
         // Encode authorization_list
         self.aa_authorization_list.encode(out);
+
     }
 
     /// Public version for normal RLP encoding
@@ -440,7 +718,19 @@ impl TxAA {
             return Err(alloy_rlp::Error::InputTooShort);
         };
 
+                let key_authorization = if let Some(first) = buf.first() {
+            if *first == EMPTY_STRING_CODE {
+                buf.advance(1);
+                None
+            } else {
+                Some(Decodable::decode(buf)?)
+            }
+        } else {
+            return Err(alloy_rlp::Error::InputTooShort);
+        };
+
         let aa_authorization_list = Decodable::decode(buf)?;
+
 
         let tx = Self {
             chain_id,
@@ -455,7 +745,9 @@ impl TxAA {
             fee_payer_signature,
             valid_before,
             valid_after,
+            key_authorization,
             aa_authorization_list,
+
         };
 
         // Validate the transaction
@@ -707,6 +999,8 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             }
         };
 
+        let key_authorization = u.arbitrary()?;
+
         Ok(Self {
             chain_id,
             fee_token,
@@ -720,7 +1014,9 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             fee_payer_signature,
             valid_before,
             valid_after,
+                        key_authorization,
             aa_authorization_list: vec![],
+
         })
     }
 }
@@ -878,7 +1174,9 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
             valid_after: Some(500000),
+                        key_authorization: None,
             aa_authorization_list: vec![],
+
         };
 
         // Encode
@@ -929,7 +1227,9 @@ mod tests {
             fee_payer_signature: None,
             valid_before: Some(1000),
             valid_after: None,
+                        key_authorization: None,
             aa_authorization_list: vec![],
+
         };
 
         // Encode
@@ -1198,6 +1498,7 @@ mod tests {
             valid_after: None,
             aa_authorization_list: vec![],
             access_list: Default::default(),
+            key_authorization: None,
         };
 
         // Transaction WITHOUT fee_payer, fee_token = token1
@@ -1259,6 +1560,7 @@ mod tests {
             valid_after: None,
             aa_authorization_list: vec![],
             access_list: Default::default(),
+            key_authorization: None,
         };
 
         // Transaction without fee_token
@@ -1322,6 +1624,7 @@ mod tests {
             valid_after: None,
             aa_authorization_list: vec![],
             access_list: Default::default(),
+            key_authorization: None,
         };
 
         // Scenario 2: No fee payer, with token
@@ -1418,7 +1721,9 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
             valid_after: Some(500000),
+                        key_authorization: None,
             aa_authorization_list: vec![],
+
         };
 
         // Encode the transaction normally
