@@ -50,7 +50,7 @@ enum Message {
     AddTransaction(Box<TempoTxEnvelope>),
 
     /// Reports a new consensus event.
-    Consensus(Box<Activity<Scheme<MinSig>, Digest>>),
+    Consensus(Box<Activity<Scheme<PublicKey, MinSig>, Digest>>),
 }
 
 /// Task managing collected subblocks.
@@ -126,7 +126,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         }
     }
 
-    fn on_new_notarization(&mut self, event: Notarization<Scheme<MinSig>, Digest>) {
+    fn on_new_notarization(&mut self, event: Notarization<Scheme<PublicKey, MinSig>, Digest>) {
         let epoch = event.epoch();
 
         let Some(scheme) = self.scheme_provider.scheme(epoch) else {
@@ -137,13 +137,13 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             return;
         };
 
-        let leader_idx = select_leader::<Scheme<MinSig>, _>(
-            participants.as_ref(),
+        let leader_idx = select_leader::<Scheme<PublicKey, MinSig>, _>(
+            scheme.participants().as_ref(),
             Round::new(epoch, event.proposal.round.view() + 1),
             Some(seed),
         );
 
-        let Some(next_proposer) = participants.get(leader_idx as usize).cloned() else {
+        let Some(next_proposer) = scheme.participants().get(leader_idx as usize).cloned() else {
             return;
         };
 
@@ -155,7 +155,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             self.subblocks.clear();
         }
 
-        let num_validators = participants.len();
+        let num_validators = scheme.participants().len();
 
         // Record next proposer and parent hash.
         self.next_proposer = Some(next_proposer.clone());
@@ -297,7 +297,7 @@ impl SubBlocksHandle {
 }
 
 impl Reporter for SubBlocksHandle {
-    type Activity = Activity<Scheme<MinSig>, Digest>;
+    type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
     async fn report(&mut self, activity: Self::Activity) -> () {
         let _ = self.tx.send(Message::Consensus(Box::new(activity)));

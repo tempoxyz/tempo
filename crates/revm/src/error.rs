@@ -1,10 +1,8 @@
 //! Tempo-specific transaction validation errors.
 
+use alloy_evm::error::InvalidTxError;
 use alloy_primitives::U256;
-use reth_evm::{
-    InvalidTxError,
-    revm::context::result::{EVMError, InvalidHeader, InvalidTransaction},
-};
+use revm::context::result::{EVMError, InvalidHeader, InvalidTransaction};
 
 /// Tempo-specific invalid transaction errors.
 ///

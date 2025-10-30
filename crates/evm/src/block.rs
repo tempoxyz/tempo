@@ -1,5 +1,16 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_evm::{
+    Database, Evm,
+    block::{
+        BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
+        ExecutableTx, OnStateHook,
+    },
+    eth::{
+        EthBlockExecutor,
+        receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
+    },
+};
 use alloy_primitives::{B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
@@ -9,17 +20,6 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use ed25519_consensus::VerificationKey;
-use reth_evm::{
-    Database, Evm, OnStateHook,
-    block::{
-        BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx,
-    },
-    eth::{
-        EthBlockExecutor,
-        receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
-    },
-};
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use std::collections::HashSet;
 use tempo_chainspec::TempoChainSpec;
@@ -390,7 +390,7 @@ where
     type Receipt = TempoReceipt;
     type Evm = TempoEvm<&'a mut State<DB>, I>;
 
-    fn apply_pre_execution_changes(&mut self) -> Result<(), reth_evm::block::BlockExecutionError> {
+    fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         self.inner.apply_pre_execution_changes()
     }
 

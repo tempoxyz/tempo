@@ -18,10 +18,8 @@ use crate::{
     tip4217_registry::{ITIP4217Registry, TIP4217Registry},
 };
 use alloy::{
-    consensus::crypto::secp256k1 as eth_secp256k1,
     hex,
-    primitives::{Address, B256, Bytes, IntoLogData, Signature as EthSignature, U256, keccak256},
-    sol_types::SolStruct,
+    primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256},
 };
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
@@ -62,7 +60,6 @@ pub mod slots {
     pub const SYMBOL: U256 = uint!(1_U256);
     pub const TOTAL_SUPPLY: U256 = uint!(3_U256);
     pub const CURRENCY: U256 = uint!(4_U256);
-    pub const DOMAIN_SEPARATOR: U256 = uint!(5_U256);
     pub const TRANSFER_POLICY_ID: U256 = uint!(6_U256);
     pub const SUPPLY_CAP: U256 = uint!(7_U256);
     pub const PAUSED: U256 = uint!(8_U256);
@@ -74,8 +71,6 @@ pub mod slots {
     // Mappings
     pub const BALANCES: U256 = uint!(10_U256);
     pub const ALLOWANCES: U256 = uint!(11_U256);
-    pub const NONCES: U256 = uint!(12_U256);
-    pub const SALTS: U256 = uint!(13_U256);
     pub const ROLES_BASE_SLOT: U256 = uint!(14_U256); // via RolesAuthContract
     pub const ROLE_ADMIN_BASE_SLOT: U256 = uint!(15_U256); // via RolesAuthContract
 }
@@ -143,13 +138,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .to::<u64>())
     }
 
-    pub fn domain_separator(&mut self) -> Result<B256, TempoPrecompileError> {
-        Ok(B256::from(
-            self.storage
-                .sload(self.token_address, slots::DOMAIN_SEPARATOR)?,
-        ))
-    }
-
     // View functions
     pub fn balance_of(
         &mut self,
@@ -160,17 +148,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
     pub fn allowance(&mut self, call: ITIP20::allowanceCall) -> Result<U256, TempoPrecompileError> {
         self.get_allowance(&call.owner, &call.spender)
-    }
-
-    pub fn nonces(&mut self, call: ITIP20::noncesCall) -> Result<U256, TempoPrecompileError> {
-        let slot = mapping_slot(call.owner, slots::NONCES);
-        self.storage.sload(self.token_address, slot)
-    }
-
-    pub fn salts(&mut self, call: ITIP20::saltsCall) -> Result<bool, TempoPrecompileError> {
-        let slot = double_mapping_slot(call.owner, call.salt, slots::SALTS);
-        let val = self.storage.sload(self.token_address, slot)?;
-        Ok(!val.is_zero())
     }
 
     // Admin functions
@@ -600,63 +577,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(true)
     }
 
-    pub fn permit(
-        &mut self,
-        _msg_sender: &Address,
-        call: ITIP20::permitCall,
-    ) -> Result<(), TempoPrecompileError> {
-        if U256::from(call.deadline) < self.storage.timestamp() {
-            return Err(TIP20Error::expired().into());
-        }
-
-        // Get current nonce (increment after successful verification)
-        let nonce_slot = mapping_slot(call.owner, slots::NONCES);
-        let nonce = self.storage.sload(self.token_address, nonce_slot)?;
-
-        // Recover address from signature
-        let recovered_addr = {
-            let digest = self.compute_permit_digest(
-                call.owner,
-                call.spender,
-                call.value,
-                nonce,
-                U256::from(call.deadline),
-            )?;
-
-            let v_norm = if call.v >= 27 { call.v - 27 } else { call.v };
-            if v_norm > 1 {
-                return Err(TIP20Error::invalid_signature().into());
-            }
-
-            eth_secp256k1::recover_signer(
-                &EthSignature::from_scalars_and_parity(call.r, call.s, v_norm == 1),
-                digest,
-            )
-            .map_err(|_| TempoPrecompileError::from(TIP20Error::invalid_signature()))?
-        };
-
-        // Verify recovered address matches owner
-        if recovered_addr != call.owner {
-            return Err(TIP20Error::invalid_signature().into());
-        }
-
-        // Increment nonce after successful verification
-        self.storage
-            .sstore(self.token_address, nonce_slot, nonce + U256::ONE)?;
-
-        self.set_allowance(&call.owner, &call.spender, call.value)?;
-
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::Approval(ITIP20::Approval {
-                owner: call.owner,
-                spender: call.spender,
-                amount: call.value,
-            })
-            .into_log_data(),
-        )
-    }
-
     // TIP20 extension functions
     pub fn transfer_with_memo(
         &mut self,
@@ -745,23 +665,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         // Initialize roles system and grant admin role
         let mut roles = self.get_roles_contract();
         roles.initialize()?;
-        roles.grant_default_admin(admin)?;
-
-        // Calculate DOMAIN_SEPARATOR
-        let mut domain_data = Vec::new();
-        domain_data.extend_from_slice(
-            keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)").as_slice(),
-        );
-        domain_data.extend_from_slice(keccak256(name.as_bytes()).as_slice());
-        domain_data.extend_from_slice(keccak256(b"1").as_slice());
-        domain_data.extend_from_slice(&U256::from(self.storage.chain_id()).to_be_bytes::<32>());
-        domain_data.extend_from_slice(self.token_address.as_slice());
-        let domain_separator = keccak256(&domain_data);
-        self.storage.sstore(
-            self.token_address,
-            slots::DOMAIN_SEPARATOR,
-            U256::from_be_bytes(domain_separator.0),
-        )
+        roles.grant_default_admin(admin)
     }
 
     // Helper to get a RolesAuthContract instance
@@ -1001,40 +905,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage
             .sstore(self.token_address, slot, U256::from_be_bytes(storage_bytes))
     }
-
-    fn compute_permit_digest(
-        &mut self,
-        owner: Address,
-        spender: Address,
-        value: U256,
-        nonce: U256,
-        deadline: U256,
-    ) -> Result<B256, TempoPrecompileError> {
-        // Build EIP-712 struct hash for Permit
-        let struct_hash = ITIP20::Permit {
-            owner,
-            spender,
-            value,
-            nonce,
-            deadline,
-        }
-        .eip712_hash_struct();
-
-        // EIP-191 digest: 0x19 0x01 || domainSeparator || structHash
-        let mut digest_data = [0u8; 66];
-        digest_data[0] = 0x19;
-        digest_data[1] = 0x01;
-        digest_data[2..34].copy_from_slice(self.domain_separator()?.as_slice());
-        digest_data[34..66].copy_from_slice(struct_hash.as_slice());
-        Ok(keccak256(digest_data))
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, FixedBytes, U256, keccak256};
-    use alloy_signer::SignerSync;
-    use alloy_signer_local::PrivateKeySigner;
+    use alloy::primitives::{Address, FixedBytes, U256};
 
     use super::*;
     use crate::{
@@ -1104,169 +979,6 @@ mod tests {
             create_token_via_factory(&mut factory, admin, "Quote", "QUOTE", LINKING_USD_ADDRESS);
 
         (token_id, quote_token_id)
-    }
-
-    #[test]
-    fn test_permit_sets_allowance_and_increments_nonce() -> eyre::Result<()> {
-        // Setup token
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::from([0u8; 20]);
-        let token_id = 1u64;
-        let mut token = TIP20Token::new(token_id, &mut storage);
-        token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
-            .unwrap();
-
-        // Owner keypair
-        let signer = PrivateKeySigner::random();
-        let owner = signer.address();
-
-        // Permit params
-        let spender = Address::from([2u8; 20]);
-        let value = U256::from(12345u64);
-
-        #[expect(clippy::disallowed_methods)]
-        let deadline_u64 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 600;
-        let deadline = U256::from(deadline_u64);
-
-        // Build EIP-712 struct hash
-        let nonce_slot = mapping_slot(owner, super::slots::NONCES);
-        let nonce = token
-            .storage
-            .sload(token.token_address, nonce_slot)
-            .expect("Could not get nonce");
-
-        let struct_hash = ITIP20::Permit {
-            owner,
-            spender,
-            value,
-            nonce,
-            deadline,
-        }
-        .eip712_hash_struct();
-
-        // Build digest per EIP-191
-        let domain = token.domain_separator()?;
-        let mut digest_data = [0u8; 66];
-        digest_data[0] = 0x19;
-        digest_data[1] = 0x01;
-        digest_data[2..34].copy_from_slice(domain.as_slice());
-        digest_data[34..66].copy_from_slice(struct_hash.as_slice());
-        let digest = keccak256(digest_data);
-
-        // Sign prehash digest
-        let signature = signer.sign_hash_sync(&digest).unwrap();
-        let r = signature.r();
-        let s = signature.s();
-        let v: u8 = if signature.v() { 28 } else { 27 };
-
-        // Call permit
-        token
-            .permit(
-                &admin,
-                ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value,
-                    deadline,
-                    v,
-                    r: r.into(),
-                    s: s.into(),
-                },
-            )
-            .unwrap();
-
-        // Effects: allowance set and nonce incremented
-        assert_eq!(token.get_allowance(&owner, &spender)?, value);
-        let nonce_after = token
-            .storage
-            .sload(token.token_address, nonce_slot)
-            .expect("Could not get nonce");
-        assert_eq!(nonce_after, U256::ONE);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_permit_rejects_invalid_signature() -> eyre::Result<()> {
-        // Setup token
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::from([0u8; 20]);
-        let token_id = 2u64;
-        let mut token = TIP20Token::new(token_id, &mut storage);
-        token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
-            .unwrap();
-
-        // Owner keypair
-        let signer = PrivateKeySigner::random();
-        let owner = signer.address();
-
-        // Params
-        let spender = Address::from([3u8; 20]);
-        let value = U256::from(777u64);
-
-        #[expect(clippy::disallowed_methods)]
-        let deadline_u64 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 600;
-        let deadline = U256::from(deadline_u64);
-
-        // Build digest
-        let nonce_slot = mapping_slot(owner, super::slots::NONCES);
-        let nonce = token
-            .storage
-            .sload(token.token_address, nonce_slot)
-            .expect("Could not get nonce");
-
-        let struct_hash = ITIP20::Permit {
-            owner,
-            spender,
-            value,
-            nonce,
-            deadline,
-        }
-        .eip712_hash_struct();
-
-        let domain = token.domain_separator()?;
-        let mut digest_data = [0u8; 66];
-        digest_data[0] = 0x19;
-        digest_data[1] = 0x01;
-        digest_data[2..34].copy_from_slice(domain.as_slice());
-        digest_data[34..66].copy_from_slice(struct_hash.as_slice());
-        let digest = keccak256(digest_data);
-
-        // Sign then tamper with value (invalidates signature)
-        let signature = signer.sign_hash_sync(&digest).unwrap();
-        let r = signature.r();
-        let s = signature.s();
-        let v: u8 = if signature.v() { 28 } else { 27 };
-
-        let bad_value = value + U256::from(1u64);
-        let result = token.permit(
-            &admin,
-            ITIP20::permitCall {
-                owner,
-                spender,
-                value: bad_value,
-                deadline,
-                v,
-                r: r.into(),
-                s: s.into(),
-            },
-        );
-        assert!(matches!(
-            result,
-            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
-        ));
-
-        Ok(())
     }
 
     #[test]
