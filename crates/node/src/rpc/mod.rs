@@ -1,6 +1,6 @@
 pub mod dex;
 
-pub use dex::TempoDexApiServer;
+pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 
 use crate::node::TempoNode;

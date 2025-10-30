@@ -2,7 +2,7 @@ use crate::{
     TempoPayloadTypes,
     args::TempoArgs,
     engine::TempoEngineValidator,
-    rpc::{TempoDexApiServer, TempoEthApiBuilder, dex::TempoDex},
+    rpc::{TempoDex, TempoDexApiServer, TempoEthApiBuilder},
 };
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};

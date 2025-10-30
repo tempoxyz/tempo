@@ -1,20 +1,20 @@
-use alloy_eips::{BlockId, BlockNumberOrTag};
-pub use books::{Orderbook, OrderbooksFilter, OrderbooksParam, OrderbooksResponse};
-use reth_ethereum::evm::revm::database::StateProviderDatabase;
-use reth_evm::{EvmInternals, revm::database::CacheDB};
-use reth_provider::{BlockReaderIdExt, StateProviderFactory};
-use tempo_evm::TempoEvmConfig;
-use tempo_primitives::TempoHeader;
+pub use books::{Orderbook, OrderbooksFilter};
+pub use error::DexApiError;
 pub use types::{
-    FilterRange, Order, OrdersFilters, OrdersResponse, OrdersSort, OrdersSortOrder,
-    PaginationParams, Tick,
+    FilterRange, Order, OrdersFilters, OrdersSort, OrdersSortOrder, PaginationParams, Tick,
 };
 
+use crate::rpc::{TempoDexApiServer, dex::types::PaginationResponse};
+use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{Address, B256, Sealable};
 use jsonrpsee::core::RpcResult;
+use reth_ethereum::evm::revm::database::StateProviderDatabase;
+use reth_evm::{EvmInternals, revm::database::CacheDB};
 use reth_node_api::{ConfigureEvm, NodePrimitives};
+use reth_provider::{BlockReaderIdExt, StateProviderFactory};
 use reth_rpc_eth_api::{RpcNodeCore, helpers::SpawnBlocking};
 use reth_rpc_eth_types::{EthApiError, error::FromEthApiError};
+use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     stablecoin_exchange::{
         Order as PrecompileOrder, Orderbook as PrecompileOrderbook, PriceLevel, StablecoinExchange,
@@ -22,15 +22,13 @@ use tempo_precompiles::{
     },
     storage::evm::EvmPrecompileStorageProvider,
 };
+use tempo_primitives::TempoHeader;
 
 pub mod api;
-pub use crate::rpc::dex::api::TempoDexApiServer;
+pub mod types;
 
 mod books;
 mod error;
-pub mod types;
-
-pub use error::DexApiError;
 
 /// Default limit for pagination
 const DEFAULT_LIMIT: usize = 10;
@@ -59,7 +57,7 @@ impl<
     fn orders(
         &self,
         params: PaginationParams<OrdersFilters>,
-    ) -> Result<OrdersResponse, DexApiError> {
+    ) -> Result<PaginationResponse<Order>, DexApiError> {
         let response = self.with_storage_at_block(BlockNumberOrTag::Latest.into(), |storage| {
             let mut exchange = StablecoinExchange::new(storage);
             let exchange_address = exchange.address();
@@ -138,9 +136,9 @@ impl<
             all_orders.truncate(limit);
             let orders = all_orders;
 
-            let response = OrdersResponse {
+            let response = PaginationResponse {
                 next_cursor,
-                orders,
+                items: orders,
             };
             Ok(response)
         })?;
@@ -151,7 +149,7 @@ impl<
     fn orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
-    ) -> Result<OrderbooksResponse, DexApiError> {
+    ) -> Result<PaginationResponse<Orderbook>, DexApiError> {
         // Get paginated orderbooks
         let (items, next_cursor) = self.apply_pagination_to_orderbooks(params)?;
 
@@ -162,9 +160,9 @@ impl<
             .collect();
 
         // Create response with next cursor
-        Ok(OrderbooksResponse {
+        Ok(PaginationResponse {
             next_cursor,
-            orderbooks,
+            items: orderbooks,
         })
     }
 
@@ -389,7 +387,10 @@ impl<
     /// The cursor for this method is the **Order ID** (u128).
     /// - When provided in the request, returns orders starting after the given order ID
     /// - Returns `next_cursor` in the response containing the last order ID for the next page
-    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse> {
+    async fn orders(
+        &self,
+        params: PaginationParams<OrdersFilters>,
+    ) -> RpcResult<PaginationResponse<Order>> {
         let this = self.clone();
         self.eth_api
             .spawn_blocking_io(move |_| {
@@ -410,7 +411,7 @@ impl<
     async fn orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
-    ) -> RpcResult<OrderbooksResponse> {
+    ) -> RpcResult<PaginationResponse<Orderbook>> {
         let this = self.clone();
         self.eth_api
             .spawn_blocking_io(move |_| {
