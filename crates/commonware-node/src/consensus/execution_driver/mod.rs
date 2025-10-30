@@ -29,7 +29,7 @@ use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
 use futures::{
     SinkExt as _, StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
-    future::{Either, always_ready, try_join},
+    future::{Either, always_ready, ready, try_join},
 };
 use rand::{CryptoRng, Rng};
 use reth::payload::EthBuiltPayload;
@@ -409,18 +409,23 @@ impl Inner<Init> {
                     "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
                 ))?;
 
-        let grandparent_info = self
-            .syncer
-            .get_info(&parent.parent_digest())
-            .await
-            .ok_or_else(|| {
-                eyre!(
-                    "could not find information on the grand parent, digest `{}`, \
+        let grandparent_digest = parent.parent_digest();
+        let grandparent_info = if parent.digest() == genesis_block.digest()
+            || grandparent_digest == genesis_block.digest()
+        {
+            Either::Left(ready(Some((0, genesis_block.digest()))))
+        } else {
+            Either::Right(self.syncer.get_info(&grandparent_digest))
+        }
+        .await
+        .ok_or_else(|| {
+            eyre!(
+                "could not find information on the grand parent, digest `{}`, \
                 height `{}`",
-                    parent.parent_digest(),
-                    parent.height(),
-                )
-            })?;
+                parent.parent_digest(),
+                parent.height(),
+            )
+        })?;
 
         if let Err(error) = self
             .state
@@ -526,18 +531,23 @@ impl Inner<Init> {
             .await
             .wrap_err("failed getting required blocks from syncer")?;
 
-        let grandparent_info = self
-            .syncer
-            .get_info(&parent.parent_digest())
-            .await
-            .ok_or_else(|| {
-                eyre!(
-                    "could not find information on the grand parent, digest `{}`, \
+        let grandparent_digest = parent.parent_digest();
+        let grandparent_info = if parent.digest() == genesis_block.digest()
+            || grandparent_digest == genesis_block.digest()
+        {
+            Either::Left(ready(Some((0, genesis_block.digest()))))
+        } else {
+            Either::Right(self.syncer.get_info(&grandparent_digest))
+        }
+        .await
+        .ok_or_else(|| {
+            eyre!(
+                "could not find information on the grand parent, digest `{}`, \
                 height `{}`",
-                    parent.parent_digest(),
-                    parent.height(),
-                )
-            })?;
+                parent.parent_digest(),
+                parent.height(),
+            )
+        })?;
 
         if let Err(error) = self
             .state
