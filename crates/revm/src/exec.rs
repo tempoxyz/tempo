@@ -3,25 +3,21 @@ use crate::{
     evm::{TempoContext, TempoEvm},
     handler::TempoEvmHandler,
 };
-use reth_evm::{
-    Database,
-    revm::{
-        DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
-        context::{
-            ContextSetters, TxEnv,
-            result::{ExecResultAndState, HaltReason},
-        },
-        context_interface::{
-            ContextTr, JournalTr,
-            result::{EVMError, ExecutionResult},
-        },
-        handler::{Handler, SystemCallTx, system_call::SystemCallEvm},
-        inspector::{
-            InspectCommitEvm, InspectEvm, InspectSystemCallEvm, Inspector, InspectorHandler,
-        },
-        primitives::{Address, Bytes},
-        state::EvmState,
+use alloy_evm::Database;
+use revm::{
+    DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
+    context::{
+        ContextSetters, TxEnv,
+        result::{ExecResultAndState, HaltReason},
     },
+    context_interface::{
+        ContextTr, JournalTr,
+        result::{EVMError, ExecutionResult},
+    },
+    handler::{Handler, SystemCallTx, system_call::SystemCallEvm},
+    inspector::{InspectCommitEvm, InspectEvm, InspectSystemCallEvm, Inspector, InspectorHandler},
+    primitives::{Address, Bytes},
+    state::EvmState,
 };
 
 impl<DB, I> ExecuteEvm for TempoEvm<DB, I>

@@ -18,6 +18,9 @@ tempo-contracts.workspace = true
 reth-evm.workspace = true
 reth-rpc-convert = { workspace = true, optional = true }
 
+revm.workspace = true
+
+alloy-evm.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-rpc-types-eth = { workspace = true, optional = true }

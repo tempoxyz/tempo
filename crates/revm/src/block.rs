@@ -1,10 +1,8 @@
+use alloy_evm::env::BlockEnvironment;
 use alloy_primitives::{Address, B256, U256, uint};
-use reth_evm::{
-    env::BlockEnvironment,
-    revm::{
-        context::{Block, BlockEnv},
-        context_interface::block::BlobExcessGasAndPrice,
-    },
+use revm::{
+    context::{Block, BlockEnv},
+    context_interface::block::BlobExcessGasAndPrice,
 };
 
 /// Tempo block environment.
