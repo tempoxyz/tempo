@@ -99,7 +99,7 @@ fn match_by_type<'a>(func: &'a InterfaceFunction, field: &'a FieldInfo) -> Gette
 /// Generates storage trait, storage impl, and interface trait with default methods.
 pub(crate) fn gen_trait_and_impl<'a>(
     ident: &Ident,
-    _interface_type: &Type,
+    _interface_types: &[Type],
     match_results: &[GetterFn<'a>],
 ) -> TokenStream {
     let s_name = format_ident!("_{}Storage", ident);
@@ -170,10 +170,10 @@ fn gen_storage_method_sig_or_impl(gen_sig: bool, result: &GetterFn<'_>) -> Token
         GetterInfo::Direct { field } => {
             let getter_name = format_ident!("_get_{}", field.name);
             if gen_sig {
-                quote! { fn #getter_name(&mut self) -> ::tempo_precompiles::error::Result<#return_type>; }
+                quote! { fn #getter_name(&mut self) -> crate::error::Result<#return_type>; }
             } else {
                 quote! {
-                    fn #getter_name(&mut self) -> ::tempo_precompiles::error::Result<#return_type> {
+                    fn #getter_name(&mut self) -> crate::error::Result<#return_type> {
                         self.#getter_name()
                     }
                 }
@@ -183,10 +183,10 @@ fn gen_storage_method_sig_or_impl(gen_sig: bool, result: &GetterFn<'_>) -> Token
             let getter_name = format_ident!("_get_{}", field.name);
             let (key, ty) = (format_ident!("{}", key_param), &func.params[0].1);
             if gen_sig {
-                quote! { fn #getter_name(&mut self, #key: #ty) -> ::tempo_precompiles::error::Result<#return_type>; }
+                quote! { fn #getter_name(&mut self, #key: #ty) -> crate::error::Result<#return_type>; }
             } else {
                 quote! {
-                    fn #getter_name(&mut self, #key: #ty) -> ::tempo_precompiles::error::Result<#return_type> {
+                    fn #getter_name(&mut self, #key: #ty) -> crate::error::Result<#return_type> {
                         self.#getter_name(#key)
                     }
                 }
@@ -201,10 +201,10 @@ fn gen_storage_method_sig_or_impl(gen_sig: bool, result: &GetterFn<'_>) -> Token
             let (key1, ty1) = (format_ident!("{}", key1_param), &func.params[0].1);
             let (key2, ty2) = (format_ident!("{}", key2_param), &func.params[1].1);
             if gen_sig {
-                quote! { fn #getter_name(&mut self, #key1: #ty1, #key2: #ty2) -> ::tempo_precompiles::error::Result<#return_type>; }
+                quote! { fn #getter_name(&mut self, #key1: #ty1, #key2: #ty2) -> crate::error::Result<#return_type>; }
             } else {
                 quote! {
-                    fn #getter_name(&mut self, #key1: #ty1, #key2: #ty2) -> ::tempo_precompiles::error::Result<#return_type> {
+                    fn #getter_name(&mut self, #key1: #ty1, #key2: #ty2) -> crate::error::Result<#return_type> {
                         self.#getter_name(#key1, #key2)
                     }
                 }
@@ -252,22 +252,22 @@ fn gen_call_trait_method(result: &GetterFn<'_>) -> TokenStream {
     let body = gen_default_getter(result);
     match func.is_view {
         true if has_params => quote! {
-            fn #method_name(&mut self, call: #call_type) -> ::tempo_precompiles::error::Result<#return_type> {
+            fn #method_name(&mut self, call: #call_type) -> crate::error::Result<#return_type> {
                 #body
             }
         },
         true => quote! {
-            fn #method_name(&mut self) -> ::tempo_precompiles::error::Result<#return_type> {
+            fn #method_name(&mut self) -> crate::error::Result<#return_type> {
                 #body
             }
         },
         false if has_params => quote! {
-            fn #method_name(&mut self, msg_sender: &::alloy::primitives::Address, call: #call_type) -> ::tempo_precompiles::error::Result<#return_type> {
+            fn #method_name(&mut self, msg_sender: &::alloy::primitives::Address, call: #call_type) -> crate::error::Result<#return_type> {
                 #body
             }
         },
         false => quote! {
-            fn #method_name(&mut self, msg_sender: &::alloy::primitives::Address) -> ::tempo_precompiles::error::Result<#return_type> {
+            fn #method_name(&mut self, msg_sender: &::alloy::primitives::Address) -> crate::error::Result<#return_type> {
                 #body
             }
         },
@@ -310,16 +310,16 @@ fn gen_call_sig(result: &GetterFn<'_>) -> TokenStream {
 
     match func.is_view {
         true if has_params => quote! {
-            fn #method_name(&mut self, call: #call_type) -> ::tempo_precompiles::error::Result<#return_type>;
+            fn #method_name(&mut self, call: #call_type) -> crate::error::Result<#return_type>;
         },
         true => quote! {
-            fn #method_name(&mut self) -> ::tempo_precompiles::error::Result<#return_type>;
+            fn #method_name(&mut self) -> crate::error::Result<#return_type>;
         },
         false if has_params => quote! {
-            fn #method_name(&mut self, msg_sender: &::alloy::primitives::Address, call: #call_type) -> ::tempo_precompiles::error::Result<#return_type>;
+            fn #method_name(&mut self, msg_sender: ::alloy::primitives::Address, call: #call_type) -> crate::error::Result<#return_type>;
         },
         false => quote! {
-            fn #method_name(&mut self, msg_sender: &::alloy::primitives::Address) -> ::tempo_precompiles::error::Result<#return_type>;
+            fn #method_name(&mut self, msg_sender: ::alloy::primitives::Address) -> crate::error::Result<#return_type>;
         },
     }
 }

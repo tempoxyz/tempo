@@ -21,20 +21,29 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 
 /// Parsed macro attributes for the contract macro.
 struct ContractAttrs {
-    interface_type: Option<Type>,
+    interface_types: Vec<Type>,
 }
 
 impl syn::parse::Parse for ContractAttrs {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
             return Ok(Self {
-                interface_type: None,
+                interface_types: Vec::new(),
             });
         }
 
-        let interface_type = Some(input.parse::<Type>()?);
+        let mut interface_types = Vec::new();
+        interface_types.push(input.parse::<Type>()?);
 
-        Ok(Self { interface_type })
+        // Parse comma-separated interface types
+        while input.peek(syn::Token![,]) {
+            input.parse::<syn::Token![,]>()?;
+            if !input.is_empty() {
+                interface_types.push(input.parse::<Type>()?);
+            }
+        }
+
+        Ok(Self { interface_types })
     }
 }
 
@@ -90,8 +99,8 @@ fn gen_contract_output(
     let fields = parse_fields(input)?;
 
     let storage_output = gen_contract_storage(&ident, &vis, &fields)?;
-    let impl_output = if let Some(ref interface) = attrs.interface_type {
-        gen_contract_impl(&ident, interface, &fields)?
+    let impl_output = if !attrs.interface_types.is_empty() {
+        gen_contract_impl(&ident, &attrs.interface_types, &fields)?
     } else {
         quote! {}
     };
@@ -103,16 +112,24 @@ fn gen_contract_output(
     })
 }
 
-/// Generates the contract call trait and its dispatcher based on the contract struct and interface.
+/// Generates the contract call trait and its dispatcher based on the contract struct and interfaces.
 fn gen_contract_impl(
     ident: &Ident,
-    interface: &Type,
+    interfaces: &[Type],
     fields: &[FieldInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let funcs = interface::parse_interface(interface)?;
-    let getters = traits::find_getters(&funcs, fields);
-    let trait_output = traits::gen_trait_and_impl(ident, interface, &getters);
-    let dispatcher_output = dispatcher::gen_dispatcher(ident, interface, &getters);
+    // Parse and aggregate functions from all interfaces
+    let mut all_funcs = Vec::new();
+    for interface in interfaces {
+        let funcs = interface::parse_interface(interface)?;
+        all_funcs.extend(funcs);
+    }
+
+    // TODO(rusowsky): Check for selector collisions across all interfaces
+
+    let getters = traits::find_getters(&all_funcs, fields);
+    let trait_output = traits::gen_trait_and_impl(ident, interfaces, &getters);
+    let dispatcher_output = dispatcher::gen_dispatcher(ident, interfaces, &getters);
 
     Ok(quote! {
         #trait_output

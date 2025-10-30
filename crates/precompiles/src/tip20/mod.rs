@@ -4,14 +4,12 @@ pub mod roles;
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
+use tempo_precompiles_macros::contract;
 
 use crate::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    error::TempoPrecompileError,
-    storage::{
-        PrecompileStorageProvider,
-        slots::{double_mapping_slot, mapping_slot},
-    },
+    error::Result,
+    storage::PrecompileStorageProvider,
     tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
@@ -20,6 +18,7 @@ use crate::{
 use alloy::{
     hex,
     primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256},
+    sol_types::SolCall,
 };
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},

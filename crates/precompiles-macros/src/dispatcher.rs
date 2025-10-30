@@ -11,7 +11,7 @@ use syn::{Ident, Type};
 /// Generates the `Precompile` implementation for the contract.
 pub(crate) fn gen_dispatcher(
     strukt: &Ident,
-    interface_type: &Type,
+    _interface_types: &[Type],
     match_results: &[GetterFn<'_>],
 ) -> TokenStream {
     let trait_name = format_ident!("{}Call", strukt);
@@ -19,7 +19,7 @@ pub(crate) fn gen_dispatcher(
     // Generate match arms for each interface function
     let match_arms: Vec<TokenStream> = match_results
         .iter()
-        .map(|result| gen_match_arm(&trait_name, interface_type, result))
+        .map(|result| gen_match_arm(&trait_name, result))
         .collect();
 
     quote! {
@@ -52,7 +52,7 @@ pub(crate) fn gen_dispatcher(
 
 // TODO(rusowsky): flatten call so that users can pass params directly.
 /// Generates an individual match arm for a function.
-fn gen_match_arm(trait_name: &Ident, _interface_type: &Type, result: &GetterFn<'_>) -> TokenStream {
+fn gen_match_arm(trait_name: &Ident, result: &GetterFn<'_>) -> TokenStream {
     let func = &result.function;
     let call_type = &func.call_type_path;
     let method_name = format_ident!("{}", func.name);
@@ -75,23 +75,33 @@ fn gen_match_arm(trait_name: &Ident, _interface_type: &Type, result: &GetterFn<'
             }
         }
         FunctionKind::Mutate => {
+            let call_expr = if func.params.is_empty() {
+                quote! { #trait_name::#method_name(self, s) }
+            } else {
+                quote! { #trait_name::#method_name(self, s, call) }
+            };
             quote! {
                 #call_type::SELECTOR => {
                     crate::mutate::<#call_type>(
                         calldata,
                         msg_sender,
-                        |s, call| #trait_name::#method_name(self, s, call)
+                        |s, call| #call_expr
                     )
                 }
             }
         }
         FunctionKind::MutateVoid => {
+            let call_expr = if func.params.is_empty() {
+                quote! { #trait_name::#method_name(self, s) }
+            } else {
+                quote! { #trait_name::#method_name(self, s, call) }
+            };
             quote! {
                 #call_type::SELECTOR => {
                     crate::mutate_void::<#call_type>(
                         calldata,
                         msg_sender,
-                        |s, call| #trait_name::#method_name(self, s, call)
+                        |s, call| #call_expr
                     )
                 }
             }

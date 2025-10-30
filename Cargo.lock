@@ -11737,6 +11737,7 @@ dependencies = [
  "reth-storage-api",
  "revm",
  "tempo-contracts",
+ "tempo-precompiles-macros",
  "thiserror 2.0.17",
  "tracing",
 ]

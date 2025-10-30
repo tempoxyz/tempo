@@ -142,12 +142,12 @@ pub(crate) fn gen_getters_and_setters(
             quote! {
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
-                    fn #getter_name(&mut self) -> ::tempo_precompiles::error::Result<#field_ty> {
+                    fn #getter_name(&mut self) -> crate::error::Result<#field_ty> {
                         crate::storage::Slot::<#field_ty, {#slot_limbs}>::read(self)
                     }
 
                     #[inline]
-                    fn #setter_name(&mut self, value: #field_ty) -> ::tempo_precompiles::error::Result<()> {
+                    fn #setter_name(&mut self, value: #field_ty) -> crate::error::Result<()> {
                         crate::storage::Slot::<#field_ty, {#slot_limbs}>::write(self, value)
                     }
                 }
@@ -162,7 +162,7 @@ pub(crate) fn gen_getters_and_setters(
             quote! {
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
-                    fn #getter_name(&mut self, key: #key_ty) -> ::tempo_precompiles::error::Result<#value_ty> {
+                    fn #getter_name(&mut self, key: #key_ty) -> crate::error::Result<#value_ty> {
                         crate::storage::Mapping::<#key_ty, #value_ty, {#slot_limbs}>::read(
                             self,
                             key,
@@ -170,7 +170,7 @@ pub(crate) fn gen_getters_and_setters(
                     }
 
                     #[inline]
-                    fn #setter_name(&mut self, key: #key_ty, value: #value_ty) -> ::tempo_precompiles::error::Result<()> {
+                    fn #setter_name(&mut self, key: #key_ty, value: #value_ty) -> crate::error::Result<()> {
                         crate::storage::Mapping::<#key_ty, #value_ty, {#slot_limbs}>::write(
                             self,
                             key,
@@ -196,7 +196,7 @@ pub(crate) fn gen_getters_and_setters(
                         &mut self,
                         key1: #key1_ty,
                         key2: #key2_ty,
-                    ) -> ::tempo_precompiles::error::Result<#value_ty> {
+                    ) -> crate::error::Result<#value_ty> {
                         crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, {#dummy_slot}>, {#slot_limbs}>::read_nested(
                             self,
                             key1,
@@ -210,7 +210,7 @@ pub(crate) fn gen_getters_and_setters(
                         key1: #key1_ty,
                         key2: #key2_ty,
                         value: #value_ty,
-                    ) -> ::tempo_precompiles::error::Result<()> {
+                    ) -> crate::error::Result<()> {
                         crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, {#dummy_slot}>, {#slot_limbs}>::write_nested(
                             self,
                             key1,

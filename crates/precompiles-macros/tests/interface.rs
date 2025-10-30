@@ -42,6 +42,15 @@ sol! {
     }
 }
 
+// Second test interface for multi-interface testing
+sol! {
+    interface IMetadata {
+        // Additional metadata functions
+        function version() external view returns (uint256);
+        function owner() external view returns (address);
+    }
+}
+
 // Create type alias for the generated error enum
 pub use ITestToken::ITestTokenErrors as TestTokenError;
 
@@ -79,7 +88,7 @@ impl<S: storage::PrecompileStorageProvider> TestTokenCall for TestToken<'_, S> {
 
     fn transfer(
         &mut self,
-        s: &Address,
+        s: Address,
         call: ITestToken::transferCall,
     ) -> tempo_precompiles::error::Result<bool> {
         let balance = self._get_balances(*s)?;
@@ -99,7 +108,7 @@ impl<S: storage::PrecompileStorageProvider> TestTokenCall for TestToken<'_, S> {
 
     fn approve(
         &mut self,
-        s: &Address,
+        s: Address,
         call: ITestToken::approveCall,
     ) -> tempo_precompiles::error::Result<bool> {
         self._set_allowances(*s, call.spender, call.amount)?;
@@ -108,7 +117,7 @@ impl<S: storage::PrecompileStorageProvider> TestTokenCall for TestToken<'_, S> {
 
     fn mint(
         &mut self,
-        _s: &Address,
+        _s: Address,
         call: ITestToken::mintCall,
     ) -> tempo_precompiles::error::Result<()> {
         let balance = self._get_balances(call.to)?;
@@ -118,7 +127,7 @@ impl<S: storage::PrecompileStorageProvider> TestTokenCall for TestToken<'_, S> {
 
     fn burn(
         &mut self,
-        s: &Address,
+        s: Address,
         call: ITestToken::burnCall,
     ) -> tempo_precompiles::error::Result<()> {
         let balance = self._get_balances(*s)?;
@@ -622,4 +631,137 @@ fn test_dispatcher_all_function_types_together() {
     let calldata = ITestToken::balanceOfCall { account: alice }.abi_encode();
     let result = token.call(&calldata, &alice).unwrap();
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(600));
+}
+
+// ============================================================================
+// Multi-Interface Tests
+// ============================================================================
+
+#[test]
+fn test_multi_interface_contract() {
+    // Test contract with multiple interfaces
+    #[contract(ITestToken, IMetadata)]
+    pub struct MultiInterfaceToken {
+        pub name: String,
+        pub symbol: String,
+        #[slot(10)]
+        #[map = "balanceOf"]
+        pub balances: storage::Mapping<Address, U256>,
+        #[slot(11)]
+        #[map = "allowance"]
+        pub allowances: storage::Mapping<Address, storage::Mapping<Address, U256>>,
+        pub version: U256,
+        pub owner: Address,
+    }
+
+    impl<S: storage::PrecompileStorageProvider> MultiInterfaceTokenCall for MultiInterfaceToken<'_, S> {
+        // ITestToken methods (some auto-generated: name, symbol, balanceOf, allowance)
+        fn decimals(&mut self) -> tempo_precompiles::error::Result<u8> {
+            Ok(18)
+        }
+
+        fn transfer(
+            &mut self,
+            s: Address,
+            call: ITestToken::transferCall,
+        ) -> tempo_precompiles::error::Result<bool> {
+            let balance = self._get_balances(*s)?;
+            if call.amount > balance {
+                return Err(tempo_precompiles::error::TempoPrecompileError::Fatal(
+                    "InsufficientBalance".to_string(),
+                ));
+            }
+            self._set_balances(*s, balance - call.amount)?;
+            let to_balance = self._get_balances(call.to)?;
+            self._set_balances(call.to, to_balance + call.amount)?;
+            Ok(true)
+        }
+
+        fn approve(
+            &mut self,
+            s: Address,
+            call: ITestToken::approveCall,
+        ) -> tempo_precompiles::error::Result<bool> {
+            self._set_allowances(*s, call.spender, call.amount)?;
+            Ok(true)
+        }
+
+        fn mint(
+            &mut self,
+            _s: Address,
+            call: ITestToken::mintCall,
+        ) -> tempo_precompiles::error::Result<()> {
+            let balance = self._get_balances(call.to)?;
+            self._set_balances(call.to, balance + call.amount)?;
+            Ok(())
+        }
+
+        fn burn(
+            &mut self,
+            s: Address,
+            call: ITestToken::burnCall,
+        ) -> tempo_precompiles::error::Result<()> {
+            let balance = self._get_balances(*s)?;
+            if call.amount > balance {
+                return Err(tempo_precompiles::error::TempoPrecompileError::Fatal(
+                    "InsufficientBalance".to_string(),
+                ));
+            }
+            self._set_balances(*s, balance - call.amount)?;
+            Ok(())
+        }
+
+        // IMetadata methods (auto-generated: version, owner)
+    }
+
+    let mut storage = HashMapStorageProvider::new(1);
+    let addr = test_address(1);
+    let mut token = MultiInterfaceToken::_new(addr, &mut storage);
+    let sender = test_address(2);
+
+    // Test ITestToken interface methods
+    token._set_name("Multi Token".to_string()).unwrap();
+    token._set_symbol("MULTI".to_string()).unwrap();
+
+    let calldata = ITestToken::nameCall {}.abi_encode();
+    let result = token.call(&calldata, &sender).unwrap();
+    assert_eq!(String::abi_decode(&result.bytes).unwrap(), "Multi Token");
+
+    let calldata = ITestToken::symbolCall {}.abi_encode();
+    let result = token.call(&calldata, &sender).unwrap();
+    assert_eq!(String::abi_decode(&result.bytes).unwrap(), "MULTI");
+
+    // Test IMetadata interface methods
+    token._set_version(U256::from(1)).unwrap();
+    token._set_owner(test_address(99)).unwrap();
+
+    let calldata = IMetadata::versionCall {}.abi_encode();
+    let result = token.call(&calldata, &sender).unwrap();
+    assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(1));
+
+    let calldata = IMetadata::ownerCall {}.abi_encode();
+    let result = token.call(&calldata, &sender).unwrap();
+    assert_eq!(
+        Address::abi_decode(&result.bytes).unwrap(),
+        test_address(99)
+    );
+
+    // Test that both interfaces work together in the same dispatcher
+    // Mint some tokens (ITestToken interface)
+    let calldata = ITestToken::mintCall {
+        to: sender,
+        amount: U256::from(500),
+    }
+    .abi_encode();
+    token.call(&calldata, &sender).unwrap();
+
+    // Check balance (ITestToken interface)
+    let calldata = ITestToken::balanceOfCall { account: sender }.abi_encode();
+    let result = token.call(&calldata, &sender).unwrap();
+    assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(500));
+
+    // Verify version still accessible (IMetadata interface)
+    let calldata = IMetadata::versionCall {}.abi_encode();
+    let result = token.call(&calldata, &sender).unwrap();
+    assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(1));
 }

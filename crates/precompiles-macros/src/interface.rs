@@ -77,6 +77,7 @@ fn get_interface_functions(
     match interface_name.as_str() {
         "ITIP20" => Ok(get_itip20_functions(interface_type)),
         "ITestToken" => Ok(get_itest_token_functions(interface_type)),
+        "IMetadata" => Ok(get_imetadata_functions(interface_type)),
         _ => {
             eprintln!(
                 "Warning: Interface '{interface_name}' not in registry. No trait methods will be generated."
@@ -180,30 +181,6 @@ fn get_itip20_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
             is_view: true,
             call_type_path: quote!(#interface_type::allowanceCall),
         },
-        InterfaceFunction {
-            name: "nonces",
-            params: vec![("owner", parse_quote!(Address))],
-            return_type: parse_quote!(U256),
-            is_view: true,
-            call_type_path: quote!(#interface_type::noncesCall),
-        },
-        InterfaceFunction {
-            name: "salts",
-            params: vec![
-                ("owner", parse_quote!(Address)),
-                ("salt", parse_quote!(FixedBytes<4>)),
-            ],
-            return_type: parse_quote!(bool),
-            is_view: true,
-            call_type_path: quote!(#interface_type::saltsCall),
-        },
-        InterfaceFunction {
-            name: "DOMAIN_SEPARATOR",
-            params: vec![],
-            return_type: parse_quote!(B256),
-            is_view: true,
-            call_type_path: quote!(#interface_type::DOMAIN_SEPARATORCall),
-        },
         // Mutating functions (non-void)
         InterfaceFunction {
             name: "transfer",
@@ -304,21 +281,6 @@ fn get_itip20_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
             return_type: parse_quote!(()),
             is_view: false,
             call_type_path: quote!(#interface_type::transferWithMemoCall),
-        },
-        InterfaceFunction {
-            name: "permit",
-            params: vec![
-                ("owner", parse_quote!(Address)),
-                ("spender", parse_quote!(Address)),
-                ("value", parse_quote!(U256)),
-                ("deadline", parse_quote!(U256)),
-                ("v", parse_quote!(u8)),
-                ("r", parse_quote!(B256)),
-                ("s", parse_quote!(B256)),
-            ],
-            return_type: parse_quote!(()),
-            is_view: false,
-            call_type_path: quote!(#interface_type::permitCall),
         },
         // Admin functions (void)
         InterfaceFunction {
@@ -453,6 +415,28 @@ fn get_itest_token_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
     ]
 }
 
+// Test interface for multi-interface testing
+fn get_imetadata_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
+    use syn::parse_quote;
+
+    vec![
+        InterfaceFunction {
+            name: "version",
+            params: vec![],
+            return_type: parse_quote!(U256),
+            is_view: true,
+            call_type_path: quote!(#interface_type::versionCall),
+        },
+        InterfaceFunction {
+            name: "owner",
+            params: vec![],
+            return_type: parse_quote!(Address),
+            is_view: true,
+            call_type_path: quote!(#interface_type::ownerCall),
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,8 +458,8 @@ mod tests {
         let ty: Type = parse_quote!(ITIP20);
         let functions = parse_interface(&ty).unwrap();
 
-        // Should have 32 functions
-        assert_eq!(functions.len(), 32);
+        // Should have 28 functions
+        assert_eq!(functions.len(), 28);
 
         // Check a few specific functions
         let name_fn = functions.iter().find(|f| f.name == "name");
