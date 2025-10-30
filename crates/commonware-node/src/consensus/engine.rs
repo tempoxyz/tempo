@@ -27,7 +27,6 @@ use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
-use tokio::sync::watch;
 
 use crate::{
     config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
@@ -175,12 +174,10 @@ where
         )
         .await;
 
-        let (epoch_context_tx, epoch_context_rx) = watch::channel(None);
-
         let (subblocks, subblocks_handle) = SubBlocksService::new(
             self.context.clone(),
             self.signer.clone(),
-            epoch_context_rx,
+            scheme_provider.clone(),
             self.execution_node.clone(),
         );
 
@@ -220,7 +217,6 @@ where
                 views_until_leader_skip: self.views_until_leader_skip,
             },
             self.context.with_label("epoch_manager"),
-            epoch_context_tx,
         );
 
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(

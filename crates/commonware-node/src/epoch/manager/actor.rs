@@ -17,12 +17,10 @@ use commonware_p2p::{
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
 };
-use commonware_utils::set::Ordered;
 use eyre::{WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
-use tokio::sync::watch;
 use tracing::{Level, Span, info, instrument, warn, warn_span};
 
 use crate::{
@@ -38,19 +36,12 @@ use super::ingress::Message;
 const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 
-pub(crate) struct EpochContext {
-    pub epoch: Epoch,
-    pub participants: Ordered<PublicKey>,
-    pub scheme: Scheme<MinSig>,
-}
-
 pub(crate) struct Actor<TBlocker, TContext> {
     active_epochs: BTreeMap<Epoch, Handle<()>>,
     config: super::Config<TBlocker>,
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     metrics: Metrics,
-    context_tx: watch::Sender<Option<EpochContext>>,
 }
 
 impl<TBlocker, TContext> Actor<TBlocker, TContext>
@@ -69,7 +60,6 @@ where
     pub(super) fn new(
         config: super::Config<TBlocker>,
         context: TContext,
-        context_tx: watch::Sender<Option<EpochContext>>,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
         let active_epochs = Gauge::default();
@@ -102,7 +92,6 @@ where
                 latest_participants,
             },
             active_epochs: BTreeMap::new(),
-            context_tx,
         }
     }
 
@@ -306,13 +295,6 @@ where
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
         );
-
-        let context = EpochContext {
-            epoch,
-            participants: participants.clone(),
-            scheme: scheme.clone(),
-        };
-        self.context_tx.send_replace(Some(context));
 
         info!("started consensus engine backing the epoch");
 

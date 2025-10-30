@@ -1,10 +1,11 @@
-use crate::{consensus::Digest, epoch::manager::EpochContext};
+use crate::{consensus::Digest, epoch::SchemeProvider};
 use alloy_consensus::{BlockHeader, Transaction};
 use alloy_primitives::{B256, BlockHash, Bytes, map::HashMap};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_consensus::{
-    Reporter,
+    Epochable, Reporter,
+    marshal::SchemeProvider as _,
     simplex::{
         select_leader,
         signing_scheme::{Scheme as _, bls12381_threshold::Scheme},
@@ -28,7 +29,7 @@ use reth_revm::database::StateProviderDatabase;
 use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR};
 use tempo_payload_types::{RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion};
 use tempo_primitives::TempoTxEnvelope;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 /// Actions processed by the subblocks service.
@@ -55,7 +56,7 @@ enum Message {
 /// Task managing collected subblocks.
 pub struct SubBlocksService<Ctx> {
     actions_rx: mpsc::UnboundedReceiver<Message>,
-    epoch_context_rx: watch::Receiver<Option<EpochContext>>,
+    scheme_provider: SchemeProvider,
     subblock_builder_handle: Option<Handle<eyre::Result<SubBlock>>>,
     validated_subblocks_tx: mpsc::UnboundedSender<RecoveredSubBlock>,
     validated_subblocks_rx: mpsc::UnboundedReceiver<RecoveredSubBlock>,
@@ -74,7 +75,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
     pub(crate) fn new(
         context: Ctx,
         signer: PrivateKey,
-        epoch_context_rx: watch::Receiver<Option<EpochContext>>,
+        scheme_provider: SchemeProvider,
         node: TempoFullNode,
     ) -> (Self, SubBlocksHandle) {
         let (actions_tx, actions_rx) = mpsc::unbounded_channel();
@@ -83,7 +84,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             subblock_builder_handle: None,
             validated_subblocks_rx,
             validated_subblocks_tx,
-            epoch_context_rx,
+            scheme_provider,
             actions_rx,
             context,
             signer,
@@ -126,20 +127,11 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
     }
 
     fn on_new_notarization(&mut self, event: Notarization<Scheme<MinSig>, Digest>) {
-        let epoch_context = self.epoch_context_rx.borrow();
-        let Some(EpochContext {
-            epoch,
-            participants,
-            scheme,
-        }) = epoch_context.as_ref()
-        else {
+        let epoch = event.epoch();
+
+        let Some(scheme) = self.scheme_provider.scheme(epoch) else {
             return;
         };
-
-        // Find out who is the next proposer
-        if epoch != &event.proposal.round.epoch() {
-            return;
-        }
 
         let Some(seed) = scheme.seed(event.proposal.round, &event.certificate) else {
             return;
@@ -147,7 +139,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
 
         let leader_idx = select_leader::<Scheme<MinSig>, _>(
             participants.as_ref(),
-            Round::new(*epoch, event.proposal.round.view() + 1),
+            Round::new(epoch, event.proposal.round.view() + 1),
             Some(seed),
         );
 

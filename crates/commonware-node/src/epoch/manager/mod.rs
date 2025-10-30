@@ -3,7 +3,7 @@ pub(super) mod ingress;
 
 use std::time::Duration;
 
-pub(crate) use actor::{Actor, EpochContext};
+pub(crate) use actor::Actor;
 use commonware_consensus::simplex::signing_scheme::bls12381_threshold::{self};
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig,
@@ -15,7 +15,6 @@ use commonware_consensus::marshal;
 use commonware_p2p::Blocker;
 use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::PoolRef};
 use rand::{CryptoRng, Rng};
-use tokio::sync::watch;
 
 use crate::{
     consensus::block::Block, epoch::scheme_provider::SchemeProvider, subblocks::SubBlocksHandle,
@@ -43,7 +42,6 @@ pub(crate) struct Config<TBlocker> {
 pub(crate) fn init<TBlocker, TContext>(
     config: Config<TBlocker>,
     context: TContext,
-    context_tx: watch::Sender<Option<EpochContext>>,
 ) -> (Actor<TBlocker, TContext>, Mailbox)
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
@@ -51,7 +49,7 @@ where
         Spawner + Metrics + Rng + CryptoRng + Clock + governor::clock::Clock + Storage + Network,
 {
     let (tx, rx) = futures::channel::mpsc::unbounded();
-    let actor = Actor::new(config, context, context_tx, rx);
+    let actor = Actor::new(config, context, rx);
     let mailbox = Mailbox::new(tx);
     (actor, mailbox)
 }
