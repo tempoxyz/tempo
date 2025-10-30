@@ -359,7 +359,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.accrue()?;
+        let timestamp = self.storage.timestamp();
+        self.accrue(timestamp)?;
+
         self.handle_rewards_on_mint(&to, amount)?;
 
         self.set_total_supply(new_supply)?;
@@ -793,7 +795,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         amount: U256,
     ) -> Result<(), TempoPrecompileError> {
         // Accrue before balance changes
-        self.accrue()?;
+        let timestamp = self.storage.timestamp();
+        self.accrue(timestamp)?;
         self.handle_rewards_on_transfer(from, to, amount)?;
 
         let from_balance = self.get_balance(from)?;

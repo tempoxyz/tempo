@@ -128,6 +128,7 @@ sol! {
         error NotStreamFunder();
         error StreamInactive();
         error NoOptedInSupply();
+        error Unauthorized();
     }
 }
 
@@ -147,6 +148,11 @@ impl TIP20Error {
     /// Creates an error for insufficient spending allowance.
     pub const fn insufficient_allowance() -> Self {
         Self::InsufficientAllowance(ITIP20::InsufficientAllowance {})
+    }
+
+    /// Creates an error for unauthorized callers
+    pub const fn unauthorized() -> Self {
+        Self::Unauthorized(ITIP20::Unauthorized {})
     }
 
     /// Creates an error when minting would exceed supply cap.

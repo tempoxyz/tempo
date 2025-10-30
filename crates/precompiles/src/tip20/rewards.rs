@@ -192,16 +192,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// This function calculates and updates the reward per token stored based on
     /// the total reward rate and the time elapsed since the last update.
     /// Only processes rewards if there is an opted-in supply.
-    pub fn accrue(&mut self) -> Result<(), TempoPrecompileError> {
-        let current_time = self.storage.timestamp();
-        let last_update_time = U256::from(self.get_last_update_time()?);
-
-        let elapsed = if current_time > last_update_time {
-            current_time - last_update_time
-        } else {
+    pub fn accrue(&mut self, accrue_to_timestamp: U256) -> Result<(), TempoPrecompileError> {
+        let elapsed = accrue_to_timestamp - U256::from(self.get_last_update_time()?);
+        if elapsed.is_zero() {
             return Ok(());
-        };
-        self.set_last_update_time(current_time)?;
+        }
+
+        self.set_last_update_time(accrue_to_timestamp)?;
 
         let opted_in_supply = self.get_opted_in_supply()?;
         if opted_in_supply == U256::ZERO {
@@ -307,7 +304,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             self.ensure_transfer_authorized(msg_sender, &call.recipient)?;
         }
 
-        self.accrue()?;
+        let timestamp = self.storage.timestamp();
+        self.accrue(timestamp)?;
 
         let current_recipient = self.get_reward_recipient_of(msg_sender)?;
         if call.recipient == current_recipient {
@@ -392,7 +390,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::stream_inactive().into());
         }
 
-        self.accrue()?;
+        let timestamp = self.storage.timestamp();
+        self.accrue(timestamp)?;
 
         let elapsed = if current_time > stream.start_time {
             current_time - U256::from(stream.start_time)
@@ -492,7 +491,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Ok(());
         }
 
-        self.accrue()?;
+        self.accrue(U256::from(end_time))?;
 
         let total_rps = self
             .get_total_reward_per_second()?
@@ -1137,7 +1136,8 @@ mod tests {
         let rpt_before = token.get_reward_per_token_stored()?;
         let last_update_before = token.get_last_update_time()?;
 
-        token.accrue()?;
+        let timestamp = token.storage.timestamp();
+        token.accrue(timestamp)?;
 
         let rpt_after = token.get_reward_per_token_stored()?;
         let last_update_after = token.get_last_update_time()?;
