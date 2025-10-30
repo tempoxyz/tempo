@@ -989,9 +989,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     fn read_string(&mut self, slot: U256) -> Result<String, TempoPrecompileError> {
         let value = self.storage.sload(self.token_address, slot)?;
         let bytes = value.to_be_bytes::<32>();
-        let len = bytes[31] as usize / 2;
+        let len = bytes[31] as usize / 2; // Last byte stores length * 2 for short strings
         if len > 31 {
-            todo!("handle error")
+            panic!("String too long, we shouldn't have stored this in the first place.");
         } else {
             Ok(String::from_utf8_lossy(&bytes[..len]).to_string())
         }
@@ -1005,7 +1005,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         }
         let mut storage_bytes = [0u8; 32];
         storage_bytes[..bytes.len()].copy_from_slice(bytes);
-        storage_bytes[31] = (bytes.len() * 2) as u8;
+        storage_bytes[31] = (bytes.len() * 2) as u8; // Store length * 2 in last byte
 
         self.storage
             .sstore(self.token_address, slot, U256::from_be_bytes(storage_bytes))
