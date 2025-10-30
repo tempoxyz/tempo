@@ -222,12 +222,30 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 accrued = contract_balance;
             }
 
-            let new_contract_balance = contract_balance - accrued;
+            let new_contract_balance = contract_balance
+                .checked_sub(accrued)
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_balance(&token_address, new_contract_balance)?;
 
-            let recipient_balance = self.get_balance(recipient)?;
-            let new_recipient_balance = recipient_balance + accrued;
-            self.set_balance(recipient, new_recipient_balance)?;
+            let recipient_balance = self
+                .get_balance(recipient)?
+                .checked_add(accrued)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_balance(recipient, recipient_balance)?;
+
+            // Since rewards are being claimed, we need to increase the delegated balance
+            // and opted-in supply to reflect that these tokens are now part of the reward pool.
+            let delegated_balance = self
+                .get_delegated_balance(recipient)?
+                .checked_add(accrued)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_delegated_balance(recipient, delegated_balance)?;
+
+            let opted_in_supply = self
+                .get_opted_in_supply()?
+                .checked_add(accrued)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(opted_in_supply)?;
 
             self.storage.emit_event(
                 self.token_address,
