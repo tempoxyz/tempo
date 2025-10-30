@@ -1088,7 +1088,10 @@ mod tests {
         assert!(reward_per_token_after >= reward_per_token_before);
         assert_eq!(user_reward_per_token_paid_after, reward_per_token_after);
         assert_eq!(token.get_opted_in_supply()?, mint_amount + reward_amount);
-        assert_eq!(token.get_delegated_balance(&alice)?, mint_amount + reward_amount);
+        assert_eq!(
+            token.get_delegated_balance(&alice)?,
+            mint_amount + reward_amount
+        );
 
         Ok(())
     }
@@ -1218,7 +1221,10 @@ mod tests {
 
         token.update_rewards(&alice)?;
         assert_eq!(token.get_opted_in_supply()?, mint_amount + reward_amount);
-        assert_eq!(token.get_delegated_balance(&alice)?, mint_amount + reward_amount);
+        assert_eq!(
+            token.get_delegated_balance(&alice)?,
+            mint_amount + reward_amount
+        );
         assert_eq!(
             token.get_user_reward_per_token_paid(&alice)?,
             reward_per_token_stored
