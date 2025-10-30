@@ -27,7 +27,25 @@ pub mod slots {
 }
 
 impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
-    // TIP20 extension functions
+    /// Starts a new reward stream for the token contract.
+    ///
+    /// This function allows an authorized user to fund a reward stream that distributes
+    /// tokens to opted-in recipients either immediately (if seconds=0) or over time.
+    ///
+    /// # Arguments
+    ///
+    /// * `msg_sender` - The address funding the reward stream
+    /// * `call` - The reward parameters including amount and duration
+    ///
+    /// # Returns
+    ///
+    /// Returns the stream ID (0 for immediate payouts, incrementing ID for streams)
+    ///
+    /// # Errors
+    ///
+    /// * `invalid_amount` - If the reward amount is zero
+    /// * `insufficient_balance` - If the sender doesn't have enough tokens
+    /// * `no_reward_supplied` - If no users have opted into rewards for immediate payout
     pub fn start_reward(
         &mut self,
         msg_sender: &Address,
@@ -125,6 +143,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         }
     }
 
+    /// Handles reward accounting when tokens are transferred from an address.
+    ///
+    /// This function updates the reward state for the sender's reward recipient,
+    /// reducing their delegated balance and the total opted-in supply.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - The address sending tokens
+    /// * `amount` - The amount of tokens being transferred
     pub fn handle_sender_rewards(
         &mut self,
         from: &Address,
@@ -149,6 +176,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// Handles reward accounting when tokens are transferred to an address.
+    ///
+    /// This function updates the reward state for the receiver's reward recipient,
+    /// increasing their delegated balance and the total opted-in supply.
+    ///
+    /// # Arguments
+    ///
+    /// * `to` - The address receiving tokens
+    /// * `amount` - The amount of tokens being transferred
     pub fn handle_receiver_rewards(
         &mut self,
         to: &Address,
@@ -173,6 +209,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// Accrues rewards based on elapsed time since last update.
+    ///
+    /// This function calculates and updates the reward per token stored based on
+    /// the total reward rate and the time elapsed since the last update.
+    /// Only processes rewards if there is an opted-in supply.
     pub fn accrue(&mut self) -> Result<(), TempoPrecompileError> {
         let current_time = self.storage.timestamp();
         let last_update_time = U256::from(self.get_last_update_time()?);
@@ -199,6 +240,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// Updates and distributes accrued rewards for a specific recipient.
+    ///
+    /// This function calculates the rewards earned by a recipient based on their
+    /// delegated balance and the reward per token difference since their last update.
+    /// It then transfers the accrued rewards from the contract to the recipient.
+    ///
+    /// # Arguments
+    ///
+    /// * `recipient` - The address to update rewards for
     fn update_rewards(&mut self, recipient: &Address) -> Result<(), TempoPrecompileError> {
         if *recipient == Address::ZERO {
             return Ok(());
@@ -242,6 +292,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// Sets or changes the reward recipient for a token holder.
+    ///
+    /// This function allows a token holder to designate who should receive their
+    /// share of rewards. Setting to zero address opts out of rewards.
+    ///
+    /// # Arguments
+    ///
+    /// * `msg_sender` - The token holder setting their reward recipient
+    /// * `call` - Contains the recipient address to set
     pub fn set_reward_recipient(
         &mut self,
         msg_sender: &Address,
@@ -310,6 +369,24 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// Cancels an active reward stream and refunds remaining tokens.
+    ///
+    /// This function allows the funder of a reward stream to cancel it early,
+    /// stopping future reward distribution and refunding unused tokens.
+    ///
+    /// # Arguments
+    ///
+    /// * `msg_sender` - The address requesting the cancellation (must be stream funder)
+    /// * `call` - Contains the stream ID to cancel
+    ///
+    /// # Returns
+    ///
+    /// Returns the amount of tokens refunded to the funder
+    ///
+    /// # Errors
+    ///
+    /// * `stream_inactive` - If the stream doesn't exist or has already ended
+    /// * `not_stream_funder` - If the caller is not the original funder
     pub fn cancel_reward(
         &mut self,
         msg_sender: &Address,
@@ -405,6 +482,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(refund)
     }
 
+    /// Finalizes expired reward streams by updating the total reward rate.
+    ///
+    /// This function is called to clean up streams that have reached their end time,
+    /// reducing the total reward per second rate by the amount of the expired streams.
     pub fn finalize_streams(&mut self) -> Result<(), TempoPrecompileError> {
         let end_time = self.storage.timestamp().to::<u128>();
         let rate_decrease = self.get_scheduled_rate_decrease_at(end_time);
@@ -426,6 +507,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    /// Gets the last recorded reward per token for a user.
     fn get_user_reward_per_token_paid(
         &mut self,
         account: &Address,
@@ -434,6 +516,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage.sload(self.token_address, slot)
     }
 
+    /// Sets the last recorded reward per token for a user.
     fn set_user_reward_per_token_paid(
         &mut self,
         account: &Address,
@@ -443,6 +526,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage.sstore(self.token_address, slot, value)
     }
 
+    /// Gets the next available stream ID (minimum 1).
     fn get_next_stream_id(&mut self) -> Result<u64, TempoPrecompileError> {
         let id = self
             .storage
@@ -452,21 +536,25 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(id.max(1))
     }
 
+    /// Sets the next stream ID counter.
     fn set_next_stream_id(&mut self, value: u64) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.token_address, slots::NEXT_STREAM_ID, U256::from(value))
     }
 
+    /// Gets the accumulated reward per token stored.
     fn get_reward_per_token_stored(&mut self) -> Result<U256, TempoPrecompileError> {
         self.storage
             .sload(self.token_address, slots::REWARD_PER_TOKEN_STORED)
     }
 
+    /// Sets the accumulated reward per token in storage.
     fn set_reward_per_token_stored(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.token_address, slots::REWARD_PER_TOKEN_STORED, value)
     }
 
+    /// Gets the timestamp of the last reward update from storage.
     fn get_last_update_time(&mut self) -> Result<u64, TempoPrecompileError> {
         Ok(self
             .storage
@@ -474,21 +562,25 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .to::<u64>())
     }
 
+    /// Sets the timestamp of the last reward update in storage.
     fn set_last_update_time(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.token_address, slots::LAST_UPDATE_TIME, value)
     }
 
+    /// Gets the total supply of tokens opted into rewards from storage.
     fn get_opted_in_supply(&mut self) -> Result<U256, TempoPrecompileError> {
         self.storage
             .sload(self.token_address, slots::OPTED_IN_SUPPLY)
     }
 
+    /// Sets the total supply of tokens opted into rewards in storage.
     fn set_opted_in_supply(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.token_address, slots::OPTED_IN_SUPPLY, value)
     }
 
+    /// Gets the reward recipient address for an account from storage.
     fn get_reward_recipient_of(
         &mut self,
         account: &Address,
@@ -497,6 +589,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(self.storage.sload(self.token_address, slot)?.into_address())
     }
 
+    /// Sets the reward recipient address for an account in storage.
     fn set_reward_recipient_of(
         &mut self,
         account: &Address,
@@ -507,11 +600,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .sstore(self.token_address, slot, recipient.into_u256())
     }
 
+    /// Gets the delegated balance for an account from storage.
     fn get_delegated_balance(&mut self, account: &Address) -> Result<U256, TempoPrecompileError> {
         let slot = mapping_slot(account, slots::DELEGATED_BALANCE);
         self.storage.sload(self.token_address, slot)
     }
 
+    /// Sets the delegated balance for an account in storage.
     fn set_delegated_balance(
         &mut self,
         account: &Address,
@@ -521,6 +616,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage.sstore(self.token_address, slot, amount)
     }
 
+    /// Gets the scheduled rate decrease at a specific time from storage.
     fn get_scheduled_rate_decrease_at(&mut self, end_time: u128) -> U256 {
         let slot = mapping_slot(end_time.to_be_bytes(), slots::SCHEDULED_RATE_DECREASE);
         self.storage
@@ -528,6 +624,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .unwrap_or(U256::ZERO)
     }
 
+    /// Sets the scheduled rate decrease at a specific time in storage.
     fn set_scheduled_rate_decrease_at(
         &mut self,
         end_time: u128,
@@ -537,16 +634,19 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.storage.sstore(self.token_address, slot, value)
     }
 
+    /// Gets the total reward per second rate from storage.
     fn get_total_reward_per_second(&mut self) -> Result<U256, TempoPrecompileError> {
         self.storage
             .sload(self.token_address, slots::TOTAL_REWARD_PER_SECOND)
     }
 
+    /// Sets the total reward per second rate in storage.
     fn set_total_reward_per_second(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.token_address, slots::TOTAL_REWARD_PER_SECOND, value)
     }
 
+    /// Retrieves a reward stream by its ID.
     pub fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TempoPrecompileError> {
         RewardStream::from_storage(stream_id, self.storage, self.token_address)
     }
@@ -569,6 +669,7 @@ impl RewardStream {
     pub const STREAM_RATE_OFFSET: U256 = uint!(3_U256);
     pub const STREAM_AMOUNT_TOTAL_OFFSET: U256 = uint!(4_U256);
 
+    /// Creates a new RewardStream instance.
     pub fn new(
         stream_id: u64,
         funder: Address,
@@ -587,6 +688,7 @@ impl RewardStream {
         }
     }
 
+    /// Loads a RewardStream from contract storage.
     pub fn from_storage<S: PrecompileStorageProvider>(
         stream_id: u64,
         storage: &mut S,
@@ -635,6 +737,7 @@ impl RewardStream {
         })
     }
 
+    /// Stores this RewardStream to contract storage.
     pub fn store<S: PrecompileStorageProvider>(
         &self,
         storage: &mut S,
@@ -675,6 +778,7 @@ impl RewardStream {
         Ok(())
     }
 
+    /// Deletes reward stream from contract storage for the corresponding `stream_id`.
     pub fn delete<S: PrecompileStorageProvider>(
         &self,
         storage: &mut S,
