@@ -1,9 +1,13 @@
 pub mod dispatch;
 
+use alloy::primitives::Bytes;
+use revm::state::Bytecode;
 pub use tempo_contracts::precompiles::INonce;
 use tempo_contracts::precompiles::NonceError;
 
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    NONCE_PRECOMPILE_ADDRESS, error::TempoPrecompileError, storage::PrecompileStorageProvider,
+};
 use alloy::primitives::{Address, U256};
 
 /// Storage slots for Nonce precompile data
@@ -51,6 +55,15 @@ pub struct NonceManager<'a, S: PrecompileStorageProvider> {
 impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self { storage }
+    }
+
+    /// Initializes the nonce manager contract.
+    pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
+        // must ensure the account is not empty, by setting some code
+        self.storage.set_code(
+            NONCE_PRECOMPILE_ADDRESS,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )
     }
 
     /// Get the nonce for a specific account and nonce key
