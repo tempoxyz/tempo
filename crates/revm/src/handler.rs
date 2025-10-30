@@ -51,21 +51,40 @@ const P256_VERIFY_GAS: u64 = 5_000;
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
     b256!("e7b3e4597bdbdd0cc4eb42f9b799b580f23068f54e472bb802cb71efb1570482");
 
-/// Calculates the gas cost for verifying an AA signature.
+/// Calculates the gas cost for verifying a primitive signature.
 ///
 /// Returns the additional gas required beyond the base transaction cost:
 /// - Secp256k1: 0 (already included in base 21k)
 /// - P256: 5000 gas
 /// - WebAuthn: 5000 gas + calldata cost for webauthn_data
 #[inline]
-fn aa_signature_verification_gas(signature: &AASignature) -> u64 {
+fn primitive_signature_verification_gas(signature: &AASignature, is_istanbul: bool) -> u64 {
     match signature {
         AASignature::Secp256k1(_) => 0,
         AASignature::P256(_) => P256_VERIFY_GAS,
         AASignature::WebAuthn(webauthn_sig) => {
-            let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, true);
+            let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, is_istanbul);
             P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
         }
+        AASignature::Keychain(_) => {
+            unreachable!("Keychain signatures should be unwrapped to their inner signature")
+        }
+    }
+}
+
+/// Calculates the gas cost for verifying an AA signature.
+///
+/// For Keychain signatures, unwraps to the inner signature for gas calculation.
+/// Returns the additional gas required beyond the base transaction cost.
+#[inline]
+fn aa_signature_verification_gas(signature: &AASignature) -> u64 {
+    match signature {
+        AASignature::Keychain(keychain_sig) => {
+            // Keychain wraps an inner signature - calculate gas for the inner signature
+            // Note: Recursive keychain signatures are prevented during deserialization
+            primitive_signature_verification_gas(&keychain_sig.signature, true)
+        }
+        _ => primitive_signature_verification_gas(signature, true),
     }
 }
 
@@ -591,6 +610,172 @@ where
         let internals = EvmInternals::new(journal, &block);
         let beneficiary = internals.block_env().beneficiary();
         let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+
+        // If the transaction includes a KeyAuthorization, validate and add the key FIRST
+        // This allows authorizing and using an access key in the same transaction
+        if let Some(aa_tx_env) = tx.aa_tx_env.as_ref() {
+            if let Some(key_auth) = &aa_tx_env.key_authorization {
+                use tempo_precompiles::account_keychain::AccountKeychain;
+
+                // Validate that the KeyAuthorization is signed by the root account
+                // The root account is the transaction caller (tx.caller)
+                let root_account = &tx.caller;
+
+                // Compute the message hash for the KeyAuthorization
+                // The root key signs this to authorize the access key
+                // Message format: keccak256(key_type || key_id || expiry || limits)
+                let mut auth_message = Vec::new();
+                let key_type_byte: u8 = match &key_auth.key_type {
+                    tempo_primitives::transaction::SignatureType::Secp256k1 => 0,
+                    tempo_primitives::transaction::SignatureType::P256 => 1,
+                    tempo_primitives::transaction::SignatureType::WebAuthn => 2,
+                };
+                auth_message.push(key_type_byte);
+                auth_message.extend_from_slice(key_auth.key_id.as_slice());
+                auth_message.extend_from_slice(&key_auth.expiry.to_be_bytes());
+                for limit in &key_auth.limits {
+                    auth_message.extend_from_slice(limit.token.as_slice());
+                    auth_message.extend_from_slice(&limit.limit.to_be_bytes::<32>());
+                }
+                let auth_message_hash = alloy_primitives::keccak256(&auth_message);
+
+                // Recover the signer of the KeyAuthorization
+                let auth_signer = key_auth
+                    .signature
+                    .recover_signer(&auth_message_hash)
+                    .map_err(|_| {
+                        EVMError::Transaction(
+                            TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                                reason: "Failed to recover signer from KeyAuthorization signature"
+                                    .to_string(),
+                            },
+                        )
+                    })?;
+
+                // Verify the KeyAuthorization is signed by the root account
+                if auth_signer != *root_account {
+                    return Err(EVMError::Transaction(
+                        TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                            reason: format!(
+                                "KeyAuthorization must be signed by root account {}, but was signed by {}",
+                                root_account, auth_signer
+                            ),
+                        },
+                    ));
+                }
+
+                // The access key address is specified in key_id
+                let access_key_addr = key_auth.key_id;
+
+                // Convert to B256 for precompile storage (pad address to 32 bytes)
+                let mut access_key_hash_bytes = [0u8; 32];
+                access_key_hash_bytes[12..].copy_from_slice(access_key_addr.as_slice());
+                let access_key_hash = B256::from(access_key_hash_bytes);
+
+                // Add the key to the KeyChain precompile
+                let mut keychain = AccountKeychain::new(
+                    &mut storage_provider,
+                    tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS,
+                );
+
+                // Convert signature type to u8
+                let signature_type: u8 = match key_auth.key_type {
+                    tempo_primitives::transaction::SignatureType::Secp256k1 => 0,
+                    tempo_primitives::transaction::SignatureType::P256 => 1,
+                    tempo_primitives::transaction::SignatureType::WebAuthn => 2,
+                };
+
+                // Convert limits to the format expected by the precompile
+                use tempo_precompiles::account_keychain::{TokenLimit, authorizeKeyCall};
+
+                let precompile_limits: Vec<TokenLimit> = key_auth
+                    .limits
+                    .iter()
+                    .map(|limit| TokenLimit {
+                        token: limit.token,
+                        amount: limit.limit,
+                    })
+                    .collect();
+
+                // Create the authorize key call
+                let authorize_call = authorizeKeyCall {
+                    publicKey: access_key_hash,
+                    signatureType: signature_type,
+                    expiry: key_auth.expiry,
+                    limits: precompile_limits,
+                };
+
+                // Call precompile to authorize the key
+                keychain
+                    .authorize_key(authorize_call, root_account)
+                    .map_err(|e| {
+                        EVMError::Transaction(
+                            TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                                reason: format!("Failed to authorize key in precompile: {e:?}"),
+                            },
+                        )
+                    })?;
+            }
+        }
+
+        // For Keychain signatures, validate that the keychain is authorized in the precompile
+        // This happens AFTER potential key authorization above, allowing same-tx auth+use
+        if let Some(aa_tx_env) = tx.aa_tx_env.as_ref()
+            && let tempo_primitives::AASignature::Keychain(keychain_sig) = &aa_tx_env.signature
+        {
+            use tempo_precompiles::account_keychain::AccountKeychain;
+
+            let mut keychain = AccountKeychain::new(
+                &mut storage_provider,
+                tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS,
+            );
+
+            // The user_address is the root account this transaction is being executed for
+            // This should match tx.caller (which comes from recover_signer on the outer signature)
+            let user_address = &keychain_sig.user_address;
+
+            // Sanity check: user_address should match tx.caller
+            if *user_address != tx.caller {
+                return Err(EVMError::Transaction(
+                    TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason: format!(
+                            "Keychain user_address {} does not match transaction caller {}",
+                            user_address, tx.caller
+                        ),
+                    },
+                ));
+            }
+
+            // Recover the access key address from the inner signature
+            let access_key_addr = keychain_sig
+                .signature
+                .recover_signer(&aa_tx_env.tx_hash)
+                .map_err(|_| {
+                    EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason: "Failed to recover access key address from inner signature"
+                            .to_string(),
+                    })
+                })?;
+
+            // Convert Address to B256 for storage lookup (pad address to 32 bytes)
+            let mut keychain_pub_key_hash_bytes = [0u8; 32];
+            keychain_pub_key_hash_bytes[12..].copy_from_slice(access_key_addr.as_slice());
+            let keychain_pub_key_hash = B256::from(keychain_pub_key_hash_bytes);
+
+            // Validate that user_address has authorized this access key in the keychain
+            keychain
+                .validate_keychain_authorization(
+                    user_address,
+                    &keychain_pub_key_hash,
+                    block.timestamp().to::<u64>(),
+                )
+                .map_err(|e| {
+                    EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason: format!("Keychain validation failed: {e:?}"),
+                    })
+                })?;
+        }
+
         let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
         if gas_balance_spending.is_zero() {
@@ -1148,6 +1333,8 @@ mod tests {
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()), // dummy secp256k1 sig
             aa_calls: vec![call],
+            key_authorization: None,
+            tx_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1207,6 +1394,8 @@ mod tests {
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
             aa_calls: calls.clone(),
+            key_authorization: None,
+            tx_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1259,6 +1448,8 @@ mod tests {
                 pre_hash: false,
             }),
             aa_calls: vec![call],
+            key_authorization: None,
+            tx_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1300,6 +1491,8 @@ mod tests {
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
             aa_calls: vec![call],
+            key_authorization: None,
+            tx_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1339,6 +1532,8 @@ mod tests {
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
             aa_calls: vec![call],
+            key_authorization: None,
+            tx_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1374,6 +1569,8 @@ mod tests {
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
             aa_calls: vec![call],
+            key_authorization: None,
+            tx_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1416,6 +1613,8 @@ mod tests {
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
             aa_calls: vec![call],
+            key_authorization: None,
+            tx_hash: B256::ZERO,
             ..Default::default()
         };
 

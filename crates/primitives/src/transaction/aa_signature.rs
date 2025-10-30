@@ -43,16 +43,22 @@ pub struct WebAuthnSignature {
     pub webauthn_data: Bytes,
 }
 
-/// Keychain signature wrapping another signature with a key identifier
+/// Keychain signature wrapping another signature with a user address
 /// This allows an access key to sign on behalf of a root account
+///
+/// Format: 0x03 || user_address (20 bytes) || inner_signature
+///
+/// The user_address is the root account this transaction is being executed for.
+/// The inner signature proves an authorized access key signed the transaction.
+/// The handler validates that user_address has authorized the access key in the KeyChain precompile.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct KeychainSignature {
-    /// Key identifier (address derived from the access key's public key)
-    pub key_id: Address,
-    /// The actual signature (can be Secp256k1, P256, or WebAuthn, but NOT another Keychain)
+    /// Root account address that this transaction is being executed for
+    pub user_address: Address,
+    /// The actual signature from the access key (can be Secp256k1, P256, or WebAuthn, but NOT another Keychain)
     pub signature: Box<AASignature>,
 }
 
@@ -151,12 +157,12 @@ impl AASignature {
                 }))
             }
             SIGNATURE_TYPE_KEYCHAIN => {
-                // Keychain format: key_id (20 bytes) + inner signature
+                // Keychain format: user_address (20 bytes) || inner_signature
                 if sig_data.len() < 20 {
-                    return Err("Invalid Keychain signature: too short");
+                    return Err("Invalid Keychain signature: too short for user_address");
                 }
 
-                let key_id = Address::from_slice(&sig_data[0..20]);
+                let user_address = Address::from_slice(&sig_data[0..20]);
                 let inner_sig_bytes = &sig_data[20..];
 
                 // Parse inner signature recursively
@@ -169,7 +175,7 @@ impl AASignature {
                 }
 
                 Ok(Self::Keychain(KeychainSignature {
-                    key_id,
+                    user_address,
                     signature: Box::new(inner_signature),
                 }))
             }
@@ -209,11 +215,11 @@ impl AASignature {
                 Bytes::from(bytes)
             }
             Self::Keychain(keychain_sig) => {
-                // Format: 0x03 | key_id (20 bytes) | inner_signature
+                // Format: 0x03 | user_address (20 bytes) | inner_signature
                 let inner_bytes = keychain_sig.signature.to_bytes();
                 let mut bytes = Vec::with_capacity(1 + 20 + inner_bytes.len());
                 bytes.push(SIGNATURE_TYPE_KEYCHAIN);
-                bytes.extend_from_slice(keychain_sig.key_id.as_slice());
+                bytes.extend_from_slice(keychain_sig.user_address.as_slice());
                 bytes.extend_from_slice(&inner_bytes);
                 Bytes::from(bytes)
             }
@@ -317,14 +323,10 @@ impl AASignature {
                 ))
             }
             Self::Keychain(keychain_sig) => {
-                // Verify the inner signature (can be Secp256k1, P256, or WebAuthn)
-                // This validates the signature cryptographically
-                keychain_sig.signature.recover_signer(sig_hash)?;
-
-                // Return the key_id (access key address)
-                // Note: Transaction validation in the handler will check that this
-                // key is authorized for the account
-                Ok(keychain_sig.key_id)
+                // Return the user_address - the root account this transaction is for
+                // The handler will validate that the inner signature's recovered address
+                // is authorized for this user_address in the KeyChain precompile
+                Ok(keychain_sig.user_address)
             }
         }
     }

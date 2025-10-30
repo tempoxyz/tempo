@@ -2094,3 +2094,289 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
     );
     Ok(())
 }
+async fn test_aa_access_key() -> eyre::Result<()> {
+    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
+    use sha2::{Digest, Sha256};
+    use tempo_primitives::transaction::{
+        aa_signature::P256SignatureWithPreHash,
+        account_abstraction::{KeyAuthorization, TokenLimit},
+    };
+
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing AA Transaction with Key Authorization and P256 Spending Limits ===\n");
+
+    // Setup test node
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
+
+    let http_url = setup.node.rpc_url();
+
+    // Generate a P256 key pair for the access key
+    let access_key_signing_key = SigningKey::random(&mut OsRng);
+    let access_key_verifying_key = access_key_signing_key.verifying_key();
+
+    // Extract access key public key coordinates
+    let encoded_point = access_key_verifying_key.to_encoded_point(false);
+    let access_pub_key_x =
+        alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
+    let access_pub_key_y =
+        alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+
+    // Derive the access key's address
+    let access_key_addr = tempo_primitives::transaction::aa_signature::derive_p256_address(
+        &access_pub_key_x,
+        &access_pub_key_y,
+    );
+
+    println!("Access key (P256) address: {access_key_addr}");
+    println!("Access key public key X: {access_pub_key_x}");
+    println!("Access key public key Y: {access_pub_key_y}");
+
+    // Use TEST_MNEMONIC account as the root key (funded account)
+    let root_key_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let root_key_addr = root_key_signer.address();
+
+    // Create provider with root key's wallet
+    let root_wallet = EthereumWallet::from(root_key_signer.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(root_wallet)
+        .connect_http(http_url.clone());
+
+    let chain_id = provider.get_chain_id().await?;
+
+    println!("Root key address: {root_key_addr}");
+    println!("Chain ID: {chain_id}");
+
+    // Check root key's initial balance
+    let root_balance_initial = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone())
+        .balanceOf(root_key_addr)
+        .call()
+        .await?;
+    println!("Root key initial balance: {root_balance_initial} tokens");
+
+    // Create recipient for the token transfer
+    let recipient = Address::random();
+    println!("Token transfer recipient: {recipient}");
+
+    // Define spending limits for the access key
+    // Allow spending up to 10 tokens from DEFAULT_FEE_TOKEN
+    let spending_limit_amount = U256::from(10_000_000_000_000_000_000u64); // 10 tokens
+    let spending_limits = vec![TokenLimit {
+        token: DEFAULT_FEE_TOKEN,
+        limit: spending_limit_amount,
+    }];
+
+    println!("\nCreating key authorization:");
+    println!("  - Token: {DEFAULT_FEE_TOKEN}");
+    println!("  - Spending limit: {spending_limit_amount} (10 tokens)");
+    println!("  - Key type: P256");
+    println!("  - Key ID (address): {access_key_addr}");
+
+    // Root key signs the key authorization data to authorize the access key
+    // Message format: keccak256(key_type || key_id || expiry || limits)
+    let key_expiry = u64::MAX; // Never expires for this test
+
+    let mut auth_message = Vec::new();
+    auth_message.push(tempo_primitives::transaction::SignatureType::P256 as u8);
+    auth_message.extend_from_slice(access_key_addr.as_slice());
+    auth_message.extend_from_slice(&key_expiry.to_be_bytes());
+    for limit in &spending_limits {
+        auth_message.extend_from_slice(limit.token.as_slice());
+        auth_message.extend_from_slice(&limit.limit.to_be_bytes::<32>());
+    }
+    let auth_message_hash = alloy::primitives::keccak256(&auth_message);
+
+    // Root key signs the authorization message
+    let root_auth_signature = root_key_signer.sign_hash_sync(&auth_message_hash)?;
+
+    // Create the key authorization with root key signature
+    let key_authorization = KeyAuthorization {
+        expiry: key_expiry,
+        limits: spending_limits,
+        key_type: tempo_primitives::transaction::SignatureType::P256, // P256 access key
+        key_id: access_key_addr, // Address derived from P256 public key
+        signature: AASignature::Secp256k1(root_auth_signature), // Root key signature (secp256k1)
+    };
+
+    println!("✓ Key authorization created (expiry: {key_expiry})");
+    println!("✓ Key authorization signed by root key");
+
+    // Create a token transfer call within the spending limit
+    // Transfer 5 tokens (within the 10 token limit)
+    let transfer_amount = U256::from(5_000_000_000_000_000_000u64); // 5 tokens
+    let transfer_calldata = transferCall {
+        to: recipient,
+        amount: transfer_amount,
+    }
+    .abi_encode();
+
+    println!("\nCreating AA transaction:");
+    println!("  - Transfer amount: {transfer_amount} tokens (within 10 token limit)");
+
+    // Create AA transaction with key authorization and token transfer
+    let tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 300_000, // Higher gas for key authorization verification
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transfer_calldata.into(),
+        }],
+        nonce_key: 0,
+        nonce: provider.get_transaction_count(root_key_addr).await?,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: Some(key_authorization),
+    };
+
+    println!("✓ AA transaction created with key authorization");
+
+    // Verify the transaction is valid
+    tx.validate()
+        .map_err(|e| eyre::eyre!("Transaction validation failed: {}", e))?;
+
+    // Verify key_authorization is set correctly
+    assert!(
+        tx.key_authorization.is_some(),
+        "Key authorization should be set"
+    );
+    println!("✓ Key authorization set correctly");
+
+    // Sign the transaction with the ACCESS KEY (P256)
+    // In a real scenario, this would be the user's access key signing the transaction
+    let sig_hash = tx.signature_hash();
+    println!("\nSigning transaction with access key (P256)...");
+    println!("  Transaction signature hash: {sig_hash}");
+
+    // Pre-hash for P256 signature
+    let pre_hashed = Sha256::digest(sig_hash.as_slice());
+
+    // Sign with the access key
+    let p256_signature: p256::ecdsa::Signature =
+        access_key_signing_key.sign_prehash(&pre_hashed)?;
+    let sig_bytes = p256_signature.to_bytes();
+
+    // Create P256 AA signature for the inner signature
+    let inner_signature = AASignature::P256(P256SignatureWithPreHash {
+        r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
+        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        pub_key_x: access_pub_key_x,
+        pub_key_y: access_pub_key_y,
+        pre_hash: true,
+    });
+
+    // Wrap it in a Keychain signature with the root key address
+    let aa_signature = AASignature::Keychain(tempo_primitives::transaction::KeychainSignature {
+        user_address: root_key_addr, // The root account this transaction is for
+        signature: Box::new(inner_signature),
+    });
+
+    println!("✓ Transaction signed with access key P256 signature (wrapped in Keychain)");
+
+    // Verify signature recovery works - should return root_key_addr
+    let recovered_signer = aa_signature.recover_signer(&sig_hash)?;
+    assert_eq!(
+        recovered_signer, root_key_addr,
+        "Recovered signer should match root key address"
+    );
+    println!("✓ Signature recovery successful (recovered: {recovered_signer})");
+
+    // Create signed transaction (clone tx since we need it later for verification)
+    let signed_tx = AASigned::new_unhashed(tx.clone(), aa_signature);
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    println!(
+        "\nEncoded AA transaction: {} bytes (type: 0x{:02x})",
+        encoded.len(),
+        encoded[0]
+    );
+
+    // Get recipient's initial balance (should be 0)
+    let recipient_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone())
+        .balanceOf(recipient)
+        .call()
+        .await?;
+    assert_eq!(
+        recipient_balance_before,
+        U256::ZERO,
+        "Recipient should have zero initial balance"
+    );
+    println!("Recipient initial balance: {recipient_balance_before}");
+
+    // Inject transaction and mine block
+    println!("\nInjecting transaction into mempool...");
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
+
+    println!("Mining block...");
+    let payload = setup.node.advance_block().await?;
+
+    println!(
+        "✓ AA transaction with key authorization mined in block {}",
+        payload.block().inner.number
+    );
+
+    // Verify transaction can be fetched via RPC
+    verify_tx_in_block_via_rpc(&provider, &encoded, &envelope).await?;
+
+    // Verify the block contains the transaction
+    assert!(
+        !payload.block().body().transactions.is_empty(),
+        "Block should contain the transaction"
+    );
+
+    // Verify recipient received the tokens
+    let recipient_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone())
+        .balanceOf(recipient)
+        .call()
+        .await?;
+
+    println!("\n=== Verifying Token Transfer ===");
+    println!("Recipient balance after: {recipient_balance_after} tokens");
+
+    assert_eq!(
+        recipient_balance_after, transfer_amount,
+        "Recipient should have received exactly the transfer amount"
+    );
+    println!(
+        "✓ Recipient received correct amount: {} tokens",
+        transfer_amount
+    );
+
+    // Verify root key's balance decreased
+    let root_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone())
+        .balanceOf(root_key_addr)
+        .call()
+        .await?;
+
+    let balance_decrease = root_balance_initial - root_balance_after;
+    println!(
+        "\nRoot key balance: {root_balance_initial} → {root_balance_after} (decreased by {balance_decrease})"
+    );
+
+    assert!(
+        balance_decrease > transfer_amount,
+        "Root key should have paid transfer amount plus gas fees"
+    );
+    println!("✓ Root key paid for transfer and gas fees");
+
+    // Verify signature hash includes key_authorization
+    let mut tx_without_auth = tx.clone();
+    tx_without_auth.key_authorization = None;
+    let sig_hash_without_auth = tx_without_auth.signature_hash();
+
+    assert_ne!(
+        sig_hash, sig_hash_without_auth,
+        "Signature hash must change with key_authorization"
+    );
+
+    Ok(())
+}

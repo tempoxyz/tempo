@@ -17,8 +17,9 @@ sol! {
     /// Key information structure
     struct KeyInfo {
         uint8 signatureType;
+        address keyId;
         uint64 expiry;
-        bool isActive;
+
     }
 
     interface IAccountKeychain {
@@ -328,16 +329,19 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             // Return default (non-existent key)
             return Ok(KeyInfo {
                 signatureType: 0,
+                keyId: Address::ZERO,
                 expiry: 0,
-                isActive: false,
             });
         }
 
         let key = AuthorizedKey::unpack(value);
+        // Derive keyId from the public key hash
+        // For now, we use the public key hash directly as the key ID
+        let key_id = Address::from_slice(&call.publicKey.as_slice()[0..20]);
         Ok(KeyInfo {
             signatureType: key.signature_type,
+            keyId: key_id,
             expiry: key.expiry,
-            isActive: key.is_active,
         })
     }
 
@@ -384,6 +388,41 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             U256::from_be_bytes(public_key.0)
         };
         self.storage.sstore(self.precompile_address, slot, value)?;
+        Ok(())
+    }
+
+    /// Validate keychain authorization (existence, active status, expiry)
+    ///
+    /// This consolidates all validation checks into one method.
+    /// Returns Ok(()) if the key is valid and authorized, Err otherwise.
+    pub fn validate_keychain_authorization(
+        &mut self,
+        account: &Address,
+        public_key: &B256,
+        current_timestamp: u64,
+    ) -> Result<(), TempoPrecompileError> {
+        // If using main key (zero public key), always valid
+        if *public_key == B256::ZERO {
+            return Ok(());
+        }
+
+        let key_slot = slots::key_slot(account, public_key);
+        let value = self.storage.sload(self.precompile_address, key_slot)?;
+
+        if value == U256::ZERO {
+            return Err(AccountKeychainError::KeyNotFound.into());
+        }
+
+        let key = AuthorizedKey::unpack(value);
+
+        if !key.is_active {
+            return Err(AccountKeychainError::KeyInactive.into());
+        }
+
+        if key.expiry > 0 && current_timestamp >= key.expiry {
+            return Err(AccountKeychainError::KeyExpired.into());
+        }
+
         Ok(())
     }
 
