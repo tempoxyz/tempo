@@ -62,16 +62,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let from_balance = self.get_balance(msg_sender)?;
         let new_from_balance = from_balance
             .checked_sub(call.amount)
-            // TODO: update this to overflow error
-            .ok_or(TIP20Error::insufficient_balance())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(msg_sender, new_from_balance)?;
 
         let contract_address = self.token_address;
         let to_balance = self.get_balance(&contract_address)?;
         let new_to_balance = to_balance
             .checked_add(call.amount)
-            // TODO: update this to overflow error
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(&contract_address, new_to_balance)?;
 
         self.accrue()?;
@@ -164,13 +162,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let delegated = self
                 .get_delegated_balance(&from_recipient)?
                 .checked_sub(amount)
-                .expect("TODO: handle error");
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_delegated_balance(&from_recipient, delegated)?;
 
             let opted_in = self
                 .get_opted_in_supply()?
                 .checked_sub(amount)
-                .expect("TODO: handle error");
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(opted_in)?;
         }
         Ok(())
@@ -197,13 +195,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let delegated = self
                 .get_delegated_balance(&to_recipient)?
                 .checked_add(amount)
-                .expect("TODO: handle error");
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_delegated_balance(&to_recipient, delegated)?;
 
             let opted_in = self
                 .get_opted_in_supply()?
                 .checked_add(amount)
-                .expect("TODO: handle error");
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(opted_in)?;
         }
         Ok(())
@@ -324,7 +322,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let delegated = self
                 .get_delegated_balance(&current_recipient)?
                 .checked_sub(balance)
-                .expect("TODO: handle error");
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_delegated_balance(&current_recipient, delegated)?;
         }
 
@@ -333,7 +331,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let opted_in_supply = self
                 .get_opted_in_supply()?
                 .checked_sub(balance)
-                .expect("TODO: handle error");
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(opted_in_supply)?;
         } else {
             let delegated = self.get_delegated_balance(&call.recipient)?;
@@ -341,14 +339,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 self.update_rewards(&call.recipient)?;
             }
 
-            let new_delegated = delegated.checked_add(balance).expect("TODO: handle error");
+            let new_delegated = delegated
+                .checked_add(balance)
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_delegated_balance(&call.recipient, new_delegated)?;
 
             if current_recipient.is_zero() {
                 let opted_in = self
                     .get_opted_in_supply()?
                     .checked_add(balance)
-                    .expect("TODO: handle error");
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_opted_in_supply(opted_in)?;
             }
 
@@ -423,7 +423,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let total_rps = self
             .get_total_reward_per_second()?
             .checked_sub(stream.rate_per_second_scaled)
-            .expect("TODO: handle error");
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_total_reward_per_second(total_rps)?;
 
         // Update the rate decrease and remove the stream
@@ -431,7 +431,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let rate_decrease = self
             .get_scheduled_rate_decrease_at(end_time)
             .checked_sub(stream.rate_per_second_scaled)
-            .expect("TODO: handle error");
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_scheduled_rate_decrease_at(end_time, rate_decrease)?;
 
         stream.delete(self.storage, self.token_address)?;
@@ -445,13 +445,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 let contract_balance = self
                     .get_balance(&contract_address)?
                     .checked_sub(remaining)
-                    .expect("TODO: handle error");
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_balance(&contract_address, contract_balance)?;
 
                 let funder_balance = self
                     .get_balance(&stream.funder)?
                     .checked_add(remaining)
-                    .expect("TODO: handle error");
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_balance(&stream.funder, funder_balance)?;
 
                 self.storage.emit_event(
@@ -499,7 +499,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let total_rps = self
             .get_total_reward_per_second()?
             .checked_sub(rate_decrease)
-            .expect("TODO: handle error");
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_total_reward_per_second(total_rps)?;
 
         self.set_scheduled_rate_decrease_at(end_time, U256::ZERO)?;

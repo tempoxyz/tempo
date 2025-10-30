@@ -352,8 +352,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         let new_supply = total_supply
             .checked_add(amount)
-            // TODO: update to return overflow error
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         let supply_cap = self.supply_cap()?;
         if new_supply > supply_cap {
@@ -367,8 +366,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let to_balance = self.get_balance(&to)?;
         let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
             .checked_add(amount)
-            // TODO: update this to overflow error
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(&to, new_to_balance)?;
 
         self.storage.emit_event(
@@ -816,8 +814,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let to_balance = self.get_balance(to)?;
             let new_to_balance = to_balance
                 .checked_add(amount)
-                // TODO: update this to overflow error
-                .ok_or(TIP20Error::supply_cap_exceeded())?;
+                .ok_or(TempoPrecompileError::under_overflow())?;
 
             self.set_balance(to, new_to_balance)?;
         }
