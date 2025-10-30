@@ -497,11 +497,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    // TODO: get stream
-    //
-    //
-    // TODO: accrued balance of
-
     /// Gets the last recorded reward per token for a user.
     fn get_user_reward_per_token_paid(
         &mut self,
