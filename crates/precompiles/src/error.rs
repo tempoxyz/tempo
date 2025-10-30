@@ -60,6 +60,12 @@ pub enum TempoPrecompileError {
 /// Result type alias for Tempo precompile operations
 pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
 
+impl TempoPrecompileError {
+    pub fn under_overflow() -> Self {
+        Self::Panic(PanicKind::UnderOverflow)
+    }
+}
+
 /// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
 pub trait IntoPrecompileResult<T> {
     fn into_precompile_result(
