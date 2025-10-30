@@ -91,7 +91,7 @@ sol! {
         // Reward Functions
         function startReward(uint256 amount, uint128 seconds) external returns (uint64);
         function setRewardRecipient(address recipient) external;
-        function cancelReward(uint256 id) external returns (uint256);
+        function cancelReward(uint64 id) external returns (uint256);
         function finalizeStreams() external;
 
         // Events
@@ -124,8 +124,8 @@ sol! {
         error TransfersDisabled();
         error InvalidAmount();
         error NotStreamFunder();
-        error NoRewardSupplied();
         error StreamInactive();
+        error NoOptedInSupply();
     }
 }
 
@@ -208,7 +208,7 @@ impl TIP20Error {
     }
 
     /// Error for when opted in supply is 0
-    pub const fn no_reward_supplied() -> Self {
-        Self::NoRewardSupplied(ITIP20::NoRewardSupplied {})
+    pub const fn no_opted_in_supply() -> Self {
+        Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
     }
 }

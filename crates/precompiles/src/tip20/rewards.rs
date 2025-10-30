@@ -45,25 +45,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::invalid_amount().into());
         }
 
-        let from_balance = self.get_balance(msg_sender)?;
-        let new_from_balance = from_balance
-            .checked_sub(call.amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_balance(msg_sender, new_from_balance)?;
-
-        let contract_address = self.token_address;
-        let to_balance = self.get_balance(&contract_address)?;
-        let new_to_balance = to_balance
-            .checked_add(call.amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_balance(&contract_address, new_to_balance)?;
-
-        self.accrue()?;
+        self._transfer(msg_sender, &token_address, call.amount)?;
 
         if call.seconds == 0 {
             let opted_in_supply = self.get_opted_in_supply()?;
             if opted_in_supply.is_zero() {
-                return Err(TIP20Error::no_reward_supplied().into());
+                return Err(TIP20Error::no_opted_in_supply().into());
             }
 
             let delta_rpt = (call.amount * ACC_PRECISION) / opted_in_supply;
@@ -130,12 +117,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// Handles reward accounting when tokens are transferred from an address.
     ///
     /// This function updates the reward state for the sender's reward recipient,
-    /// reducing their delegated balance and the total opted-in supply.
-    pub fn handle_sender_rewards(
+    /// reducing their delegated balance and returns the resulting opted in supply delta if changed
+    fn handle_sender_rewards(
         &mut self,
         from: &Address,
         amount: U256,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<Option<U256>, TempoPrecompileError> {
         let from_recipient = self.get_reward_recipient_of(from)?;
         if from_recipient != Address::ZERO {
             self.update_rewards(&from_recipient)?;
@@ -146,24 +133,21 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_delegated_balance(&from_recipient, delegated)?;
 
-            let opted_in = self
-                .get_opted_in_supply()?
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(opted_in)?;
+            Ok(Some(amount))
+        } else {
+            Ok(None)
         }
-        Ok(())
     }
 
     /// Handles reward accounting when tokens are transferred to an address.
     ///
     /// This function updates the reward state for the receiver's reward recipient,
-    /// increasing their delegated balance and the total opted-in supply.
-    pub fn handle_receiver_rewards(
+    /// increasing their delegated balance and returns the resulting opted in supply delta if changed
+    fn handle_receiver_rewards(
         &mut self,
         to: &Address,
         amount: U256,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<Option<U256>, TempoPrecompileError> {
         let to_recipient = self.get_reward_recipient_of(to)?;
         if to_recipient != Address::ZERO {
             self.update_rewards(&to_recipient)?;
@@ -174,13 +158,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_delegated_balance(&to_recipient, delegated)?;
 
-            let opted_in = self
-                .get_opted_in_supply()?
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(opted_in)?;
+            Ok(Some(amount))
+        } else {
+            Ok(None)
         }
-        Ok(())
     }
 
     /// Accrues rewards based on elapsed time since last update.
@@ -283,21 +264,21 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Ok(());
         }
 
-        let balance = self.get_balance(msg_sender)?;
+        let holder_balance = self.get_balance(msg_sender)?;
         if current_recipient != Address::ZERO {
             self.update_rewards(&current_recipient)?;
-            let delegated = self
+            let delegated_balance = self
                 .get_delegated_balance(&current_recipient)?
-                .checked_sub(balance)
+                .checked_sub(holder_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_delegated_balance(&current_recipient, delegated)?;
+            self.set_delegated_balance(&current_recipient, delegated_balance)?;
         }
 
         self.set_reward_recipient_of(msg_sender, call.recipient)?;
         if call.recipient == Address::ZERO {
             let opted_in_supply = self
                 .get_opted_in_supply()?
-                .checked_sub(balance)
+                .checked_sub(holder_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(opted_in_supply)?;
         } else {
@@ -307,14 +288,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             }
 
             let new_delegated = delegated
-                .checked_add(balance)
+                .checked_add(holder_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_delegated_balance(&call.recipient, new_delegated)?;
 
             if current_recipient.is_zero() {
                 let opted_in = self
                     .get_opted_in_supply()?
-                    .checked_add(balance)
+                    .checked_add(holder_balance)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_opted_in_supply(opted_in)?;
             }
@@ -345,25 +326,26 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         msg_sender: &Address,
         call: ITIP20::cancelRewardCall,
     ) -> Result<U256, TempoPrecompileError> {
-        let stream_id = call.id.to::<u64>();
+        // NOTE: bookmakr
+        let stream_id = call.id;
         let stream = RewardStream::from_storage(stream_id, self.storage, self.token_address)?;
-
-        let current_time = self.storage.timestamp();
 
         if stream.funder.is_zero() {
             return Err(TIP20Error::stream_inactive().into());
         }
+
         if stream.funder != *msg_sender {
             return Err(TIP20Error::not_stream_funder().into());
         }
 
+        let current_time = self.storage.timestamp();
         if current_time >= stream.end_time {
             return Err(TIP20Error::stream_inactive().into());
         }
 
         self.accrue()?;
 
-        let elapsed = if current_time > U256::from(stream.start_time) {
+        let elapsed = if current_time > stream.start_time {
             current_time - U256::from(stream.start_time)
         } else {
             U256::ZERO
@@ -459,6 +441,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
+    // TODO: get stream
+    //
+    //
+    // TODO: accrued balance of
+
     /// Gets the last recorded reward per token for a user.
     fn get_user_reward_per_token_paid(
         &mut self,
@@ -521,13 +508,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Gets the total supply of tokens opted into rewards from storage.
-    fn get_opted_in_supply(&mut self) -> Result<U256, TempoPrecompileError> {
+    pub fn get_opted_in_supply(&mut self) -> Result<U256, TempoPrecompileError> {
         self.storage
             .sload(self.token_address, slots::OPTED_IN_SUPPLY)
     }
 
     /// Sets the total supply of tokens opted into rewards in storage.
-    fn set_opted_in_supply(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
+    pub fn set_opted_in_supply(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.token_address, slots::OPTED_IN_SUPPLY, value)
     }
@@ -596,6 +583,65 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     fn set_total_reward_per_second(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
         self.storage
             .sstore(self.token_address, slots::TOTAL_REWARD_PER_SECOND, value)
+    }
+
+    /// Handles reward accounting for both sender and receiver during token transfers.
+    ///
+    /// This function manages the opted-in supply adjustments when tokens are transferred
+    /// between addresses with different reward recipient settings. It returns the net
+    /// change to the opted-in supply.
+    pub fn handle_rewards_on_transfer(
+        &mut self,
+        from: &Address,
+        to: &Address,
+        amount: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        let mut opted_in_delta = alloy::primitives::I256::ZERO;
+
+        if let Some(delta) = self.handle_sender_rewards(from, amount)? {
+            opted_in_delta = alloy::primitives::I256::from(delta);
+        }
+
+        if let Some(delta) = self.handle_receiver_rewards(to, amount)? {
+            opted_in_delta -= alloy::primitives::I256::from(delta);
+        }
+
+        if opted_in_delta > alloy::primitives::I256::ZERO {
+            let opted_in_supply = self
+                .get_opted_in_supply()?
+                .checked_sub(U256::from(opted_in_delta))
+                .ok_or(crate::error::TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(opted_in_supply)?;
+        } else if opted_in_delta < alloy::primitives::I256::ZERO {
+            let opted_in_supply = self
+                .get_opted_in_supply()?
+                .checked_add(U256::from(-opted_in_delta))
+                .ok_or(crate::error::TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(opted_in_supply)?;
+        }
+
+        Ok(())
+    }
+
+    /// Handles reward accounting when tokens are minted to an address.
+    ///
+    /// This function manages the opted-in supply adjustments when tokens are minted
+    /// to an address with a reward recipient setting. It only handles receiver rewards
+    /// since tokens are minted from the zero address.
+    pub fn handle_rewards_on_mint(
+        &mut self,
+        to: &Address,
+        amount: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        if let Some(delta) = self.handle_receiver_rewards(to, amount)? {
+            let opted_in_supply = self
+                .get_opted_in_supply()?
+                .checked_add(delta)
+                .ok_or(crate::error::TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(opted_in_supply)?;
+        }
+
+        Ok(())
     }
 
     /// Retrieves a reward stream by its ID.
@@ -908,12 +954,7 @@ mod tests {
             },
         )?;
 
-        let remaining = token.cancel_reward(
-            &admin,
-            ITIP20::cancelRewardCall {
-                id: U256::from(stream_id),
-            },
-        )?;
+        let remaining = token.cancel_reward(&admin, ITIP20::cancelRewardCall { id: stream_id })?;
 
         let total_after = token.get_total_reward_per_second()?;
         assert_eq!(total_after, U256::ZERO);

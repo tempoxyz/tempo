@@ -360,7 +360,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         }
 
         self.accrue()?;
-        self.handle_receiver_rewards(&to, amount)?;
+        self.handle_rewards_on_mint(&to, amount)?;
 
         self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(&to)?;
@@ -792,21 +792,20 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         to: &Address,
         amount: U256,
     ) -> Result<(), TempoPrecompileError> {
+        // Accrue before balance changes
+        self.accrue()?;
+        self.handle_rewards_on_transfer(from, to, amount)?;
+
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
             return Err(TIP20Error::insufficient_balance().into());
         }
 
-        // Accrue and handle TIP20 rewards
-        self.accrue()?;
-        self.handle_sender_rewards(from, amount)?;
-        self.handle_receiver_rewards(to, amount)?;
-
         // Adjust balances
         let from_balance = self.get_balance(from)?;
         let new_from_balance = from_balance
             .checked_sub(amount)
-            .ok_or(TIP20Error::insufficient_balance())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         self.set_balance(from, new_from_balance)?;
 
