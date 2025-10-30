@@ -1,5 +1,8 @@
 use crate::tip20::TIP20Error;
-use alloy::sol_types::SolInterface;
+use alloy::{
+    primitives::U256,
+    sol_types::{Panic, PanicKind, SolError, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
     FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
@@ -45,6 +48,9 @@ pub enum TempoPrecompileError {
     /// Error from native AA nonce manager
     #[error("Native AA nonce error: {0:?}")]
     NonceError(NonceError),
+
+    #[error("Panic({0:?})")]
+    Panic(PanicKind),
 
     #[error("Fatal precompile error: {0:?}")]
     Fatal(String),
@@ -107,6 +113,12 @@ impl From<NonceError> for TempoPrecompileError {
     }
 }
 
+impl TempoPrecompileError {
+    pub fn under_overflow() -> Self {
+        Self::Panic(PanicKind::UnderOverflow)
+    }
+}
+
 /// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
 pub trait IntoPrecompileResult<T> {
     fn into_precompile_result(
@@ -137,6 +149,13 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                     TPErr::FeeManagerError(e) => e.abi_encode().into(),
                     TPErr::TIPFeeAMMError(e) => e.abi_encode().into(),
                     TPErr::NonceError(e) => e.abi_encode().into(),
+                    TPErr::Panic(kind) => {
+                        let panic = Panic {
+                            code: U256::from(kind as u32),
+                        };
+
+                        panic.abi_encode().into()
+                    }
                     TPErr::Fatal(msg) => {
                         return Err(PrecompileError::Fatal(msg));
                     }
