@@ -46,9 +46,7 @@ fn get_book_keys_for_iteration(
 ) -> Result<Vec<B256>, DexApiError> {
     match (base_token, quote_token) {
         (Some(base), Some(quote)) => Ok(vec![compute_book_key(base, quote)]),
-        _ => exchange
-            .get_book_keys()
-            .map_err(|_| DexApiError::GetBookKeys),
+        _ => exchange.get_book_keys().map_err(DexApiError::Precompile),
     }
 }
 
@@ -108,7 +106,7 @@ impl<'a, 'b> BookIterator<'a, 'b> {
     /// Get a PrecompileOrder from an order ID
     pub fn get_order(&mut self, order_id: u128) -> Result<PrecompileOrder, DexApiError> {
         PrecompileOrder::from_storage(order_id, self.storage, self.exchange_address)
-            .map_err(|_| DexApiError::LoadOrder(order_id))
+            .map_err(DexApiError::Precompile)
     }
 
     /// Get a PriceLevel from a tick
@@ -120,7 +118,7 @@ impl<'a, 'b> BookIterator<'a, 'b> {
             tick,
             self.bids,
         )
-        .map_err(|_| DexApiError::LoadPriceLevel(tick))
+        .map_err(DexApiError::Precompile)
     }
 
     /// Get the next initialized tick after the given tick
@@ -291,7 +289,7 @@ impl<
                 for book_key in book_keys {
                     let orderbook =
                         PrecompileOrderbook::from_storage(book_key, storage, exchange_address)
-                            .map_err(|_| DexApiError::GetBook(book_key))?;
+                            .map_err(DexApiError::Precompile)?;
 
                     // Check if this book matches the base/quote filter
                     if !orderbook_matches_tokens(&orderbook, base_token, quote_token) {
@@ -466,7 +464,7 @@ impl<
 
             // Take limit + 1 to check if there's a next page
             for key in keys.into_iter().skip(start_idx).take(limit + 1) {
-                let book = exchange.books(key).map_err(|_| DexApiError::GetBook(key))?;
+                let book = exchange.books(key).map_err(DexApiError::Precompile)?;
 
                 // Apply filters if present
                 if let Some(ref filter) = params.filters
@@ -581,13 +579,8 @@ impl<
     pub fn get_all_books(&self) -> Result<Vec<PrecompileOrderbook>, DexApiError> {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let mut books = Vec::new();
-            for book_key in exchange
-                .get_book_keys()
-                .map_err(|_| DexApiError::GetBookKeys)?
-            {
-                let book = exchange
-                    .books(book_key)
-                    .map_err(|_| DexApiError::GetBook(book_key))?;
+            for book_key in exchange.get_book_keys().map_err(DexApiError::Precompile)? {
+                let book = exchange.books(book_key).map_err(DexApiError::Precompile)?;
                 books.push(book);
             }
             Ok(books)
@@ -606,9 +599,7 @@ impl<
     ) -> Result<PrecompileOrderbook, DexApiError> {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let book_key = compute_book_key(base, quote);
-            exchange
-                .books(book_key)
-                .map_err(|_| DexApiError::GetBook(book_key))
+            exchange.books(book_key).map_err(DexApiError::Precompile)
         })
     }
 }
@@ -620,17 +611,17 @@ fn orderbook_matches_tokens(
     quote_token: Option<Address>,
 ) -> bool {
     // Check base token filter
-    if let Some(base) = base_token {
-        if base != book.base {
-            return false;
-        }
+    if let Some(base) = base_token
+        && base != book.base
+    {
+        return false;
     }
 
     // Check quote token filter
-    if let Some(quote) = quote_token {
-        if quote != book.quote {
-            return false;
-        }
+    if let Some(quote) = quote_token
+        && quote != book.quote
+    {
+        return false;
     }
 
     true

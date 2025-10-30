@@ -1,6 +1,7 @@
 use alloy_eips::BlockId;
 use alloy_primitives::B256;
-use reth_rpc_eth_types::EthApiError;
+use jsonrpsee::types::ErrorObject;
+use reth_rpc_eth_types::{EthApiError, error::ToRpcError};
 use tempo_precompiles::error::TempoPrecompileError;
 
 /// DEX API specific errors that extend [`EthApiError`].
@@ -13,14 +14,6 @@ pub enum DexApiError {
     /// Precompile storage errors
     #[error(transparent)]
     Precompile(#[from] TempoPrecompileError),
-
-    /// Failed to get book keys from exchange
-    #[error("failed to get book keys from exchange")]
-    GetBookKeys,
-
-    /// Failed to get specific book from exchange
-    #[error("failed to get book for key {0}")]
-    GetBook(B256),
 
     /// Header not found for block
     #[error("header not found for block {0:?}")]
@@ -51,14 +44,6 @@ pub enum DexApiError {
     /// Orderbook cursor not found in available books
     #[error("orderbook cursor {0} not found in available books")]
     OrderbookCursorNotFound(B256),
-
-    /// Failed to load order from storage
-    #[error("failed to load order {0} from storage")]
-    LoadOrder(u128),
-
-    /// Failed to load price level from storage
-    #[error("failed to load price level at tick {0} from storage")]
-    LoadPriceLevel(i16),
 }
 
 // Convert DexApiError to EthApiError for RPC handling
@@ -66,18 +51,21 @@ impl From<DexApiError> for EthApiError {
     fn from(err: DexApiError) -> Self {
         match err {
             DexApiError::Eth(e) => e,
-            DexApiError::HeaderNotFound(block_id) => EthApiError::HeaderNotFound(block_id),
-            // For provider errors and other internal errors that are boxed,
-            // convert to string and wrap as InvalidParams since we can't create RethError from Box<dyn Error>
-            DexApiError::Provider(e) | DexApiError::CreateEvm(e) => {
-                EthApiError::InvalidParams(format!("Internal error: {}", e))
-            }
-            // Precompile errors should be internal errors
-            DexApiError::Precompile(e) => {
-                EthApiError::InvalidParams(format!("Precompile error: {}", e))
-            }
-            // All other DEX-specific errors become invalid params
-            other => EthApiError::InvalidParams(other.to_string()),
+            DexApiError::HeaderNotFound(block_id) => Self::HeaderNotFound(block_id),
+            // All other errors use the Other variant with our error type
+            other => Self::Other(Box::new(other)),
         }
+    }
+}
+
+// Implement ToRpcError so DexApiError can be used in EthApiError::Other
+impl ToRpcError for DexApiError {
+    fn to_rpc_error(&self) -> ErrorObject<'static> {
+        // Use internal error code for all DEX-specific errors
+        ErrorObject::owned(
+            jsonrpsee::types::error::INTERNAL_ERROR_CODE,
+            self.to_string(),
+            None::<()>,
+        )
     }
 }
