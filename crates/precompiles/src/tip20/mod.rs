@@ -434,7 +434,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let total_supply = self.total_supply()?;
         let new_supply = total_supply
             .checked_sub(call.amount)
-            .ok_or(TIP20Error::insufficient_balance())?;
+            .ok_or(TIP20Error::insufficient_balance(call.amount, total_supply))?;
         self.set_total_supply(new_supply)?;
 
         self.storage.emit_event(
@@ -455,7 +455,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let total_supply = self.total_supply()?;
         let new_supply = total_supply
             .checked_sub(amount)
-            .ok_or(TIP20Error::insufficient_balance())?;
+            .ok_or(TIP20Error::insufficient_balance(amount, total_supply))?;
         self.set_total_supply(new_supply)?;
 
         self.storage.emit_event(
@@ -791,12 +791,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let from_balance = self.get_balance(from)?;
 
         if amount > from_balance {
-            return Err(TIP20Error::insufficient_balance().into());
+            return Err(TIP20Error::insufficient_balance(amount, from_balance).into());
         }
 
         let new_from_balance = from_balance
             .checked_sub(amount)
-            .ok_or(TIP20Error::insufficient_balance())?;
+            .ok_or(TIP20Error::insufficient_balance(amount, from_balance))?;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -828,12 +828,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TempoPrecompileError> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
-            return Err(TIP20Error::insufficient_balance().into());
+            return Err(TIP20Error::insufficient_balance(amount, from_balance).into());
         }
 
         let new_from_balance = from_balance
             .checked_sub(amount)
-            .ok_or(TIP20Error::insufficient_balance())?;
+            .ok_or(TIP20Error::insufficient_balance(amount, from_balance))?;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -855,12 +855,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TempoPrecompileError> {
         let from_balance = self.get_balance(&TIP_FEE_MANAGER_ADDRESS)?;
         if refund > from_balance {
-            return Err(TIP20Error::insufficient_balance().into());
+            return Err(TIP20Error::insufficient_balance(refund, from_balance).into());
         }
 
         let new_from_balance = from_balance
             .checked_sub(refund)
-            .ok_or(TIP20Error::insufficient_balance())?;
+            .ok_or(TIP20Error::insufficient_balance(refund, from_balance))?;
 
         self.set_balance(&TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
 
@@ -1320,7 +1320,7 @@ mod tests {
         assert_eq!(
             result,
             Err(TempoPrecompileError::TIP20(
-                TIP20Error::insufficient_balance()
+                TIP20Error::insufficient_balance(fee_amount, U256::ZERO)
             ))
         );
     }

@@ -1,6 +1,6 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy::sol;
+use alloy::{primitives::Uint, sol};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -81,7 +81,7 @@ sol! {
         event QuoteTokenUpdateFinalized(address indexed updater, address indexed newQuoteToken);
 
         // Errors
-        error InsufficientBalance();
+        error InsufficientBalance(uint256 available, uint256 required);
         error InsufficientAllowance();
         error SupplyCapExceeded();
         error InvalidPayload();
@@ -104,8 +104,11 @@ impl RolesAuthError {
 
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
-    pub const fn insufficient_balance() -> Self {
-        Self::InsufficientBalance(ITIP20::InsufficientBalance {})
+    pub const fn insufficient_balance(required: Uint<256, 4>, available: Uint<256, 4>) -> Self {
+        Self::InsufficientBalance(ITIP20::InsufficientBalance {
+            available,
+            required,
+        })
     }
 
     /// Creates an error for insufficient spending allowance.
