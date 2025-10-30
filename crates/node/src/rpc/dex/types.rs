@@ -66,9 +66,34 @@ pub struct OrdersFilters {
     /// Filter by quote token
     pub quote_token: Option<Address>,
     /// Remaining amount in range
-    pub remaining: Option<FilterRange<u128>>,
+    pub remaining: Option<RemainingFilterRange>,
     /// Tick in range (from -2000 to 2000)
     pub tick: Option<FilterRange<Tick>>,
+}
+
+/// FilterRange type for u128, so that we can serialize the u128s as QUANTITY.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemainingFilterRange {
+    #[serde(with = "alloy_serde::quantity::opt")]
+    pub min: Option<u128>,
+    #[serde(with = "alloy_serde::quantity::opt")]
+    pub max: Option<u128>,
+}
+
+impl RemainingFilterRange {
+    /// Checks if a value is within this range (inclusive)
+    pub fn in_range(&self, value: u128) -> bool {
+        if self.min.as_ref().is_some_and(|min| &value < min) {
+            return false;
+        }
+
+        if self.max.as_ref().is_some_and(|max| &value > max) {
+            return false;
+        }
+
+        true
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
