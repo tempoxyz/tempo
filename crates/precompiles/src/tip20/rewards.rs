@@ -376,7 +376,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         msg_sender: &Address,
         call: ITIP20::cancelRewardCall,
     ) -> Result<U256, TempoPrecompileError> {
-        // NOTE: bookmakr
         let stream_id = call.id;
         let stream = RewardStream::from_storage(stream_id, self.storage, self.token_address)?;
 
