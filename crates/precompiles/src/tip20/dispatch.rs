@@ -123,6 +123,31 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.transfer_with_memo(s, call)
                 })
             }
+            ITIP20::startRewardCall::SELECTOR => {
+                mutate::<ITIP20::startRewardCall>(calldata, msg_sender, |s, call| {
+                    self.start_reward(s, call)
+                })
+            }
+            ITIP20::setRewardRecipientCall::SELECTOR => {
+                mutate_void::<ITIP20::setRewardRecipientCall>(calldata, msg_sender, |s, call| {
+                    self.set_reward_recipient(s, call)
+                })
+            }
+            ITIP20::cancelRewardCall::SELECTOR => {
+                mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, |s, call| {
+                    self.cancel_reward(s, call)
+                })
+            }
+
+            ITIP20::totalRewardPerSecondCall::SELECTOR => {
+                view::<ITIP20::totalRewardPerSecondCall>(calldata, |_call| {
+                    self.get_total_reward_per_second()
+                })
+            }
+
+            ITIP20::getStreamCall::SELECTOR => view::<ITIP20::getStreamCall>(calldata, |call| {
+                self.get_stream(call.id).map(|stream| stream.into())
+            }),
 
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {

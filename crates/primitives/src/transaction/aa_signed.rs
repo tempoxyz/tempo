@@ -430,7 +430,7 @@ mod serde_impl {
                     input: Bytes::from(vec![1, 2, 3, 4]),
                 }],
                 access_list: Default::default(),
-                nonce_key: 0,
+                nonce_key: U256::ZERO,
                 nonce: 5,
                 fee_payer_signature: None,
                 valid_before: None,

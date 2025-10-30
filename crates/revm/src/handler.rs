@@ -1,6 +1,6 @@
 //! Tempo EVM Handler implementation.
 
-use std::fmt::Debug;
+use std::{cmp::Ordering, fmt::Debug};
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
@@ -33,6 +33,7 @@ use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::FeeManagerErro
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
+    nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
     tip_fee_manager::{self, TipFeeManager},
     tip20,
@@ -488,19 +489,78 @@ where
             );
         }
 
+        let nonce_key = tx
+            .aa_tx_env
+            .as_ref()
+            .map(|aa| aa.nonce_key)
+            .unwrap_or_default();
+
         // Validate account nonce and code (EIP-3607) using upstream helper
         pre_execution::validate_account_nonce_and_code(
             &mut caller_account.info,
             tx.nonce(),
             cfg.is_eip3607_disabled(),
-            cfg.is_nonce_check_disabled(),
+            // skip nonce check if 2D nonce is used
+            cfg.is_nonce_check_disabled() || !nonce_key.is_zero(),
         )?;
 
         // modify account nonce and touch the account.
         caller_account.mark_touch();
-        // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
-        if tx.kind().is_call() {
-            caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+
+        if !nonce_key.is_zero() {
+            let internals = EvmInternals::new(journal, block);
+            let mut storage_provider = EvmPrecompileStorageProvider::new(internals, cfg.chain_id);
+            let mut nonce_manager = NonceManager::new(&mut storage_provider);
+
+            if !cfg.is_nonce_check_disabled() {
+                let tx_nonce = tx.nonce();
+                let state = nonce_manager
+                    .get_nonce(getNonceCall {
+                        account: tx.caller(),
+                        nonceKey: nonce_key,
+                    })
+                    .map_err(|err| match err {
+                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                    })?;
+
+                match tx_nonce.cmp(&state) {
+                    Ordering::Greater => {
+                        return Err(TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::NonceTooHigh {
+                                tx: tx_nonce,
+                                state,
+                            },
+                        )
+                        .into());
+                    }
+                    Ordering::Less => {
+                        return Err(TempoInvalidTransaction::EthInvalidTransaction(
+                            InvalidTransaction::NonceTooLow {
+                                tx: tx_nonce,
+                                state,
+                            },
+                        )
+                        .into());
+                    }
+                    _ => {}
+                }
+            }
+
+            // Always increment nonce for AA transactions with non-zero nonce keys.
+            nonce_manager
+                .increment_nonce(&tx.caller(), nonce_key)
+                .map_err(|err| match err {
+                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                    err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                })?;
+        } else {
+            // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
+            //
+            // Always bump nonce for AA transactions.
+            if tx.aa_tx_env.is_some() || tx.kind().is_call() {
+                caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+            }
         }
 
         // calculate the new balance after the fee is collected.
@@ -626,7 +686,7 @@ where
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // First perform standard validation (header + transaction environment)
         // This validates: prevrandao, excess_blob_gas, chain_id, gas limits, tx type support, etc.
-        validation::validate_env::<_, TempoInvalidTransaction>(evm.ctx())?;
+        validation::validate_env::<_, Self::Error>(evm.ctx())?;
 
         // AA-specific validations
         let cfg = evm.ctx_ref().cfg();
@@ -1152,10 +1212,8 @@ mod tests {
 
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()), // dummy secp256k1 sig
-            valid_before: None,
-            valid_after: None,
             aa_calls: vec![call],
-            aa_authorization_list: vec![],
+            ..Default::default()
         };
 
         // Calculate AA gas
@@ -1213,10 +1271,8 @@ mod tests {
 
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            valid_before: None,
-            valid_after: None,
             aa_calls: calls.clone(),
-            aa_authorization_list: vec![],
+            ..Default::default()
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
@@ -1267,10 +1323,8 @@ mod tests {
                 pub_key_y: B256::ZERO,
                 pre_hash: false,
             }),
-            valid_before: None,
-            valid_after: None,
             aa_calls: vec![call],
-            aa_authorization_list: vec![],
+            ..Default::default()
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
@@ -1310,10 +1364,8 @@ mod tests {
 
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            valid_before: None,
-            valid_after: None,
             aa_calls: vec![call],
-            aa_authorization_list: vec![],
+            ..Default::default()
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
@@ -1353,10 +1405,8 @@ mod tests {
 
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            valid_before: None,
-            valid_after: None,
             aa_calls: vec![call],
-            aa_authorization_list: vec![],
+            ..Default::default()
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(
@@ -1397,10 +1447,8 @@ mod tests {
 
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            valid_before: None,
-            valid_after: None,
             aa_calls: vec![call],
-            aa_authorization_list: vec![],
+            ..Default::default()
         };
 
         // Test without access list
@@ -1441,10 +1489,8 @@ mod tests {
 
         let aa_env = AATxEnv {
             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            valid_before: None,
-            valid_after: None,
             aa_calls: vec![call],
-            aa_authorization_list: vec![],
+            ..Default::default()
         };
 
         let gas = calculate_aa_batch_intrinsic_gas(

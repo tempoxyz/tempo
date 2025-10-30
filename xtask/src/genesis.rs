@@ -31,6 +31,7 @@ use tempo_precompiles::{
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::{ITIP20Factory, TIP20Factory},
+    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
 };
 
@@ -133,6 +134,9 @@ impl GenesisArgs {
 
         println!("Initializing LinkingUSD");
         initialize_linking_usd(admin, &mut evm)?;
+
+        println!("Initializing TIP20RewardsRegistry");
+        initialize_tip20_rewards_registry(&mut evm)?;
 
         println!("Initializing fee manager");
         initialize_fee_manager(alpha_token_address, addresses, &mut evm);
@@ -365,6 +369,15 @@ fn initialize_linking_usd(
     let mut roles = linking_usd.get_roles_contract();
     roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
     roles.grant_role_internal(&admin, *TRANSFER_ROLE)?;
+
+    Ok(())
+}
+
+fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    TIP20RewardsRegistry::new(&mut provider).initialize()?;
 
     Ok(())
 }

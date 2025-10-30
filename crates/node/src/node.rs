@@ -10,7 +10,7 @@ use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
-    AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
+    AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
@@ -27,6 +27,7 @@ use reth_node_builder::{
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
+use reth_rpc_eth_api::RpcNodeCore;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::TransactionValidationTaskExecutor;
 use std::{default::Default, sync::Arc, time::SystemTime};
@@ -128,6 +129,8 @@ where
     EthB: EthApiBuilder<N>,
     PVB: Send + PayloadValidatorBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
+    EthB::EthApi:
+        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
 {
     type Handle = <RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB> as NodeAddOns<N>>::Handle;
 
@@ -155,6 +158,8 @@ where
     EthB: EthApiBuilder<N>,
     PVB: PayloadValidatorBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
+    EthB::EthApi:
+        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
 {
     type EthApi = EthB::EthApi;
 

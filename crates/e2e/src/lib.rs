@@ -142,12 +142,21 @@ pub async fn setup_validators(
                 let recovered = oracle.register(signer.public_key(), 1).await.unwrap();
                 let resolver = oracle.register(signer.public_key(), 2).await.unwrap();
                 let broadcast = oracle.register(signer.public_key(), 3).await.unwrap();
-                let backfill = oracle.register(signer.public_key(), 4).await.unwrap();
+                let marshal = oracle.register(signer.public_key(), 4).await.unwrap();
                 let dkg = oracle.register(signer.public_key(), 5).await.unwrap();
+                let boundary_certs = oracle.register(signer.public_key(), 6).await.unwrap();
 
                 link_validators(&mut oracle, &validators, link, None).await;
 
-                engine.start(pending, recovered, resolver, broadcast, backfill, dkg);
+                engine.start(
+                    pending,
+                    recovered,
+                    resolver,
+                    broadcast,
+                    marshal,
+                    dkg,
+                    boundary_certs,
+                );
 
                 debug!(%uid, "started validator");
             })),

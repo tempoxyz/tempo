@@ -29,7 +29,7 @@ use rand::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
 use crate::{
-    config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
+    config::{BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, MARSHAL_LIMIT},
     consensus::application,
     dkg,
     epoch::{self, Coordinator, SchemeProvider},
@@ -134,7 +134,7 @@ where
             mailbox_size: self.mailbox_size,
             requester_config: commonware_p2p::utils::requester::Config {
                 me: Some(self.signer.public_key()),
-                rate_limit: BACKFILL_QUOTA,
+                rate_limit: MARSHAL_LIMIT,
                 initial: Duration::from_secs(1),
                 timeout: Duration::from_secs(2),
             },
@@ -296,6 +296,10 @@ where
         + Spawner
         + Storage,
 {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "following commonware's style of writing"
+    )]
     pub fn start(
         self,
         pending_network: (
@@ -314,11 +318,15 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        backfill_network: (
+        marshal_network: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
         dkg_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
+        boundary_certificates_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -329,34 +337,36 @@ where
                 recovered_network,
                 resolver_network,
                 broadcast_network,
-                backfill_network,
+                marshal_network,
                 dkg_channel,
+                boundary_certificates_channel,
             )
         })
     }
 
-    /// Start the `simplex` consensus engine.
-    ///
-    /// This will also rebuild the state of the engine from provided `Journal`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "following commonware's style of writing"
+    )]
     async fn run(
         self,
-        pending_network: (
+        pending_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        recovered_network: (
+        recovered_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        resolver_network: (
+        resolver_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        broadcast_network: (
+        broadcast_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        backfill_network: (
+        marshal_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -364,22 +374,29 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        boundary_certificates_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> eyre::Result<()> {
-        let broadcast = self.broadcast.start(broadcast_network);
+        let broadcast = self.broadcast.start(broadcast_channel);
         let application = self.application.start(self.dkg_manager_mailbox.clone());
 
         let resolver =
-            marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
+            marshal::resolver::p2p::init(&self.context, self.resolver_config, marshal_channel);
 
-        let syncer = self.marshal.start(
+        let marshal = self.marshal.start(
             Reporters::from((self.application_mailbox, self.dkg_manager_mailbox)),
             self.broadcast_mailbox,
             resolver,
         );
 
-        let epoch_manager =
-            self.epoch_manager
-                .start(pending_network, recovered_network, resolver_network);
+        let epoch_manager = self.epoch_manager.start(
+            pending_channel,
+            recovered_channel,
+            resolver_channel,
+            boundary_certificates_channel,
+        );
 
         let dkg_manager = self.dkg_manager.start(dkg_channel);
 
@@ -387,7 +404,7 @@ where
             application,
             broadcast,
             epoch_manager,
-            syncer,
+            marshal,
             dkg_manager,
         ])
         .await

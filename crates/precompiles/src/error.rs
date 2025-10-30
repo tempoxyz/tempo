@@ -1,11 +1,15 @@
 use crate::tip20::TIP20Error;
-use alloy::sol_types::SolInterface;
+use alloy::{
+    primitives::U256,
+    sol_types::{Panic, PanicKind, SolError, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
-    FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError, TIP403RegistryError,
-    TIPAccountRegistrarError, TIPFeeAMMError,
+    FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
+    TIP20RewardsRegistryError, TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
 };
 
+// TODO: add error type for overflow/underflow
 /// Top-level error type for all Tempo precompile operations
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, derive_more::From)]
 pub enum TempoPrecompileError {
@@ -16,6 +20,10 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 token
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
+
+    /// Error from TIP20RewardsRegistry
+    #[error("TIP20 rewards registry error: {0:?}")]
+    TIP20RewardsRegistry(TIP20RewardsRegistryError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -41,6 +49,9 @@ pub enum TempoPrecompileError {
     #[error("Native AA nonce error: {0:?}")]
     NonceError(NonceError),
 
+    #[error("Panic({0:?})")]
+    Panic(PanicKind),
+
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
     Fatal(String),
@@ -48,6 +59,12 @@ pub enum TempoPrecompileError {
 
 /// Result type alias for Tempo precompile operations
 pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
+
+impl TempoPrecompileError {
+    pub fn under_overflow() -> Self {
+        Self::Panic(PanicKind::UnderOverflow)
+    }
+}
 
 /// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
 pub trait IntoPrecompileResult<T> {
@@ -72,12 +89,20 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                 let bytes = match err {
                     TPErr::StablecoinExchange(e) => e.abi_encode().into(),
                     TPErr::TIP20(e) => e.abi_encode().into(),
+                    TPErr::TIP20RewardsRegistry(e) => e.abi_encode().into(),
                     TPErr::RolesAuthError(e) => e.abi_encode().into(),
                     TPErr::TIP403RegistryError(e) => e.abi_encode().into(),
                     TPErr::TIPAccountRegistrarError(e) => e.abi_encode().into(),
                     TPErr::FeeManagerError(e) => e.abi_encode().into(),
                     TPErr::TIPFeeAMMError(e) => e.abi_encode().into(),
                     TPErr::NonceError(e) => e.abi_encode().into(),
+                    TPErr::Panic(kind) => {
+                        let panic = Panic {
+                            code: U256::from(kind as u32),
+                        };
+
+                        panic.abi_encode().into()
+                    }
                     TPErr::Fatal(msg) => {
                         return Err(PrecompileError::Fatal(msg));
                     }
