@@ -4,11 +4,7 @@ pub(super) mod ingress;
 use std::time::Duration;
 
 pub(crate) use actor::Actor;
-use commonware_consensus::simplex::signing_scheme::bls12381_threshold;
-use commonware_cryptography::{
-    bls12381::primitives::variant::MinSig,
-    ed25519::{PrivateKey, PublicKey},
-};
+use commonware_cryptography::ed25519::PublicKey;
 pub(crate) use ingress::Mailbox;
 
 use commonware_consensus::marshal;
@@ -16,7 +12,9 @@ use commonware_p2p::Blocker;
 use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::PoolRef};
 use rand::{CryptoRng, Rng};
 
-use crate::{consensus::block::Block, epoch::scheme_provider::SchemeProvider};
+use crate::{
+    alias::ThresholdScheme, consensus::block::Block, epoch::scheme_provider::SchemeProvider,
+};
 
 pub(crate) struct Config<TBlocker> {
     pub(crate) application: crate::consensus::application::Mailbox,
@@ -26,8 +24,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) time_for_peer_response: Duration,
     pub(crate) time_to_propose: Duration,
     pub(crate) mailbox_size: usize,
-    pub(crate) marshal: marshal::Mailbox<bls12381_threshold::Scheme<MinSig>, Block>,
-    pub(crate) me: PrivateKey,
+    pub(crate) marshal: marshal::Mailbox<ThresholdScheme, Block>,
     pub(crate) scheme_provider: SchemeProvider,
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,

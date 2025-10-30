@@ -133,7 +133,7 @@ where
             coordinator,
             mailbox_size: self.mailbox_size,
             requester_config: commonware_p2p::utils::requester::Config {
-                public_key: self.signer.public_key(),
+                me: Some(self.signer.public_key()),
                 rate_limit: BACKFILL_QUOTA,
                 initial: Duration::from_secs(1),
                 timeout: Duration::from_secs(2),
@@ -197,7 +197,6 @@ where
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
-                me: self.signer.clone(),
                 scheme_provider,
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
