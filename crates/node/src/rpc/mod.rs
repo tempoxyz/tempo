@@ -5,7 +5,7 @@ mod request;
 pub use dex::TempoDexApiServer;
 pub use request::TempoTransactionRequest;
 
-use crate::{TempoNetwork, node::TempoNode};
+use crate::{TempoNetwork, node::TempoNode, rpc::dex::DexApiError};
 use alloy::{consensus::TxReceipt, primitives::U256};
 use alloy_primitives::Address;
 use reth_ethereum::tasks::{
@@ -54,13 +54,13 @@ use tokio::sync::Mutex;
 #[derive(Clone)]
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
-    inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
+    inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork, DexApiError>>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     /// Creates a new `TempoEthApi`.
     pub fn new(
-        eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
+        eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork, DexApiError>>,
     ) -> Self {
         Self { inner: eth_api }
     }
@@ -85,9 +85,9 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiTypes for TempoEthApi<N> {
-    type Error = EthApiError;
+    type Error = DexApiError;
     type NetworkTypes = TempoNetwork;
-    type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoNetwork>;
+    type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoNetwork, DexApiError>;
 
     fn tx_resp_builder(&self) -> &Self::RpcConvert {
         self.inner.tx_resp_builder()
