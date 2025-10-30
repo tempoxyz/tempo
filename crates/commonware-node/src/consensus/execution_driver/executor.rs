@@ -404,12 +404,6 @@ where
             neither valid nor syncing: `{payload_status}`"
         );
 
-        // TODO(janis): this acknowledges to the marshaller that the finalized
-        // block was successfully delivered to the state machine, but we don't
-        // actually set the finalized head. That will only happen once the next
-        // update request is sent. We can postpone sending a response here and
-        // instead store the channel internally, sending an ack once the
-        // canonical (including finalized) is actually updated.
         if let Err(()) = response.send(()) {
             warn!("tried acknowledging finalization but channel was already closed");
         }
