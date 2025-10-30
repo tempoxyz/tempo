@@ -1,6 +1,8 @@
 pub mod dex;
+pub mod eth_ext;
 
 pub use dex::{TempoDex, api::TempoDexApiServer};
+pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 
 use crate::node::TempoNode;
