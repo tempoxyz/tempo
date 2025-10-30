@@ -1,13 +1,58 @@
+//! Actor implementing the epoch manager logic.
+//!
+//! This actor is responsible for:
+//!
+//! 1. entering and exiting epochs given messages it receives from the DKG
+//!    manager.
+//! 2. catching the node up by listening to votes for unknown epoch and
+//!    requesting finalizations for the currently known boundary height.
+//!
+//! # Entering and exiting epochs
+//!
+//! When the actor receives an `Enter` message, it spins up a new simplex
+//! consensus engine backing the epoch stored in the message. The message also
+//! contains the public polynomial, share of the private key for this node,
+//! and the participants in the next epoch - all determined by the DKG ceremony.
+//! The engine receives a subchannel of the recovered, pending, and resolver
+//! p2p channels, multiplexed by the epoch.
+//!
+//! When the actor receives an `Exit` message, it exists the engine backing the
+//! epoch stored in it.
+//!
+//! # Catching up the node
+//!
+//! The actor makes use of the backup mechanism exposed by the subchannel
+//! multiplexer API: assume the actor has a simplex engine running for epoch 0,
+//! then this engine will have a subchannel registered on the multiplexer for
+//! epoch 0.
+//!
+//! If the actor now receives a vote in epoch 5 over its pending mux backup
+//! channel (since there are no subchannels registered with the muxer on
+//! epochs 1 through 5), it will request the finalization certificate for the
+//! boundary height of epoch 0 from the voter. This request is done over the
+//! boundary certificates p2p network.
+//!
+//! Upon receipt of the request for epoch 0 over the boundary certificates p2p
+//! network, the voter will send the finalization certificate to the *recovered*
+//! p2p network, tagged by epoch 0.
+//!
+//! Finally, this certificate is received by the running simplex engine
+//! (since remember, it's active for epoch 0), and subsequently forwarded to
+//! the marshal actor, which finally is able to fetch all finalizations up to
+//! the boundary height, which will eventually trigger the node to transition to
+//! epoch 1.
+//!
+//! This process is repeated until the node catches up to the current network
+//! epoch.
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
-use commonware_codec::Encode as _;
+use bytes::Bytes;
+use commonware_codec::{DecodeExt as _, Encode as _, varint::UInt};
 use commonware_consensus::{
     simplex::{self, signing_scheme::bls12381_threshold::Scheme, types::Voter},
     types::Epoch,
 };
-use commonware_cryptography::{
-    Signer as _, bls12381::primitives::variant::MinSig, ed25519::PublicKey,
-};
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_p2p::{
     Blocker, Receiver, Recipients, Sender,
@@ -20,7 +65,7 @@ use eyre::{WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
-use tracing::{Level, Span, info, instrument, warn, warn_span};
+use tracing::{Level, Span, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
     consensus::Digest,
@@ -108,8 +153,16 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        boundary_certificates: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(pending, recovered, resolver).await)
+        spawn_cell!(
+            self.context,
+            self.run(pending, recovered, resolver, boundary_certificates)
+                .await
+        )
     }
 
     async fn run(
@@ -123,6 +176,10 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
         (resolver_sender, resolver_receiver): (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
+        (mut boundary_certificates_sender, mut boundary_certificates_receiver): (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -158,22 +215,43 @@ where
         loop {
             select!(
                 message = pending_backup.next() => {
-                    let Some((epoch, (from, _))) = message else {
-                        warn_span!("mux channel closed").in_scope(||
-                            warn!("pending p2p mux channel closed; exiting actor"
+                    let Some((their_epoch, (from, _))) = message else {
+                        error_span!("mux channel closed").in_scope(||
+                            error!("pending p2p mux channel closed; exiting actor"
                         ));
                         break;
                     };
                     let _: Result<_, _>  = self.handle_msg_for_unregistered_epoch(
-                        &mut recovered_global_sender,
-                        epoch,
+                        &mut boundary_certificates_sender,
+                        their_epoch,
                         from,
                     ).await;
                 },
 
+                message = boundary_certificates_receiver.recv() => {
+                    let (from, payload) = match message {
+                        Err(error) => {
+                            error_span!("epoch channel closed").in_scope(||
+                                error!(
+                                    error = %eyre::Report::new(error),
+                                    "epoch p2p channel closed; exiting actor",
+                            ));
+                        break;
+                        }
+                        Ok(msg) => msg,
+                    };
+                    let _: Result<_, _>  = self.handle_boundary_certificate_request(
+                        from,
+                        payload,
+                        &mut recovered_global_sender)
+                    .await;
+                },
+
                 msg = self.mailbox.next()=>  {
                     let Some(msg) = msg else {
-                        warn_span!("mailboxes dropped").in_scope(|| warn!("all mailboxes dropped; exiting actor"));
+                        warn_span!("mailboxes dropped").in_scope(||
+                             warn!("all mailboxes dropped; exiting actor"
+                        ));
                         break;
                     };
                     let cause = msg.cause;
@@ -234,22 +312,21 @@ where
             "an engine for the entered epoch is already running; ignoring",
         );
 
-        // Register the new signing scheme with the scheme provider.
-        let scheme = if let Some(share) = share {
-            Scheme::new(participants.as_ref(), &public, share)
-        } else {
-            Scheme::verifier(participants.as_ref(), &public)
-        };
-        assert!(self.config.scheme_provider.register(epoch, scheme.clone()));
-
         self.metrics
             .latest_participants
             .set(participants.len() as i64);
+
+        // Register the new signing scheme with the scheme provider.
+        let scheme = if let Some(share) = share {
+            Scheme::new(participants, &public, share)
+        } else {
+            Scheme::verifier(participants, &public)
+        };
+        assert!(self.config.scheme_provider.register(epoch, scheme.clone()));
+
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
             simplex::Config {
-                me: self.config.me.public_key(),
-                participants,
                 scheme,
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
@@ -322,55 +399,99 @@ where
 
     /// Handles messages for epochs received on un-registered sub-channels.
     ///
+    /// If `their_epoch` is known (equal to our current epoch or in the past),
+    /// no action is taken.
+    ///
+    /// If `their_epoch` is in the future, then the finalization certificate for
+    /// our latest epoch is requested from the sender.
+    ///
     /// This makes use of commonware's backup channels: when starting a new
     /// engine, we register a new subchannel with the muxer and tagged with that
     /// epoch. Upon receiving a message on an un-registered epoch, the
     /// commonware p2p muxer will send the message to the backup channel, tagged
-    /// with unknown epoch.
-    #[instrument(skip_all, fields(msg.epoch = epoch, msg.from = %from), err(level = Level::WARN))]
+    /// with the unknown epoch.
+    #[instrument(skip_all, fields(msg.epoch = their_epoch, msg.from = %from), err(level = Level::INFO))]
     async fn handle_msg_for_unregistered_epoch(
         &mut self,
-        recovered_global_sender: &mut GlobalSender<impl Sender<PublicKey = PublicKey>>,
-        epoch: Epoch,
+        boundary_certificates_sender: &mut impl Sender<PublicKey = PublicKey>,
+        their_epoch: Epoch,
         from: PublicKey,
     ) -> eyre::Result<()> {
-        let Some(latest_epoch) = self.active_epochs.keys().last().copied() else {
+        let Some(our_epoch) = self.active_epochs.keys().last().copied() else {
             return Err(eyre!(
                 "received message over unregistered epoch channel, but we have no active epochs at all"
             ));
         };
         ensure!(
-            epoch < latest_epoch,
-            "sender seems to be ahead of us; our latest running epoch: {latest_epoch}",
+            their_epoch > our_epoch,
+            "request epoch `{their_epoch}` is in our past, no action is necessary",
         );
 
-        let boundary_height = epoch::last_height(epoch, self.config.epoch_length);
-        let Some(finalization) = self.config.marshal.get_finalization(boundary_height).await else {
-            return Err(eyre!(
-                "boundary height `{boundary_height}` of epoch is not locally known; peer needs to ask a nother node"
-            ));
-        };
-
-        info!(
-            boundary_height,
-            "found certificate for boundary height `{boundary_height}`, forwarding to peer"
+        let boundary_height = epoch::last_height(our_epoch, self.config.epoch_length);
+        ensure!(
+            self.config
+                .marshal
+                .get_finalization(boundary_height)
+                .await
+                .is_none(),
+            "finalization certificate for epoch `{our_epoch}` at boundary \
+            height `{boundary_height}` is already known; no action necessary",
         );
 
-        // Forward the finalization to the sender. This operation is best-effort.
-        let message = Voter::<Scheme<MinSig>, Digest>::Finalization(finalization);
-        let res = recovered_global_sender
+        boundary_certificates_sender
             .send(
-                epoch,
                 Recipients::One(from),
-                message.encode().freeze(),
+                UInt(our_epoch).encode().freeze(),
                 true,
             )
             .await
-            .wrap_err("failed handing finalization certificate to p2p network")?;
-        ensure!(
-            !res.is_empty(),
-            "failed forwarding finalization certificate to peer",
-        );
+            .wrap_err("failed request for finalization certificate of our epoch")?;
+
+        info!("requested finalization certificate for our epoch");
+
+        Ok(())
+    }
+
+    #[instrument(skip_all, fields(
+        msg.from = %from,
+        msg.payload_len = bytes.len(),
+        msg.decoded_epoch = tracing::field::Empty,
+    ), err(level = Level::WARN))]
+    async fn handle_boundary_certificate_request(
+        &mut self,
+        from: PublicKey,
+        bytes: Bytes,
+        recovered_global_sender: &mut GlobalSender<impl Sender<PublicKey = PublicKey>>,
+    ) -> eyre::Result<()> {
+        let requested_epoch = UInt::<Epoch>::decode(bytes.as_ref())
+            .wrap_err("failed decoding epoch channel payload as epoch")?
+            .into();
+        tracing::Span::current().record("msg.decoded_epoch", requested_epoch);
+        let boundary_height = epoch::last_height(requested_epoch, self.config.epoch_length);
+        let cert = self
+            .config
+            .marshal
+            .get_finalization(boundary_height)
+            .await
+            .ok_or_else(|| {
+                eyre!(
+                    "do not have finalization for requested epoch \
+                    `{requested_epoch}`, boundary height `{boundary_height}` \
+                    available locally; cannot serve request"
+                )
+            })?;
+        let message = Voter::<Scheme<PublicKey, MinSig>, Digest>::Finalization(cert);
+        recovered_global_sender
+            .send(
+                requested_epoch,
+                Recipients::One(from),
+                message.encode().freeze(),
+                false,
+            )
+            .await
+            .wrap_err(
+                "failed forwarding finalization certificate to requester via `recovered` channel",
+            )?;
         Ok(())
     }
 }

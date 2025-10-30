@@ -67,6 +67,35 @@ sol! {
         function updateQuoteToken(address newQuoteToken) external;
         function finalizeQuoteTokenUpdate() external;
 
+        // EIP-712 Permit
+        struct Permit {
+            address owner;
+            address spender;
+            uint256 value;
+            uint256 nonce;
+            uint256 deadline;
+        }
+        function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
+
+
+
+        struct RewardStream {
+            address funder;
+            uint64 startTime;
+            uint64 endTime;
+            uint256 ratePerSecondScaled;
+            uint256 amountTotal;
+        }
+
+        // Reward Functions
+        function startReward(uint256 amount, uint128 seconds) external returns (uint64);
+        function setRewardRecipient(address recipient) external;
+        function cancelReward(uint64 id) external returns (uint256);
+        function finalizeStreams() external;
+        function getStream(uint64 id) external returns (RewardStream);
+        function totalRewardPerSecond() external returns (uint256);
+
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
         event Approval(address indexed owner, address indexed spender, uint256 amount);
@@ -79,6 +108,9 @@ sol! {
         event PauseStateUpdate(address indexed updater, bool isPaused);
         event UpdateQuoteToken(address indexed updater, address indexed newQuoteToken);
         event QuoteTokenUpdateFinalized(address indexed updater, address indexed newQuoteToken);
+        event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
+        event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
+        event RewardRecipientSet(address indexed holder, address indexed recipient);
 
         // Errors
         error InsufficientBalance();
@@ -92,6 +124,11 @@ sol! {
         error InvalidCurrency();
         error InvalidQuoteToken();
         error TransfersDisabled();
+        error InvalidAmount();
+        error NotStreamFunder();
+        error StreamInactive();
+        error NoOptedInSupply();
+        error Unauthorized();
     }
 }
 
@@ -111,6 +148,11 @@ impl TIP20Error {
     /// Creates an error for insufficient spending allowance.
     pub const fn insufficient_allowance() -> Self {
         Self::InsufficientAllowance(ITIP20::InsufficientAllowance {})
+    }
+
+    /// Creates an error for unauthorized callers
+    pub const fn unauthorized() -> Self {
+        Self::Unauthorized(ITIP20::Unauthorized {})
     }
 
     /// Creates an error when minting would exceed supply cap.
@@ -156,5 +198,25 @@ impl TIP20Error {
     /// Creates an error for transfers being disabled.
     pub const fn transfers_disabled() -> Self {
         Self::TransfersDisabled(ITIP20::TransfersDisabled {})
+    }
+
+    /// Creates an error for invalid amount.
+    pub const fn invalid_amount() -> Self {
+        Self::InvalidAmount(ITIP20::InvalidAmount {})
+    }
+
+    /// Error for when stream does not exist
+    pub const fn stream_inactive() -> Self {
+        Self::StreamInactive(ITIP20::StreamInactive {})
+    }
+
+    /// Error for when msg.sedner is not stream funder
+    pub const fn not_stream_funder() -> Self {
+        Self::NotStreamFunder(ITIP20::NotStreamFunder {})
+    }
+
+    /// Error for when opted in supply is 0
+    pub const fn no_opted_in_supply() -> Self {
+        Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
     }
 }

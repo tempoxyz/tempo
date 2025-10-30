@@ -10,7 +10,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
 
-use crate::utils::setup_test_token;
+use crate::utils::{await_receipts, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
@@ -201,11 +201,20 @@ async fn test_tip20_mint() -> eyre::Result<()> {
         assert_eq!(balance, *expected_balance);
     }
 
+    token
+        .setSupplyCap(U256::from(u128::MAX))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
     // Try to mint U256::MAX and assert it causes a SupplyCapExceeded error
-    let max_mint_result = token.mint(Address::random(), U256::MAX).call().await;
+    let max_mint_result = token
+        .mint(Address::random(), U256::from(u128::MAX))
+        .call()
+        .await;
     assert!(max_mint_result.is_err(), "Minting U256::MAX should fail");
 
-    // TODO: Update to assert the actual error once Precompile errors are propagated through revm
     let err = max_mint_result.unwrap_err();
     assert_eq!(
         err.as_decoded_interface_error::<TIP20Error>(),
@@ -661,6 +670,88 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
             }),
     )
     .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_rewards() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+
+    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin = admin_wallet.address();
+    let admin_provider = ProviderBuilder::new()
+        .wallet(admin_wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(admin_provider.clone(), admin).await?;
+
+    let alice_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)
+        .unwrap()
+        .build()
+        .unwrap();
+    let alice = alice_wallet.address();
+    let alice_provider = ProviderBuilder::new()
+        .wallet(alice_wallet)
+        .connect_http(http_url.clone());
+    let alice_token = ITIP20::new(*token.address(), alice_provider);
+
+    let mut pending = vec![];
+
+    let mint_amount = U256::from(1000e18);
+    let reward_amount = U256::from(300e18);
+
+    let bob = Address::random();
+    pending.push(token.mint(alice, mint_amount).send().await?);
+    pending.push(token.mint(admin, reward_amount).send().await?);
+    pending.push(alice_token.setRewardRecipient(bob).send().await?);
+    await_receipts(&mut pending).await?;
+
+    // Check balances before finalizing streams
+    let alice_balance_before = token.balanceOf(alice).call().await?;
+    let bob_balance_before = token.balanceOf(bob).call().await?;
+
+    // Start reward stream
+    let start_receipt = token
+        .startReward(reward_amount, 2)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let _reward_started_event = start_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::RewardScheduled::decode_log(&log.inner).ok())
+        .next()
+        .expect("RewardStarted event should be emitted");
+
+    // Wait for reward stream duration to elapse
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    // Transfer some tokens to trigger reward distribution calculations
+    pending.push(
+        alice_token
+            .transfer(Address::random(), U256::from(100e18))
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    // Check balances after finalizing streams and reward distribution
+    let alice_balance_after = token.balanceOf(alice).call().await?;
+    let bob_balance_after = token.balanceOf(bob).call().await?;
+
+    assert!(alice_balance_after < alice_balance_before);
+    assert!(bob_balance_after > bob_balance_before);
 
     Ok(())
 }

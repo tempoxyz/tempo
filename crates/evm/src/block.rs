@@ -16,8 +16,9 @@ use alloy_sol_types::SolCall;
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
-    tip_fee_manager::IFeeManager,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
+    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
+    tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tempo_revm::evm::TempoContext;
@@ -63,9 +64,9 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     >,
 
     general_gas_left: u64,
-
     seen_fee_manager_system_tx: bool,
     seen_stablecoin_dex_system_tx: bool,
+    seen_tip20_rewards_registry_system_tx: bool,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -88,6 +89,7 @@ where
             ),
             seen_fee_manager_system_tx: false,
             seen_stablecoin_dex_system_tx: false,
+            seen_tip20_rewards_registry_system_tx: false,
         }
     }
 
@@ -121,6 +123,19 @@ where
             } else {
                 Ok(())
             }
+        } else if to == TIP20_REWARDS_REGISTRY_ADDRESS {
+            let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
+                .abi_encode()
+                .into_iter()
+                .chain(block)
+                .collect::<Bytes>();
+            if *tx.input() == finalize_streams_input && self.seen_tip20_rewards_registry_system_tx {
+                Err(BlockValidationError::msg(
+                    "duplicate stablecoin TIP20 rewards registry system transaction",
+                ))
+            } else {
+                Ok(())
+            }
         } else {
             Err(BlockValidationError::msg("invalid system transaction"))
         }
@@ -150,7 +165,10 @@ where
 
         if is_system {
             self.validate_system_tx(tx.tx())?;
-        } else if self.seen_fee_manager_system_tx || self.seen_stablecoin_dex_system_tx {
+        } else if self.seen_fee_manager_system_tx
+            || self.seen_stablecoin_dex_system_tx
+            || self.seen_tip20_rewards_registry_system_tx
+        {
             trace!(target: "tempo::block", tx_hash = ?tx.tx().tx_hash(), "Rejecting: regular transaction after system transaction");
             return Err(BlockValidationError::msg(
                 "regular transaction can't follow system transaction",
@@ -188,6 +206,9 @@ where
                 }
                 Some(addr) if addr == STABLECOIN_EXCHANGE_ADDRESS => {
                     self.seen_stablecoin_dex_system_tx = true;
+                }
+                Some(addr) if addr == TIP20_REWARDS_REGISTRY_ADDRESS => {
+                    self.seen_tip20_rewards_registry_system_tx = true;
                 }
                 _ => {}
             }

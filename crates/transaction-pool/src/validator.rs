@@ -9,6 +9,7 @@ use reth_transaction_pool::{
     TransactionValidator,
 };
 use tempo_precompiles::provider::TIPFeeStateProviderExt;
+use tempo_primitives::TempoTxEnvelope;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -31,7 +32,19 @@ where
         transaction: TempoPooledTransaction,
         state_provider: impl StateProvider,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
+            return TransactionValidationOutcome::Error(
+                *transaction.hash(),
+                InvalidTransactionError::TxTypeNotSupported.into(),
+            );
+        }
+
+        // Reject AA transactions with non-zero nonce keys, we don't have
+        // a nice way to track them in the pool yet.
+        if let TempoTxEnvelope::AA(tx) = transaction.inner()
+            && !tx.tx().nonce_key.is_zero()
+        {
             return TransactionValidationOutcome::Error(
                 *transaction.hash(),
                 InvalidTransactionError::TxTypeNotSupported.into(),

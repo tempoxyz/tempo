@@ -247,13 +247,13 @@ vergen = "9"
 vergen-git2 = "1"
 
 [patch.crates-io]
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "8c07397a10630e0f6cda8aa8abd4047b6d682ffc" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "d71d776" }

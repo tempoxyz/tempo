@@ -1,4 +1,5 @@
 pub mod dispatch;
+pub mod rewards;
 pub mod roles;
 
 pub use tempo_contracts::precompiles::{
@@ -55,24 +56,25 @@ pub fn address_to_token_id_unchecked(address: Address) -> u64 {
 pub mod slots {
     use alloy::primitives::{U256, uint};
 
-    // Variables
-    pub const NAME: U256 = uint!(0_U256);
-    pub const SYMBOL: U256 = uint!(1_U256);
-    pub const TOTAL_SUPPLY: U256 = uint!(3_U256);
+    // Roles Auth slots
+    pub const ROLES_BASE_SLOT: U256 = uint!(0_U256);
+    pub const ROLE_ADMIN_BASE_SLOT: U256 = uint!(1_U256);
+
+    // TIP20 variables
+    pub const NAME: U256 = uint!(2_U256);
+    pub const SYMBOL: U256 = uint!(3_U256);
     pub const CURRENCY: U256 = uint!(4_U256);
-    pub const TRANSFER_POLICY_ID: U256 = uint!(6_U256);
-    pub const SUPPLY_CAP: U256 = uint!(7_U256);
-    pub const PAUSED: U256 = uint!(8_U256);
-
-    // TODO: we should unify the storage slots with the reference implementation
-    pub const QUOTE_TOKEN: U256 = uint!(9_U256);
-    pub const NEXT_QUOTE_TOKEN: U256 = uint!(16_U256);
-
-    // Mappings
+    pub const DOMAIN_SEPARATOR: U256 = uint!(5_U256);
+    pub const QUOTE_TOKEN: U256 = uint!(6_U256);
+    pub const NEXT_QUOTE_TOKEN: U256 = uint!(7_U256);
+    pub const TRANSFER_POLICY_ID: U256 = uint!(8_U256);
+    pub const TOTAL_SUPPLY: U256 = uint!(9_U256);
     pub const BALANCES: U256 = uint!(10_U256);
     pub const ALLOWANCES: U256 = uint!(11_U256);
-    pub const ROLES_BASE_SLOT: U256 = uint!(14_U256); // via RolesAuthContract
-    pub const ROLE_ADMIN_BASE_SLOT: U256 = uint!(15_U256); // via RolesAuthContract
+    pub const NONCES: U256 = uint!(12_U256);
+    pub const PAUSED: U256 = uint!(13_U256);
+    pub const SUPPLY_CAP: U256 = uint!(14_U256);
+    pub const SALTS: U256 = uint!(15_U256);
 }
 
 #[derive(Debug)]
@@ -350,19 +352,23 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         let new_supply = total_supply
             .checked_add(amount)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         let supply_cap = self.supply_cap()?;
         if new_supply > supply_cap {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.set_total_supply(new_supply)?;
+        let timestamp = self.storage.timestamp();
+        self.accrue(timestamp)?;
 
+        self.handle_rewards_on_mint(to, amount)?;
+
+        self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(to)?;
         let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
             .checked_add(amount)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(to, new_to_balance)?;
 
         self.storage.emit_event(
@@ -780,15 +786,21 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         to: Address,
         amount: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let from_balance = self.get_balance(from)?;
+        // Accrue before balance changes
+        let timestamp = self.storage.timestamp();
+        self.accrue(timestamp)?;
+        self.handle_rewards_on_transfer(from, to, amount)?;
 
+        let from_balance = self.get_balance(from)?;
         if amount > from_balance {
             return Err(TIP20Error::insufficient_balance().into());
         }
 
+        // Adjust balances
+        let from_balance = self.get_balance(from)?;
         let new_from_balance = from_balance
             .checked_sub(amount)
-            .ok_or(TIP20Error::insufficient_balance())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -796,7 +808,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             let to_balance = self.get_balance(to)?;
             let new_to_balance = to_balance
                 .checked_add(amount)
-                .ok_or(TIP20Error::supply_cap_exceeded())?;
+                .ok_or(TempoPrecompileError::under_overflow())?;
 
             self.set_balance(to, new_to_balance)?;
         }

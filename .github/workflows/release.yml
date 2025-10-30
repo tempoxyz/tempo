@@ -31,7 +31,7 @@ env:
 jobs:
   get-version:
     name: Get Version
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
@@ -53,15 +53,11 @@ jobs:
       matrix:
         binary: [tempo, tempo-bench, tempo-sidecar]
         platform:
-          # - os: depot-ubuntu-latest-16
-          - os: ubuntu-latest
+          - os: depot-ubuntu-latest-16
             target: x86_64-unknown-linux-gnu
-          # - os: depot-ubuntu-latest-arm-16
-          # temporarily skip arm builds
-          # - os: ubuntu-24.04-arm
-            # target: aarch64-unknown-linux-gnu
-          # - os: depot-macos-15
-          - os: macos-15
+          - os: depot-ubuntu-latest-arm-16
+            target: aarch64-unknown-linux-gnu
+          - os: depot-macos-15
             target: aarch64-apple-darwin
 
     steps:
@@ -133,7 +129,7 @@ jobs:
     name: Create Release
     needs: [get-version, build-release]
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     permissions:
       contents: write
     steps:

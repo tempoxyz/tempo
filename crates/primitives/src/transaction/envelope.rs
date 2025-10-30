@@ -140,11 +140,19 @@ impl TempoTxEnvelope {
         matches!(self, Self::FeeToken(_) | Self::AA(_))
     }
 
-    /// Returns the authorization list if present
+    /// Returns the authorization list if present (for EIP-7702 and FeeToken transactions)
     pub fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
         match self {
             Self::Eip7702(tx) => Some(&tx.tx().authorization_list),
             Self::FeeToken(tx) => Some(&tx.tx().authorization_list),
+            _ => None,
+        }
+    }
+
+    /// Returns the AA authorization list if present (for AA transactions)
+    pub fn aa_authorization_list(&self) -> Option<&[crate::transaction::AASignedAuthorization]> {
+        match self {
+            Self::AA(tx) => Some(&tx.tx().aa_authorization_list),
             _ => None,
         }
     }
