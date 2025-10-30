@@ -436,7 +436,7 @@ where
                 .await
                 .is_none(),
             "finalization certificate for epoch `{our_epoch}` at boundary \
-            height `{boundary_height}` is aleady known; no action necessary",
+            height `{boundary_height}` is already known; no action necessary",
         );
 
         // Forward the finalization to the sender. This operation is best-effort.
