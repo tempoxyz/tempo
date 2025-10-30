@@ -50,6 +50,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
     }
 
+    /// Stablecoin exchange address
+    pub fn address(&self) -> Address {
+        self.address
+    }
+
     /// Initializes the contract
     ///
     /// This ensures the [`StablecoinExchange`] isn't empty and prevents state clear.

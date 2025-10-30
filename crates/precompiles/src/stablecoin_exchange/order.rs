@@ -62,29 +62,29 @@ pub const ORDER_FLIP_TICK_OFFSET: U256 = uint!(9_U256);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Order {
     /// Unique identifier for this order
-    order_id: u128,
+    pub order_id: u128,
     /// Address of the user who placed this order
-    maker: Address,
+    pub maker: Address,
     /// Orderbook key (identifies the trading pair)
-    book_key: B256,
+    pub book_key: B256,
     /// Whether this is a bid (true) or ask (false) order
-    is_bid: bool,
+    pub is_bid: bool,
     /// Price tick
-    tick: i16,
+    pub tick: i16,
     /// Original order amount
-    amount: u128,
+    pub amount: u128,
     /// Remaining amount to be filled
-    remaining: u128,
+    pub remaining: u128,
     /// Previous order ID in the doubly linked list (0 if head)
-    prev: u128,
+    pub prev: u128,
     /// Next order ID in the doubly linked list (0 if tail)
-    next: u128,
+    pub next: u128,
     /// Whether this is a flip order
-    is_flip: bool,
+    pub is_flip: bool,
     /// Tick to flip to when fully filled (for flip orders, 0 for regular orders)
     /// For bid flips: flip_tick must be > tick
     /// For ask flips: flip_tick must be < tick
-    flip_tick: i16,
+    pub flip_tick: i16,
 }
 
 impl Order {

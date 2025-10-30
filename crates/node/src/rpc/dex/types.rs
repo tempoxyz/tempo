@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256};
+use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 
 pub type OrdersParams = PaginationParams<OrdersFilters>;
@@ -7,10 +7,14 @@ pub type Tick = i16;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaginationParams<Filters> {
-    /// Cursor for pagination. Based on orderId.
+    /// Cursor for pagination.
+    ///
+    /// The cursor format depends on the endpoint:
+    /// - `dex_getOrders`: Order ID (u128 encoded as string)
+    /// - `dex_getOrderbooks`: Book Key (B256 encoded as hex string)
     ///
     /// Defaults to first entry based on the sort and filter configuration.
-    /// Use the `nextCursor` in response to get the next set of orders.
+    /// Use the `nextCursor` in response to get the next set of results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 
@@ -62,9 +66,34 @@ pub struct OrdersFilters {
     /// Filter by quote token
     pub quote_token: Option<Address>,
     /// Remaining amount in range
-    pub remaining: Option<FilterRange<u128>>,
+    pub remaining: Option<RemainingFilterRange>,
     /// Tick in range (from -2000 to 2000)
     pub tick: Option<FilterRange<Tick>>,
+}
+
+/// FilterRange type for u128, so that we can serialize the u128s as QUANTITY.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemainingFilterRange {
+    #[serde(with = "alloy_serde::quantity::opt")]
+    pub min: Option<u128>,
+    #[serde(with = "alloy_serde::quantity::opt")]
+    pub max: Option<u128>,
+}
+
+impl RemainingFilterRange {
+    /// Checks if a value is within this range (inclusive)
+    pub fn in_range(&self, value: u128) -> bool {
+        if self.min.as_ref().is_some_and(|min| &value < min) {
+            return false;
+        }
+
+        if self.max.as_ref().is_some_and(|max| &value > max) {
+            return false;
+        }
+
+        true
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -72,6 +101,21 @@ pub struct OrdersFilters {
 pub struct FilterRange<T> {
     pub min: Option<T>,
     pub max: Option<T>,
+}
+
+impl<T: PartialOrd> FilterRange<T> {
+    /// Checks if a value is within this range (inclusive)
+    pub fn in_range(&self, value: T) -> bool {
+        if self.min.as_ref().is_some_and(|min| &value < min) {
+            return false;
+        }
+
+        if self.max.as_ref().is_some_and(|max| &value > max) {
+            return false;
+        }
+
+        true
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -85,7 +129,8 @@ pub struct OrdersResponse {
 #[serde(rename_all = "camelCase")]
 pub struct Order {
     /// Original order amount
-    pub amount: B256,
+    #[serde(with = "alloy_serde::quantity")]
+    pub amount: u128,
     /// Target tick to flip to when order is filled
     pub flip_tick: i16,
     /// Order side: true for buy (bid), false for sell (ask)

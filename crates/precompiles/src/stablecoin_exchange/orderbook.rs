@@ -287,6 +287,29 @@ impl Orderbook {
         self.base != Address::ZERO
     }
 
+    /// Returns true if the base and quote tokens match the provided base and quote token options.
+    pub fn matches_tokens(
+        &self,
+        base_token: Option<Address>,
+        quote_token: Option<Address>,
+    ) -> bool {
+        // Check base token filter
+        if let Some(base) = base_token
+            && base != self.base
+        {
+            return false;
+        }
+
+        // Check quote token filter
+        if let Some(quote) = quote_token
+            && quote != self.quote
+        {
+            return false;
+        }
+
+        true
+    }
+
     /// Load an Orderbook from storage
     pub fn from_storage<S: PrecompileStorageProvider>(
         book_key: B256,
