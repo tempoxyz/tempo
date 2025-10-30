@@ -14,17 +14,16 @@ pub mod slots {
     use alloy::primitives::{U256, uint};
 
     // Rewards related slots
-    // TODO: update these starting at 16
-    pub const LAST_UPDATE_TIME: U256 = uint!(15_U256);
-    pub const OPTED_IN_SUPPLY: U256 = uint!(16_U256);
-    pub const NEXT_STREAM_ID: U256 = uint!(17_U256);
-    pub const STREAMS: U256 = uint!(18_U256);
-    pub const SCHEDULED_RATE_DECREASE: U256 = uint!(19_U256);
-    pub const REWARD_RECIPIENT_OF: U256 = uint!(20_U256);
-    pub const USER_REWARD_PER_TOKEN_PAID: U256 = uint!(21_U256);
-    pub const DELEGATED_BALANCE: U256 = uint!(22_U256);
-    pub const REWARD_PER_TOKEN_STORED: U256 = uint!(23_U256);
-    pub const TOTAL_REWARD_PER_SECOND: U256 = uint!(24_U256);
+    pub const LAST_UPDATE_TIME: U256 = uint!(16_U256);
+    pub const OPTED_IN_SUPPLY: U256 = uint!(17_U256);
+    pub const NEXT_STREAM_ID: U256 = uint!(18_U256);
+    pub const STREAMS: U256 = uint!(19_U256);
+    pub const SCHEDULED_RATE_DECREASE: U256 = uint!(20_U256);
+    pub const REWARD_RECIPIENT_OF: U256 = uint!(21_U256);
+    pub const USER_REWARD_PER_TOKEN_PAID: U256 = uint!(22_U256);
+    pub const DELEGATED_BALANCE: U256 = uint!(23_U256);
+    pub const REWARD_PER_TOKEN_STORED: U256 = uint!(24_U256);
+    pub const TOTAL_REWARD_PER_SECOND: U256 = uint!(25_U256);
 }
 
 impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
