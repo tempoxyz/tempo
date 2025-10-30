@@ -188,6 +188,15 @@ pub struct RecoveredSubBlock {
 }
 
 impl RecoveredSubBlock {
+    /// Creates a new [`RecoveredSubBlock`] without validating the signatures.
+    pub fn new_unchecked(inner: SignedSubBlock, senders: Vec<Address>, validator: B256) -> Self {
+        Self {
+            inner,
+            senders,
+            validator,
+        }
+    }
+
     /// Returns an iterator over `Recovered<&Transaction>`
     #[inline]
     pub fn transactions_recovered(&self) -> impl Iterator<Item = Recovered<&TempoTxEnvelope>> + '_ {

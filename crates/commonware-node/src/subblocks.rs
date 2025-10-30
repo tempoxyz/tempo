@@ -1,5 +1,5 @@
 use crate::{consensus::Digest, epoch::SchemeProvider};
-use alloy_consensus::{BlockHeader, Transaction};
+use alloy_consensus::Transaction;
 use alloy_primitives::{B256, BlockHash, Bytes, map::HashMap};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
@@ -24,9 +24,9 @@ use futures::future::OptionFuture;
 use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
 use reth_primitives_traits::SignedTransaction;
-use reth_provider::{BlockReader, ProviderError, StateProviderFactory};
+use reth_provider::{BlockReader, ProviderError, StateProviderBox, StateProviderFactory};
 use reth_revm::database::StateProviderDatabase;
-use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR};
+use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::TempoEvm};
 use tempo_payload_types::{RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion};
 use tempo_primitives::TempoTxEnvelope;
 use tokio::sync::{mpsc, oneshot};
@@ -57,7 +57,7 @@ enum Message {
 pub struct SubBlocksService<Ctx> {
     actions_rx: mpsc::UnboundedReceiver<Message>,
     scheme_provider: SchemeProvider,
-    subblock_builder_handle: Option<Handle<eyre::Result<RecoveredSubBlock>>>,
+    subblock_builder_handle: Option<Handle<RecoveredSubBlock>>,
     validated_subblocks_tx: mpsc::UnboundedSender<RecoveredSubBlock>,
     validated_subblocks_rx: mpsc::UnboundedReceiver<RecoveredSubBlock>,
 
@@ -240,10 +240,10 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                     self.subblocks.insert(subblock.validator(), subblock);
                 }
                 // Handle built subblocks.
-                Some(our_subblock) = OptionFuture::from(self.subblock_builder_handle.as_mut()) => {
+                Some(subblock) = OptionFuture::from(self.subblock_builder_handle.as_mut()) => {
                     self.subblock_builder_handle = None;
 
-                    debug!(subblock = ?our_subblock, "built subblock");
+                    debug!(?subblock, "built subblock");
 
                     let Some(next_parent_hash) = self.next_parent_hash else {
                         continue;
@@ -252,24 +252,25 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                         continue;
                     };
 
-                    let subblock = if let Ok(Ok(subblock)) = our_subblock {
-                        subblock
-                    } else {
-                        SubBlock { version: SubBlockVersion::V1, parent_hash: next_parent_hash, transactions: Default::default() }
+                    let subblock = match subblock {
+                        Ok(subblock) => subblock,
+                        Err(err) => {
+                            warn!(%err, "failed to build subblock, skipping");
+                            continue;
+                        }
                     };
 
                     if subblock.parent_hash != next_parent_hash {
                         continue;
                     }
 
-                    let signature = self.signer.sign(None, subblock.signature_hash().as_slice());
-                    let signed_subblock = SignedSubBlock {
-                        inner: subblock,
-                        signature: Bytes::copy_from_slice(signature.as_ref()),
-                    };
+                    debug!(?subblock, ?next_proposer, "sending subblock to the next proposer");
+                    if next_proposer != &self.signer.public_key() {
+                        let _ = network_tx.send(Recipients::One(next_proposer.clone()), alloy_rlp::encode(&*subblock).into(), true).await;
+                    } else {
+                        let _ = self.validated_subblocks_tx.send(subblock);
+                    }
 
-                    debug!(subblock = ?signed_subblock, ?next_proposer, "sending subblock to the next proposer");
-                    let _ = network_tx.send(Recipients::One(next_proposer.clone()), alloy_rlp::encode(&signed_subblock).into(), true).await;
                 }
             }
         }
@@ -305,18 +306,21 @@ impl Reporter for SubBlocksHandle {
     }
 }
 
-fn evm_at_block(node: &TempoFullNode, hash: BlockHash) -> eyre::Result<TempoE> {
+fn evm_at_block(
+    node: &TempoFullNode,
+    hash: BlockHash,
+) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
-            node.provider.state_by_block_hash(parent_hash)?,
+            node.provider.state_by_block_hash(hash)?,
         ))
         .build();
     let block = node
         .provider
-        .sealed_block_with_senders(parent_hash.into(), Default::default())?
+        .sealed_block_with_senders(hash.into(), Default::default())?
         .ok_or(ProviderError::BestBlockNotFound)?;
 
-    node.evm_config.evm_for_block(db, block.sealed_block())?;
+    Ok(node.evm_config.evm_for_block(db, block.sealed_block())?)
 }
 
 async fn build_subblock(
@@ -325,41 +329,42 @@ async fn build_subblock(
     parent_hash: BlockHash,
     num_validators: usize,
     signer: PrivateKey,
-) -> eyre::Result<RecoveredSubBlock> {
-    let db = State::builder()
-        .with_database(StateProviderDatabase::new(
-            node.provider.state_by_block_hash(parent_hash)?,
-        ))
-        .build();
-    let block = node
-        .provider
-        .sealed_block_with_senders(parent_hash.into(), Default::default())?
-        .ok_or(ProviderError::BestBlockNotFound)?;
+) -> RecoveredSubBlock {
+    let (transactions, senders) = match evm_at_block(&node, parent_hash) {
+        Ok(mut evm) => {
+            let mut selected_transactions = Vec::new();
+            let mut senders = Vec::new();
+            let mut gas_left =
+                evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
 
-    let mut evm = node.evm_config.evm_for_block(db, block.sealed_block())?;
+            for tx in transactions {
+                if tx.gas_limit() > gas_left {
+                    continue;
+                }
+                let Ok(sender) = tx.try_recover() else {
+                    continue;
+                };
+                if evm.transact_commit(tx.with_signer_ref(sender)).is_err() {
+                    continue;
+                }
+                gas_left -= tx.gas_limit();
+                selected_transactions.push(tx);
+                senders.push(sender);
+            }
 
-    let mut selected_transactions = Vec::new();
-    let mut senders = Vec::new();
-    let mut gas_left = block.gas_limit() / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
-    for tx in transactions {
-        if tx.gas_limit() > gas_left {
-            continue;
+            (selected_transactions, senders)
         }
-        let Ok(sender) = tx.try_recover() else {
-            continue;
-        };
-        if evm.transact_commit(tx.with_signer_ref(sender)).is_err() {
-            continue;
+        Err(err) => {
+            warn!(%err, "failed to build an evm at block, building an empty subblock");
+
+            Default::default()
         }
-        gas_left -= tx.gas_limit();
-        selected_transactions.push(tx);
-        senders.push(sender);
-    }
+    };
 
     let subblock = SubBlock {
         version: SubBlockVersion::V1,
         parent_hash,
-        transactions: selected_transactions,
+        transactions,
     };
 
     let signature = signer.sign(None, subblock.signature_hash().as_slice());
@@ -368,11 +373,11 @@ async fn build_subblock(
         signature: Bytes::copy_from_slice(signature.as_ref()),
     };
 
-    Ok(RecoveredSubBlock {
-        inner: signed_subblock,
+    RecoveredSubBlock::new_unchecked(
+        signed_subblock,
         senders,
-        validator: B256::from_slice(&signer.public_key()),
-    })
+        B256::from_slice(&signer.public_key()),
+    )
 }
 
 async fn validate_subblock(
@@ -401,17 +406,7 @@ async fn validate_subblock(
 
     let subblock = subblock.try_into_recovered(B256::from_slice(&sender))?;
 
-    let db = State::builder()
-        .with_database(StateProviderDatabase::new(
-            node.provider.state_by_block_hash(parent_hash)?,
-        ))
-        .build();
-    let block = node
-        .provider
-        .sealed_block_with_senders(parent_hash.into(), Default::default())?
-        .ok_or(ProviderError::BestBlockNotFound)?;
-
-    let mut evm = node.evm_config.evm_for_block(db, block.sealed_block())?;
+    let mut evm = evm_at_block(&node, parent_hash)?;
 
     for tx in subblock.transactions_recovered() {
         if let Err(err) = evm.transact_commit(tx) {
