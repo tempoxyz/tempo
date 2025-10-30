@@ -98,7 +98,7 @@ fn test_event_emission_through_dispatcher() {
     }
     .abi_encode();
 
-    let result = token.call(&calldata, &recipient);
+    let result = token.call(&calldata, recipient);
     assert!(result.is_ok());
 
     // Verify balance was updated

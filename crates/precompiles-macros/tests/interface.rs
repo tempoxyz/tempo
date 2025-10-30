@@ -353,21 +353,21 @@ fn test_dispatcher_metadata_functions() {
 
     // Test name() - metadata function
     let calldata = ITestToken::nameCall {}.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(result.gas_used, METADATA_GAS);
     let name = String::abi_decode(&result.bytes).unwrap();
     assert_eq!(name, "Test Token");
 
     // Test symbol() - metadata function
     let calldata = ITestToken::symbolCall {}.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(result.gas_used, METADATA_GAS);
     let symbol = String::abi_decode(&result.bytes).unwrap();
     assert_eq!(symbol, "TEST");
 
     // Test decimals() - metadata function (custom impl)
     let calldata = ITestToken::decimalsCall {}.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(result.gas_used, METADATA_GAS);
     let decimals =
         <ITestToken::decimalsCall as SolCall>::abi_decode_returns(&result.bytes).unwrap();
@@ -391,7 +391,7 @@ fn test_dispatcher_view_functions() {
 
     // Test balanceOf() - view function
     let calldata = ITestToken::balanceOfCall { account }.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(result.gas_used, VIEW_FUNC_GAS);
     let balance = U256::abi_decode(&result.bytes).unwrap();
     assert_eq!(balance, U256::from(1000));
@@ -402,7 +402,7 @@ fn test_dispatcher_view_functions() {
         spender,
     }
     .abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(result.gas_used, VIEW_FUNC_GAS);
     let allowance = U256::abi_decode(&result.bytes).unwrap();
     assert_eq!(allowance, U256::from(500));
@@ -426,7 +426,7 @@ fn test_dispatcher_mutate_functions() {
         amount: U256::from(100),
     }
     .abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
     assert!(!result.reverted);
     let success = bool::abi_decode(&result.bytes).unwrap();
@@ -442,7 +442,7 @@ fn test_dispatcher_mutate_functions() {
         amount: U256::from(200),
     }
     .abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
     assert!(!result.reverted);
     let success = bool::abi_decode(&result.bytes).unwrap();
@@ -467,7 +467,7 @@ fn test_dispatcher_mutate_void_functions() {
         amount: U256::from(500),
     }
     .abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
     assert!(!result.reverted);
     assert!(result.bytes.is_empty()); // void return
@@ -481,7 +481,7 @@ fn test_dispatcher_mutate_void_functions() {
         amount: U256::from(100),
     }
     .abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
     assert!(!result.reverted);
     assert!(result.bytes.is_empty());
@@ -503,19 +503,19 @@ fn test_dispatcher_error_handling() {
         amount: U256::from(100),
     }
     .abi_encode();
-    let result = token.call(&calldata, &sender);
+    let result = token.call(&calldata, sender);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, ::revm::precompile::PrecompileError::Fatal(_)));
 
     // Test invalid selector
     let invalid_calldata = vec![0x12, 0x34, 0x56, 0x78];
-    let result = token.call(&invalid_calldata, &sender);
+    let result = token.call(&invalid_calldata, sender);
     assert!(result.is_err());
 
     // Test insufficient calldata (< 4 bytes)
     let short_calldata = vec![0x12, 0x34];
-    let result = token.call(&short_calldata, &sender);
+    let result = token.call(&short_calldata, sender);
     assert!(result.is_err());
 }
 
@@ -532,7 +532,7 @@ fn test_dispatcher_selector_routing() {
     // Verify selector routing works
     let name_selector = ITestToken::nameCall::SELECTOR;
     let mut calldata = name_selector.to_vec();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     let name = String::abi_decode(&result.bytes).unwrap();
     assert_eq!(name, "Test");
 
@@ -540,7 +540,7 @@ fn test_dispatcher_selector_routing() {
     token._set_symbol("TST".to_string()).unwrap();
     let symbol_selector = ITestToken::symbolCall::SELECTOR;
     calldata = symbol_selector.to_vec();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     let symbol = String::abi_decode(&result.bytes).unwrap();
     assert_eq!(symbol, "TST");
 
@@ -548,7 +548,7 @@ fn test_dispatcher_selector_routing() {
     let account = test_address(5);
     token._set_balances(account, U256::from(999)).unwrap();
     let balance_calldata = ITestToken::balanceOfCall { account }.abi_encode();
-    let result = token.call(&balance_calldata, &sender).unwrap();
+    let result = token.call(&balance_calldata, sender).unwrap();
     let balance = U256::abi_decode(&result.bytes).unwrap();
     assert_eq!(balance, U256::from(999));
 }
@@ -568,7 +568,7 @@ fn test_dispatcher_all_function_types_together() {
 
     // 1. Check metadata
     let calldata = ITestToken::nameCall {}.abi_encode();
-    let result = token.call(&calldata, &alice).unwrap();
+    let result = token.call(&calldata, alice).unwrap();
     assert_eq!(String::abi_decode(&result.bytes).unwrap(), "Full Test");
 
     // 2. Mint (mutate void)
@@ -577,11 +577,11 @@ fn test_dispatcher_all_function_types_together() {
         amount: U256::from(1000),
     }
     .abi_encode();
-    token.call(&calldata, &alice).unwrap();
+    token.call(&calldata, alice).unwrap();
 
     // 3. Check balance (view)
     let calldata = ITestToken::balanceOfCall { account: alice }.abi_encode();
-    let result = token.call(&calldata, &alice).unwrap();
+    let result = token.call(&calldata, alice).unwrap();
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(1000));
 
     // 4. Approve (mutate returning bool)
@@ -590,7 +590,7 @@ fn test_dispatcher_all_function_types_together() {
         amount: U256::from(500),
     }
     .abi_encode();
-    let result = token.call(&calldata, &alice).unwrap();
+    let result = token.call(&calldata, alice).unwrap();
     assert!(bool::abi_decode(&result.bytes).unwrap());
 
     // 5. Check allowance (view)
@@ -599,7 +599,7 @@ fn test_dispatcher_all_function_types_together() {
         spender: bob,
     }
     .abi_encode();
-    let result = token.call(&calldata, &alice).unwrap();
+    let result = token.call(&calldata, alice).unwrap();
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(500));
 
     // 6. Transfer (mutate returning bool)
@@ -608,16 +608,16 @@ fn test_dispatcher_all_function_types_together() {
         amount: U256::from(300),
     }
     .abi_encode();
-    let result = token.call(&calldata, &alice).unwrap();
+    let result = token.call(&calldata, alice).unwrap();
     assert!(bool::abi_decode(&result.bytes).unwrap());
 
     // 7. Verify final balances (view)
     let calldata = ITestToken::balanceOfCall { account: alice }.abi_encode();
-    let result = token.call(&calldata, &alice).unwrap();
+    let result = token.call(&calldata, alice).unwrap();
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(700));
 
     let calldata = ITestToken::balanceOfCall { account: bob }.abi_encode();
-    let result = token.call(&calldata, &alice).unwrap();
+    let result = token.call(&calldata, alice).unwrap();
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(300));
 
     // 8. Burn (mutate void)
@@ -625,11 +625,11 @@ fn test_dispatcher_all_function_types_together() {
         amount: U256::from(100),
     }
     .abi_encode();
-    token.call(&calldata, &alice).unwrap();
+    token.call(&calldata, alice).unwrap();
 
     // 9. Final balance check
     let calldata = ITestToken::balanceOfCall { account: alice }.abi_encode();
-    let result = token.call(&calldata, &alice).unwrap();
+    let result = token.call(&calldata, alice).unwrap();
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(600));
 }
 
@@ -723,11 +723,11 @@ fn test_multi_interface_contract() {
     token._set_symbol("MULTI".to_string()).unwrap();
 
     let calldata = ITestToken::nameCall {}.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(String::abi_decode(&result.bytes).unwrap(), "Multi Token");
 
     let calldata = ITestToken::symbolCall {}.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(String::abi_decode(&result.bytes).unwrap(), "MULTI");
 
     // Test IMetadata interface methods
@@ -735,11 +735,11 @@ fn test_multi_interface_contract() {
     token._set_owner(test_address(99)).unwrap();
 
     let calldata = IMetadata::versionCall {}.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(1));
 
     let calldata = IMetadata::ownerCall {}.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(
         Address::abi_decode(&result.bytes).unwrap(),
         test_address(99)
@@ -752,16 +752,16 @@ fn test_multi_interface_contract() {
         amount: U256::from(500),
     }
     .abi_encode();
-    token.call(&calldata, &sender).unwrap();
+    token.call(&calldata, sender).unwrap();
 
     // Check balance (ITestToken interface)
     let calldata = ITestToken::balanceOfCall { account: sender }.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(500));
 
     // Verify version still accessible (IMetadata interface)
     let calldata = IMetadata::versionCall {}.abi_encode();
-    let result = token.call(&calldata, &sender).unwrap();
+    let result = token.call(&calldata, sender).unwrap();
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(1));
 }
 

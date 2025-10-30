@@ -24,7 +24,7 @@ pub(crate) fn gen_dispatcher(
 
     quote! {
         impl<'a, S: crate::storage::PrecompileStorageProvider> crate::Precompile for #strukt<'a, S> {
-            fn call(&mut self, calldata: &[u8], msg_sender: &::alloy::primitives::Address) -> ::revm::precompile::PrecompileResult {
+            fn call(&mut self, calldata: &[u8], msg_sender: ::alloy::primitives::Address) -> ::revm::precompile::PrecompileResult {
                 let selector: [u8; 4] = calldata
                     .get(..4)
                     .ok_or_else(|| {
@@ -86,9 +86,9 @@ fn gen_match_arm(trait_name: &Ident, result: &GetterFn<'_>) -> TokenStream {
         }
         FunctionKind::Mutate => {
             let call_expr = if func.params.is_empty() {
-                quote! { #trait_name::#method_name(self, *s) }
+                quote! { #trait_name::#method_name(self, s) }
             } else {
-                quote! { #trait_name::#method_name(self, *s, #(#param_fields),*) }
+                quote! { #trait_name::#method_name(self, s, #(#param_fields),*) }
             };
             quote! {
                 #call_type::SELECTOR => {
@@ -102,9 +102,9 @@ fn gen_match_arm(trait_name: &Ident, result: &GetterFn<'_>) -> TokenStream {
         }
         FunctionKind::MutateVoid => {
             let call_expr = if func.params.is_empty() {
-                quote! { #trait_name::#method_name(self, *s) }
+                quote! { #trait_name::#method_name(self, s) }
             } else {
-                quote! { #trait_name::#method_name(self, *s, #(#param_fields),*) }
+                quote! { #trait_name::#method_name(self, s, #(#param_fields),*) }
             };
             quote! {
                 #call_type::SELECTOR => {
