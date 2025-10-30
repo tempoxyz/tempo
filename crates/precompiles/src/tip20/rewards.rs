@@ -486,8 +486,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ///
     /// This function is called to clean up streams that have reached their end time,
     /// reducing the total reward per second rate by the amount of the expired streams.
-    pub fn finalize_streams(&mut self) -> Result<(), TempoPrecompileError> {
-        let end_time = self.storage.timestamp().to::<u128>();
+    pub fn finalize_streams(&mut self, end_time: u128) -> Result<(), TempoPrecompileError> {
         let rate_decrease = self.get_scheduled_rate_decrease_at(end_time);
 
         if rate_decrease == U256::ZERO {
@@ -1152,7 +1151,7 @@ mod tests {
         token.storage.set_timestamp(U256::from(end_time));
 
         let total_before = token.get_total_reward_per_second()?;
-        token.finalize_streams()?;
+        token.finalize_streams(token.storage.timestamp().to::<u128>())?;
         let total_after = token.get_total_reward_per_second()?;
 
         assert!(total_after < total_before);
@@ -1299,7 +1298,7 @@ mod tests {
             .storage
             .set_timestamp(current_timestamp + uint!(10_U256));
 
-        token.finalize_streams()?;
+        token.finalize_streams(token.storage.timestamp().to::<u128>())?;
         token.transfer(
             &alice,
             ITIP20::transferCall {
@@ -1317,7 +1316,7 @@ mod tests {
             .storage
             .set_timestamp(current_timestamp + uint!(20_U256));
 
-        token.finalize_streams()?;
+        token.finalize_streams(token.storage.timestamp().to::<u128>())?;
         token.transfer(
             &alice,
             ITIP20::transferCall {
