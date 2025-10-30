@@ -480,7 +480,7 @@ impl TxAA {
 
     /// Returns the proposer of the subblock if this is a subblock transaction.
     pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
-        if self.nonce_key.byte(0) == TEMPO_SUBBLOCK_NONCE_KEY_PREFIX {
+        if self.nonce_key.byte(31) == TEMPO_SUBBLOCK_NONCE_KEY_PREFIX {
             Some(PartialValidatorKey::from_slice(
                 &self.nonce_key.to_be_bytes::<32>()[1..16],
             ))

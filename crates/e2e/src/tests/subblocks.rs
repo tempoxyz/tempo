@@ -102,6 +102,7 @@ fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
         nonce_key: U256::from_be_bytes(nonce_bytes),
         ..Default::default()
     };
+    assert!(tx.subblock_proposer().unwrap().matches(&node.public_key));
     let signature = wallet.sign_transaction_sync(&mut tx).unwrap();
 
     let tx = TempoTxEnvelope::AA(tx.into_signed(signature.into()));

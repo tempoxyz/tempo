@@ -162,22 +162,19 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         self.next_proposer = Some(next_proposer.clone());
         self.next_parent_hash = Some(event.proposal.payload.0);
 
-        // If next proposer is not us, we need to build a new subblock.
-        if next_proposer != self.signer.public_key() {
-            if let Some(existing) = self.subblock_builder_handle.take() {
-                existing.abort();
-            }
-
-            let transactions = self.subblock_transactions.clone();
-            let node = self.node.clone();
-            let parent_hash = event.proposal.payload.0;
-            let signer = self.signer.clone();
-            let handle = self.context.clone().shared(true).spawn(move |_| {
-                build_subblock(transactions, node, parent_hash, num_validators, signer)
-            });
-
-            self.subblock_builder_handle = Some(handle);
+        if let Some(existing) = self.subblock_builder_handle.take() {
+            existing.abort();
         }
+
+        let transactions = self.subblock_transactions.clone();
+        let node = self.node.clone();
+        let parent_hash = event.proposal.payload.0;
+        let signer = self.signer.clone();
+        let handle = self.context.clone().shared(true).spawn(move |_| {
+            build_subblock(transactions, node, parent_hash, num_validators, signer)
+        });
+
+        self.subblock_builder_handle = Some(handle);
     }
 }
 
