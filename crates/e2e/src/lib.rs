@@ -181,8 +181,6 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
         loop {
             let metrics = context.encode();
 
-            std::fs::write("metrics_dump", &metrics).unwrap();
-
             let mut success = false;
             for line in metrics.lines() {
                 if !line.starts_with("validator-") {
