@@ -33,6 +33,8 @@ use tempo_contracts::{
     precompiles::{FeeManagerError, TIPFeeAMMError},
 };
 use tempo_precompiles::{
+    TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
@@ -606,23 +608,13 @@ where
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
-        // Create storage provider wrapper around journal
-        let internals = EvmInternals::new(journal, &block);
-        let beneficiary = internals.block_env().beneficiary();
-        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
-
-        // If the transaction includes a KeyAuthorization, validate and add the key FIRST
-        // This allows authorizing and using an access key in the same transaction
+        // If the transaction includes a KeyAuthorization, validate and authorize the key
         if let Some(aa_tx_env) = tx.aa_tx_env.as_ref() {
             if let Some(key_auth) = &aa_tx_env.key_authorization {
-                use tempo_precompiles::account_keychain::AccountKeychain;
-
                 // Validate that the KeyAuthorization is signed by the root account
-                // The root account is the transaction caller (tx.caller)
                 let root_account = &tx.caller;
 
                 // Compute the message hash for the KeyAuthorization
-                // The root key signs this to authorize the access key
                 // Message format: keccak256(key_type || key_id || expiry || limits)
                 let mut auth_message = Vec::new();
                 let key_type_byte: u8 = match &key_auth.key_type {
@@ -664,19 +656,20 @@ where
                     ));
                 }
 
-                // The access key address is specified in key_id
-                let access_key_addr = key_auth.key_id;
+                // Now authorize the key in the precompile
+                let internals = EvmInternals::new(journal, block);
+                let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
 
-                // Convert to B256 for precompile storage (pad address to 32 bytes)
-                let mut access_key_hash_bytes = [0u8; 32];
-                access_key_hash_bytes[12..].copy_from_slice(access_key_addr.as_slice());
-                let access_key_hash = B256::from(access_key_hash_bytes);
-
-                // Add the key to the KeyChain precompile
                 let mut keychain = AccountKeychain::new(
                     &mut storage_provider,
                     tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS,
                 );
+
+                let access_key_addr = key_auth.key_id;
+                // Convert to B256 for precompile storage (pad address to 32 bytes)
+                let mut access_key_hash_bytes = [0u8; 32];
+                access_key_hash_bytes[12..].copy_from_slice(access_key_addr.as_slice());
+                let access_key_hash = B256::from(access_key_hash_bytes);
 
                 // Convert signature type to u8
                 let signature_type: u8 = match key_auth.key_type {
@@ -686,8 +679,6 @@ where
                 };
 
                 // Convert limits to the format expected by the precompile
-                use tempo_precompiles::account_keychain::{TokenLimit, authorizeKeyCall};
-
                 let precompile_limits: Vec<TokenLimit> = key_auth
                     .limits
                     .iter()
@@ -705,31 +696,28 @@ where
                     limits: precompile_limits,
                 };
 
-                // Call precompile to authorize the key
+                // Call precompile to authorize the key (same phase as nonce increment)
                 keychain
                     .authorize_key(authorize_call, root_account)
-                    .map_err(|e| {
-                        EVMError::Transaction(
-                            TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                                reason: format!("Failed to authorize key in precompile: {e:?}"),
-                            },
-                        )
+                    .map_err(|err| match err {
+                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                        err => TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                            reason: err.to_string(),
+                        }
+                        .into(),
                     })?;
             }
         }
 
+        // Create storage provider wrapper around journal for fee manager
+        let internals = EvmInternals::new(journal, &block);
+        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+
         // For Keychain signatures, validate that the keychain is authorized in the precompile
-        // This happens AFTER potential key authorization above, allowing same-tx auth+use
+        // UNLESS this transaction also includes a KeyAuthorization (same-tx auth+use case)
         if let Some(aa_tx_env) = tx.aa_tx_env.as_ref()
             && let tempo_primitives::AASignature::Keychain(keychain_sig) = &aa_tx_env.signature
         {
-            use tempo_precompiles::account_keychain::AccountKeychain;
-
-            let mut keychain = AccountKeychain::new(
-                &mut storage_provider,
-                tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS,
-            );
-
             // The user_address is the root account this transaction is being executed for
             // This should match tx.caller (which comes from recover_signer on the outer signature)
             let user_address = &keychain_sig.user_address;
@@ -757,23 +745,41 @@ where
                     })
                 })?;
 
-            // Convert Address to B256 for storage lookup (pad address to 32 bytes)
-            let mut keychain_pub_key_hash_bytes = [0u8; 32];
-            keychain_pub_key_hash_bytes[12..].copy_from_slice(access_key_addr.as_slice());
-            let keychain_pub_key_hash = B256::from(keychain_pub_key_hash_bytes);
+            // Check if this transaction includes a KeyAuthorization for the same key
+            // If so, skip validation here - the key will be authorized during execution
+            let is_authorizing_this_key = aa_tx_env
+                .key_authorization
+                .as_ref()
+                .map(|key_auth| key_auth.key_id == access_key_addr)
+                .unwrap_or(false);
 
-            // Validate that user_address has authorized this access key in the keychain
-            keychain
-                .validate_keychain_authorization(
-                    user_address,
-                    &keychain_pub_key_hash,
-                    block.timestamp().to::<u64>(),
-                )
-                .map_err(|e| {
-                    EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason: format!("Keychain validation failed: {e:?}"),
-                    })
-                })?;
+            if !is_authorizing_this_key {
+                // Not authorizing this key in the same transaction, so validate it exists now
+                let mut keychain = AccountKeychain::new(
+                    &mut storage_provider,
+                    tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS,
+                );
+
+                // Convert Address to B256 for storage lookup (pad address to 32 bytes)
+                let mut keychain_pub_key_hash_bytes = [0u8; 32];
+                keychain_pub_key_hash_bytes[12..].copy_from_slice(access_key_addr.as_slice());
+                let keychain_pub_key_hash = B256::from(keychain_pub_key_hash_bytes);
+
+                // Validate that user_address has authorized this access key in the keychain
+                keychain
+                    .validate_keychain_authorization(
+                        user_address,
+                        &keychain_pub_key_hash,
+                        block.timestamp().to::<u64>(),
+                    )
+                    .map_err(|e| {
+                        EVMError::Transaction(
+                            TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                                reason: format!("Keychain validation failed: {e:?}"),
+                            },
+                        )
+                    })?;
+            }
         }
 
         let mut fee_manager = TipFeeManager::new(&mut storage_provider);
@@ -865,6 +871,7 @@ where
                 )
                 .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }
+
         Ok(())
     }
 

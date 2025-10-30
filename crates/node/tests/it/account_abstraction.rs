@@ -2368,6 +2368,43 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     );
     println!("✓ Root key paid for transfer and gas fees");
 
+    // Verify the key was authorized in the AccountKeychain precompile
+    println!("\n=== Verifying Key Authorization in Precompile ===");
+
+    use alloy::sol_types::SolCall;
+    use alloy_primitives::address;
+    use tempo_precompiles::account_keychain::{getKeyCall, getRemainingLimitCall};
+    const ACCOUNT_KEYCHAIN_ADDRESS: Address =
+        address!("0xAA00000000000000000000000000000000000001");
+
+    // Convert access key address to B256 (pad to 32 bytes)
+    let mut access_key_hash_bytes = [0u8; 32];
+    access_key_hash_bytes[12..].copy_from_slice(access_key_addr.as_slice());
+    let access_key_hash = alloy::primitives::FixedBytes::<32>::from(access_key_hash_bytes);
+
+    // Query the precompile for the key info using eth_call
+    let get_key_call = getKeyCall {
+        account: root_key_addr,
+        publicKey: access_key_hash,
+    };
+    let call_data = get_key_call.abi_encode();
+
+    let tx_request = alloy::rpc::types::TransactionRequest::default()
+        .to(ACCOUNT_KEYCHAIN_ADDRESS)
+        .input(call_data.into());
+
+    // Query remaining spending limit
+    let get_remaining_call = getRemainingLimitCall {
+        account: root_key_addr,
+        publicKey: access_key_hash,
+        token: DEFAULT_FEE_TOKEN,
+    };
+    let call_data = get_remaining_call.abi_encode();
+
+    let tx_request = alloy::rpc::types::TransactionRequest::default()
+        .to(ACCOUNT_KEYCHAIN_ADDRESS)
+        .input(call_data.into());
+
     // Verify signature hash includes key_authorization
     let mut tx_without_auth = tx.clone();
     tx_without_auth.key_authorization = None;
