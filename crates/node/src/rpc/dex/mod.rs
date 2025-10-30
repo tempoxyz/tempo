@@ -15,6 +15,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_api::{ConfigureEvm, NodePrimitives};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::RpcNodeCore;
+use reth_rpc_eth_types::EthApiError;
 
 use tempo_precompiles::{
     stablecoin_exchange::{
@@ -25,7 +26,10 @@ use tempo_precompiles::{
 };
 
 mod books;
+mod error;
 pub mod types;
+
+pub use error::DexApiError;
 
 /// Default limit for pagination
 const DEFAULT_LIMIT: usize = 10;
@@ -39,12 +43,12 @@ fn get_book_keys_for_iteration(
     exchange: &mut StablecoinExchange<'_, EvmPrecompileStorageProvider<'_>>,
     base_token: Option<Address>,
     quote_token: Option<Address>,
-) -> Result<Vec<B256>, String> {
+) -> Result<Vec<B256>, DexApiError> {
     match (base_token, quote_token) {
         (Some(base), Some(quote)) => Ok(vec![compute_book_key(base, quote)]),
         _ => exchange
             .get_book_keys()
-            .map_err(|e| format!("Failed to get book keys: {e}")),
+            .map_err(|_| DexApiError::GetBookKeys),
     }
 }
 
@@ -91,14 +95,24 @@ impl<'a, 'b> BookIterator<'a, 'b> {
         }
     }
 
+    /// Try to get the next order, returning None when iteration is complete.
+    /// This is an alternative to using the Iterator trait that makes error handling more explicit.
+    pub fn try_next(&mut self) -> Result<Option<PrecompileOrder>, DexApiError> {
+        match self.next() {
+            None => Ok(None),
+            Some(Ok(order)) => Ok(Some(order)),
+            Some(Err(e)) => Err(e),
+        }
+    }
+
     /// Get a PrecompileOrder from an order ID
-    pub fn get_order(&mut self, order_id: u128) -> PrecompileOrder {
+    pub fn get_order(&mut self, order_id: u128) -> Result<PrecompileOrder, DexApiError> {
         PrecompileOrder::from_storage(order_id, self.storage, self.exchange_address)
-            .expect("TODO: errors")
+            .map_err(|_| DexApiError::LoadOrder(order_id))
     }
 
     /// Get a PriceLevel from a tick
-    pub fn get_price_level(&mut self, tick: i16) -> PriceLevel {
+    pub fn get_price_level(&mut self, tick: i16) -> Result<PriceLevel, DexApiError> {
         PriceLevel::from_storage(
             self.storage,
             self.exchange_address,
@@ -106,7 +120,7 @@ impl<'a, 'b> BookIterator<'a, 'b> {
             tick,
             self.bids,
         )
-        .expect("TODO: errors")
+        .map_err(|_| DexApiError::LoadPriceLevel(tick))
     }
 
     /// Get the next initialized tick after the given tick
@@ -125,10 +139,10 @@ impl<'a, 'b> BookIterator<'a, 'b> {
 
     /// Find the next order in the orderbook, starting from current position.
     /// Returns the order ID of the next order, or None if no more orders.
-    fn find_next_order(&mut self) -> Option<u128> {
+    fn find_next_order(&mut self) -> Result<Option<u128>, DexApiError> {
         // If we have a starting order, use that to initialize
         if let Some(starting_order) = self.starting_order.take() {
-            return Some(starting_order);
+            return Ok(Some(starting_order));
         }
 
         // If there is no current order we get the first one based on the best bid or ask tick
@@ -139,47 +153,58 @@ impl<'a, 'b> BookIterator<'a, 'b> {
                 self.orderbook.best_ask_tick
             };
 
-            let price_level = self.get_price_level(tick);
+            let price_level = self.get_price_level(tick)?;
 
             // if the best bid level is empty then there are no more bids and we should stop the
             // iteration
             if price_level.is_empty() {
-                return None;
+                return Ok(None);
             }
 
-            return Some(price_level.head);
+            return Ok(Some(price_level.head));
         };
 
-        let current_order = self.get_order(current_id);
+        let current_order = self.get_order(current_id)?;
 
         // Now get the order after this one.
         if current_order.next() != 0 {
-            Some(current_order.next())
+            Ok(Some(current_order.next()))
         } else {
             let tick = current_order.tick();
 
             // find the next tick
-            let next_tick = self.get_next_tick(tick)?;
+            let Some(next_tick) = self.get_next_tick(tick) else {
+                return Ok(None);
+            };
 
             // get the price level for this tick so we can get the head of the price level
-            let price_level = self.get_price_level(next_tick);
+            let price_level = self.get_price_level(next_tick)?;
             if price_level.is_empty() {
-                return None;
+                return Ok(None);
             }
 
             // return the head of the price level as the next order
-            Some(price_level.head)
+            Ok(Some(price_level.head))
         }
     }
 }
 
 impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
-    type Item = PrecompileOrder;
+    type Item = Result<PrecompileOrder, DexApiError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // keep searching until we find an order that matches the filter
-        while let Some(order_id) = self.find_next_order() {
-            let order = self.get_order(order_id);
+        loop {
+            let order_id = match self.find_next_order() {
+                Ok(Some(id)) => id,
+                Ok(None) => return None,
+                Err(e) => return Some(Err(e)),
+            };
+
+            let order = match self.get_order(order_id) {
+                Ok(o) => o,
+                Err(e) => return Some(Err(e)),
+            };
 
             // update current position
             self.order = Some(order_id);
@@ -187,15 +212,13 @@ impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
             // check if order passes filter
             if let Some(ref filter) = self.filter {
                 if order_matches_filter(&order, filter) {
-                    return Some(order);
+                    return Some(Ok(order));
                 }
             } else {
                 // no filter, return the order
-                return Some(order);
+                return Some(Ok(order));
             }
         }
-
-        None
     }
 }
 
@@ -254,8 +277,7 @@ impl<
                 let cursor = params
                     .cursor
                     .map(|cursor| parse_order_cursor(&cursor))
-                    .transpose()
-                    .expect("TODO: errors");
+                    .transpose()?;
 
                 let limit = params
                     .limit
@@ -269,7 +291,7 @@ impl<
                 for book_key in book_keys {
                     let orderbook =
                         PrecompileOrderbook::from_storage(book_key, storage, exchange_address)
-                            .expect("TODO: errors");
+                            .map_err(|_| DexApiError::GetBook(book_key))?;
 
                     // Check if this book matches the base/quote filter
                     if !orderbook_matches_tokens(&orderbook, base_token, quote_token) {
@@ -292,7 +314,8 @@ impl<
                     );
 
                     // Collect orders from this book, up to limit + 1
-                    for order in book_iterator {
+                    for order_result in book_iterator {
+                        let order = order_result?;
                         let rpc_order = self.to_rpc_order(order, &orderbook);
                         all_orders.push(rpc_order);
 
@@ -322,7 +345,7 @@ impl<
                 };
                 Ok(response)
             })
-            .expect("TODO: proper errors");
+            .map_err(|e: DexApiError| EthApiError::from(e))?;
         Ok(response)
     }
 
@@ -339,7 +362,7 @@ impl<
         // Get paginated orderbooks
         let (items, next_cursor) = self
             .apply_pagination_to_orderbooks(params)
-            .map_err(|e| internal_rpc_err(format!("Failed to get orderbooks: {e}")))?;
+            .map_err(|e: DexApiError| internal_rpc_err(e.to_string()))?;
 
         // Convert PrecompileOrderbooks to RPC Orderbooks
         let orderbooks = items
@@ -366,21 +389,21 @@ impl<
 
     /// Creates an `EvmPrecompileStorageProvider` at the given block.
     /// This handles the boilerplate of creating the EVM context and state provider.
-    fn with_storage_at_block<F, R>(&self, at: BlockId, f: F) -> Result<R, String>
+    fn with_storage_at_block<F, R>(&self, at: BlockId, f: F) -> Result<R, DexApiError>
     where
-        F: FnOnce(&mut EvmPrecompileStorageProvider<'_>) -> Result<R, String>,
+        F: FnOnce(&mut EvmPrecompileStorageProvider<'_>) -> Result<R, DexApiError>,
     {
         // Get the header for the specified block
         let provider = self.eth_api.provider();
         let header = provider
             .header_by_id(at)
-            .map_err(|e| format!("Failed to get header: {e}"))?
-            .ok_or_else(|| "Header not found".to_string())?;
+            .map_err(|e| DexApiError::Provider(Box::new(e)))?
+            .ok_or(DexApiError::HeaderNotFound(at))?;
 
         let block_hash = header.hash_slow();
         let state_provider = provider
             .state_by_block_hash(block_hash)
-            .map_err(|e| format!("Failed to get state provider: {e}"))?;
+            .map_err(|e| DexApiError::Provider(Box::new(e)))?;
 
         // Create EVM using state provider db
         let db = CacheDB::new(StateProviderDatabase::new(state_provider));
@@ -388,7 +411,7 @@ impl<
             .eth_api
             .evm_config()
             .evm_for_block(db, &header)
-            .map_err(|e| format!("Failed to create EVM: {e}"))?;
+            .map_err(|e| DexApiError::CreateEvm(Box::new(e)))?;
 
         let ctx = evm.ctx_mut();
         let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
@@ -399,11 +422,11 @@ impl<
 
     /// Creates a `StablecoinExchange` instance at the given block.
     /// This builds on `with_storage_at_block` to provide the exchange.
-    fn with_exchange_at_block<F, R>(&self, at: BlockId, f: F) -> Result<R, String>
+    fn with_exchange_at_block<F, R>(&self, at: BlockId, f: F) -> Result<R, DexApiError>
     where
         F: FnOnce(
             &mut StablecoinExchange<'_, EvmPrecompileStorageProvider<'_>>,
-        ) -> Result<R, String>,
+        ) -> Result<R, DexApiError>,
     {
         self.with_storage_at_block(at, |storage| {
             let mut exchange = StablecoinExchange::new(storage);
@@ -417,7 +440,7 @@ impl<
     pub fn apply_pagination_to_orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
-    ) -> Result<(Vec<PrecompileOrderbook>, Option<String>), String> {
+    ) -> Result<(Vec<PrecompileOrderbook>, Option<String>), DexApiError> {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let base_token = params.filters.as_ref().and_then(|f| f.base_token);
             let quote_token = params.filters.as_ref().and_then(|f| f.quote_token);
@@ -429,7 +452,7 @@ impl<
 
                 keys.iter()
                     .position(|k| *k == cursor_key)
-                    .expect("TODO: error for when the user inputs a cursor that doesnt exist")
+                    .ok_or(DexApiError::OrderbookCursorNotFound(cursor_key))?
             } else {
                 0
             };
@@ -443,9 +466,7 @@ impl<
 
             // Take limit + 1 to check if there's a next page
             for key in keys.into_iter().skip(start_idx).take(limit + 1) {
-                let book = exchange
-                    .books(key)
-                    .map_err(|e| format!("Failed to get book: {e}"))?;
+                let book = exchange.books(key).map_err(|_| DexApiError::GetBook(key))?;
 
                 // Apply filters if present
                 if let Some(ref filter) = params.filters
@@ -538,37 +559,39 @@ impl<
     }
 
     /// Returns the orderbooks that should be filtered based on the filter params.
-    pub fn pick_orderbooks(&self, filter: OrderbooksFilter) -> Vec<PrecompileOrderbook> {
+    pub fn pick_orderbooks(
+        &self,
+        filter: OrderbooksFilter,
+    ) -> Result<Vec<PrecompileOrderbook>, DexApiError> {
         // If both base and quote are specified, get just that specific orderbook
         if let (Some(base), Some(quote)) = (filter.base_token, filter.quote_token) {
-            return vec![self.get_orderbook(base, quote)];
+            return Ok(vec![self.get_orderbook(base, quote)?]);
         }
 
         // Get all orderbooks and filter them
-        let all_books = self.get_all_books();
+        let all_books = self.get_all_books()?;
 
-        all_books
+        Ok(all_books
             .into_iter()
             .filter(|book| orderbook_matches_filter(book, &filter))
-            .collect()
+            .collect())
     }
 
     /// Returns all orderbooks.
-    pub fn get_all_books(&self) -> Vec<PrecompileOrderbook> {
+    pub fn get_all_books(&self) -> Result<Vec<PrecompileOrderbook>, DexApiError> {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let mut books = Vec::new();
             for book_key in exchange
                 .get_book_keys()
-                .map_err(|e| format!("Failed to get book keys: {e}"))?
+                .map_err(|_| DexApiError::GetBookKeys)?
             {
                 let book = exchange
                     .books(book_key)
-                    .map_err(|e| format!("Failed to get book: {e}"))?;
+                    .map_err(|_| DexApiError::GetBook(book_key))?;
                 books.push(book);
             }
             Ok(books)
         })
-        .expect("TODO: remove")
     }
 
     /// Returns an orderbook based on the base and quote tokens.
@@ -576,14 +599,17 @@ impl<
     /// ## Note
     /// Single orderbook fetches don't require cursor pagination.
     /// This is used when filters specify both base and quote tokens.
-    pub fn get_orderbook(&self, base: Address, quote: Address) -> PrecompileOrderbook {
+    pub fn get_orderbook(
+        &self,
+        base: Address,
+        quote: Address,
+    ) -> Result<PrecompileOrderbook, DexApiError> {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let book_key = compute_book_key(base, quote);
             exchange
                 .books(book_key)
-                .map_err(|e| format!("Failed to get orderbook: {e}"))
+                .map_err(|_| DexApiError::GetBook(book_key))
         })
-        .expect("TODO: remove")
     }
 }
 
@@ -692,19 +718,17 @@ fn order_matches_filter(order: &PrecompileOrder, filter: &OrdersFilters) -> bool
 }
 
 /// Parses a cursor string into a u128 for orders
-fn parse_order_cursor(cursor: &str) -> Result<u128, String> {
-    // TODO: just make this better, there must be a util for this that we have already in alloy or
-    // ruint or something
+fn parse_order_cursor(cursor: &str) -> Result<u128, DexApiError> {
     if let Some(hex_val) = cursor.strip_prefix("0x") {
-        u128::from_str_radix(hex_val, 16).map_err(|e| format!("Invalid cursor format: {e}"))
+        u128::from_str_radix(hex_val, 16).map_err(Into::into)
     } else {
-        Err("Must be a hex string".to_string())
+        Err(DexApiError::InvalidOrderCursor(cursor.to_string()))
     }
 }
 
 /// Parses a cursor string into a B256 for orderbooks
-fn parse_orderbook_cursor(cursor: &str) -> Result<B256, String> {
+fn parse_orderbook_cursor(cursor: &str) -> Result<B256, DexApiError> {
     cursor
         .parse::<B256>()
-        .map_err(|e| format!("Invalid cursor format: {e}"))
+        .map_err(|_| DexApiError::InvalidOrderbookCursor(cursor.to_string()))
 }

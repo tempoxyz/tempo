@@ -11669,6 +11669,7 @@ dependencies = [
  "tempo-revm",
  "tempo-transaction-pool",
  "test-case",
+ "thiserror 2.0.17",
  "tokio",
  "vergen",
  "vergen-git2",
