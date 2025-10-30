@@ -413,7 +413,6 @@ where
     #[instrument(skip_all, fields(msg.epoch = their_epoch, msg.from = %from), err(level = Level::INFO))]
     async fn handle_msg_for_unregistered_epoch(
         &mut self,
-        // recovered_global_sender: &mut GlobalSender<impl Sender<PublicKey = PublicKey>>,
         boundary_certificates_sender: &mut impl Sender<PublicKey = PublicKey>,
         their_epoch: Epoch,
         from: PublicKey,
@@ -439,7 +438,6 @@ where
             height `{boundary_height}` is already known; no action necessary",
         );
 
-        // Forward the finalization to the sender. This operation is best-effort.
         boundary_certificates_sender
             .send(
                 Recipients::One(from),
