@@ -30,22 +30,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// Starts a new reward stream for the token contract.
     ///
     /// This function allows an authorized user to fund a reward stream that distributes
-    /// tokens to opted-in recipients either immediately (if seconds=0) or over time.
-    ///
-    /// # Arguments
-    ///
-    /// * `msg_sender` - The address funding the reward stream
-    /// * `call` - The reward parameters including amount and duration
-    ///
-    /// # Returns
-    ///
-    /// Returns the stream ID (0 for immediate payouts, incrementing ID for streams)
-    ///
-    /// # Errors
-    ///
-    /// * `invalid_amount` - If the reward amount is zero
-    /// * `insufficient_balance` - If the sender doesn't have enough tokens
-    /// * `no_reward_supplied` - If no users have opted into rewards for immediate payout
+    /// tokens to opted-in recipients either immediately if seconds=0, or over the specified
+    /// duration.
     pub fn start_reward(
         &mut self,
         msg_sender: &Address,
@@ -145,11 +131,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ///
     /// This function updates the reward state for the sender's reward recipient,
     /// reducing their delegated balance and the total opted-in supply.
-    ///
-    /// # Arguments
-    ///
-    /// * `from` - The address sending tokens
-    /// * `amount` - The amount of tokens being transferred
     pub fn handle_sender_rewards(
         &mut self,
         from: &Address,
@@ -178,11 +159,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ///
     /// This function updates the reward state for the receiver's reward recipient,
     /// increasing their delegated balance and the total opted-in supply.
-    ///
-    /// # Arguments
-    ///
-    /// * `to` - The address receiving tokens
-    /// * `amount` - The amount of tokens being transferred
     pub fn handle_receiver_rewards(
         &mut self,
         to: &Address,
@@ -243,10 +219,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// This function calculates the rewards earned by a recipient based on their
     /// delegated balance and the reward per token difference since their last update.
     /// It then transfers the accrued rewards from the contract to the recipient.
-    ///
-    /// # Arguments
-    ///
-    /// * `recipient` - The address to update rewards for
     fn update_rewards(&mut self, recipient: &Address) -> Result<(), TempoPrecompileError> {
         if *recipient == Address::ZERO {
             return Ok(());
@@ -294,11 +266,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ///
     /// This function allows a token holder to designate who should receive their
     /// share of rewards. Setting to zero address opts out of rewards.
-    ///
-    /// # Arguments
-    ///
-    /// * `msg_sender` - The token holder setting their reward recipient
-    /// * `call` - Contains the recipient address to set
     pub fn set_reward_recipient(
         &mut self,
         msg_sender: &Address,
@@ -373,20 +340,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ///
     /// This function allows the funder of a reward stream to cancel it early,
     /// stopping future reward distribution and refunding unused tokens.
-    ///
-    /// # Arguments
-    ///
-    /// * `msg_sender` - The address requesting the cancellation (must be stream funder)
-    /// * `call` - Contains the stream ID to cancel
-    ///
-    /// # Returns
-    ///
-    /// Returns the amount of tokens refunded to the funder
-    ///
-    /// # Errors
-    ///
-    /// * `stream_inactive` - If the stream doesn't exist or has already ended
-    /// * `not_stream_funder` - If the caller is not the original funder
     pub fn cancel_reward(
         &mut self,
         msg_sender: &Address,
