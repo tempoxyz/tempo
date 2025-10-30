@@ -6,6 +6,7 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
+use alloy_primitives::TxKind;
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
@@ -48,7 +49,7 @@ async fn fund_address_with_fee_tokens(
             value: U256::ZERO,
             input: transfer_calldata.into(),
         }],
-        nonce_key: 0,
+        nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(funder_addr).await?,
         fee_token: None,
         fee_payer_signature: None,
@@ -532,7 +533,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 0, // Protocol nonce (key 0)
+        nonce_key: U256::ZERO, // Protocol nonce (key 0)
         nonce,
         fee_token: None, // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
@@ -619,7 +620,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 0, // Protocol nonce - should work
+        nonce_key: U256::ZERO, // Protocol nonce - should work
         nonce,
         fee_token: None,
         fee_payer_signature: None,
@@ -670,7 +671,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 1, // Parallel nonce - should be rejected
+        nonce_key: U256::ONE, // Parallel nonce - should be rejected
         nonce: 0,
         fee_token: None,
         fee_payer_signature: None,
@@ -763,9 +764,9 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 0,    // Protocol nonce
-        nonce: 0,        // First transaction
-        fee_token: None, // Will use DEFAULT_FEE_TOKEN from genesis
+        nonce_key: U256::ZERO, // Protocol nonce
+        nonce: 0,              // First transaction
+        fee_token: None,       // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -954,7 +955,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 0,
+        nonce_key: U256::ZERO,
         nonce: nonce_seq,
         fee_token: None,
         fee_payer_signature: None,
@@ -1314,7 +1315,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 500_000, // Higher gas limit for multiple calls
         calls,              // Multiple batched calls
-        nonce_key: 0,
+        nonce_key: U256::ZERO,
         nonce: 0, // First transaction from P256 signer
         fee_token: None,
         fee_payer_signature: None,
@@ -1539,9 +1540,9 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 0,    // Protocol nonce
-        nonce: 0,        // First transaction for user
-        fee_token: None, // Use DEFAULT_FEE_TOKEN
+        nonce_key: U256::ZERO, // Protocol nonce
+        nonce: 0,              // First transaction for user
+        fee_token: None,       // Use DEFAULT_FEE_TOKEN
         fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)), // Placeholder
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -1666,7 +1667,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 100_000,
         calls: vec![], // EMPTY call batch - properly encoded but fails validation
-        nonce_key: 0,
+        nonce_key: U256::ZERO,
         nonce,
         fee_token: None,
         fee_payer_signature: None,
@@ -2028,5 +2029,85 @@ async fn test_aa_authorization_list() -> eyre::Result<()> {
 
     println!("verification successful");
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+
+    // Verify alice has ZERO native ETH (this is expected - gas paid via fee tokens)
+    let alice_eth_balance = provider.get_balance(alice_addr).await?;
+    assert_eq!(
+        alice_eth_balance,
+        U256::ZERO,
+        "Test accounts should have zero ETH balance"
+    );
+
+    println!("Alice address: {alice_addr}");
+    println!("Alice ETH balance: {alice_eth_balance} (expected: 0)");
+
+    // Get alice's current nonce (protocol nonce, key 0)
+    let nonce = provider.get_transaction_count(alice_addr).await?;
+    println!("Alice nonce: {nonce}");
+
+    // Create AA transaction with secp256k1 signature and protocol nonce
+    let tx = TxAA {
+        chain_id: provider.get_chain_id().await?,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 100_000,
+        calls: vec![Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: alloy_primitives::bytes!("0xef"),
+        }],
+        nonce_key: U256::ZERO, // Protocol nonce (key 0)
+        nonce,
+        valid_before: Some(u64::MAX),
+        ..Default::default()
+    };
+
+    println!("Created AA transaction with secp256k1 signature");
+
+    // Sign the transaction with secp256k1
+    let sig_hash = tx.signature_hash();
+    let signature = alice_signer.sign_hash_sync(&sig_hash)?;
+    let aa_signature = AASignature::Secp256k1(signature);
+    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
+
+    // Convert to envelope and encode
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    println!(
+        "Encoded AA transaction: {} bytes (type: 0x{:02x})",
+        encoded.len(),
+        encoded[0]
+    );
+
+    // Inject transaction and mine block
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
+    let payload = setup.node.advance_block().await?;
+
+    println!(
+        "✓ AA transaction mined in block {}",
+        payload.block().inner.number
+    );
+
+    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
+    verify_tx_in_block_via_rpc(&provider, &encoded, &envelope).await?;
+
+    // Verify alice's nonce incremented (protocol nonce)
+    // This proves the transaction was successfully mined and executed
+    let alice_nonce_after = provider.get_transaction_count(alice_addr).await?;
+    assert_eq!(
+        alice_nonce_after,
+        nonce + 1,
+        "Protocol nonce should increment"
+    );
     Ok(())
 }

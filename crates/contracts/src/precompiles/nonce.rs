@@ -15,7 +15,7 @@ sol! {
         /// @param account The account address
         /// @param nonceKey The nonce key (must be > 0, protocol nonce key 0 not supported)
         /// @return nonce The current nonce value
-        function getNonce(address account, uint64 nonceKey) external view returns (uint64 nonce);
+        function getNonce(address account, uint256 nonceKey) external view returns (uint64 nonce);
 
         /// Get the number of active nonce keys for an account
         /// @param account The account address
@@ -23,7 +23,7 @@ sol! {
         function getActiveNonceKeyCount(address account) external view returns (uint256 count);
 
         // Events
-        event NonceIncremented(address indexed account, uint64 indexed nonceKey, uint64 newNonce);
+        event NonceIncremented(address indexed account, uint256 indexed nonceKey, uint64 newNonce);
         event ActiveKeyCountChanged(address indexed account, uint256 newCount);
 
         // Errors
