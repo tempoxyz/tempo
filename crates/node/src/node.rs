@@ -2,10 +2,7 @@ use crate::{
     TempoPayloadTypes,
     args::TempoArgs,
     engine::TempoEngineValidator,
-    rpc::{
-        TempoDexApiServer, TempoEthApiBuilder,
-        dex::{DexApiError, TempoDex},
-    },
+    rpc::{TempoDexApiServer, TempoEthApiBuilder, dex::TempoDex},
 };
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
@@ -30,7 +27,7 @@ use reth_node_builder::{
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
-use reth_rpc_eth_api::{EthApiTypes, RpcNodeCore};
+use reth_rpc_eth_api::RpcNodeCore;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::TransactionValidationTaskExecutor;
 use std::{default::Default, sync::Arc, time::SystemTime};
@@ -132,8 +129,8 @@ where
     EthB: EthApiBuilder<N>,
     PVB: Send + PayloadValidatorBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
-    EthB::EthApi: RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>
-        + EthApiTypes<Error = DexApiError>,
+    EthB::EthApi:
+        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
 {
     type Handle = <RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB> as NodeAddOns<N>>::Handle;
 
@@ -161,8 +158,8 @@ where
     EthB: EthApiBuilder<N>,
     PVB: PayloadValidatorBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
-    EthB::EthApi: RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>
-        + EthApiTypes<Error = DexApiError>,
+    EthB::EthApi:
+        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
 {
     type EthApi = EthB::EthApi;
 

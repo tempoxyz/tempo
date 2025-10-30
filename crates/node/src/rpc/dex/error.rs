@@ -104,7 +104,7 @@ where
 {
     fn from(value: EVMError<T, TempoInvalidTransaction>) -> Self {
         match value {
-            EVMError::Transaction(err) => Self::InvalidTransaction(err.into()),
+            EVMError::Transaction(err) => Self::InvalidTransaction(err),
             EVMError::Database(err) => Self::Eth(err.into()),
             EVMError::Header(err) => Self::Eth(err.into()),
             EVMError::Custom(err) => Self::Eth(EthApiError::EvmCustom(err)),
