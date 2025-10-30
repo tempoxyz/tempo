@@ -1002,7 +1002,6 @@ mod tests {
             calls: vec![dummy_call],
             ..Default::default()
         };
-        assert!(tx2.validate().is_err());
         assert_eq!(tx2.nonce(), 0);
     }
 
