@@ -18,7 +18,6 @@ use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Block as _,
-    marshal::ingress::mailbox::Identifier,
     types::{Epoch, Round, View},
 };
 use commonware_macros::select;
@@ -31,14 +30,14 @@ use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
-    future::{Either, always_ready, try_join},
+    future::{Either, always_ready, ready, try_join},
 };
 use rand::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
-use reth_provider::{BlockNumReader as _, BlockReader as _};
+use reth_provider::BlockReader as _;
 use tokio::sync::RwLock;
 use tracing::{Level, debug, error, error_span, info, instrument, warn};
 
@@ -259,8 +258,8 @@ impl Inner<Init> {
                 // XXX: the None case here should not be hit:
                 // 1. an epoch transition is triggered by the application
                 // finalizing the last block of the outgoing epoch.
-                // 2. the finalized block is received from the marshaller (here
-                // called syncer), so we know it must be available and indexed
+                // 2. the finalized block is received from the marshal actor,
+                // so we know it must be available and indexed
                 // by the marshaller.
                 // 3. this means this call should always succeed.
                 //
@@ -300,7 +299,7 @@ impl Inner<Init> {
             round,
         } = request;
 
-        let mut proposal = select!(
+        let (mut proposal, grandparent_info) = select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
@@ -349,12 +348,14 @@ impl Inner<Init> {
         }
 
         let proposal_digest = proposal.digest();
+        let proposal_height = proposal.height();
 
         info!(
             proposal.digest = %proposal_digest,
-            proposal.height = %proposal.height(),
+            proposal.height = %proposal_height,
             "constructed proposal",
         );
+
         response.send(proposal_digest).map_err(|_| {
             eyre!(
                 "failed returning proposal to consensus engine: response channel was already closed"
@@ -375,7 +376,7 @@ impl Inner<Init> {
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize(None, proposal_digest)
+            .canonicalize((proposal_height, proposal_digest), grandparent_info)
         {
             warn!(
                 %error,
@@ -430,13 +431,17 @@ impl Inner<Init> {
         // the event reporting the result of the verification.
         let _ = report_verification_result(response, &result);
 
-        if let Ok((block, true)) = result {
+        // 2. make the forkchoice state available && cache the block
+        if let Ok((block, grandparent_info, true)) = result {
             // Only make the verified block canonical when not doing a
             // re-propose at the end of an epoch.
             if parent.1 != payload
-                && let Err(error) = self.state.executor_mailbox.canonicalize(None, payload)
+                && let Err(error) = self
+                    .state
+                    .executor_mailbox
+                    .canonicalize((block.height(), block.digest()), grandparent_info)
             {
-                warn!(
+                tracing::warn!(
                     %error,
                     "failed making the verified proposal the head of the canonical chain",
                 );
@@ -451,7 +456,7 @@ impl Inner<Init> {
         parent_view: View,
         parent_digest: Digest,
         round: Round,
-    ) -> eyre::Result<Block> {
+    ) -> eyre::Result<(Block, (u64, Digest))> {
         let genesis_block = self.genesis_block.clone();
         let parent_request = if parent_digest == genesis_block.digest() {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
@@ -470,24 +475,47 @@ impl Inner<Init> {
 
         debug!(height = parent.height(), "retrieved parent block",);
 
+        let grandparent_digest = parent.parent_digest();
+        let grandparent_info = if parent.digest() == genesis_block.digest()
+            || grandparent_digest == genesis_block.digest()
+        {
+            Either::Left(ready(Some((0, genesis_block.digest()))))
+        } else {
+            Either::Right(self.marshal.get_info(&grandparent_digest))
+        }
+        .await
+        .ok_or_else(|| {
+            eyre!(
+                "could not find information on the grand parent, digest `{}`, \
+                height `{}`",
+                parent.parent_digest(),
+                parent.height(),
+            )
+        })?;
+
         // XXX: Re-propose the parent if the parent is the last height of the
         // epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
         if epoch::is_last_height_of_epoch(parent.height(), round.epoch(), self.epoch_length) {
             info!("last height of epoch reached; re-proposing parent");
-            return Ok(parent);
+            return Ok((parent, grandparent_info));
         }
 
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+            .canonicalize((parent.height(), parent.digest()), grandparent_info)
         {
-            warn!(
+            tracing::warn!(
                 %error,
-                "failed making the proposal's parent the head of the canonical chain",
+                parent.height = parent.height(),
+                parent.digest = %parent.digest(),
+                grandparent.height = grandparent_info.0,
+                grandparent.digest = %grandparent_info.1,
+                "failed canonicalizing parent and grandparent",
             );
         }
+
         let attrs = TempoPayloadBuilderAttributes::new(
             // XXX: derives the payload ID from the parent so that
             // overlong payload builds will eventually succeed on the
@@ -535,7 +563,10 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
-        Ok(Block::from_execution_block(payload.block().clone()))
+        Ok((
+            Block::from_execution_block(payload.block().clone()),
+            grandparent_info,
+        ))
     }
 
     async fn verify<TContext: Pacer>(
@@ -544,7 +575,7 @@ impl Inner<Init> {
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         round: Round,
-    ) -> eyre::Result<(Block, bool)> {
+    ) -> eyre::Result<(Block, (u64, Digest), bool)> {
         let genesis_block = self.genesis_block.clone();
         let parent_request = if parent_digest == genesis_block.digest() {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
@@ -566,6 +597,24 @@ impl Inner<Init> {
             .await
             .wrap_err("failed getting required blocks from syncer")?;
 
+        let grandparent_digest = parent.parent_digest();
+        let grandparent_info = if parent.digest() == genesis_block.digest()
+            || grandparent_digest == genesis_block.digest()
+        {
+            Either::Left(ready(Some((0, genesis_block.digest()))))
+        } else {
+            Either::Right(self.marshal.get_info(&grandparent_digest))
+        }
+        .await
+        .ok_or_else(|| {
+            eyre!(
+                "could not find information on the grand parent, digest `{}`, \
+                height `{}`",
+                parent.parent_digest(),
+                parent.height(),
+            )
+        })?;
+
         // Can only repropose at the end of an epoch.
         //
         // NOTE: fetching block and parent twice (in the case block == parent)
@@ -574,9 +623,9 @@ impl Inner<Init> {
         // general case.
         if payload == parent_digest {
             if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length) {
-                return Ok((block, true));
+                return Ok((block, grandparent_info, true));
             } else {
-                return Ok((block, false));
+                return Ok((block, grandparent_info, false));
             }
         }
 
@@ -599,7 +648,7 @@ impl Inner<Init> {
                         error = %eyre::Report::new(error),
                         "cannot decode extra data header field of boundary block as public ceremony outcome; failing block",
                     );
-                    return Ok((block, false));
+                    return Ok((block, grandparent_info, false));
                 }
                 Ok(block_outcome) => block_outcome,
             };
@@ -611,18 +660,22 @@ impl Inner<Init> {
                     block.public = ?block_outcome.public,
                     "our public dkg ceremont outcome does not match what's stored in the block; failing block",
                 );
-                return Ok((block, false));
+                return Ok((block, grandparent_info, false));
             }
         };
 
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+            .canonicalize((parent.height(), parent.digest()), grandparent_info)
         {
-            warn!(
+            tracing::warn!(
                 %error,
-                "failed setting the proposal's parent as the head of the canonical chain",
+                parent.height = parent.height(),
+                parent.digest = %parent.digest(),
+                grandparent.height = grandparent_info.0,
+                grandparent.digest = %grandparent_info.1,
+                "failed canonicalizing parent and grandparent",
             );
         }
 
@@ -640,7 +693,7 @@ impl Inner<Init> {
         .await
         .wrap_err("failed verifying block against execution layer")?;
 
-        Ok((block, is_good))
+        Ok((block, grandparent_info, is_good))
     }
 }
 
@@ -653,45 +706,13 @@ impl Inner<Uninit> {
     /// 2. starting the canonical chain engine and storing its handle.
     #[instrument(skip_all, err)]
     async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
-        mut self,
+        self,
         context: TContext,
         dkg_manager: crate::dkg::manager::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
-        // TODO(janis): does this have the potential to stall indefinitely?
-        // If so, we should have some kind of heartbeat to inform telemetry.
-        let (finalized_consensus_height, finalized_consensus_digest) = self
-            .marshal
-            .get_info(Identifier::Latest)
-            .await
-            .unwrap_or_else(|| {
-                info!(
-                    "marshal actor returned nothing for the latest block; \
-                    cannot distinguish between the actor failing or us still \
-                    being at genesis; using height 0 and genesis digest; \
-                    consider looking at logs"
-                );
-                (0, self.genesis_block.digest())
-            });
-
-        let latest_execution_block_number =
-            self.execution_node.provider.last_block_number().wrap_err(
-                "failed getting last block number from execution layer; cannot \
-                continue without it",
-            )?;
-
-        info!(
-            finalized_consensus_height,
-            %finalized_consensus_digest,
-            latest_execution_block_number,
-            "consensus and execution layers reported their latest local state; \
-            setting forkchoice-state and catching up execution layer, if \
-            necessary",
-        );
-
         let executor = executor::Builder {
             execution_node: self.execution_node.clone(),
             genesis_block: self.genesis_block.clone(),
-            latest_finalized_digest: finalized_consensus_digest,
             marshal: self.marshal.clone(),
         }
         .build(context.with_label("executor"));
@@ -815,10 +836,10 @@ fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
 #[instrument(skip_all, err)]
 fn report_verification_result(
     response: oneshot::Sender<bool>,
-    verification_result: &eyre::Result<(Block, bool)>,
+    verification_result: &eyre::Result<(Block, (u64, Digest), bool)>,
 ) -> eyre::Result<()> {
     match &verification_result {
-        Ok((_, is_good)) => {
+        Ok((_, _, is_good)) => {
             info!(
                 proposal_valid = is_good,
                 "returning proposal verification result to consensus",
