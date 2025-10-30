@@ -9,7 +9,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
+use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
     Block as _,
     marshal::{self, ingress::mailbox::Identifier},
@@ -155,14 +155,8 @@ where
 
         self.canonicalize(
             Span::current(),
-            (
-                finalized_consensus_height,
-                finalized_consensus_digest.clone(),
-            ),
-            (
-                finalized_consensus_height,
-                finalized_consensus_digest.clone(),
-            ),
+            (finalized_consensus_height, finalized_consensus_digest),
+            (finalized_consensus_height, finalized_consensus_digest),
         )
         .await
         .wrap_err("failed setting initial canonical state; can't go on like this")?;
@@ -382,7 +376,7 @@ where
         if block.height() > finalized_height {
             let finalized = (block.height(), block.digest());
             let head = if finalized.0 > head_height {
-                finalized.clone()
+                finalized
             } else {
                 (head_height, Digest(forkchoice.head_block_hash))
             };

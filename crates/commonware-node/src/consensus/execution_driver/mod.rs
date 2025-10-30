@@ -425,7 +425,7 @@ impl Inner<Init> {
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize((parent.height(), parent.digest()), grandparent_info.clone())
+            .canonicalize((parent.height(), parent.digest()), grandparent_info)
         {
             tracing::warn!(
                 %error,
@@ -542,7 +542,7 @@ impl Inner<Init> {
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize((parent.height(), parent.digest()), grandparent_info.clone())
+            .canonicalize((parent.height(), parent.digest()), grandparent_info)
         {
             tracing::warn!(
                 %error,
