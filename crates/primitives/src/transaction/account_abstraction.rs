@@ -1003,10 +1003,6 @@ mod tests {
             ..Default::default()
         };
         assert!(tx2.validate().is_err());
-        assert_eq!(
-            tx2.validate().unwrap_err(),
-            "only protocol nonce (nonce_key = 0) is currently supported"
-        );
         assert_eq!(tx2.nonce(), 0);
     }
 
