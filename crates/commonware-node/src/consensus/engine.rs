@@ -30,6 +30,7 @@ use tempo_node::TempoFullNode;
 
 use crate::{
     config::{BACKFILL_QUOTA, BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES},
+    consensus::application,
     dkg,
     epoch::{self, Coordinator, SchemeProvider},
     subblocks::{SubBlocksHandle, SubBlocksService},
@@ -181,8 +182,8 @@ where
             self.execution_node.clone(),
         );
 
-        let execution_driver = super::execution_driver::ExecutionDriverBuilder {
-            context: self.context.with_label("execution_driver"),
+        let (application, application_mailbox) = application::init(super::application::Config {
+            context: self.context.with_label("application"),
             // TODO: pass in from the outside,
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
@@ -191,15 +192,13 @@ where
             new_payload_wait_time: self.new_payload_wait_time,
             subblocks: subblocks_handle.clone(),
             epoch_length: self.epoch_length,
-        }
-        .build()
-        .wrap_err("failed initializing execution driver")?;
-
-        let execution_driver_mailbox = execution_driver.mailbox().clone();
+        })
+        .await
+        .wrap_err("failed initializing application actor")?;
 
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             epoch::manager::Config {
-                application: execution_driver_mailbox.clone(),
+                application: application_mailbox.clone(),
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
                 epoch_length: self.epoch_length,
@@ -244,8 +243,8 @@ where
             dkg_manager,
             dkg_manager_mailbox,
 
-            execution_driver,
-            execution_driver_mailbox,
+            application,
+            application_mailbox,
 
             resolver_config,
             marshal,
@@ -285,8 +284,8 @@ where
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
-    execution_driver: crate::consensus::execution_driver::ExecutionDriver<TContext>,
-    execution_driver_mailbox: crate::consensus::execution_driver::ExecutionDriverMailbox,
+    application: application::Actor<TContext>,
+    application_mailbox: application::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
     resolver_config: marshal::resolver::p2p::Config<PublicKey, Coordinator>,
@@ -395,15 +394,13 @@ where
         ),
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_network);
-        let execution_driver = self
-            .execution_driver
-            .start(self.dkg_manager_mailbox.clone());
+        let application = self.application.start(self.dkg_manager_mailbox.clone());
 
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, backfill_network);
 
         let syncer = self.marshal.start(
-            Reporters::from((self.execution_driver_mailbox, self.dkg_manager_mailbox)),
+            Reporters::from((self.application_mailbox, self.dkg_manager_mailbox)),
             self.broadcast_mailbox,
             resolver,
         );
@@ -419,9 +416,9 @@ where
         let dkg_manager = self.dkg_manager.start(dkg_channel);
 
         try_join_all(vec![
+            application,
             broadcast,
             epoch_manager,
-            execution_driver,
             syncer,
             dkg_manager,
             subblocks,

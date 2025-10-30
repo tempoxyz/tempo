@@ -17,7 +17,7 @@ sol! {
     /// The exchange operates on pairs between base tokens and their designated quote tokens,
     /// using a tick-based pricing system for precise order matching.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     interface IStablecoinExchange {
         // Structs
         struct Order {
