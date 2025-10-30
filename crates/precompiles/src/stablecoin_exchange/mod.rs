@@ -29,6 +29,9 @@ use crate::{
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 
+/// Minimum order size (dust limit): $100 with 6 decimals = 100_000_000
+pub const DUST_LIMIT: u128 = 100_000_000;
+
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
 /// Returns None if overflow would occur
@@ -464,6 +467,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
         }
 
+        // Validate order amount meets dust limit
+        if amount < DUST_LIMIT {
+            return Err(
+                StablecoinExchangeError::below_minimum_order_size(amount, DUST_LIMIT).into(),
+            );
+        }
+
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
@@ -539,6 +549,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Validate flip_tick relationship to tick based on order side
         if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
             return Err(StablecoinExchangeError::invalid_flip_tick().into());
+        }
+
+        // Validate order amount meets dust limit
+        if amount < DUST_LIMIT {
+            return Err(
+                StablecoinExchangeError::below_minimum_order_size(amount, DUST_LIMIT).into(),
+            );
         }
 
         // Calculate escrow amount and token based on order side
