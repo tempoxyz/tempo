@@ -1,8 +1,8 @@
-//! Drives the execution engine by forwarding consensus messages.
+//! The actor running the application event loop.
 //!
 //! # On the usage of the commonware-pacer
 //!
-//! The execution driver will contain `Pacer::pace` calls for all interactions
+//! The actor will contain `Pacer::pace` calls for all interactions
 //! with the execution layer. This is a no-op in production because the
 //! commonware tokio runtime ignores these. However, these are critical in
 //! e2e tests using the commonware deterministic runtime: since the execution
@@ -17,9 +17,8 @@ use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
-    Automaton, Block as _, Epochable, Relay, Reporter,
+    Block as _,
     marshal::ingress::mailbox::Identifier,
-    simplex::types::Context,
     types::{Epoch, Round, View},
 };
 use commonware_macros::select;
@@ -30,7 +29,7 @@ use commonware_runtime::{
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
 use futures::{
-    SinkExt as _, StreamExt as _, TryFutureExt as _,
+    StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
     future::{Either, always_ready, try_join},
 };
@@ -45,52 +44,39 @@ use tracing::{Level, debug, error, error_span, info, instrument, warn};
 
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
-mod executor;
-
+use super::{
+    Mailbox, executor,
+    executor::ExecutorMailbox,
+    ingress::{Broadcast, Finalized, Genesis, Message, Propose, Verify},
+};
 use crate::{
-    consensus::{Digest, execution_driver::executor::ExecutorMailbox},
+    consensus::{Digest, block::Block},
     dkg::PublicOutcome,
     epoch,
 };
 
-use super::block::Block;
+pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
+    context: ContextCell<TContext>,
+    mailbox: mpsc::Receiver<Message>,
 
-pub(super) struct ExecutionDriverBuilder<TContext> {
-    /// The execution context of the commonwarexyz application (tokio runtime, etc).
-    pub(super) context: TContext,
-
-    /// Used as PayloadAttributes.suggested_fee_recipient
-    pub(super) fee_recipient: alloy_primitives::Address,
-
-    /// Number of messages from consensus to hold in our backlog
-    /// before blocking.
-    pub(super) mailbox_size: usize,
-
-    /// For subscribing to blocks distributed via the consensus p2p network.
-    pub(super) marshal: crate::alias::marshal::Mailbox,
-
-    /// A handle to the execution node to verify and create new payloads.
-    pub(super) execution_node: TempoFullNode,
-
-    /// The minimum amount of time to wait before resolving a new payload from the builder
-    pub(super) new_payload_wait_time: Duration,
-
-    /// The number of heights H in an epoch. For a given epoch E, all heights
-    /// `E*H+1` to and including `(E+1)*H` make up the epoch. The block at
-    /// `E*H` is said to be the genesis (or parent) of the epoch.
-    pub(super) epoch_length: u64,
+    inner: Inner<TState>,
 }
 
-impl<TContext> ExecutionDriverBuilder<TContext>
+impl<TContext, TState> Actor<TContext, TState> {
+    pub(super) fn mailbox(&self) -> &Mailbox {
+        &self.inner.my_mailbox
+    }
+}
+
+impl<TContext> Actor<TContext, Uninit>
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    /// Builds the uninitialized execution driver.
-    pub(super) fn build(self) -> eyre::Result<ExecutionDriver<TContext, Uninit>> {
-        let (tx, rx) = mpsc::channel(self.mailbox_size);
-        let my_mailbox = ExecutionDriverMailbox::from_sender(tx);
+    pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
+        let (tx, rx) = mpsc::channel(config.mailbox_size);
+        let my_mailbox = Mailbox::from_sender(tx);
 
-        let block = self
+        let block = config
             .execution_node
             .provider
             .block_by_number(0)
@@ -98,46 +84,28 @@ where
             .and_then(|maybe| maybe.ok_or_eyre("block reader returned empty genesis block"))
             .wrap_err("failed reading genesis block from execution node")?;
 
-        Ok(ExecutionDriver {
-            context: ContextCell::new(self.context),
+        Ok(Self {
+            context: ContextCell::new(config.context),
             mailbox: rx,
 
             inner: Inner {
-                fee_recipient: self.fee_recipient,
-                epoch_length: self.epoch_length,
-                new_payload_wait_time: self.new_payload_wait_time,
+                fee_recipient: config.fee_recipient,
+                epoch_length: config.epoch_length,
+                new_payload_wait_time: config.new_payload_wait_time,
 
                 my_mailbox,
-                marshal: self.marshal,
+                marshal: config.marshal,
 
                 genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
 
-                execution_node: self.execution_node,
+                execution_node: config.execution_node,
 
                 state: Uninit(()),
             },
         })
     }
-}
 
-pub(super) struct ExecutionDriver<TContext, TState = Uninit> {
-    context: ContextCell<TContext>,
-    mailbox: mpsc::Receiver<Message>,
-
-    inner: Inner<TState>,
-}
-
-impl<TContext, TState> ExecutionDriver<TContext, TState> {
-    pub(super) fn mailbox(&self) -> &ExecutionDriverMailbox {
-        &self.inner.my_mailbox
-    }
-}
-
-impl<TContext> ExecutionDriver<TContext, Uninit>
-where
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
-{
-    /// Runs the execution driver until it is externally stopped.
+    /// Runs the actor until it is externally stopped.
     async fn run_until_stopped(self, dkg_manager: crate::dkg::manager::Mailbox) {
         let Self {
             context,
@@ -151,7 +119,7 @@ where
             return;
         };
 
-        ExecutionDriver {
+        Actor {
             context,
             mailbox,
             inner: initialized,
@@ -160,16 +128,18 @@ where
         .await
     }
 
-    pub(super) fn start(mut self, dkg_manager: crate::dkg::manager::Mailbox) -> Handle<()> {
+    pub(in crate::consensus) fn start(
+        mut self,
+        dkg_manager: crate::dkg::manager::Mailbox,
+    ) -> Handle<()> {
         spawn_cell!(self.context, self.run_until_stopped(dkg_manager).await)
     }
 }
 
-impl<TContext> ExecutionDriver<TContext, Init>
+impl<TContext> Actor<TContext, Init>
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    /// Runs the initialized execution driver.
     async fn run_until_stopped(mut self) {
         while let Some(msg) = self.mailbox.next().await {
             if let Err(error) = self.handle_message(msg) {
@@ -228,7 +198,7 @@ struct Inner<TState> {
     epoch_length: u64,
     new_payload_wait_time: Duration,
 
-    my_mailbox: ExecutionDriverMailbox,
+    my_mailbox: Mailbox,
 
     marshal: crate::alias::marshal::Mailbox,
 
@@ -675,7 +645,7 @@ impl Inner<Init> {
 }
 
 impl Inner<Uninit> {
-    /// Returns a fully initialized execution driver using runtime information.
+    /// Returns a fully initialized actor using runtime information.
     ///
     /// This includes:
     ///
@@ -747,11 +717,11 @@ impl Inner<Uninit> {
     }
 }
 
-/// Marker type to signal that the execution driver is not fully initialized.
+/// Marker type to signal that the actor is not fully initialized.
 #[derive(Clone, Debug)]
-pub(super) struct Uninit(());
+pub(in crate::consensus) struct Uninit(());
 
-/// Carries the runtime initialized state of the execution driver.
+/// Carries the runtime initialized state of the application.
 #[derive(Clone, Debug)]
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<Block>>>,
@@ -830,193 +800,6 @@ async fn verify_block<TContext: Pacer>(
         }
     }
 }
-
-impl Automaton for ExecutionDriverMailbox {
-    type Context = Context<Self::Digest>;
-
-    type Digest = Digest;
-
-    async fn genesis(&mut self, epoch: <Self::Context as Epochable>::Epoch) -> Self::Digest {
-        let (tx, rx) = oneshot::channel();
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
-        self.to_execution_driver
-            .send(
-                Genesis {
-                    epoch,
-                    response: tx,
-                }
-                .into(),
-            )
-            .await
-            .expect("application is present and ready to receive genesis");
-        rx.await
-            .expect("application returns the digest of the genesis")
-    }
-
-    async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
-        //
-        // XXX: comment taken from alto - what does this mean? is this relevant to us?
-        // > If we linked payloads to their parent, we would verify
-        // > the parent included in the payload matches the provided `Context`.
-        let (tx, rx) = oneshot::channel();
-        self.to_execution_driver
-            .send(
-                Propose {
-                    parent: context.parent,
-                    response: tx,
-                    round: context.round,
-                }
-                .into(),
-            )
-            .await
-            .expect("application is present and ready to receive proposals");
-        rx
-    }
-
-    async fn verify(
-        &mut self,
-        context: Self::Context,
-        payload: Self::Digest,
-    ) -> oneshot::Receiver<bool> {
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
-        //
-        // XXX: comment taken from alto - what does this mean? is this relevant to us?
-        // > If we linked payloads to their parent, we would verify
-        // > the parent included in the payload matches the provided `Context`.
-        let (tx, rx) = oneshot::channel();
-        self.to_execution_driver
-            .send(
-                Verify {
-                    parent: context.parent,
-                    payload,
-                    round: context.round,
-                    response: tx,
-                }
-                .into(),
-            )
-            .await
-            .expect("application is present and ready to receive verify requests");
-        rx
-    }
-}
-
-impl Relay for ExecutionDriverMailbox {
-    type Digest = Digest;
-
-    async fn broadcast(&mut self, digest: Self::Digest) {
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
-        self.to_execution_driver
-            .send(Broadcast { payload: digest }.into())
-            .await
-            .expect("application is present and ready to receive broadcasts");
-    }
-}
-
-impl Reporter for ExecutionDriverMailbox {
-    type Activity = Block;
-
-    async fn report(&mut self, block: Self::Activity) {
-        let (response, rx) = oneshot::channel();
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
-        self.to_execution_driver
-            .send(Finalized { block, response }.into())
-            .await
-            .expect("application is present and ready to receive broadcasts");
-
-        // XXX: This is used as an acknowledgement that the application
-        // finalized the block:
-        // Response on this channel -> future returns -> marshaller gets an ack
-        //
-        // TODO(janis): report if this channel gets dropped?
-        let _ = rx.await;
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct ExecutionDriverMailbox {
-    to_execution_driver: mpsc::Sender<Message>,
-}
-
-impl ExecutionDriverMailbox {
-    fn from_sender(to_execution_driver: mpsc::Sender<Message>) -> Self {
-        Self {
-            to_execution_driver,
-        }
-    }
-}
-
-/// Messages forwarded from consensus to execution driver.
-// TODO: add trace spans into all of these messages.
-enum Message {
-    Broadcast(Broadcast),
-    Finalized(Box<Finalized>),
-    Genesis(Genesis),
-    Propose(Propose),
-    Verify(Verify),
-}
-
-struct Genesis {
-    epoch: Epoch,
-    response: oneshot::Sender<Digest>,
-}
-
-impl From<Genesis> for Message {
-    fn from(value: Genesis) -> Self {
-        Self::Genesis(value)
-    }
-}
-
-struct Propose {
-    parent: (View, Digest),
-    response: oneshot::Sender<Digest>,
-    round: Round,
-}
-
-impl From<Propose> for Message {
-    fn from(value: Propose) -> Self {
-        Self::Propose(value)
-    }
-}
-
-struct Broadcast {
-    payload: Digest,
-}
-
-impl From<Broadcast> for Message {
-    fn from(value: Broadcast) -> Self {
-        Self::Broadcast(value)
-    }
-}
-
-struct Verify {
-    parent: (View, Digest),
-    payload: Digest,
-    response: oneshot::Sender<bool>,
-    round: Round,
-}
-
-impl From<Verify> for Message {
-    fn from(value: Verify) -> Self {
-        Self::Verify(value)
-    }
-}
-
-#[derive(Debug)]
-struct Finalized {
-    block: Block,
-    response: oneshot::Sender<()>,
-}
-
-impl From<Finalized> for Message {
-    fn from(value: Finalized) -> Self {
-        Self::Finalized(value.into())
-    }
-}
-
 /// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
 fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
     PayloadId::new(

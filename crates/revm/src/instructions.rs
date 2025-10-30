@@ -1,10 +1,8 @@
 use crate::evm::TempoContext;
-use reth_evm::{
-    Database,
-    revm::{
-        handler::instructions::EthInstructions,
-        interpreter::{Instruction, InstructionContext, interpreter::EthInterpreter, push},
-    },
+use alloy_evm::Database;
+use revm::{
+    handler::instructions::EthInstructions,
+    interpreter::{Instruction, InstructionContext, interpreter::EthInterpreter, push},
 };
 
 /// Instruction ID for opcode returning milliseconds timestamp.

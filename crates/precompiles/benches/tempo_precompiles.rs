@@ -154,41 +154,6 @@ fn tip20_view(c: &mut Criterion) {
         });
     });
 
-    c.bench_function("tip20_nonces", |b| {
-        let admin = Address::from([0u8; 20]);
-        let owner = Address::from([1u8; 20]);
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
-            .unwrap();
-
-        b.iter(|| {
-            let token = black_box(&mut token);
-            let call = black_box(ITIP20::noncesCall { owner });
-            let result = token.nonces(call).unwrap();
-            black_box(result);
-        });
-    });
-
-    c.bench_function("tip20_salts", |b| {
-        let admin = Address::from([0u8; 20]);
-        let owner = Address::from([1u8; 20]);
-        let salt = FixedBytes::<4>::random();
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
-            .unwrap();
-
-        b.iter(|| {
-            let token = black_box(&mut token);
-            let call = black_box(ITIP20::saltsCall { owner, salt });
-            let result = token.salts(call).unwrap();
-            black_box(result);
-        });
-    });
-
     c.bench_function("tip20_supply_cap", |b| {
         let admin = Address::from([0u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
@@ -230,21 +195,6 @@ fn tip20_view(c: &mut Criterion) {
         b.iter(|| {
             let token = black_box(&mut token);
             let result = token.transfer_policy_id().unwrap();
-            black_box(result);
-        });
-    });
-
-    c.bench_function("tip20_domain_separator", |b| {
-        let admin = Address::from([0u8; 20]);
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
-        token
-            .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, &admin)
-            .unwrap();
-
-        b.iter(|| {
-            let token = black_box(&mut token);
-            let result = token.domain_separator().unwrap();
             black_box(result);
         });
     });

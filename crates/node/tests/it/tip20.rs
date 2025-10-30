@@ -201,11 +201,20 @@ async fn test_tip20_mint() -> eyre::Result<()> {
         assert_eq!(balance, *expected_balance);
     }
 
+    token
+        .setSupplyCap(U256::from(u128::MAX))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
     // Try to mint U256::MAX and assert it causes a SupplyCapExceeded error
-    let max_mint_result = token.mint(Address::random(), U256::MAX).call().await;
+    let max_mint_result = token
+        .mint(Address::random(), U256::from(u128::MAX))
+        .call()
+        .await;
     assert!(max_mint_result.is_err(), "Minting U256::MAX should fail");
 
-    // TODO: Update to assert the actual error once Precompile errors are propagated through revm
     let err = max_mint_result.unwrap_err();
     assert_eq!(
         err.as_decoded_interface_error::<TIP20Error>(),

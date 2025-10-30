@@ -1,11 +1,8 @@
 use crate::{
     TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
 };
-use reth_evm::{
-    block::BlockExecutionError,
-    eth::EthBlockExecutorFactory,
-    execute::{BlockAssembler, BlockAssemblerInput},
-};
+use alloy_evm::{block::BlockExecutionError, eth::EthBlockExecutorFactory};
+use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
 use reth_evm_ethereum::EthBlockAssembler;
 use reth_primitives_traits::SealedHeader;
 use std::sync::Arc;

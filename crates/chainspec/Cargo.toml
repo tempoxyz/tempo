@@ -23,6 +23,16 @@ reth-ethereum = { workspace = true, features = ["evm"] }
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
+alloy-hardforks.workspace = true
 
 eyre.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+
+[features]
+default = ["serde"]
+serde = [
+    "alloy-eips/serde",
+    "alloy-hardforks/serde",
+    "alloy-primitives/serde",
+]

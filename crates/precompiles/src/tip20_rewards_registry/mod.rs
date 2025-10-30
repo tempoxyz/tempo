@@ -170,7 +170,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             for addr in tokens {
                 let token_id = address_to_token_id_unchecked(&addr);
                 let mut token = TIP20Token::new(token_id, self.storage);
-                token.finalize_streams()?;
+                token.finalize_streams(next_timestamp)?;
             }
             next_timestamp += 1;
         }
