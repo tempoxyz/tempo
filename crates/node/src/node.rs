@@ -2,7 +2,7 @@ use crate::{
     TempoPayloadTypes,
     args::TempoArgs,
     engine::TempoEngineValidator,
-    rpc::{TempoDex, TempoDexApiServer, TempoEthApiBuilder},
+    rpc::{TempoDex, TempoDexApiServer, TempoEthApiBuilder, TempoToken, TempoTokenApiServer},
 };
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
@@ -139,9 +139,11 @@ where
                 } = container;
 
                 let eth_api = registry.eth_api().clone();
-                let dex = TempoDex::new(eth_api);
+                let dex = TempoDex::new(eth_api.clone());
+                let token = TempoToken::new(eth_api);
 
                 modules.merge_configured(dex.into_rpc())?;
+                modules.merge_configured(token.into_rpc())?;
 
                 Ok(())
             })

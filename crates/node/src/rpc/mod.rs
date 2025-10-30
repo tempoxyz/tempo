@@ -1,9 +1,11 @@
 pub mod dex;
+pub mod token;
 
 mod request;
 
 pub use dex::{TempoDex, TempoDexApiServer};
 pub use request::TempoTransactionRequest;
+pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::{TempoNetwork, node::TempoNode};
 use alloy::{consensus::TxReceipt, primitives::U256};
