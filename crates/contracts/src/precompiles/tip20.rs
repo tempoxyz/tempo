@@ -93,6 +93,8 @@ sol! {
         function setRewardRecipient(address recipient) external;
         function cancelReward(uint64 id) external returns (uint256);
         function finalizeStreams() external;
+        function getStream(uint64 id) external returns (RewardStream);
+        function totalRewardPerSecond() external returns (uint256);
 
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
