@@ -53,10 +53,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 return Err(TIP20Error::no_opted_in_supply().into());
             }
 
-            // TODO: use checked math here
-            let delta_rpt = (call.amount * ACC_PRECISION) / opted_in_supply;
+            let delta_rpt = call
+                .amount
+                .checked_mul(ACC_PRECISION)
+                .and_then(|v| v.checked_div(opted_in_supply))
+                .ok_or(TempoPrecompileError::under_overflow())?;
             let current_rpt = self.get_reward_per_token_stored()?;
-            self.set_reward_per_token_stored(current_rpt + delta_rpt)?;
+            let new_rpt = current_rpt
+                .checked_add(delta_rpt)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_reward_per_token_stored(new_rpt)?;
 
             // Emit reward scheduled event for immediate payout
             self.storage.emit_event(
@@ -72,16 +78,27 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
             Ok(0)
         } else {
-            // TODO: use checked math here
-            let rate = (call.amount * ACC_PRECISION) / U256::from(call.seconds);
+            let rate = call
+                .amount
+                .checked_mul(ACC_PRECISION)
+                .and_then(|v| v.checked_div(U256::from(call.seconds)))
+                .ok_or(TempoPrecompileError::under_overflow())?;
             let stream_id = self.get_next_stream_id()?;
-            self.set_next_stream_id(stream_id + 1)?;
+            let next_stream_id = stream_id
+                .checked_add(1)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_next_stream_id(next_stream_id)?;
 
             let current_total = self.get_total_reward_per_second()?;
-            self.set_total_reward_per_second(current_total + rate)?;
+            let new_total = current_total
+                .checked_add(rate)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_total_reward_per_second(new_total)?;
 
             let current_time = self.storage.timestamp().to::<u128>();
-            let end_time = current_time + call.seconds;
+            let end_time = current_time
+                .checked_add(call.seconds)
+                .ok_or(TempoPrecompileError::under_overflow())?;
 
             RewardStream::new(
                 stream_id,
@@ -94,7 +111,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .store(self.storage, self.token_address)?;
 
             let current_decrease = self.get_scheduled_rate_decrease_at(end_time);
-            self.set_scheduled_rate_decrease_at(end_time, current_decrease + rate)?;
+            let new_decrease = current_decrease
+                .checked_add(rate)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_scheduled_rate_decrease_at(end_time, new_decrease)?;
 
             // Add stream to registry
             let mut registry = TIP20RewardsRegistry::new(self.storage);
@@ -189,10 +209,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         let total_reward_per_second = self.get_total_reward_per_second()?;
         if total_reward_per_second > U256::ZERO {
-            // TODO: use checked math here
-            let delta_rpt = (total_reward_per_second * elapsed) / opted_in_supply;
+            let delta_rpt = total_reward_per_second
+                .checked_mul(elapsed)
+                .and_then(|v| v.checked_div(opted_in_supply))
+                .ok_or(TempoPrecompileError::under_overflow())?;
             let current_rpt = self.get_reward_per_token_stored()?;
-            self.set_reward_per_token_stored(current_rpt + delta_rpt)?;
+            let new_rpt = current_rpt
+                .checked_add(delta_rpt)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_reward_per_token_stored(new_rpt)?;
         }
 
         Ok(())
@@ -212,9 +237,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let reward_per_token_stored = self.get_reward_per_token_stored()?;
         let user_reward_per_token_paid = self.get_user_reward_per_token_paid(recipient)?;
 
-        // TODO: use checked math here
-        let mut accrued =
-            (delegated * (reward_per_token_stored - user_reward_per_token_paid)) / ACC_PRECISION;
+        let mut accrued = reward_per_token_stored
+            .checked_sub(user_reward_per_token_paid)
+            .and_then(|diff| delegated.checked_mul(diff))
+            .and_then(|v| v.checked_div(ACC_PRECISION))
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         self.set_user_reward_per_token_paid(recipient, reward_per_token_stored)?;
 
@@ -373,10 +400,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             U256::ZERO
         };
 
-        // TODO: use checked math here
-        let mut distributed = (stream.rate_per_second_scaled * elapsed) / ACC_PRECISION;
+        let mut distributed = stream
+            .rate_per_second_scaled
+            .checked_mul(elapsed)
+            .and_then(|v| v.checked_div(ACC_PRECISION))
+            .ok_or(TempoPrecompileError::under_overflow())?;
         distributed = distributed.min(stream.amount_total);
-        let remaining = stream.amount_total - distributed;
+        let remaining = stream
+            .amount_total
+            .checked_sub(distributed)
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         let total_rps = self
             .get_total_reward_per_second()?
