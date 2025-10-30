@@ -57,7 +57,7 @@ enum Message {
 pub struct SubBlocksService<Ctx> {
     actions_rx: mpsc::UnboundedReceiver<Message>,
     scheme_provider: SchemeProvider,
-    subblock_builder_handle: Option<Handle<eyre::Result<SubBlock>>>,
+    subblock_builder_handle: Option<Handle<eyre::Result<RecoveredSubBlock>>>,
     validated_subblocks_tx: mpsc::UnboundedSender<RecoveredSubBlock>,
     validated_subblocks_rx: mpsc::UnboundedReceiver<RecoveredSubBlock>,
 
@@ -111,8 +111,9 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                 let _ = response.send(subblocks);
             }
             Message::AddTransaction(transaction) => {
-                if transaction.subblock_proposer().as_ref().map(|v| v.as_ref())
-                    != Some(self.signer.public_key().as_ref())
+                if !transaction
+                    .subblock_proposer()
+                    .is_some_and(|k| k.matches(self.signer.public_key()))
                 {
                     return;
                 }
@@ -170,10 +171,10 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             let transactions = self.subblock_transactions.clone();
             let node = self.node.clone();
             let parent_hash = event.proposal.payload.0;
-            let handle =
-                self.context.clone().shared(true).spawn(move |_| {
-                    build_subblock(transactions, node, parent_hash, num_validators)
-                });
+            let signer = self.signer.clone();
+            let handle = self.context.clone().shared(true).spawn(move |_| {
+                build_subblock(transactions, node, parent_hash, num_validators, signer)
+            });
 
             self.subblock_builder_handle = Some(handle);
         }
@@ -304,12 +305,27 @@ impl Reporter for SubBlocksHandle {
     }
 }
 
+fn evm_at_block(node: &TempoFullNode, hash: BlockHash) -> eyre::Result<TempoE> {
+    let db = State::builder()
+        .with_database(StateProviderDatabase::new(
+            node.provider.state_by_block_hash(parent_hash)?,
+        ))
+        .build();
+    let block = node
+        .provider
+        .sealed_block_with_senders(parent_hash.into(), Default::default())?
+        .ok_or(ProviderError::BestBlockNotFound)?;
+
+    node.evm_config.evm_for_block(db, block.sealed_block())?;
+}
+
 async fn build_subblock(
     transactions: Vec<TempoTxEnvelope>,
     node: TempoFullNode,
     parent_hash: BlockHash,
     num_validators: usize,
-) -> eyre::Result<SubBlock> {
+    signer: PrivateKey,
+) -> eyre::Result<RecoveredSubBlock> {
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
             node.provider.state_by_block_hash(parent_hash)?,
@@ -323,6 +339,7 @@ async fn build_subblock(
     let mut evm = node.evm_config.evm_for_block(db, block.sealed_block())?;
 
     let mut selected_transactions = Vec::new();
+    let mut senders = Vec::new();
     let mut gas_left = block.gas_limit() / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
     for tx in transactions {
         if tx.gas_limit() > gas_left {
@@ -334,14 +351,27 @@ async fn build_subblock(
         if evm.transact_commit(tx.with_signer_ref(sender)).is_err() {
             continue;
         }
-        selected_transactions.push(tx.clone());
         gas_left -= tx.gas_limit();
+        selected_transactions.push(tx);
+        senders.push(sender);
     }
 
-    Ok(SubBlock {
+    let subblock = SubBlock {
         version: SubBlockVersion::V1,
         parent_hash,
         transactions: selected_transactions,
+    };
+
+    let signature = signer.sign(None, subblock.signature_hash().as_slice());
+    let signed_subblock = SignedSubBlock {
+        inner: subblock,
+        signature: Bytes::copy_from_slice(signature.as_ref()),
+    };
+
+    Ok(RecoveredSubBlock {
+        inner: signed_subblock,
+        senders,
+        validator: B256::from_slice(&signer.public_key()),
     })
 }
 
@@ -362,7 +392,7 @@ async fn validate_subblock(
 
     if subblock.transactions.iter().any(|tx| {
         tx.subblock_proposer()
-            .is_none_or(|proposer| *proposer != *sender)
+            .is_none_or(|proposer| !proposer.matches(&sender))
     }) {
         return Err(eyre::eyre!(
             "all transactions must specify the subblock validator"

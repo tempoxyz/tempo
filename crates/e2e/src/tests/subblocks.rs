@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use alloy_network::TxSignerSync;
-use alloy_primitives::{Address, B256, TxHash};
+use alloy_primitives::{Address, TxHash, U256};
 use alloy_signer_local::PrivateKeySigner;
 use commonware_macros::test_traced;
 use commonware_p2p::simulated::Link;
@@ -16,7 +16,10 @@ use reth_ethereum::{
     provider::{CanonStateNotification, CanonStateSubscriptions},
 };
 use reth_node_core::primitives::transaction::TxHashRef;
-use tempo_node::primitives::{TempoTxEnvelope, TxAA, transaction::Call};
+use tempo_node::primitives::{
+    TempoTxEnvelope, TxAA,
+    transaction::{Call, account_abstraction::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
+};
 
 use crate::{ExecutionRuntime, Setup, ValidatorNode, setup_validators};
 
@@ -84,15 +87,19 @@ fn subblocks_are_included() {
 fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
     let wallet = PrivateKeySigner::random();
 
+    let mut nonce_bytes = [0; 32];
+    nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
+    nonce_bytes[1..16].copy_from_slice(&node.public_key.as_ref()[..15]);
+
     let mut tx = TxAA {
         chain_id: node.node.node.provider.chain_spec().chain_id(),
-        proposer: Some(B256::from_slice(node.public_key.as_ref())),
         calls: vec![Call {
             to: Address::ZERO.into(),
             input: Default::default(),
             value: Default::default(),
         }],
         gas_limit: 100000,
+        nonce_key: U256::from_be_bytes(nonce_bytes),
         ..Default::default()
     };
     let signature = wallet.sign_transaction_sync(&mut tx).unwrap();

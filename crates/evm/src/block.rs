@@ -28,7 +28,7 @@ use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
     tip_fee_manager::IFeeManager,
 };
-use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{TempoReceipt, TempoTxEnvelope, transaction::PartialValidatorKey};
 use tempo_revm::evm::TempoContext;
 use tracing::trace;
 
@@ -39,7 +39,7 @@ enum BlockSection {
     /// Must use at most `non_shared_gas_left` gas.
     NonShared,
     /// Subblock authored by the given validator.
-    SubBlock { proposer: B256 },
+    SubBlock { proposer: PartialValidatorKey },
     /// Gas incentive transaction.
     GasIncentive,
     /// System transactions.
@@ -53,7 +53,6 @@ enum BlockSection {
 #[derive(Debug, Clone, Default)]
 struct ValidatorSetInfo {
     pub participants: Vec<B256>,
-    pub current_validator: B256,
 }
 
 /// Builder for [`TempoReceipt`].
@@ -96,7 +95,7 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     >,
 
     section: BlockSection,
-    seen_subblocks: Vec<(B256, u64, Vec<TempoTxEnvelope>)>,
+    seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<ValidatorSetInfo>,
     shared_gas_limit: u64,
 
@@ -253,27 +252,23 @@ where
                 return Err(BlockValidationError::msg("invalid subblock validator"));
             }
 
-            if metadata.validator == validator_set.current_validator {
-                return Err(BlockValidationError::msg(
-                    "proposer cannot submit subblocks",
-                ));
-            }
-
             if !seen.insert(metadata.validator) {
                 return Err(BlockValidationError::msg(
                     "only one subblock per validator is allowed",
                 ));
             }
 
-            let (gas_used, transactions) = if let Some((validator, gas_used, txs)) =
+            let transactions = if let Some((validator, txs)) =
                 self.seen_subblocks.get(next_non_empty)
-                && validator == &metadata.validator
+                && validator.matches(metadata.validator)
             {
                 next_non_empty += 1;
-                (*gas_used, txs.clone())
+                txs.clone()
             } else {
-                (0, Vec::new())
+                Vec::new()
             };
+
+            let reserved_gas = transactions.iter().map(|tx| tx.gas_limit()).sum::<u64>();
 
             let signature_hash = SubBlock {
                 version: SubBlockVersion::V1,
@@ -297,13 +292,13 @@ where
                 return Err(BlockValidationError::msg("invalid subblock signature"));
             }
 
-            if gas_used > gas_per_subblock {
+            if reserved_gas > gas_per_subblock {
                 return Err(BlockValidationError::msg(
                     "subblock gas used exceeds gas per subblock",
                 ));
             }
 
-            incentive_gas += gas_per_subblock - gas_used;
+            incentive_gas += gas_per_subblock - reserved_gas;
         }
 
         if next_non_empty != self.seen_subblocks.len() {
@@ -337,10 +332,7 @@ where
                 }),
                 BlockSection::SubBlock { proposer } => {
                     if proposer == tx_proposer
-                        || !self
-                            .seen_subblocks
-                            .iter()
-                            .any(|(p, _, _)| *p == tx_proposer)
+                        || !self.seen_subblocks.iter().any(|(p, _)| *p == tx_proposer)
                     {
                         Ok(BlockSection::SubBlock { proposer })
                     } else {
@@ -424,16 +416,15 @@ where
                 let last_subblock = if let Some(last) = self
                     .seen_subblocks
                     .last_mut()
-                    .filter(|(p, _, _)| *p == proposer)
+                    .filter(|(p, _)| *p == proposer)
                 {
                     last
                 } else {
-                    self.seen_subblocks.push((proposer, 0, Vec::new()));
+                    self.seen_subblocks.push((proposer, Vec::new()));
                     self.seen_subblocks.last_mut().unwrap()
                 };
 
-                last_subblock.1 += tx.tx().gas_limit();
-                last_subblock.2.push(tx.tx().clone());
+                last_subblock.1.push(tx.tx().clone());
             }
             BlockSection::GasIncentive => {
                 self.incentive_gas_used += gas_used;

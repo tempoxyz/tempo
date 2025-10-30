@@ -1,3 +1,5 @@
+use crate::transaction::account_abstraction::PartialValidatorKey;
+
 use super::{aa_signed::AASigned, fee_token::TxFeeToken};
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
@@ -140,11 +142,19 @@ impl TempoTxEnvelope {
         matches!(self, Self::FeeToken(_) | Self::AA(_))
     }
 
-    /// Returns the authorization list if present
+    /// Returns the authorization list if present (for EIP-7702 and FeeToken transactions)
     pub fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
         match self {
             Self::Eip7702(tx) => Some(&tx.tx().authorization_list),
             Self::FeeToken(tx) => Some(&tx.tx().authorization_list),
+            _ => None,
+        }
+    }
+
+    /// Returns the AA authorization list if present (for AA transactions)
+    pub fn aa_authorization_list(&self) -> Option<&[crate::transaction::AASignedAuthorization]> {
+        match self {
+            Self::AA(tx) => Some(&tx.tx().aa_authorization_list),
             _ => None,
         }
     }
@@ -167,11 +177,9 @@ impl TempoTxEnvelope {
     }
 
     /// Returns the proposer of the subblock if this is a subblock transaction.
-    pub fn subblock_proposer(&self) -> Option<B256> {
-        match self {
-            Self::AA(tx) => tx.tx().proposer,
-            _ => None,
-        }
+    pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
+        let Self::AA(tx) = &self else { return None };
+        tx.tx().subblock_proposer()
     }
 }
 
