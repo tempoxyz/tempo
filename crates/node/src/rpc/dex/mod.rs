@@ -279,8 +279,10 @@ impl<
                 .map(|l| l.min(MAX_LIMIT))
                 .unwrap_or(DEFAULT_LIMIT);
 
+            let mut iter = keys.into_iter().skip(start_idx);
+
             // Take limit + 1 to check if there's a next page
-            for key in keys.into_iter().skip(start_idx) {
+            for key in iter.by_ref() {
                 let book = exchange.books(key).map_err(DexApiError::Precompile)?;
 
                 // Apply filters if present
@@ -293,26 +295,14 @@ impl<
                 orderbooks.push(book);
 
                 // Stop if we have enough items
-                if orderbooks.len() > limit {
+                if orderbooks.len() >= limit {
                     break;
                 }
             }
 
-            // Get the next page / cursor
-            let has_next_page = orderbooks.len() > limit;
-            let next_cursor = if has_next_page {
-                // Use the last item's cursor as the next cursor
-                orderbooks
-                    .get(limit)
-                    .map(|book| format!("0x{}", compute_book_key(book.base, book.quote)))
-            } else {
-                None
-            };
+            let next_cursor = iter.next().map(|next_book| format!("0x{next_book}"));
 
-            // Return only up to limit items
-            let items = orderbooks.into_iter().take(limit).collect();
-
-            Ok((items, next_cursor))
+            Ok((orderbooks, next_cursor))
         })
     }
 
