@@ -3,9 +3,9 @@
 //! This actor is responsible for:
 //!
 //! 1. entering and exiting epochs given messages it receives from the DKG
-//! manager.
+//!    manager.
 //! 2. catching the node up by listening to votes for unknown epoch and
-//! requesting finalizations for the currently known boundary height.
+//!    requesting finalizations for the currently known boundary height.
 //!
 //! # Entering and exiting epochs
 //!

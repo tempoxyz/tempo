@@ -296,6 +296,10 @@ where
         + Spawner
         + Storage,
 {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "following commonware's style of writing"
+    )]
     pub fn start(
         self,
         pending_network: (
@@ -340,9 +344,10 @@ where
         })
     }
 
-    /// Start the `simplex` consensus engine.
-    ///
-    /// This will also rebuild the state of the engine from provided `Journal`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "following commonware's style of writing"
+    )]
     async fn run(
         self,
         pending_channel: (
