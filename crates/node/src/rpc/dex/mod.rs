@@ -11,12 +11,10 @@ pub use types::{
 };
 
 use alloy_primitives::{Address, B256, Sealable};
-use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use jsonrpsee::core::RpcResult;
 use reth_node_api::{ConfigureEvm, NodePrimitives};
-use reth_node_core::rpc::result::internal_rpc_err;
-use reth_rpc_eth_api::RpcNodeCore;
-use reth_rpc_eth_types::EthApiError;
-
+use reth_rpc_eth_api::{RpcNodeCore, helpers::SpawnBlocking};
+use reth_rpc_eth_types::{EthApiError, error::FromEthApiError};
 use tempo_precompiles::{
     stablecoin_exchange::{
         Order as PrecompileOrder, Orderbook as PrecompileOrderbook, PriceLevel, StablecoinExchange,
@@ -24,6 +22,9 @@ use tempo_precompiles::{
     },
     storage::evm::EvmPrecompileStorageProvider,
 };
+
+pub mod api;
+pub use crate::rpc::dex::api::TempoDexApiServer;
 
 mod books;
 mod error;
@@ -44,140 +45,115 @@ pub struct TempoDex<EthApi> {
 }
 
 impl<EthApi> TempoDex<EthApi> {
-    pub fn new(eth_api: EthApi) -> Self {
+    /// Creates a new instance of the [`TempoDex`] wrapping the eth api instance.
+    pub const fn new(eth_api: EthApi) -> Self {
         Self { eth_api }
     }
 }
 
-#[rpc(server, namespace = "dex")]
-pub trait TempoDexApi {
-    #[method(name = "getOrders")]
-    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse>;
-
-    #[method(name = "getOrderbooks")]
-    async fn orderbooks(
-        &self,
-        params: PaginationParams<OrderbooksFilter>,
-    ) -> RpcResult<OrderbooksResponse>;
-}
-
-#[async_trait::async_trait]
 impl<
     EthApi: RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
-> TempoDexApiServer for TempoDex<EthApi>
+> TempoDex<EthApi>
 {
-    /// Returns orders based on pagination parameters.
-    ///
-    /// ## Cursor
-    /// The cursor for this method is the **Order ID** (u128).
-    /// - When provided in the request, returns orders starting after the given order ID
-    /// - Returns `next_cursor` in the response containing the last order ID for the next page
-    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse> {
-        let response = self
-            .with_storage_at_block(BlockNumberOrTag::Latest.into(), |storage| {
-                let mut exchange = StablecoinExchange::new(storage);
-                let exchange_address = exchange.address();
+    /// Implementation of the `dex_orders` implementation
+    fn orders(
+        &self,
+        params: PaginationParams<OrdersFilters>,
+    ) -> Result<OrdersResponse, DexApiError> {
+        let response = self.with_storage_at_block(BlockNumberOrTag::Latest.into(), |storage| {
+            let mut exchange = StablecoinExchange::new(storage);
+            let exchange_address = exchange.address();
 
-                // Determine which books to iterate based on filter
-                let base_token = params.filters.as_ref().and_then(|f| f.base_token);
-                let quote_token = params.filters.as_ref().and_then(|f| f.quote_token);
-                let book_keys =
-                    get_book_keys_for_iteration(&mut exchange, base_token, quote_token)?;
+            // Determine which books to iterate based on filter
+            let base_token = params.filters.as_ref().and_then(|f| f.base_token);
+            let quote_token = params.filters.as_ref().and_then(|f| f.quote_token);
+            let book_keys = get_book_keys_for_iteration(&mut exchange, base_token, quote_token)?;
 
-                let is_bid = params
-                    .filters
-                    .as_ref()
-                    .is_none_or(|f| f.is_bid.unwrap_or(false));
+            let is_bid = params
+                .filters
+                .as_ref()
+                .is_none_or(|f| f.is_bid.unwrap_or(false));
 
-                let cursor = params
-                    .cursor
-                    .map(|cursor| parse_order_cursor(&cursor))
-                    .transpose()?;
+            let cursor = params
+                .cursor
+                .map(|cursor| parse_order_cursor(&cursor))
+                .transpose()?;
 
-                let limit = params
-                    .limit
-                    .map(|l| l.min(MAX_LIMIT))
-                    .unwrap_or(DEFAULT_LIMIT);
+            let limit = params
+                .limit
+                .map(|l| l.min(MAX_LIMIT))
+                .unwrap_or(DEFAULT_LIMIT);
 
-                let mut all_orders: Vec<Order> = Vec::new();
-                let mut next_cursor = None;
+            let mut all_orders: Vec<Order> = Vec::new();
+            let mut next_cursor = None;
 
-                // Iterate through books collecting orders until we reach the limit
-                for book_key in book_keys {
-                    let orderbook =
-                        PrecompileOrderbook::from_storage(book_key, storage, exchange_address)
-                            .map_err(DexApiError::Precompile)?;
+            // Iterate through books collecting orders until we reach the limit
+            for book_key in book_keys {
+                let orderbook =
+                    PrecompileOrderbook::from_storage(book_key, storage, exchange_address)?;
 
-                    // Check if this book matches the base/quote filter
-                    if !orderbook.matches_tokens(base_token, quote_token) {
-                        continue;
-                    }
+                // Check if this book matches the base/quote filter
+                if !orderbook.matches_tokens(base_token, quote_token) {
+                    continue;
+                }
 
-                    let starting_order = if all_orders.is_empty() {
-                        cursor // Use cursor only for the first book
-                    } else {
-                        None
-                    };
+                let starting_order = if all_orders.is_empty() {
+                    cursor // Use cursor only for the first book
+                } else {
+                    None
+                };
 
-                    let book_iterator = BookIterator::new(
-                        storage,
-                        &orderbook,
-                        exchange_address,
-                        is_bid,
-                        starting_order,
-                        params.filters.clone(),
-                    );
+                let book_iterator = BookIterator::new(
+                    storage,
+                    &orderbook,
+                    exchange_address,
+                    is_bid,
+                    starting_order,
+                    params.filters.clone(),
+                );
 
-                    // Collect orders from this book, up to limit + 1
-                    for order_result in book_iterator {
-                        let order = order_result?;
-                        let rpc_order = self.to_rpc_order(order, &orderbook);
-                        all_orders.push(rpc_order);
+                // Collect orders from this book, up to limit + 1
+                for order_result in book_iterator {
+                    let order = order_result?;
+                    let rpc_order = self.to_rpc_order(order, &orderbook);
+                    all_orders.push(rpc_order);
 
-                        // stop once we have limit + 1 orders, we can't always use the next order
-                        // ID as the next cursor because of queue and book boundaries
-                        if all_orders.len() > limit {
-                            // Use the last order for cursor
-                            let last = &all_orders[limit];
-                            next_cursor = Some(format!("0x{:x}", last.order_id));
-                            break;
-                        }
-                    }
-
-                    // If we have enough orders, stop iterating through books
+                    // stop once we have limit + 1 orders, we can't always use the next order
+                    // ID as the next cursor because of queue and book boundaries
                     if all_orders.len() > limit {
+                        // Use the last order for cursor
+                        let last = &all_orders[limit];
+                        next_cursor = Some(format!("0x{:x}", last.order_id));
                         break;
                     }
                 }
 
-                // Truncate to limit
-                all_orders.truncate(limit);
-                let orders = all_orders;
+                // If we have enough orders, stop iterating through books
+                if all_orders.len() > limit {
+                    break;
+                }
+            }
 
-                let response = OrdersResponse {
-                    next_cursor,
-                    orders,
-                };
-                Ok(response)
-            })
-            .map_err(|e: DexApiError| EthApiError::from(e))?;
+            // Truncate to limit
+            all_orders.truncate(limit);
+            let orders = all_orders;
+
+            let response = OrdersResponse {
+                next_cursor,
+                orders,
+            };
+            Ok(response)
+        })?;
         Ok(response)
     }
 
-    /// Returns orderbooks based on pagination parameters.
-    ///
-    /// ## Cursor
-    /// The cursor for this method is the **Book Key** (B256).
-    /// - When provided in the request, returns orderbooks starting after the given book key
-    /// - Returns `next_cursor` in the response containing the last book key for the next page
-    async fn orderbooks(
+    /// Implementation of the `dex_orderbooks` endpoints
+    fn orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
-    ) -> RpcResult<OrderbooksResponse> {
+    ) -> Result<OrderbooksResponse, DexApiError> {
         // Get paginated orderbooks
-        let (items, next_cursor) = self
-            .apply_pagination_to_orderbooks(params)
-            .map_err(|e: DexApiError| internal_rpc_err(e.to_string()))?;
+        let (items, next_cursor) = self.apply_pagination_to_orderbooks(params)?;
 
         // Convert PrecompileOrderbooks to RPC Orderbooks
         let orderbooks = items
@@ -190,16 +166,6 @@ impl<
             next_cursor,
             orderbooks,
         })
-    }
-}
-
-impl<
-    EthApi: RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
-> TempoDex<EthApi>
-{
-    /// Access the underlying provider.
-    pub fn provider(&self) -> &EthApi::Provider {
-        self.eth_api.provider()
     }
 
     /// Creates an `EvmPrecompileStorageProvider` at the given block.
@@ -386,8 +352,8 @@ impl<
     pub fn get_all_books(&self) -> Result<Vec<PrecompileOrderbook>, DexApiError> {
         self.with_exchange_at_block(BlockNumberOrTag::Latest.into(), |exchange| {
             let mut books = Vec::new();
-            for book_key in exchange.get_book_keys().map_err(DexApiError::Precompile)? {
-                let book = exchange.books(book_key).map_err(DexApiError::Precompile)?;
+            for book_key in exchange.get_book_keys()? {
+                let book = exchange.books(book_key)?;
                 books.push(book);
             }
             Ok(books)
@@ -408,6 +374,52 @@ impl<
             let book_key = compute_book_key(base, quote);
             exchange.books(book_key).map_err(DexApiError::Precompile)
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl<
+    EthApi: RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>
+        + SpawnBlocking,
+> TempoDexApiServer for TempoDex<EthApi>
+{
+    /// Returns orders based on pagination parameters.
+    ///
+    /// ## Cursor
+    /// The cursor for this method is the **Order ID** (u128).
+    /// - When provided in the request, returns orders starting after the given order ID
+    /// - Returns `next_cursor` in the response containing the last order ID for the next page
+    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse> {
+        let this = self.clone();
+        self.eth_api
+            .spawn_blocking_io(move |_| {
+                Self::orders(&this, params)
+                    .map_err(EthApiError::from)
+                    .map_err(EthApi::Error::from_eth_err)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Returns orderbooks based on pagination parameters.
+    ///
+    /// ## Cursor
+    /// The cursor for this method is the **Book Key** (B256).
+    /// - When provided in the request, returns orderbooks starting after the given book key
+    /// - Returns `next_cursor` in the response containing the last book key for the next page
+    async fn orderbooks(
+        &self,
+        params: PaginationParams<OrderbooksFilter>,
+    ) -> RpcResult<OrderbooksResponse> {
+        let this = self.clone();
+        self.eth_api
+            .spawn_blocking_io(move |_| {
+                Self::orderbooks(&this, params)
+                    .map_err(EthApiError::from)
+                    .map_err(EthApi::Error::from_eth_err)
+            })
+            .await
+            .map_err(Into::into)
     }
 }
 
