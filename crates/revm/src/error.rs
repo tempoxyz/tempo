@@ -2,7 +2,7 @@
 
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::U256;
-use revm::context::result::{EVMError, InvalidHeader, InvalidTransaction};
+use revm::context::result::{EVMError, InvalidTransaction};
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -13,10 +13,6 @@ pub enum TempoInvalidTransaction {
     /// Standard Ethereum transaction validation error.
     #[error(transparent)]
     EthInvalidTransaction(#[from] InvalidTransaction),
-
-    /// Block header validation error (e.g., missing prevrandao or excess_blob_gas).
-    #[error(transparent)]
-    EthInvalidHeader(#[from] InvalidHeader),
 
     /// System transaction must be a call (not a create).
     #[error("system transaction must be a call, not a create")]
@@ -115,6 +111,10 @@ pub enum TempoInvalidTransaction {
         /// The calculated intrinsic gas required.
         intrinsic_gas: u64,
     },
+
+    /// Nonce manager error.
+    #[error("nonce manager error: {0}")]
+    NonceManagerError(String),
 }
 
 impl InvalidTxError for TempoInvalidTransaction {

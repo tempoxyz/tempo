@@ -32,6 +32,9 @@ pub struct AATxEnv {
 
     /// Authorization list (EIP-7702 with AA signatures)
     pub aa_authorization_list: Vec<AASignedAuthorization>,
+
+    /// Nonce key for 2D nonce system
+    pub nonce_key: U256,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -251,8 +254,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             gas_limit,
             calls,
             access_list,
-            // Ignored for now, will be used in the future
-            nonce_key: _,
+            nonce_key,
             nonce,
             fee_payer_signature,
             valid_before,
@@ -312,6 +314,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_after: *valid_after,
                 aa_calls: calls.clone(),
                 aa_authorization_list: aa_authorization_list.clone(),
+                nonce_key: *nonce_key,
             })),
         }
     }

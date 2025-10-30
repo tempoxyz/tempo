@@ -147,10 +147,9 @@ pub struct TxAA {
 
     /// AA-specific fields
 
-    /// Nonce key for 2D nonce system (192 bits)
+    /// Nonce key for 2D nonce system
     /// Key 0 is the protocol nonce, keys 1-N are user nonces for parallelization
-    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
-    pub nonce_key: u64,
+    pub nonce_key: U256,
 
     /// Current nonce value for the nonce key
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
@@ -193,12 +192,6 @@ impl TxAA {
             && valid_before <= valid_after
         {
             return Err("valid_before must be greater than valid_after");
-        }
-
-        // For now, only allow protocol nonce (nonce_key = 0)
-        // 2D nonce system support (nonce_key > 0) will be enabled in a future release
-        if self.nonce_key != 0 {
-            return Err("only protocol nonce (nonce_key = 0) is currently supported");
         }
 
         // Authorization list validation: Cannot have Create in any call when aa_authorization_list is non-empty
@@ -703,7 +696,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
         let access_list = u.arbitrary()?;
 
         // For now, always set nonce_key to 0 (protocol nonce) to pass validation
-        let nonce_key = 0u64;
+        let nonce_key = U256::ZERO;
         let nonce = u.arbitrary()?;
         let fee_payer_signature = u.arbitrary()?;
 
@@ -890,7 +883,7 @@ mod tests {
             gas_limit: 21000,
             calls: vec![call.clone()],
             access_list: Default::default(),
-            nonce_key: 0,
+            nonce_key: U256::ZERO,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
@@ -941,7 +934,7 @@ mod tests {
             gas_limit: 21000,
             calls: vec![call],
             access_list: Default::default(),
-            nonce_key: 0,
+            nonce_key: U256::ZERO,
             nonce: 1,
             fee_payer_signature: None,
             valid_before: Some(1000),
@@ -994,7 +987,7 @@ mod tests {
 
         // Protocol nonce (key 0) - should be accepted
         let tx1 = TxAA {
-            nonce_key: 0,
+            nonce_key: U256::ZERO,
             nonce: 1,
             calls: vec![dummy_call.clone()],
             ..Default::default()
@@ -1004,16 +997,11 @@ mod tests {
 
         // User parallel nonce (key > 0) - should be rejected for now
         let tx2 = TxAA {
-            nonce_key: 1,
+            nonce_key: U256::from(1),
             nonce: 0,
             calls: vec![dummy_call],
             ..Default::default()
         };
-        assert!(tx2.validate().is_err());
-        assert_eq!(
-            tx2.validate().unwrap_err(),
-            "only protocol nonce (nonce_key = 0) is currently supported"
-        );
         assert_eq!(tx2.nonce(), 0);
     }
 
@@ -1095,7 +1083,7 @@ mod tests {
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
             calls: vec![dummy_call],
-            nonce_key: 0,
+            nonce_key: U256::ZERO,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
@@ -1173,7 +1161,7 @@ mod tests {
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
             calls: vec![dummy_call],
-            nonce_key: 0,
+            nonce_key: U256::ZERO,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
@@ -1216,7 +1204,7 @@ mod tests {
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
             calls: vec![dummy_call],
-            nonce_key: 0,
+            nonce_key: U256::ZERO,
             nonce: 1,
             fee_payer_signature: None, // No fee payer
             valid_before: Some(1000),
@@ -1277,7 +1265,7 @@ mod tests {
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
             calls: vec![dummy_call],
-            nonce_key: 0,
+            nonce_key: U256::ZERO,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
@@ -1340,7 +1328,7 @@ mod tests {
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
             calls: vec![dummy_call],
-            nonce_key: 0,
+            nonce_key: U256::ZERO,
             nonce: 1,
             fee_payer_signature: None,
             valid_before: Some(1000),
@@ -1438,7 +1426,7 @@ mod tests {
             gas_limit: 21000,
             calls: vec![call],
             access_list: Default::default(),
-            nonce_key: 0,
+            nonce_key: U256::ZERO,
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
