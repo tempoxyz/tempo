@@ -11732,6 +11732,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "criterion 0.7.0",
+ "derive_more",
  "eyre",
  "rand 0.8.5",
  "reth-storage-api",

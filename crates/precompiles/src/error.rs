@@ -7,7 +7,7 @@ use tempo_contracts::precompiles::{
 };
 
 /// Top-level error type for all Tempo precompile operations
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, derive_more::From)]
 pub enum TempoPrecompileError {
     /// Error from stablecoin exchange
     #[error("Stablecoin exchange error: {0:?}")]
@@ -42,59 +42,12 @@ pub enum TempoPrecompileError {
     NonceError(NonceError),
 
     #[error("Fatal precompile error: {0:?}")]
+    #[from(skip)]
     Fatal(String),
 }
 
 /// Result type alias for Tempo precompile operations
 pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
-
-impl From<StablecoinExchangeError> for TempoPrecompileError {
-    fn from(err: StablecoinExchangeError) -> Self {
-        Self::StablecoinExchange(err)
-    }
-}
-
-impl From<TIP20Error> for TempoPrecompileError {
-    fn from(err: TIP20Error) -> Self {
-        Self::TIP20(err)
-    }
-}
-
-impl From<RolesAuthError> for TempoPrecompileError {
-    fn from(err: RolesAuthError) -> Self {
-        Self::RolesAuthError(err)
-    }
-}
-
-impl From<TIP403RegistryError> for TempoPrecompileError {
-    fn from(err: TIP403RegistryError) -> Self {
-        Self::TIP403RegistryError(err)
-    }
-}
-
-impl From<FeeManagerError> for TempoPrecompileError {
-    fn from(err: FeeManagerError) -> Self {
-        Self::FeeManagerError(err)
-    }
-}
-
-impl From<TIPFeeAMMError> for TempoPrecompileError {
-    fn from(err: TIPFeeAMMError) -> Self {
-        Self::TIPFeeAMMError(err)
-    }
-}
-
-impl From<TIPAccountRegistrarError> for TempoPrecompileError {
-    fn from(err: TIPAccountRegistrarError) -> Self {
-        Self::TIPAccountRegistrarError(err)
-    }
-}
-
-impl From<NonceError> for TempoPrecompileError {
-    fn from(err: NonceError) -> Self {
-        Self::NonceError(err)
-    }
-}
 
 /// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
 pub trait IntoPrecompileResult<T> {
