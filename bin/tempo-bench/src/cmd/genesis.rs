@@ -25,11 +25,10 @@ use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     contracts::{
         EvmStorageProvider, IFeeManager, ITIP20, ITIP20Factory, TIP20Factory, TIP20Token,
-        linking_usd::LinkingUSD, stablecoin_exchange::StablecoinExchange,
+        TIP403Registry, linking_usd::LinkingUSD, stablecoin_exchange::StablecoinExchange,
         tip_fee_manager::TipFeeManager, tip20::ISSUER_ROLE, types::ITIPFeeAMM,
     },
 };
-use tempo_precompiles::contracts::TIP403Registry;
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]

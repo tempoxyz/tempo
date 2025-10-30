@@ -116,7 +116,7 @@ where
     }
 
     async fn run(mut self) {
-        // XXX: `run_pre_event_loop_init` is emitting an errror event on failure.
+        // XXX: `run_pre_event_loop_init` is emitting an error event on failure.
         if self.run_pre_event_loop_init().await.is_err() {
             return;
         };
