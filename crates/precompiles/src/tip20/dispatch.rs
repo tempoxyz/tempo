@@ -138,6 +138,12 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.cancel_reward(s, call)
                 })
             }
+            ITIP20::totalRewardPerSecondCall::SELECTOR => {
+                metadata::<ITIP20::totalRewardPerSecondCall>(|| self.total_reward_per_second())
+            }
+            ITIP20::getStreamCall::SELECTOR => {
+                view::<ITIP20::getStreamCall>(calldata, |call| self.get_stream(call))
+            }
 
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {
