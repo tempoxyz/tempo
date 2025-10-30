@@ -5,16 +5,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use commonware_consensus::{marshal, types::Epoch};
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_consensus::{
+    marshal, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
+};
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_resolver::p2p;
 use commonware_utils::set::Ordered;
 
-use crate::alias::ThresholdScheme;
-
 #[derive(Clone)]
+#[expect(clippy::type_complexity)]
 pub(crate) struct SchemeProvider {
-    inner: Arc<Mutex<HashMap<Epoch, Arc<ThresholdScheme>>>>,
+    inner: Arc<Mutex<HashMap<Epoch, Arc<Scheme<PublicKey, MinSig>>>>>,
 }
 
 impl SchemeProvider {
@@ -24,7 +25,7 @@ impl SchemeProvider {
         }
     }
 
-    pub(crate) fn register(&self, epoch: Epoch, scheme: ThresholdScheme) -> bool {
+    pub(crate) fn register(&self, epoch: Epoch, scheme: Scheme<PublicKey, MinSig>) -> bool {
         self.inner
             .lock()
             .unwrap()
@@ -38,7 +39,7 @@ impl SchemeProvider {
 }
 
 impl marshal::SchemeProvider for SchemeProvider {
-    type Scheme = ThresholdScheme;
+    type Scheme = Scheme<PublicKey, MinSig>;
 
     fn scheme(&self, epoch: Epoch) -> Option<Arc<Self::Scheme>> {
         self.inner.lock().unwrap().get(&epoch).cloned()

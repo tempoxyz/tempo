@@ -5,7 +5,7 @@ use commonware_consensus::{
     simplex::{self, signing_scheme::bls12381_threshold::Scheme, types::Voter},
     types::Epoch,
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_p2p::{
     Blocker, Receiver, Recipients, Sender,
@@ -21,7 +21,6 @@ use rand::{CryptoRng, Rng};
 use tracing::{Level, Span, info, instrument, warn, warn_span};
 
 use crate::{
-    alias::ThresholdScheme,
     consensus::Digest,
     epoch::{
         self,
@@ -355,7 +354,7 @@ where
         );
 
         // Forward the finalization to the sender. This operation is best-effort.
-        let message = Voter::<ThresholdScheme, Digest>::Finalization(finalization);
+        let message = Voter::<Scheme<PublicKey, MinSig>, Digest>::Finalization(finalization);
         let res = recovered_global_sender
             .send(
                 epoch,
