@@ -46,9 +46,6 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             ITIP20::allowanceCall::SELECTOR => {
                 view::<ITIP20::allowanceCall>(calldata, |call| self.allowance(call))
             }
-            ITIP20::noncesCall::SELECTOR => {
-                view::<ITIP20::noncesCall>(calldata, |call| self.token.nonces(call))
-            }
 
             // Mutating functions that work normally
             ITIP20::approveCall::SELECTOR => {
@@ -89,11 +86,6 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             ITIP20::unpauseCall::SELECTOR => {
                 mutate_void::<ITIP20::unpauseCall>(calldata, msg_sender, |sender, call| {
                     self.unpause(sender, call)
-                })
-            }
-            ITIP20::permitCall::SELECTOR => {
-                mutate_void::<ITIP20::permitCall>(calldata, msg_sender, |sender, call| {
-                    self.token.permit(sender, call)
                 })
             }
             ITIP20::changeTransferPolicyIdCall::SELECTOR => {

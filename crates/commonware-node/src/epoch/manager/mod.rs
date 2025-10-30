@@ -19,7 +19,7 @@ use rand::{CryptoRng, Rng};
 use crate::{consensus::block::Block, epoch::scheme_provider::SchemeProvider};
 
 pub(crate) struct Config<TBlocker> {
-    pub(crate) application: crate::consensus::execution_driver::ExecutionDriverMailbox,
+    pub(crate) application: crate::consensus::application::Mailbox,
     pub(crate) blocker: TBlocker,
     pub(crate) buffer_pool: PoolRef,
     pub(crate) epoch_length: u64,

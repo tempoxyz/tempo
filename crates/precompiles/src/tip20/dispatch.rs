@@ -42,12 +42,6 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::allowanceCall::SELECTOR => {
                 view::<ITIP20::allowanceCall>(calldata, |call| self.allowance(call))
             }
-            ITIP20::noncesCall::SELECTOR => {
-                view::<ITIP20::noncesCall>(calldata, |call| self.nonces(call))
-            }
-            ITIP20::saltsCall::SELECTOR => {
-                view::<ITIP20::saltsCall>(calldata, |call| self.salts(call))
-            }
             ITIP20::quoteTokenCall::SELECTOR => {
                 view::<ITIP20::quoteTokenCall>(calldata, |_| self.quote_token())
             }
@@ -68,11 +62,6 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             }
             ITIP20::approveCall::SELECTOR => {
                 mutate::<ITIP20::approveCall>(calldata, msg_sender, |s, call| self.approve(s, call))
-            }
-            ITIP20::permitCall::SELECTOR => {
-                mutate_void::<ITIP20::permitCall>(calldata, msg_sender, |s, call| {
-                    self.permit(s, call)
-                })
             }
             ITIP20::changeTransferPolicyIdCall::SELECTOR => {
                 mutate_void::<ITIP20::changeTransferPolicyIdCall>(
@@ -853,36 +842,6 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn test_nonces_and_salts() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
-        let admin = Address::from([0u8; 20]);
-        let user = Address::from([1u8; 20]);
-
-        // Initialize token
-        token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
-            .unwrap();
-
-        // Test nonces (should start at 0)
-        let nonces_call = ITIP20::noncesCall { owner: user };
-        let calldata = nonces_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin).unwrap();
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
-        let nonce = U256::abi_decode(&result.bytes).unwrap();
-        assert_eq!(nonce, U256::ZERO);
-
-        // Test salts (should be false for unused salt)
-        let salt = alloy::primitives::FixedBytes::<4>::from([1u8, 2u8, 3u8, 4u8]);
-        let salts_call = ITIP20::saltsCall { owner: user, salt };
-        let calldata = salts_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin).unwrap();
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
-        let is_used = bool::abi_decode(&result.bytes).unwrap();
-        assert!(!is_used);
     }
 
     #[test]
