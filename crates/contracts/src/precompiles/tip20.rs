@@ -1,6 +1,6 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy::{primitives::Uint, sol};
+use alloy::{primitives::U256, sol};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -141,7 +141,7 @@ impl RolesAuthError {
 
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
-    pub const fn insufficient_balance(required: Uint<256, 4>, available: Uint<256, 4>) -> Self {
+    pub const fn insufficient_balance(required: U256, available: U256) -> Self {
         Self::InsufficientBalance(ITIP20::InsufficientBalance {
             available,
             required,
