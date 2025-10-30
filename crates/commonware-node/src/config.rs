@@ -19,20 +19,23 @@ pub(crate) const PENDING_CHANNEL_IDENT: commonware_p2p::Channel = 0;
 pub(crate) const RECOVERED_CHANNEL_IDENT: commonware_p2p::Channel = 1;
 pub(crate) const RESOLVER_CHANNEL_IDENT: commonware_p2p::Channel = 2;
 pub(crate) const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
-pub(crate) const BACKFILL_BY_DIGEST_CHANNEL_IDENT: commonware_p2p::Channel = 4;
+pub(crate) const MARSHAL_CHANNEL_IDENT: commonware_p2p::Channel = 4;
 pub(crate) const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 5;
+pub(crate) const BOUNDARY_CERT_CHANNEL_IDENT: commonware_p2p::Channel = 6;
 
 pub(crate) const NUMBER_CONCURRENT_FETCHES: usize = 4;
 pub(crate) const NUMBER_MAX_FETCHES: usize = 16;
 
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
 
-pub(crate) const BACKFILL_QUOTA: Quota =
-    Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
 pub(crate) const BROADCASTER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
+pub(crate) const BOUNDARY_CERT_LIMIT: Quota =
+    Quota::per_second(NonZeroU32::new(1).expect("value is not zero"));
 pub(crate) const DKG_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
+pub(crate) const MARSHAL_LIMIT: Quota =
+    Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
 pub(crate) const PENDING_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 pub(crate) const RECOVERED_LIMIT: Quota =
