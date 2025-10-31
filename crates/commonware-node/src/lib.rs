@@ -26,10 +26,10 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::config::{
-    BACKFILL_BY_DIGEST_CHANNEL_IDENT, BACKFILL_QUOTA, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT,
-    RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT,
-    SUBBLOCKS_LIMIT,
+    BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
+    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT,
+    PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
+    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
 };
 
 pub async fn run_consensus_stack(
@@ -53,12 +53,13 @@ pub async fn run_consensus_stack(
         BROADCASTER_LIMIT,
         message_backlog,
     );
-    let backfill = network.register(
-        BACKFILL_BY_DIGEST_CHANNEL_IDENT,
-        BACKFILL_QUOTA,
+    let marshal = network.register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, message_backlog);
+    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
+    let boundary_certificates = network.register(
+        BOUNDARY_CERT_CHANNEL_IDENT,
+        BOUNDARY_CERT_LIMIT,
         message_backlog,
     );
-    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
     let consensus_engine = crate::consensus::engine::Builder {
@@ -98,8 +99,9 @@ pub async fn run_consensus_stack(
             recovered,
             resolver,
             broadcaster,
-            backfill,
+            marshal,
             dkg,
+            boundary_certificates,
             subblocks,
         ),
     );

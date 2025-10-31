@@ -14,7 +14,7 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub shared_gas_limit: u64,
     /// Validator set for the block.
     ///
-    /// Only set for blocks requiring 
+    /// Only set for blocks requiring
     pub validator_set: Option<Vec<B256>>,
 }
 

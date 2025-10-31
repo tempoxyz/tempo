@@ -28,17 +28,17 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         }
     }
 
-    pub fn initialize(&mut self, admin: &Address) -> Result<(), TempoPrecompileError> {
+    pub fn initialize(&mut self, admin: Address) -> Result<(), TempoPrecompileError> {
         self.token
             .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
     }
 
     fn is_transfer_authorized(
         &mut self,
-        sender: &Address,
-        recipient: &Address,
+        sender: Address,
+        recipient: Address,
     ) -> Result<bool, TempoPrecompileError> {
-        let authorized = *sender == STABLECOIN_EXCHANGE_ADDRESS
+        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
             || self.token.has_role(sender, *TRANSFER_ROLE)?
             || self.token.has_role(recipient, *RECEIVE_ROLE)?;
 
@@ -47,11 +47,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     fn is_transfer_from_authorized(
         &mut self,
-        sender: &Address,
-        from: &Address,
-        recipient: &Address,
+        sender: Address,
+        from: Address,
+        recipient: Address,
     ) -> Result<bool, TempoPrecompileError> {
-        let authorized = *sender == STABLECOIN_EXCHANGE_ADDRESS
+        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
             || self.token.has_role(from, *TRANSFER_ROLE)?
             || self.token.has_role(recipient, *RECEIVE_ROLE)?;
 
@@ -60,10 +60,10 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     pub fn transfer(
         &mut self,
-        msg_sender: &Address,
+        msg_sender: Address,
         call: ITIP20::transferCall,
     ) -> Result<bool, TempoPrecompileError> {
-        if self.is_transfer_authorized(msg_sender, &call.to)? {
+        if self.is_transfer_authorized(msg_sender, call.to)? {
             self.token.transfer(msg_sender, call)
         } else {
             Err(TIP20Error::transfers_disabled().into())
@@ -72,11 +72,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     pub fn transfer_from(
         &mut self,
-        msg_sender: &Address,
+        msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool, TempoPrecompileError> {
-        if self.is_transfer_from_authorized(msg_sender, &call.from, &call.to)?
-            || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
+        if self.is_transfer_from_authorized(msg_sender, call.from, call.to)?
+            || msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from(msg_sender, call)
         } else {
@@ -86,10 +86,10 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     pub fn transfer_with_memo(
         &mut self,
-        msg_sender: &Address,
+        msg_sender: Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<(), TempoPrecompileError> {
-        if self.is_transfer_authorized(msg_sender, &call.to)? {
+        if self.is_transfer_authorized(msg_sender, call.to)? {
             self.token.transfer_with_memo(msg_sender, call)
         } else {
             Err(TIP20Error::transfers_disabled().into())
@@ -98,11 +98,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     pub fn transfer_from_with_memo(
         &mut self,
-        msg_sender: &Address,
+        msg_sender: Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool, TempoPrecompileError> {
-        if self.is_transfer_from_authorized(msg_sender, &call.from, &call.to)?
-            || *msg_sender == STABLECOIN_EXCHANGE_ADDRESS
+        if self.is_transfer_from_authorized(msg_sender, call.from, call.to)?
+            || msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from_with_memo(msg_sender, call)
         } else {
@@ -143,7 +143,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     pub fn approve(
         &mut self,
-        sender: &Address,
+        sender: Address,
         call: ITIP20::approveCall,
     ) -> Result<bool, TempoPrecompileError> {
         self.token.approve(sender, call)
@@ -151,7 +151,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     pub fn mint(
         &mut self,
-        sender: &Address,
+        sender: Address,
         call: ITIP20::mintCall,
     ) -> Result<(), TempoPrecompileError> {
         self.token.mint(sender, call)
@@ -159,7 +159,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     pub fn burn(
         &mut self,
-        sender: &Address,
+        sender: Address,
         call: ITIP20::burnCall,
     ) -> Result<(), TempoPrecompileError> {
         self.token.burn(sender, call)
@@ -171,7 +171,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     pub fn pause(
         &mut self,
-        sender: &Address,
+        sender: Address,
         call: ITIP20::pauseCall,
     ) -> Result<(), TempoPrecompileError> {
         self.token.pause(sender, call)
@@ -179,7 +179,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     pub fn unpause(
         &mut self,
-        sender: &Address,
+        sender: Address,
         call: ITIP20::unpauseCall,
     ) -> Result<(), TempoPrecompileError> {
         self.token.unpause(sender, call)
@@ -208,11 +208,11 @@ mod tests {
         let admin = Address::random();
 
         linking_usd
-            .initialize(&admin)
+            .initialize(admin)
             .expect("Could not initialize linking usd");
 
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE).unwrap();
+        roles.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
 
         (linking_usd, admin)
     }
@@ -234,7 +234,7 @@ mod tests {
         let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = linking_usd.transfer(
-            &Address::random(),
+            Address::random(),
             ITIP20::transferCall {
                 to: Address::random(),
                 amount: U256::random(),
@@ -253,7 +253,7 @@ mod tests {
         let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = linking_usd.transfer_from(
-            &Address::random(),
+            Address::random(),
             ITIP20::transferFromCall {
                 from: Address::random(),
                 to: Address::random(),
@@ -272,7 +272,7 @@ mod tests {
         let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = linking_usd.transfer_with_memo(
-            &Address::random(),
+            Address::random(),
             ITIP20::transferWithMemoCall {
                 to: Address::random(),
                 amount: U256::from(100),
@@ -291,7 +291,7 @@ mod tests {
         let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = linking_usd.transfer_from_with_memo(
-            &Address::random(),
+            Address::random(),
             ITIP20::transferFromWithMemoCall {
                 from: Address::random(),
                 to: Address::random(),
@@ -316,7 +316,7 @@ mod tests {
             linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         linking_usd.mint(
-            &admin,
+            admin,
             ITIP20::mintCall {
                 to: recipient,
                 amount,
@@ -336,15 +336,15 @@ mod tests {
         let admin = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: admin, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: admin, amount })?;
 
         let balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: admin })?;
 
-        linking_usd.burn(&admin, ITIP20::burnCall { amount })?;
+        linking_usd.burn(admin, ITIP20::burnCall { amount })?;
 
         let balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: admin })?;
         assert_eq!(balance_after, balance_before - amount);
@@ -360,9 +360,9 @@ mod tests {
         let spender = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
 
-        let result = linking_usd.approve(&owner, ITIP20::approveCall { spender, amount })?;
+        let result = linking_usd.approve(owner, ITIP20::approveCall { spender, amount })?;
 
         assert!(result);
 
@@ -379,12 +379,12 @@ mod tests {
         let recipient = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         linking_usd.mint(
-            &admin,
+            admin,
             ITIP20::mintCall {
                 to: STABLECOIN_EXCHANGE_ADDRESS,
                 amount,
@@ -399,7 +399,7 @@ mod tests {
             linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         let result = linking_usd.transfer(
-            &STABLECOIN_EXCHANGE_ADDRESS,
+            STABLECOIN_EXCHANGE_ADDRESS,
             ITIP20::transferCall {
                 to: recipient,
                 amount,
@@ -428,14 +428,14 @@ mod tests {
         let to = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: from, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
         linking_usd.approve(
-            &from,
+            from,
             ITIP20::approveCall {
                 spender: STABLECOIN_EXCHANGE_ADDRESS,
                 amount,
@@ -453,7 +453,7 @@ mod tests {
         })?;
 
         let result = linking_usd.transfer_from(
-            &STABLECOIN_EXCHANGE_ADDRESS,
+            STABLECOIN_EXCHANGE_ADDRESS,
             ITIP20::transferFromCall { from, to, amount },
         )?;
 
@@ -483,12 +483,12 @@ mod tests {
         let recipient = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(&sender, *TRANSFER_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(sender, *TRANSFER_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: sender, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
         let sender_balance_before =
             linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
@@ -497,7 +497,7 @@ mod tests {
             linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         let result = linking_usd.transfer(
-            &sender,
+            sender,
             ITIP20::transferCall {
                 to: recipient,
                 amount,
@@ -524,12 +524,12 @@ mod tests {
         let recipient = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(&recipient, *RECEIVE_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(recipient, *RECEIVE_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: sender, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
         let sender_balance_before =
             linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
@@ -538,7 +538,7 @@ mod tests {
             linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         let result = linking_usd.transfer(
-            &sender,
+            sender,
             ITIP20::transferCall {
                 to: recipient,
                 amount,
@@ -567,14 +567,14 @@ mod tests {
         let spender = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(&from, *TRANSFER_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(from, *TRANSFER_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: from, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(&from, ITIP20::approveCall { spender, amount })?;
+        linking_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
         let from_balance_before =
             linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
@@ -587,7 +587,7 @@ mod tests {
         })?;
 
         let result =
-            linking_usd.transfer_from(&spender, ITIP20::transferFromCall { from, to, amount })?;
+            linking_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount })?;
 
         assert!(result);
 
@@ -614,14 +614,14 @@ mod tests {
         let spender = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(&to, *RECEIVE_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(to, *RECEIVE_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: from, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(&from, ITIP20::approveCall { spender, amount })?;
+        linking_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
         let from_balance_before =
             linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
@@ -634,7 +634,7 @@ mod tests {
         })?;
 
         let result =
-            linking_usd.transfer_from(&spender, ITIP20::transferFromCall { from, to, amount })?;
+            linking_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount })?;
 
         assert!(result);
 
@@ -661,13 +661,13 @@ mod tests {
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
 
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(&sender, *TRANSFER_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(sender, *TRANSFER_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: sender, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
         let sender_balance_before =
             linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
@@ -675,7 +675,7 @@ mod tests {
             linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         linking_usd.transfer_with_memo(
-            &sender,
+            sender,
             ITIP20::transferWithMemoCall {
                 to: recipient,
                 amount,
@@ -703,12 +703,12 @@ mod tests {
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(&recipient, *RECEIVE_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(recipient, *RECEIVE_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: sender, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
         let sender_balance_before =
             linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
@@ -716,7 +716,7 @@ mod tests {
             linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         linking_usd.transfer_with_memo(
-            &sender,
+            sender,
             ITIP20::transferWithMemoCall {
                 to: recipient,
                 amount,
@@ -744,14 +744,14 @@ mod tests {
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: from, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
         linking_usd.approve(
-            &from,
+            from,
             ITIP20::approveCall {
                 spender: STABLECOIN_EXCHANGE_ADDRESS,
                 amount,
@@ -767,7 +767,7 @@ mod tests {
         })?;
 
         let result = linking_usd.transfer_from_with_memo(
-            &STABLECOIN_EXCHANGE_ADDRESS,
+            STABLECOIN_EXCHANGE_ADDRESS,
             ITIP20::transferFromWithMemoCall {
                 from,
                 to,
@@ -802,14 +802,14 @@ mod tests {
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(&from, *TRANSFER_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(from, *TRANSFER_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: from, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(&from, ITIP20::approveCall { spender, amount })?;
+        linking_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
         let from_balance_before =
             linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
@@ -820,7 +820,7 @@ mod tests {
         })?;
 
         let result = linking_usd.transfer_from_with_memo(
-            &spender,
+            spender,
             ITIP20::transferFromWithMemoCall {
                 from,
                 to,
@@ -855,14 +855,14 @@ mod tests {
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(&admin)?;
+        linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(&to, *RECEIVE_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(to, *RECEIVE_ROLE)?;
 
-        linking_usd.mint(&admin, ITIP20::mintCall { to: from, amount })?;
+        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(&from, ITIP20::approveCall { spender, amount })?;
+        linking_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
         let from_balance_before =
             linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
@@ -873,7 +873,7 @@ mod tests {
         })?;
 
         let result = linking_usd.transfer_from_with_memo(
-            &spender,
+            spender,
             ITIP20::transferFromWithMemoCall {
                 from,
                 to,
@@ -905,23 +905,23 @@ mod tests {
         let pauser = Address::random();
         let unpauser = Address::random();
 
-        linking_usd.initialize(&admin).unwrap();
+        linking_usd.initialize(admin).unwrap();
 
         // Grant PAUSE_ROLE and UNPAUSE_ROLE
         let mut roles = linking_usd.get_roles_contract();
-        roles.grant_role_internal(&pauser, *PAUSE_ROLE)?;
-        roles.grant_role_internal(&unpauser, *UNPAUSE_ROLE)?;
+        roles.grant_role_internal(pauser, *PAUSE_ROLE)?;
+        roles.grant_role_internal(unpauser, *UNPAUSE_ROLE)?;
 
         // Verify initial state (not paused)
         assert!(!linking_usd.paused().unwrap());
 
         // Pause the token
-        linking_usd.pause(&pauser, ITIP20::pauseCall {}).unwrap();
+        linking_usd.pause(pauser, ITIP20::pauseCall {}).unwrap();
         assert!(linking_usd.paused().unwrap());
 
         // Unpause the token
         linking_usd
-            .unpause(&unpauser, ITIP20::unpauseCall {})
+            .unpause(unpauser, ITIP20::unpauseCall {})
             .unwrap();
         assert!(!linking_usd.paused().unwrap());
         Ok(())
@@ -934,13 +934,13 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
 
-        linking_usd.initialize(&admin).unwrap();
+        linking_usd.initialize(admin).unwrap();
 
         // Grant ISSUER_ROLE to user
         let mut roles = linking_usd.get_roles_contract();
         roles
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: *ISSUER_ROLE,
                     account: user,
@@ -961,7 +961,7 @@ mod tests {
         // Revoke the role
         roles
             .revoke_role(
-                &admin,
+                admin,
                 IRolesAuth::revokeRoleCall {
                     role: *ISSUER_ROLE,
                     account: user,
@@ -989,16 +989,16 @@ mod tests {
         let recipient = Address::random();
         let supply_cap = U256::from(1000);
 
-        linking_usd.initialize(&admin).unwrap();
+        linking_usd.initialize(admin).unwrap();
 
         let mut roles = linking_usd.get_roles_contract();
-        roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Set supply cap
         linking_usd
             .token
             .set_supply_cap(
-                &admin,
+                admin,
                 ITIP20::setSupplyCapCall {
                     newSupplyCap: supply_cap,
                 },
@@ -1009,7 +1009,7 @@ mod tests {
 
         // Try to mint more than supply cap
         let result = linking_usd.mint(
-            &admin,
+            admin,
             ITIP20::mintCall {
                 to: recipient,
                 amount: U256::from(1001),
@@ -1030,13 +1030,13 @@ mod tests {
         let admin = Address::random();
         let new_policy_id = 42u64;
 
-        linking_usd.initialize(&admin).unwrap();
+        linking_usd.initialize(admin).unwrap();
 
         // Admin can change transfer policy ID
         linking_usd
             .token
             .change_transfer_policy_id(
-                &admin,
+                admin,
                 ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: new_policy_id,
                 },
@@ -1054,7 +1054,7 @@ mod tests {
         // Non-admin cannot change transfer policy ID
         let non_admin = Address::random();
         let result = linking_usd.token.change_transfer_policy_id(
-            &non_admin,
+            non_admin,
             ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 },
         );
 

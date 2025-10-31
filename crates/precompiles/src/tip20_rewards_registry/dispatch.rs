@@ -1,10 +1,11 @@
-use crate::{Precompile, mutate, storage::PrecompileStorageProvider};
+use crate::{Precompile, mutate_void};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::ITIP20RewardsRegistry;
 
-use crate::tip_account_registrar::{ITipAccountRegistrar, TipAccountRegistrar};
+use crate::{storage::PrecompileStorageProvider, tip20_rewards_registry::TIP20RewardsRegistry};
 
-impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S> {
+impl<'a, S: PrecompileStorageProvider> Precompile for TIP20RewardsRegistry<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
@@ -12,14 +13,14 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
                 PrecompileError::Other("Invalid input: missing function selector".to_string())
             })?
             .try_into()
-            .unwrap();
+            .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
 
         match selector {
-            ITipAccountRegistrar::delegateToDefaultCall::SELECTOR => {
-                mutate::<ITipAccountRegistrar::delegateToDefaultCall>(
+            ITIP20RewardsRegistry::finalizeStreamsCall::SELECTOR => {
+                mutate_void::<ITIP20RewardsRegistry::finalizeStreamsCall>(
                     calldata,
                     msg_sender,
-                    |_, call| self.delegate_to_default(call),
+                    |sender, _call| self.finalize_streams(sender),
                 )
             }
             _ => Err(PrecompileError::Other(

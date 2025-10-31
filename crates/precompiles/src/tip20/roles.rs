@@ -40,7 +40,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
     }
 
     /// Grant the default admin role to an account
-    pub fn grant_default_admin(&mut self, admin: &Address) -> Result<(), TempoPrecompileError> {
+    pub fn grant_default_admin(&mut self, admin: Address) -> Result<(), TempoPrecompileError> {
         self.grant_role_internal(admin, DEFAULT_ADMIN_ROLE)
     }
 
@@ -49,7 +49,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         &mut self,
         call: IRolesAuth::hasRoleCall,
     ) -> Result<bool, TempoPrecompileError> {
-        self.has_role_internal(&call.account, call.role)
+        self.has_role_internal(call.account, call.role)
     }
 
     pub fn get_role_admin(
@@ -61,19 +61,19 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
 
     pub fn grant_role(
         &mut self,
-        msg_sender: &Address,
+        msg_sender: Address,
         call: IRolesAuth::grantRoleCall,
     ) -> Result<(), TempoPrecompileError> {
         let admin_role = self.get_role_admin_internal(call.role)?;
         self.check_role_internal(msg_sender, admin_role)?;
-        self.grant_role_internal(&call.account, call.role)?;
+        self.grant_role_internal(call.account, call.role)?;
 
         self.storage.emit_event(
             self.parent_contract_address,
             RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: call.account,
-                sender: *msg_sender,
+                sender: msg_sender,
                 hasRole: true,
             })
             .into_log_data(),
@@ -82,19 +82,19 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
 
     pub fn revoke_role(
         &mut self,
-        msg_sender: &Address,
+        msg_sender: Address,
         call: IRolesAuth::revokeRoleCall,
     ) -> Result<(), TempoPrecompileError> {
         let admin_role = self.get_role_admin_internal(call.role)?;
         self.check_role_internal(msg_sender, admin_role)?;
-        self.revoke_role_internal(&call.account, call.role)?;
+        self.revoke_role_internal(call.account, call.role)?;
 
         self.storage.emit_event(
             self.parent_contract_address,
             RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: call.account,
-                sender: *msg_sender,
+                sender: msg_sender,
                 hasRole: false,
             })
             .into_log_data(),
@@ -103,7 +103,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
 
     pub fn renounce_role(
         &mut self,
-        msg_sender: &Address,
+        msg_sender: Address,
         call: IRolesAuth::renounceRoleCall,
     ) -> Result<(), TempoPrecompileError> {
         self.check_role_internal(msg_sender, call.role)?;
@@ -113,8 +113,8 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
             self.parent_contract_address,
             RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
-                account: *msg_sender,
-                sender: *msg_sender,
+                account: msg_sender,
+                sender: msg_sender,
                 hasRole: false,
             })
             .into_log_data(),
@@ -123,7 +123,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
 
     pub fn set_role_admin(
         &mut self,
-        msg_sender: &Address,
+        msg_sender: Address,
         call: IRolesAuth::setRoleAdminCall,
     ) -> Result<(), TempoPrecompileError> {
         let current_admin_role = self.get_role_admin_internal(call.role)?;
@@ -136,25 +136,21 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
             RolesAuthEvent::RoleAdminUpdated(IRolesAuth::RoleAdminUpdated {
                 role: call.role,
                 newAdminRole: call.adminRole,
-                sender: *msg_sender,
+                sender: msg_sender,
             })
             .into_log_data(),
         )
     }
 
     // Utility functions for checking roles without calldata
-    pub fn check_role(
-        &mut self,
-        account: &Address,
-        role: B256,
-    ) -> Result<(), TempoPrecompileError> {
+    pub fn check_role(&mut self, account: Address, role: B256) -> Result<(), TempoPrecompileError> {
         self.check_role_internal(account, role)
     }
 
     // Internal implementation functions
     pub fn has_role_internal(
         &mut self,
-        account: &Address,
+        account: Address,
         role: B256,
     ) -> Result<bool, TempoPrecompileError> {
         let slot = double_mapping_slot(account, role, self.roles_slot);
@@ -164,7 +160,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
 
     pub fn grant_role_internal(
         &mut self,
-        account: &Address,
+        account: Address,
         role: B256,
     ) -> Result<(), TempoPrecompileError> {
         let slot = double_mapping_slot(account, role, self.roles_slot);
@@ -174,7 +170,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
 
     fn revoke_role_internal(
         &mut self,
-        account: &Address,
+        account: Address,
         role: B256,
     ) -> Result<(), TempoPrecompileError> {
         let slot = double_mapping_slot(account, role, self.roles_slot);
@@ -203,7 +199,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
 
     fn check_role_internal(
         &mut self,
-        account: &Address,
+        account: Address,
         role: B256,
     ) -> Result<(), TempoPrecompileError> {
         if !self.has_role_internal(account, role)? {
@@ -236,7 +232,7 @@ mod tests {
 
         // Initialize and grant admin
         roles.initialize().unwrap();
-        roles.grant_default_admin(&admin).unwrap();
+        roles.grant_default_admin(admin).unwrap();
 
         // Test hasRole
         let has_admin = roles
@@ -250,7 +246,7 @@ mod tests {
         // Grant custom role
         roles
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: custom_role,
                     account: user,
@@ -282,12 +278,12 @@ mod tests {
         let admin_role = keccak256(b"ADMIN_ROLE");
 
         roles.initialize().unwrap();
-        roles.grant_default_admin(&admin).unwrap();
+        roles.grant_default_admin(admin).unwrap();
 
         // Set custom admin for role
         roles
             .set_role_admin(
-                &admin,
+                admin,
                 IRolesAuth::setRoleAdminCall {
                     role: custom_role,
                     adminRole: admin_role,
@@ -312,17 +308,17 @@ mod tests {
         let custom_role = keccak256(b"CUSTOM_ROLE");
 
         roles.initialize().unwrap();
-        roles.grant_role_internal(&user, custom_role).unwrap();
+        roles.grant_role_internal(user, custom_role).unwrap();
 
         // Renounce role
         roles
-            .renounce_role(&user, IRolesAuth::renounceRoleCall { role: custom_role })
+            .renounce_role(user, IRolesAuth::renounceRoleCall { role: custom_role })
             .unwrap();
 
         // Check role is removed
         assert!(
             !roles
-                .has_role_internal(&user, custom_role)
+                .has_role_internal(user, custom_role)
                 .expect("Could not get role")
         );
     }
@@ -341,7 +337,7 @@ mod tests {
 
         // Try to grant role without permission
         let result = roles.grant_role(
-            &user,
+            user,
             IRolesAuth::grantRoleCall {
                 role: custom_role,
                 account: other,

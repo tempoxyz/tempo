@@ -1,15 +1,17 @@
+use std::sync::{Arc, Mutex};
+
 use crate::{consensus::Digest, epoch::SchemeProvider};
-use alloy_consensus::Transaction;
-use alloy_primitives::{B256, BlockHash, Bytes, map::HashMap};
+use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_primitives::{B256, BlockHash, Bytes, TxHash, map::HashMap};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_consensus::{
-    Epochable, Reporter,
+    Epochable, Reporter, Viewable,
     marshal::SchemeProvider as _,
     simplex::{
         select_leader,
         signing_scheme::{Scheme as _, bls12381_threshold::Scheme},
-        types::{Activity, Notarization},
+        types::Activity,
     },
     types::Round,
 };
@@ -30,7 +32,7 @@ use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::T
 use tempo_payload_types::{RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion};
 use tempo_primitives::TempoTxEnvelope;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 
 /// Actions processed by the subblocks service.
 #[derive(Debug)]
@@ -67,7 +69,7 @@ pub struct SubBlocksService<Ctx> {
     next_proposer: Option<PublicKey>,
     next_parent_hash: Option<BlockHash>,
     subblocks: HashMap<B256, RecoveredSubBlock>,
-    subblock_transactions: Vec<TempoTxEnvelope>,
+    subblock_transactions: Arc<Mutex<HashMap<TxHash, Arc<TempoTxEnvelope>>>>,
     node: TempoFullNode,
 }
 
@@ -98,6 +100,36 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         (this, SubBlocksHandle { tx: actions_tx })
     }
 
+    pub async fn run(
+        mut self,
+        (mut network_tx, mut network_rx): (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
+    ) {
+        loop {
+            tokio::select! {
+                // Handle messages from consensus engine and service handle.
+                Some(action) = self.actions_rx.recv() => {
+                    self.on_new_message(action);
+                }
+                // Handle messages from the network.
+                Ok((sender, message)) = network_rx.recv() => {
+                    self.on_network_message(sender, message);
+                }
+                // Handle validated subblocks.
+                Some(subblock) = self.validated_subblocks_rx.recv() => {
+                    self.on_validated_subblock(subblock);
+                }
+                // Handle built subblocks.
+                Some(subblock) = OptionFuture::from(self.subblock_builder_handle.as_mut()) => {
+                    self.subblock_builder_handle = None;
+                    self.on_built_subblock(subblock, &mut network_tx).await;
+                }
+            }
+        }
+    }
+
     fn on_new_message(&mut self, action: Message) {
         match action {
             Message::GetSubBlocks { parent, response } => {
@@ -117,30 +149,39 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                 {
                     return;
                 }
-                self.subblock_transactions.push(*transaction);
+                let Ok(mut transactions) = self.subblock_transactions.lock() else {
+                    return;
+                };
+                transactions.insert(*transaction.tx_hash(), Arc::new(*transaction));
             }
             Message::Consensus(activity) => {
-                if let Activity::Notarization(event) = *activity {
-                    self.on_new_notarization(event);
-                }
+                self.on_consensus_event(*activity);
             }
         }
     }
 
-    fn on_new_notarization(&mut self, event: Notarization<Scheme<PublicKey, MinSig>, Digest>) {
+    #[instrument(skip_all, fields(event.epoch = event.epoch(), event.view = event.view()))]
+    fn on_consensus_event(&mut self, event: Activity<Scheme<PublicKey, MinSig>, Digest>) {
         let epoch = event.epoch();
+        let view = event.view();
+
+        let (new_tip, certificate) = match event {
+            Activity::Notarization(n) => (Some(n.proposal.payload.0), n.certificate),
+            Activity::Nullification(n) => (None, n.certificate),
+            _ => return,
+        };
 
         let Some(scheme) = self.scheme_provider.scheme(epoch) else {
             return;
         };
 
-        let Some(seed) = scheme.seed(event.proposal.round, &event.certificate) else {
+        let Some(seed) = scheme.seed(Round::new(epoch, view), &certificate) else {
             return;
         };
 
         let leader_idx = select_leader::<Scheme<PublicKey, MinSig>, _>(
             scheme.participants().as_ref(),
-            Round::new(epoch, event.proposal.round.view() + 1),
+            Round::new(epoch, view + 1),
             Some(seed),
         );
 
@@ -151,7 +192,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         // Clear older subblocks if we have a new parent.
         if self
             .next_parent_hash
-            .is_some_and(|hash| hash != event.proposal.payload.0)
+            .is_some_and(|hash| Some(hash) != new_tip)
         {
             self.subblocks.clear();
         }
@@ -159,8 +200,10 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         let num_validators = scheme.participants().len();
 
         // Record next proposer and parent hash.
-        self.next_proposer = Some(next_proposer.clone());
-        self.next_parent_hash = Some(event.proposal.payload.0);
+        self.next_proposer = Some(next_proposer);
+        if let Some(new_tip) = new_tip {
+            self.next_parent_hash = Some(new_tip);
+        }
 
         if let Some(existing) = self.subblock_builder_handle.take() {
             existing.abort();
@@ -168,7 +211,9 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
 
         let transactions = self.subblock_transactions.clone();
         let node = self.node.clone();
-        let parent_hash = event.proposal.payload.0;
+        let Some(parent_hash) = self.next_parent_hash else {
+            return;
+        };
         let signer = self.signer.clone();
         let handle = self.context.clone().shared(true).spawn(move |_| {
             build_subblock(transactions, node, parent_hash, num_validators, signer)
@@ -176,100 +221,104 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
 
         self.subblock_builder_handle = Some(handle);
     }
-}
 
-impl<Ctx: Spawner> SubBlocksService<Ctx> {
-    pub async fn run(
-        mut self,
-        (mut network_tx, mut network_rx): (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
+    #[instrument(skip_all, fields(sender = %sender))]
+    fn on_network_message(&mut self, sender: PublicKey, message: bytes::Bytes) {
+        let Ok(subblock) = SignedSubBlock::decode(&mut &*message) else {
+            return;
+        };
+
+        let Some(next_parent_hash) = self.next_parent_hash else {
+            return;
+        };
+
+        // Skip subblocks that are not built on top of the tip.
+        if next_parent_hash != subblock.parent_hash {
+            return;
+        }
+
+        // Skip subblocks if we are not proposing
+        if self.next_proposer != Some(self.signer.public_key()) {
+            return;
+        }
+
+        // Spawn task to validate the subblock.
+        let node = self.node.clone();
+        let validated_subblocks_tx = self.validated_subblocks_tx.clone();
+        self.context
+            .clone()
+            .shared(true)
+            .spawn(move |_| async move {
+                if let Err(err) = validate_subblock(
+                    sender.clone(),
+                    node,
+                    subblock,
+                    next_parent_hash,
+                    validated_subblocks_tx,
+                )
+                .await
+                {
+                    warn!(
+                        %sender,
+                        %err,
+                        "received invalid subblock"
+                    );
+                }
+            });
+    }
+
+    #[instrument(skip_all, fields(subblock.validator = %subblock.validator(), subblock.parent_hash = %subblock.parent_hash))]
+    fn on_validated_subblock(&mut self, subblock: RecoveredSubBlock) {
+        // SKip subblock if we are already past its parent
+        if Some(subblock.parent_hash) != self.next_parent_hash {
+            return;
+        }
+
+        debug!(subblock = ?subblock, "validated subblock");
+
+        self.subblocks.insert(subblock.validator(), subblock);
+    }
+
+    #[instrument(skip_all)]
+    async fn on_built_subblock(
+        &mut self,
+        subblock: Result<RecoveredSubBlock, commonware_runtime::Error>,
+        network_tx: &mut impl Sender<PublicKey = PublicKey>,
     ) {
-        loop {
-            tokio::select! {
-                // First, handle messages from consensus engine and handle.
-                Some(action) = self.actions_rx.recv() => {
-                    self.on_new_message(action);
-                }
-                // Handle messages from the network.
-                Ok((sender, message)) = network_rx.recv() => {
-                    let Ok(subblock) = SignedSubBlock::decode(&mut &*message) else {
-                        continue;
-                    };
+        let Some(next_parent_hash) = self.next_parent_hash else {
+            return;
+        };
+        let Some(next_proposer) = &self.next_proposer else {
+            return;
+        };
 
-                    let Some(next_parent_hash) = self.next_parent_hash else {
-                        continue;
-                    };
-
-                    // Skip subblocks that are not built on top of the tip.
-                    if next_parent_hash != subblock.parent_hash {
-                        continue;
-                    }
-
-                    // Skip subblocks if we are not proposing
-                    if self.next_proposer != Some(self.signer.public_key()) {
-                        continue;
-                    }
-
-                    // Spawn task to validate the subblock.
-                    let node = self.node.clone();
-                    let validated_subblocks_tx = self.validated_subblocks_tx.clone();
-                    self.context.clone().shared(true).spawn(move |_| async move {
-                        if let Err(err) = validate_subblock(sender.clone(), node, subblock, next_parent_hash, validated_subblocks_tx).await {
-                            warn!(
-                                %sender,
-                                %err,
-                                "received invalid subblock"
-                            );
-                        }
-                    });
-                }
-                // Handle validated subblocks.
-                Some(subblock) = self.validated_subblocks_rx.recv() => {
-                    // SKip subblock if we are already past its parent
-                    if Some(subblock.parent_hash) != self.next_parent_hash {
-                        return;
-                    }
-
-                    debug!(subblock = ?subblock, "validated subblock");
-
-                    self.subblocks.insert(subblock.validator(), subblock);
-                }
-                // Handle built subblocks.
-                Some(subblock) = OptionFuture::from(self.subblock_builder_handle.as_mut()) => {
-                    self.subblock_builder_handle = None;
-
-                    debug!(?subblock, "built subblock");
-
-                    let Some(next_parent_hash) = self.next_parent_hash else {
-                        continue;
-                    };
-                    let Some(next_proposer) = &self.next_proposer else {
-                        continue;
-                    };
-
-                    let subblock = match subblock {
-                        Ok(subblock) => subblock,
-                        Err(err) => {
-                            warn!(%err, "failed to build subblock, skipping");
-                            continue;
-                        }
-                    };
-
-                    if subblock.parent_hash != next_parent_hash {
-                        continue;
-                    }
-
-                    debug!(?subblock, ?next_proposer, "sending subblock to the next proposer");
-                    if next_proposer != &self.signer.public_key() {
-                        let _ = network_tx.send(Recipients::One(next_proposer.clone()), alloy_rlp::encode(&*subblock).into(), true).await;
-                    } else {
-                        let _ = self.validated_subblocks_tx.send(subblock);
-                    }
-
-                }
+        let subblock = match subblock {
+            Ok(subblock) => subblock,
+            Err(err) => {
+                warn!(%err, "failed to build subblock");
+                return;
             }
+        };
+
+        if subblock.parent_hash != next_parent_hash {
+            return;
+        }
+
+        debug!(
+            ?subblock,
+            ?next_proposer,
+            "sending subblock to the next proposer"
+        );
+        if next_proposer != &self.signer.public_key() {
+            let _ = network_tx
+                .send(
+                    Recipients::One(next_proposer.clone()),
+                    alloy_rlp::encode(&*subblock).into(),
+                    true,
+                )
+                .await;
+        } else {
+            self.on_validated_subblock(subblock);
         }
     }
 }
@@ -321,7 +370,7 @@ fn evm_at_block(
 }
 
 async fn build_subblock(
-    transactions: Vec<TempoTxEnvelope>,
+    transactions: Arc<Mutex<HashMap<TxHash, Arc<TempoTxEnvelope>>>>,
     node: TempoFullNode,
     parent_hash: BlockHash,
     num_validators: usize,
@@ -334,7 +383,7 @@ async fn build_subblock(
             let mut gas_left =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
 
-            for tx in transactions {
+            for (tx_hash, tx) in transactions.lock().unwrap().clone() {
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
@@ -342,10 +391,12 @@ async fn build_subblock(
                     continue;
                 };
                 if evm.transact_commit(tx.with_signer_ref(sender)).is_err() {
+                    // Remove invalid transactions from the set.
+                    transactions.lock().unwrap().remove(&tx_hash);
                     continue;
                 }
                 gas_left -= tx.gas_limit();
-                selected_transactions.push(tx);
+                selected_transactions.push(Arc::unwrap_or_clone(tx));
                 senders.push(sender);
             }
 

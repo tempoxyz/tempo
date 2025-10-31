@@ -25,8 +25,9 @@ use std::collections::HashSet;
 use tempo_chainspec::TempoChainSpec;
 use tempo_payload_types::{SubBlock, SubBlockMetadata, SubBlockVersion};
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, stablecoin_exchange::IStablecoinExchange,
-    tip_fee_manager::IFeeManager,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
+    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
+    tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, transaction::PartialValidatorKey};
 use tempo_revm::evm::TempoContext;
@@ -47,6 +48,7 @@ enum BlockSection {
         seen_fee_manager: bool,
         seen_stablecoin_dex: bool,
         seen_subblocks_signatures: bool,
+        seen_tip20_rewards_registry: bool,
     },
 }
 
@@ -131,19 +133,25 @@ where
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
-        let (mut seen_fee_manager, mut seen_stablecoin_dex, mut seen_subblocks_signatures) =
-            match self.section {
-                BlockSection::System {
-                    seen_fee_manager,
-                    seen_stablecoin_dex,
-                    seen_subblocks_signatures,
-                } => (
-                    seen_fee_manager,
-                    seen_stablecoin_dex,
-                    seen_subblocks_signatures,
-                ),
-                _ => (false, false, false),
-            };
+        let (
+            mut seen_fee_manager,
+            mut seen_stablecoin_dex,
+            mut seen_subblocks_signatures,
+            mut seen_tip20_rewards_registry,
+        ) = match self.section {
+            BlockSection::System {
+                seen_fee_manager,
+                seen_stablecoin_dex,
+                seen_subblocks_signatures,
+                seen_tip20_rewards_registry,
+            } => (
+                seen_fee_manager,
+                seen_stablecoin_dex,
+                seen_subblocks_signatures,
+                seen_tip20_rewards_registry,
+            ),
+            _ => (false, false, false, false),
+        };
 
         let block = self.evm().block().number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
@@ -187,6 +195,26 @@ where
             }
 
             seen_stablecoin_dex = true;
+        } else if to == TIP20_REWARDS_REGISTRY_ADDRESS {
+            if seen_tip20_rewards_registry {
+                return Err(BlockValidationError::msg(
+                    "duplicate stablecoin TIP20 rewards registry system transaction",
+                ));
+            }
+
+            let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
+                .abi_encode()
+                .into_iter()
+                .chain(block)
+                .collect::<Bytes>();
+
+            if *tx.input() != finalize_streams_input {
+                return Err(BlockValidationError::msg(
+                    "invalid stablecoin TIP20 rewards registry system transaction",
+                ));
+            }
+
+            seen_tip20_rewards_registry = true;
         } else if to.is_zero() {
             if seen_subblocks_signatures {
                 return Err(BlockValidationError::msg(
@@ -226,6 +254,7 @@ where
             seen_fee_manager,
             seen_stablecoin_dex,
             seen_subblocks_signatures,
+            seen_tip20_rewards_registry,
         })
     }
 
@@ -268,7 +297,7 @@ where
             let signature_hash = SubBlock {
                 version: SubBlockVersion::V1,
                 parent_hash: self.inner.ctx.parent_hash,
-                transactions,
+                transactions: transactions.clone(),
             }
             .signature_hash();
 
@@ -280,7 +309,9 @@ where
             };
 
             let Ok(signature) = Signature::decode(&mut metadata.signature.as_ref()) else {
-                return Err(BlockValidationError::msg("invalid subblock signature"));
+                return Err(BlockValidationError::msg(
+                    "invalid subblock signature encoding",
+                ));
             };
 
             if !validator.verify(None, signature_hash.as_slice(), &signature) {
@@ -302,7 +333,7 @@ where
             ));
         }
 
-        if incentive_gas > self.incentive_gas_used {
+        if incentive_gas < self.incentive_gas_used {
             return Err(BlockValidationError::msg("incentive gas limit exceeded"));
         }
 
@@ -329,7 +360,9 @@ where
                     if proposer == tx_proposer
                         || !self.seen_subblocks.iter().any(|(p, _)| *p == tx_proposer)
                     {
-                        Ok(BlockSection::SubBlock { proposer })
+                        Ok(BlockSection::SubBlock {
+                            proposer: tx_proposer,
+                        })
                     } else {
                         Err(BlockValidationError::msg(
                             "proposer's subblock already processed",
@@ -440,6 +473,7 @@ where
                 seen_fee_manager: true,
                 seen_stablecoin_dex: true,
                 seen_subblocks_signatures: true,
+                seen_tip20_rewards_registry: true,
             })
         {
             return Err(BlockValidationError::msg("system transactions not seen in block").into());

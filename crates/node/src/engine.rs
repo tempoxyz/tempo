@@ -25,7 +25,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
     ) -> Result<RecoveredBlock<Block>, NewPayloadError> {
         let TempoExecutionData {
             block,
-            validator_set,
+            validator_set: _,
         } = payload;
         block
             .try_recover()
