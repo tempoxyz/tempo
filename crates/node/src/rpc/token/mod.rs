@@ -16,18 +16,31 @@ pub mod tokens_by_address;
 
 #[rpc(server, namespace = "token")]
 pub trait TempoTokenApi {
+    /// Gets paginated role change history for TIP-20 tokens on Tempo.
+    ///
+    /// Tracks role grants and revocations from the RoleMembershipUpdated event for audit trails and compliance monitoring.
+    ///
+    /// Uses cursor-based pagination for stable iteration through role changes.
     #[method(name = "getRoleHistory")]
     async fn role_history(
         &self,
         params: PaginationParams<RoleHistoryFilters>,
     ) -> RpcResult<PaginationResponse<RoleChange>>;
 
+    /// Gets paginated TIP-20 tokens on Tempo.
+    ///
+    /// Uses cursor-based pagination for stable iteration through tokens.
     #[method(name = "getTokens")]
     async fn tokens(
         &self,
         params: PaginationParams<TokensFilters>,
     ) -> RpcResult<PaginationResponse<Token>>;
 
+    /// Gets paginated TIP-20 tokens associated with an account address on Tempo.
+    ///
+    /// Returns tokens where the account has a balance or specific roles.
+    ///
+    /// Uses cursor-based pagination for stable iteration through tokens.
     #[method(name = "getTokensByAddress")]
     async fn tokens_by_address(
         &self,

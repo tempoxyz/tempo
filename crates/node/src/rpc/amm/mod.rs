@@ -9,6 +9,11 @@ pub mod pools;
 
 #[rpc(server, namespace = "amm")]
 pub trait TempoAmmApi {
+    /// Gets paginated liquidity pools from the Fee AMM on Tempo.
+    ///
+    /// Each pool is directional (userToken → validatorToken) with fixed swap rates for fee swaps (0.997) and rebalance swaps (0.9985).
+    ///
+    /// Uses cursor-based pagination for stable iteration through pools.
     #[method(name = "getPools")]
     async fn pools(
         &self,

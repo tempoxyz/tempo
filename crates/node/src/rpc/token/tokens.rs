@@ -46,7 +46,7 @@ pub struct Token {
     /// Quote token address for trading pairs
     pub quote_token: Address,
     /// Maximum token supply
-    pub supply_cap: B256,
+    pub supply_cap: U256,
     /// Token symbol
     pub symbol: String,
     /// Unique token ID from factory

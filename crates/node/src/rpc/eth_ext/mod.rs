@@ -12,6 +12,9 @@ pub mod transactions;
 
 #[rpc(server, namespace = "eth")]
 pub trait TempoEthExtApi {
+    /// Gets paginated transactions on Tempo with flexible filtering and sorting.
+    ///
+    /// Uses cursor-based pagination for stable iteration through transactions.
     #[method(name = "getTransactions")]
     async fn transactions(
         &self,

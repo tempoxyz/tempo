@@ -9,6 +9,11 @@ pub mod addresses;
 
 #[rpc(server, namespace = "policy")]
 pub trait TempoPolicyApi {
+    /// Gets paginated addresses in a transfer policy on Tempo.
+    ///
+    /// Returns addresses that are authorized or restricted based on the policy type (whitelist or blacklist).
+    ///
+    /// Uses cursor-based pagination for stable iteration through addresses.
     #[method(name = "getAddresses")]
     async fn addresses(
         &self,
