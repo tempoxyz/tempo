@@ -23,9 +23,9 @@ use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
 };
-use reth_provider::{BlockNumReader as _, BlockReader};
+use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, debug, info, instrument, warn};
+use tracing::{Level, Span, debug, error, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -417,7 +417,7 @@ where
                 .provider
                 .block_number(block.block_hash())
             {
-                Ok(Some(number)) if number == block.number() => {
+                Ok(Some(number)) if number == block.height() => {
                     info!(
                         "execution layer already knows the block; \
                             not sending it again"
@@ -437,7 +437,7 @@ where
                 }
                 Err(error) => {
                     error!(
-                        error = %Report::new(error),
+                        error = %eyre::Report::new(error),
                         "failed querying execution layer for the block; \
                         still attempting to send it, but this is not good"
                     );
