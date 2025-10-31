@@ -80,6 +80,11 @@ impl Builder {
     }
 }
 
+/// Tracks the last forkchoice state that the executor sent to the execution layer.
+///
+/// Also tracks the corresponding heights corresponding to
+/// `forkchoice_state.head_block_hash` and
+/// `forkchoice_state.finalized_block_hash`, respectively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LastCanonicalized {
     forkchoice: ForkchoiceState,
@@ -88,6 +93,16 @@ struct LastCanonicalized {
 }
 
 impl LastCanonicalized {
+    /// Updates the finalized height and finalized block hash to `height` and `hash`.
+    ///
+    /// `height` must be ahead of the latest canonicalized finalized height. If
+    /// it is not, then this is a no-op.
+    ///
+    /// Similarly, if `height` is ahead or the same as the latest canonicalized
+    /// head height, it also updates the head height.
+    ///
+    /// This is to ensure that the finalized block hash is never ahead of the
+    /// head hash.
     fn update_finalized(self, height: u64, hash: B256) -> Self {
         let mut this = self;
         if height > this.finalized_height {
@@ -95,13 +110,13 @@ impl LastCanonicalized {
             this.forkchoice.safe_block_hash = hash;
             this.forkchoice.finalized_block_hash = hash;
         }
-        if height > this.head_height {
-            this.head_height = height;
-            this.forkchoice.head_block_hash = hash;
-        }
-        this
+        this.update_head(height, hash)
     }
 
+    /// UPdates the head height and head block hash to `height` and `hash`.
+    ///
+    /// `head` must be ahead of the latest canonicalized head height. If it is
+    /// not, then this is a no-op.
     fn update_head(self, height: u64, hash: B256) -> Self {
         let mut this = self;
         if height >= this.head_height {
