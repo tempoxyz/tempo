@@ -10,7 +10,10 @@ pub(crate) fn get_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
         // View functions
         InterfaceFunction {
             name: "has_role",
-            params: vec![("account", parse_quote!(Address)), ("role", parse_quote!(B256))],
+            params: vec![
+                ("account", parse_quote!(Address)),
+                ("role", parse_quote!(B256)),
+            ],
             return_type: parse_quote!(bool),
             is_view: true,
             call_type_path: quote!(#interface_type::hasRoleCall),
@@ -25,14 +28,20 @@ pub(crate) fn get_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
         // Mutating functions (void)
         InterfaceFunction {
             name: "grant_role",
-            params: vec![("role", parse_quote!(B256)), ("account", parse_quote!(Address))],
+            params: vec![
+                ("role", parse_quote!(B256)),
+                ("account", parse_quote!(Address)),
+            ],
             return_type: parse_quote!(()),
             is_view: false,
             call_type_path: quote!(#interface_type::grantRoleCall),
         },
         InterfaceFunction {
             name: "revoke_role",
-            params: vec![("role", parse_quote!(B256)), ("account", parse_quote!(Address))],
+            params: vec![
+                ("role", parse_quote!(B256)),
+                ("account", parse_quote!(Address)),
+            ],
             return_type: parse_quote!(()),
             is_view: false,
             call_type_path: quote!(#interface_type::revokeRoleCall),

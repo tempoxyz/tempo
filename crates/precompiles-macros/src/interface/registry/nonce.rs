@@ -9,7 +9,10 @@ pub(crate) fn get_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
     vec![
         InterfaceFunction {
             name: "get_nonce",
-            params: vec![("account", parse_quote!(Address)), ("nonce_key", parse_quote!(U256))],
+            params: vec![
+                ("account", parse_quote!(Address)),
+                ("nonce_key", parse_quote!(U256)),
+            ],
             return_type: parse_quote!(u64),
             is_view: true,
             call_type_path: quote!(#interface_type::getNonceCall),

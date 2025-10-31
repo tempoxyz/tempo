@@ -24,7 +24,10 @@ pub(crate) fn get_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
         },
         InterfaceFunction {
             name: "is_authorized",
-            params: vec![("policy_id", parse_quote!(u64)), ("user", parse_quote!(Address))],
+            params: vec![
+                ("policy_id", parse_quote!(u64)),
+                ("user", parse_quote!(Address)),
+            ],
             return_type: parse_quote!(bool),
             is_view: true,
             call_type_path: quote!(#interface_type::isAuthorizedCall),
@@ -54,7 +57,10 @@ pub(crate) fn get_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
         // State-changing functions (void)
         InterfaceFunction {
             name: "set_policy_admin",
-            params: vec![("policy_id", parse_quote!(u64)), ("admin", parse_quote!(Address))],
+            params: vec![
+                ("policy_id", parse_quote!(u64)),
+                ("admin", parse_quote!(Address)),
+            ],
             return_type: parse_quote!(()),
             is_view: false,
             call_type_path: quote!(#interface_type::setPolicyAdminCall),
@@ -100,7 +106,11 @@ pub(crate) fn get_events(interface_type: &Type) -> Vec<InterfaceEvent> {
             params: vec![
                 ("policy_id", parse_quote!(u64), true),
                 ("updater", parse_quote!(Address), true),
-                ("policy_type", parse_quote!(#interface_type::PolicyType), false),
+                (
+                    "policy_type",
+                    parse_quote!(#interface_type::PolicyType),
+                    false,
+                ),
             ],
             event_type_path: quote!(#interface_type::PolicyCreated),
         },

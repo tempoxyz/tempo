@@ -91,7 +91,10 @@ pub(crate) fn get_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
         // Balance management view functions
         InterfaceFunction {
             name: "balance_of",
-            params: vec![("user", parse_quote!(Address)), ("token", parse_quote!(Address))],
+            params: vec![
+                ("user", parse_quote!(Address)),
+                ("token", parse_quote!(Address)),
+            ],
             return_type: parse_quote!(u128),
             is_view: true,
             call_type_path: quote!(#interface_type::balanceOfCall),
@@ -164,7 +167,10 @@ pub(crate) fn get_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
         },
         InterfaceFunction {
             name: "withdraw",
-            params: vec![("token", parse_quote!(Address)), ("amount", parse_quote!(u128))],
+            params: vec![
+                ("token", parse_quote!(Address)),
+                ("amount", parse_quote!(u128)),
+            ],
             return_type: parse_quote!(()),
             is_view: false,
             call_type_path: quote!(#interface_type::withdrawCall),

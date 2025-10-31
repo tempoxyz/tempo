@@ -53,7 +53,10 @@ pub(crate) fn get_functions(interface_type: &Type) -> Vec<InterfaceFunction> {
         },
         InterfaceFunction {
             name: "liquidity_balances",
-            params: vec![("pool_id", parse_quote!(B256)), ("user", parse_quote!(Address))],
+            params: vec![
+                ("pool_id", parse_quote!(B256)),
+                ("user", parse_quote!(Address)),
+            ],
             return_type: parse_quote!(U256),
             is_view: true,
             call_type_path: quote!(#interface_type::liquidityBalancesCall),

@@ -1,7 +1,32 @@
 //! Utility functions for the contract macro implementation.
 
-use alloy::primitives::U256;
+use alloy::primitives::{U256, keccak256};
 use syn::{Attribute, Lit, Type};
+
+/// Parses a slot value from a literal.
+///
+/// Supports:
+/// - Integer literals: decimal (e.g., `42`) or hexadecimal (e.g., `0x2a`)
+/// - String literals: computes keccak256 hash of the string
+fn parse_slot_value(value: &Lit) -> syn::Result<U256> {
+    match value {
+        Lit::Int(int) => {
+            let lit_str = int.to_string();
+            let slot = if let Some(hex) = lit_str.strip_prefix("0x") {
+                U256::from_str_radix(hex, 16)
+            } else {
+                U256::from_str_radix(&lit_str, 10)
+            }
+            .map_err(|_| syn::Error::new_spanned(int, "Invalid slot number"))?;
+            Ok(slot)
+        }
+        Lit::Str(lit) => Ok(keccak256(lit.value().as_bytes()).into()),
+        _ => Err(syn::Error::new_spanned(
+            value,
+            "slot attribute must be an integer or a string literal",
+        )),
+    }
+}
 
 /// Converts a string from CamelCase or snake_case to snake_case.
 /// Preserves SCREAMING_SNAKE_CASE, as those are assumed to be constant/immutable names.
@@ -66,26 +91,15 @@ pub(crate) fn extract_attributes(
             }
 
             let value: Lit = attr.parse_args()?;
-            if let Lit::Int(lit_int) = value {
-                let lit_str = lit_int.to_string();
-                let slot = if let Some(hex) = lit_str.strip_prefix("0x") {
-                    U256::from_str_radix(hex, 16)
-                } else {
-                    U256::from_str_radix(&lit_str, 10)
-                }
-                .map_err(|_| syn::Error::new_spanned(&lit_int, "Invalid slot number"))?;
-                slot_attr = Some(slot);
-            } else {
-                return Err(syn::Error::new_spanned(
-                    value,
-                    "slot attribute must be an integer literal",
-                ));
-            }
+            slot_attr = Some(parse_slot_value(&value)?);
         }
         // Extract `#[base_slot(N)]` attribute
         else if attr.path().is_ident("base_slot") {
             if base_slot_attr.is_some() {
-                return Err(syn::Error::new_spanned(attr, "Duplicate 'base_slot' attribute"));
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "Duplicate 'base_slot' attribute",
+                ));
             }
             if slot_attr.is_some() {
                 return Err(syn::Error::new_spanned(
@@ -95,21 +109,7 @@ pub(crate) fn extract_attributes(
             }
 
             let value: Lit = attr.parse_args()?;
-            if let Lit::Int(lit_int) = value {
-                let lit_str = lit_int.to_string();
-                let slot = if let Some(hex) = lit_str.strip_prefix("0x") {
-                    U256::from_str_radix(hex, 16)
-                } else {
-                    U256::from_str_radix(&lit_str, 10)
-                }
-                .map_err(|_| syn::Error::new_spanned(&lit_int, "Invalid base_slot number"))?;
-                base_slot_attr = Some(slot);
-            } else {
-                return Err(syn::Error::new_spanned(
-                    value,
-                    "base_slot attribute must be an integer literal",
-                ));
-            }
+            base_slot_attr = Some(parse_slot_value(&value)?);
         }
         // Extract `#[map = "..."]` attribute
         else if attr.path().is_ident("map") {

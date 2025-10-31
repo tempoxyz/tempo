@@ -5,7 +5,7 @@ mod storage {
     pub(super) use tempo_precompiles::storage::*;
 }
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, keccak256};
 use storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider};
 use tempo_precompiles::error;
 use tempo_precompiles_macros::contract;
@@ -206,4 +206,26 @@ fn test_base_slot_with_regular_slot() {
     assert_eq!(slots::FIELD_C, U256::from(101));
     assert_eq!(slots::FIELD_D, U256::from(50));
     assert_eq!(slots::FIELD_E, U256::from(102));
+}
+
+#[test]
+fn test_string_literal_slots() {
+    #[contract]
+    pub struct Layout {
+        #[slot("id")]
+        pub field: U256, // slot: keccak256("id")
+    }
+
+    let mut storage = HashMapStorageProvider::new(1);
+    let addr = test_address(1);
+
+    let mut layout = Layout::_new(addr, &mut storage);
+
+    // Set value
+    layout._set_field(U256::from(1)).unwrap();
+
+    // Verify
+    let slot: U256 = keccak256("id").into();
+    assert_eq!(storage.sload(addr, slot), Ok(U256::from(1))); // field
+    assert_eq!(slots::FIELD, slot);
 }
