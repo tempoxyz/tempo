@@ -465,7 +465,7 @@ where
     }
 }
 
-/// Marker to indicate whether the head hash or finalized hash should be upgrade.
+/// Marker to indicate whether the head hash or finalized hash should be updated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeadOrFinalized {
     Head,
@@ -475,8 +475,8 @@ enum HeadOrFinalized {
 impl std::fmt::Display for HeadOrFinalized {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let msg = match self {
-            HeadOrFinalized::Head => "head",
-            HeadOrFinalized::Finalized => "finalized",
+            Self::Head => "head",
+            Self::Finalized => "finalized",
         };
         f.write_str(msg)
     }
