@@ -520,7 +520,7 @@ fn initialize_validator_config(
                 &owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator.address,
-                    publicKey: FixedBytes::from(validator.key.0),
+                    publicKey: validator.key,
                     active: validator.active,
                     inboundAddress: validator.inbound_address.to_string(),
                     outboundAddress: validator.outbound_address.to_string(),
