@@ -141,7 +141,7 @@ impl RolesAuthError {
 
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
-    pub const fn insufficient_balance(required: U256, available: U256) -> Self {
+    pub const fn insufficient_balance(available: U256, required: U256) -> Self {
         Self::InsufficientBalance(ITIP20::InsufficientBalance {
             available,
             required,
