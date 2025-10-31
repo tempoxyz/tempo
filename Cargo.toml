@@ -205,7 +205,6 @@ camino = "1.1.12"
 clap = { version = "4.5.45", features = ["derive"] }
 const-hex = { version = "1.15.0" }
 derive_more = { version = "2.0.0" }
-ed25519-consensus = "2"
 test-fuzz = "7"
 eyre = "0.6.12"
 futures = "0.3.31"

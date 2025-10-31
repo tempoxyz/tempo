@@ -19,7 +19,6 @@ tempo-primitives.workspace = true
 tempo-precompiles.workspace = true
 tempo-revm.workspace = true
 
-ed25519-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
 

@@ -19,7 +19,6 @@ use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
 };
-use ed25519_consensus::VerificationKey;
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use std::collections::HashSet;
 use tempo_chainspec::TempoChainSpec;
@@ -301,10 +300,7 @@ where
             }
             .signature_hash();
 
-            let Ok(validator) =
-                VerificationKey::try_from(AsRef::<[u8]>::as_ref(&metadata.validator))
-                    .map(PublicKey::from)
-            else {
+            let Ok(validator) = PublicKey::decode(&mut metadata.validator.as_ref()) else {
                 return Err(BlockValidationError::msg("invalid subblock validator"));
             };
 
