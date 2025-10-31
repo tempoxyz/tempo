@@ -199,14 +199,18 @@ impl Consensus<Block> for TempoConsensus {
     }
 
     fn validate_block_pre_execution(&self, block: &SealedBlock<Block>) -> Result<(), Self::Error> {
-        let system_txs = block
-            .body()
-            .transactions
-            .iter()
-            .rev()
-            .take(TEMPO_SYSTEM_TX_COUNT)
-            .filter(|tx| tx.is_system_tx())
-            .collect::<Vec<&TempoTxEnvelope>>();
+        let transactions = &block.body().transactions;
+
+        // Get the last three transactions in the block and validate that they are system txs
+        let system_txs = transactions
+            .get(transactions.len().saturating_sub(TEMPO_SYSTEM_TX_COUNT)..)
+            .map(|slice| {
+                slice
+                    .iter()
+                    .filter(|tx| tx.is_system_tx())
+                    .collect::<Vec<&TempoTxEnvelope>>()
+            })
+            .unwrap_or_default();
 
         if system_txs.len() != TEMPO_SYSTEM_TX_COUNT {
             return Err(ConsensusError::Other(
@@ -214,6 +218,7 @@ impl Consensus<Block> for TempoConsensus {
             ));
         }
 
+        // Valdiate that the sequence of system txs is correct
         for (tx, expected_to) in system_txs.into_iter().zip(TEMPO_SYSTEM_TX_ADDRESSES) {
             if tx.to().unwrap_or_default() != expected_to {
                 return Err(ConsensusError::Other("Invalid system tx order".to_string()));
