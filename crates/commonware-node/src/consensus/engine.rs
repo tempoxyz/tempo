@@ -182,6 +182,7 @@ where
             self.execution_node.clone(),
             self.fee_recipient,
             self.time_to_build_subblock,
+            self.epoch_length,
         );
 
         let (application, application_mailbox) = application::init(super::application::Config {

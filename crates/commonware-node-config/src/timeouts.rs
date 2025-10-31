@@ -32,7 +32,7 @@ pub struct Config {
     #[serde(with = "humantime_serde")]
     pub new_payload_wait_time: Duration,
 
-    /// The amount of time to wait for subblock builder before building a subblock.
+    /// Timeout for subblock building.
     #[serde(with = "humantime_serde", default = "default_time_to_build_subblock")]
     pub time_to_build_subblock: Duration,
 }

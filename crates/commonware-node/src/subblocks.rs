@@ -3,8 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{consensus::Digest, epoch::SchemeProvider};
-use alloy_consensus::{Transaction, transaction::TxHashRef};
+use crate::{
+    consensus::Digest,
+    epoch::{self, SchemeProvider},
+};
+use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
 use alloy_primitives::{Address, B256, BlockHash, Bytes, TxHash, map::HashMap};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
@@ -16,7 +19,7 @@ use commonware_consensus::{
         signing_scheme::{Scheme as _, bls12381_threshold::Scheme},
         types::Activity,
     },
-    types::Round,
+    types::{Epoch, Round},
 };
 use commonware_cryptography::{
     Signer, Verifier,
@@ -29,7 +32,9 @@ use futures::future::OptionFuture;
 use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
 use reth_primitives_traits::SignedTransaction;
-use reth_provider::{BlockReader, ProviderError, StateProviderBox, StateProviderFactory};
+use reth_provider::{
+    BlockReader, HeaderProvider, ProviderError, StateProviderBox, StateProviderFactory,
+};
 use reth_revm::database::StateProviderDatabase;
 use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::TempoEvm};
 use tempo_primitives::{
@@ -72,9 +77,11 @@ pub struct Actor<Ctx> {
     node: TempoFullNode,
     fee_recipient: Address,
     time_to_build_subblock: Duration,
+    epoch_length: u64,
 
     next_proposer: Option<PublicKey>,
     next_parent_hash: Option<BlockHash>,
+    next_block_epoch: Option<Epoch>,
     subblocks: HashMap<B256, RecoveredSubBlock>,
     subblock_transactions: Arc<Mutex<HashMap<TxHash, Arc<TempoTxEnvelope>>>>,
 }
@@ -87,6 +94,7 @@ impl<Ctx: Spawner> Actor<Ctx> {
         node: TempoFullNode,
         fee_recipient: Address,
         time_to_build_subblock: Duration,
+        epoch_length: u64,
     ) -> (Self, Mailbox) {
         let (actions_tx, actions_rx) = mpsc::unbounded_channel();
         let (validated_subblocks_tx, validated_subblocks_rx) = mpsc::unbounded_channel();
@@ -101,8 +109,10 @@ impl<Ctx: Spawner> Actor<Ctx> {
             node,
             fee_recipient,
             time_to_build_subblock,
+            epoch_length,
             next_proposer: None,
             next_parent_hash: None,
+            next_block_epoch: None,
             subblocks: Default::default(),
             subblock_transactions: Default::default(),
         };
@@ -174,31 +184,48 @@ impl<Ctx: Spawner> Actor<Ctx> {
 
     #[instrument(skip_all, fields(event.epoch = event.epoch(), event.view = event.view()))]
     fn on_consensus_event(&mut self, event: Activity<Scheme<PublicKey, MinSig>, Digest>) {
-        let epoch = event.epoch();
-        let view = event.view();
-
-        let (new_tip, certificate) = match event {
-            Activity::Notarization(n) => (Some(n.proposal.payload.0), n.certificate),
-            Activity::Nullification(n) => (None, n.certificate),
+        let (new_tip, round, certificate) = match event {
+            Activity::Notarization(n) => {
+                (Some(n.proposal.payload.0), n.proposal.round, n.certificate)
+            }
+            Activity::Nullification(n) => (None, n.round, n.certificate),
             _ => return,
         };
 
-        let Some(scheme) = self.scheme_provider.scheme(epoch) else {
-            return;
+        let (next_block_round, seed) = if let Some(tip) = new_tip
+            && let Ok(Some(header)) = self.node.provider.header(tip)
+            && epoch::is_last_height(header.number(), self.epoch_length)
+        {
+            // If next block is the first block of the next epoch, next round will be first view of the new epoch.
+            // For the first view of the new epoch, there is no seed yet.
+            (Round::new(round.epoch() + 1, 1), None)
+        } else {
+            let Some(scheme) = self.scheme_provider.scheme(round.epoch()) else {
+                return;
+            };
+
+            // If next block will be in the same epoch, use notarization/nullification certificate to get the seed.
+            (
+                Round::new(round.epoch(), round.view() + 1),
+                scheme.seed(round, &certificate),
+            )
         };
 
-        let Some(seed) = scheme.seed(Round::new(epoch, view), &certificate) else {
+        let Some(scheme) = self.scheme_provider.scheme(next_block_round.epoch()) else {
             return;
         };
 
         let (next_proposer, _) = select_leader::<Scheme<PublicKey, MinSig>, _>(
             scheme.participants().as_ref(),
-            Round::new(epoch, view + 1),
-            Some(seed),
+            next_block_round,
+            seed,
         );
 
         // Record next proposer.
         self.next_proposer = Some(next_proposer);
+
+        // Record next block epoch.
+        self.next_block_epoch = Some(next_block_round.epoch());
 
         // If we don't have a new tip, we can keep subblocks state as is.
         let Some(new_tip) = new_tip else {
@@ -247,6 +274,19 @@ impl<Ctx: Spawner> Actor<Ctx> {
         let Some(next_parent_hash) = self.next_parent_hash else {
             return;
         };
+
+        let Some(next_block_epoch) = self.next_block_epoch else {
+            return;
+        };
+
+        let Some(scheme) = self.scheme_provider.scheme(next_block_epoch) else {
+            return;
+        };
+
+        // Ensure that sender is actually a validator.
+        if !scheme.participants().iter().any(|p| p == &sender) {
+            return;
+        }
 
         // Skip subblocks that are not built on top of the tip.
         if next_parent_hash != subblock.parent_hash {

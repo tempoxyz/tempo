@@ -571,6 +571,10 @@ impl Inner<Init> {
             .wrap_err("failed requesting new payload from the execution layer")?;
 
         // Spawn a task to update the subblocks set for the payload builder.
+        //
+        // It is likely that the subblocks will be arriving as we are building the block,
+        // thus we rely on multiple iterations of payload building to happen, and build
+        // blocks with as many subblocks as possible.
         {
             let interrupt_handle = interrupt_handle.clone();
             context.clone().spawn(move |context| async move {
