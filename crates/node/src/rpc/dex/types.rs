@@ -191,6 +191,69 @@ impl FieldName for Order {
 mod tests {
     use super::*;
 
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FakeItem {
+        some_field: String,
+    }
+
+    impl FieldName for FakeItem {
+        fn field_plural_camel_case() -> &'static str {
+            "fakeItems"
+        }
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DifferentFakeItem {
+        some_other_field: String,
+    }
+
+    impl FieldName for DifferentFakeItem {
+        fn field_plural_camel_case() -> &'static str {
+            "differentFakeItems"
+        }
+    }
+
+    #[test_case::test_case(
+        PaginationResponse {
+            next_cursor: Some("foo".to_owned()),
+            items: vec![FakeItem {
+                some_field: "bar".to_owned(),
+            }],
+        },
+        r#"{"nextCursor":"foo","fakeItems":[{"someField":"bar"}]}"#;
+        "With next cursor and fake item"
+    )]
+    #[test_case::test_case(
+        PaginationResponse {
+            next_cursor: None,
+            items: vec![FakeItem {
+                some_field: "something".to_owned(),
+            }],
+        },
+        r#"{"nextCursor":null,"fakeItems":[{"someField":"something"}]}"#;
+        "Without next cursor and fake item"
+    )]
+    #[test_case::test_case(
+        PaginationResponse {
+            next_cursor: None,
+            items: vec![DifferentFakeItem {
+                some_other_field: "hey".to_owned(),
+            }],
+        },
+        r#"{"nextCursor":null,"differentFakeItems":[{"someOtherField":"hey"}]}"#;
+        "Without next cursor and different fake item"
+    )]
+    fn test_pagination_response_serializes_successfully(
+        response: PaginationResponse<impl Serialize + FieldName>,
+        expected_json: &str,
+    ) {
+        let actual_json = serde_json::to_string(&response).unwrap();
+
+        assert_eq!(actual_json, expected_json);
+    }
+
     #[test_case::test_case(
         OrdersParams::default();
         "None filled"
