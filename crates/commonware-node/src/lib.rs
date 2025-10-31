@@ -8,6 +8,7 @@ pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
+pub(crate) mod marshal_utils;
 pub mod metrics;
 
 use std::net::SocketAddr;
@@ -16,7 +17,7 @@ use commonware_cryptography::{
     Signer,
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::authenticated::discovery;
+use commonware_p2p::{Manager as _, authenticated::discovery};
 use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, bail, eyre};
 use indexmap::IndexMap;
@@ -40,7 +41,7 @@ pub async fn run_consensus_stack(
         .wrap_err("failed to start network")?;
 
     oracle
-        .register(0, config.peers.keys().cloned().collect())
+        .update(0, config.peers.keys().cloned().collect())
         .await;
     let message_backlog = config.message_backlog;
     let pending = network.register(PENDING_CHANNEL_IDENT, PENDING_LIMIT, message_backlog);
@@ -67,7 +68,8 @@ pub async fn run_consensus_stack(
         fee_recipient: config.fee_recipient,
 
         execution_node,
-        blocker: oracle,
+        blocker: oracle.clone(),
+        peer_manager: oracle.clone(),
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         signer: config.signer.clone(),

@@ -17,11 +17,12 @@ use tracing::{Span, debug, info, instrument, warn};
 
 use crate::{
     dkg::{
-        CeremonyState, EpochState, ceremony,
-        ceremony::{Ceremony, PublicOutcome},
+        CeremonyState, EpochState,
+        ceremony::{self, Ceremony, PublicOutcome},
         manager::ingress::{Finalize, GetIntermediateDealing, GetOutcome},
     },
     epoch,
+    marshal_utils::UpdateExt as _,
 };
 
 const EPOCH_KEY: u64 = 0;
@@ -310,15 +311,17 @@ where
         parent = cause,
         skip_all,
         fields(
-            block.derived_epoch = epoch::of_height(block.height(), self.config.epoch_length),
-            block.height = block.height(),
+            block.derived_epoch = update
+                .as_block()
+                .and_then(|b| epoch::of_height(b.height(), self.config.epoch_length)),
+            block.height = update.as_block().map(|b| b.height()),
             ceremony.epoch = ceremony.epoch(),
         ),
     )]
     async fn handle_finalize<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        Finalize { block, response }: Finalize,
+        Finalize { update, response }: Finalize,
         mut ceremony: Ceremony<ContextCell<TContext>, TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
@@ -326,6 +329,10 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
+        let Some(block) = update.into_block() else {
+            return ceremony;
+        };
+
         // Special case height == 0
         let Some(block_epoch) = epoch::of_height(block.height(), self.config.epoch_length) else {
             return ceremony;

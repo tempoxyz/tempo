@@ -1,4 +1,4 @@
-use commonware_consensus::{Reporter, types::Epoch};
+use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
 use tracing::{Span, warn};
@@ -85,7 +85,7 @@ impl From<GetOutcome> for Command {
 }
 
 pub(super) struct Finalize {
-    pub(super) block: Box<Block>,
+    pub(super) update: Box<Update<Block>>,
     pub(super) response: oneshot::Sender<()>,
 }
 
@@ -100,15 +100,15 @@ pub(super) struct GetOutcome {
 }
 
 impl Reporter for Mailbox {
-    type Activity = Block;
+    type Activity = Update<Block>;
 
-    async fn report(&mut self, block: Self::Activity) {
+    async fn report(&mut self, update: Self::Activity) {
         let (response, rx) = oneshot::channel();
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         if let Err(error) = self
             .inner
             .unbounded_send(Message::in_current_span(Finalize {
-                block: block.into(),
+                update: update.into(),
                 response,
             }))
             .wrap_err("dkg manager no longer running")

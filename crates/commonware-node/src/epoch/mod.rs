@@ -12,7 +12,7 @@ pub(crate) mod manager;
 mod scheme_provider;
 
 pub(crate) use manager::ingress::{Enter, Exit};
-pub(crate) use scheme_provider::{Coordinator, SchemeProvider};
+pub(crate) use scheme_provider::SchemeProvider;
 
 /// Returns the first height of `epoch` given `epoch_length`.
 pub(crate) fn first_height(epoch: Epoch, epoch_length: u64) -> u64 {

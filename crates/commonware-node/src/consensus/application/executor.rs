@@ -10,7 +10,10 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_consensus::{Block as _, marshal::ingress::mailbox::Identifier};
+use commonware_consensus::{
+    Block as _,
+    marshal::{Update, ingress::mailbox::Identifier},
+};
 
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
@@ -21,9 +24,12 @@ use futures::{
 };
 use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, debug, info, instrument, warn};
+use tracing::{Level, Span, debug, field, info, instrument, warn};
 
-use crate::consensus::{Digest, block::Block};
+use crate::{
+    consensus::{Digest, block::Block},
+    marshal_utils::UpdateExt as _,
+};
 
 pub(super) struct Builder {
     /// A handle to the execution node layer. Used to forward finalized blocks
@@ -205,8 +211,8 @@ where
             Command::Canonicalize { head, finalized } => {
                 let _ = self.canonicalize(cause, head, finalized).await;
             }
-            Command::ForwardFinalized { block, response } => {
-                let _ = self.forward_finalized(*block, response, cause).await;
+            Command::ForwardFinalized { update, response } => {
+                let _ = self.forward_finalized(*update, response, cause).await;
             }
         }
     }
@@ -346,16 +352,23 @@ where
     #[instrument(
         skip_all,
         follows_from = [cause],
-        fields(block.digest = %block.digest()),
+        fields(
+            block.digest = update.as_block().map(|b| field::display(b.digest())),
+            block.height = update.as_block().map(|b| b.height()),
+        ),
         err(level = Level::WARN),
         ret,
     )]
     async fn forward_finalized(
         &mut self,
-        block: Block,
+        update: Update<Block>,
         response: oneshot::Sender<()>,
         cause: Span,
     ) -> eyre::Result<()> {
+        let Some(block) = update.into_block() else {
+            return Ok(());
+        };
+
         let LastCanonicalized {
             forkchoice,
             head_height,
@@ -483,7 +496,7 @@ impl ExecutorMailbox {
             .unbounded_send(Message {
                 cause: Span::current(),
                 command: Command::ForwardFinalized {
-                    block: Box::new(finalized.block),
+                    update: Box::new(finalized.update),
                     response: finalized.response,
                 },
             })
@@ -518,7 +531,7 @@ enum Command {
     /// finalized block is received from the commonware marshaller, which
     /// expects an acknowledgmenet of finalization.
     ForwardFinalized {
-        block: Box<Block>,
+        update: Box<Update<Block>>,
         response: oneshot::Sender<()>,
     },
 }
