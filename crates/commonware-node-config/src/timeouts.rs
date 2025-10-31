@@ -33,8 +33,12 @@ pub struct Config {
     pub new_payload_wait_time: Duration,
 
     /// The amount of time to wait for subblock builder before building a subblock.
-    #[serde(with = "humantime_serde")]
+    #[serde(with = "humantime_serde", default = "default_time_to_build_subblock")]
     pub time_to_build_subblock: Duration,
+}
+
+fn default_time_to_build_subblock() -> Duration {
+    Duration::from_millis(100)
 }
 
 impl Default for Config {
@@ -47,7 +51,7 @@ impl Default for Config {
             views_to_track: 256,
             views_until_leader_skip: 32,
             new_payload_wait_time: Duration::from_millis(500),
-            time_to_build_subblock: Duration::from_millis(100),
+            time_to_build_subblock: default_time_to_build_subblock(),
         }
     }
 }
