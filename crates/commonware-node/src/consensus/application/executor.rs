@@ -455,7 +455,7 @@ where
                 None => {
                     debug!(
                         "no sync target set on execution layer; forwarding \
-                        payload from consenus layer"
+                        payload from consensus layer"
                     )
                 }
             }
