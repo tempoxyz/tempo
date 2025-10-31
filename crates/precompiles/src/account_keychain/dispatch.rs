@@ -48,9 +48,9 @@ impl<S: crate::storage::PrecompileStorageProvider> Precompile for AccountKeychai
                 })
             }
 
-            IAccountKeychain::getLastUsedKeyCall::SELECTOR => {
-                view::<IAccountKeychain::getLastUsedKeyCall>(calldata, |call| {
-                    self.get_last_used_key(call, msg_sender)
+            IAccountKeychain::getTransactionKeyCall::SELECTOR => {
+                view::<IAccountKeychain::getTransactionKeyCall>(calldata, |call| {
+                    self.get_transaction_key(call, msg_sender)
                 })
             }
 

@@ -5,7 +5,7 @@ use alloy::{
 };
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
-    FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
+    AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
     TIP20RewardsRegistryError, TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
     UnknownFunctionSelector, ValidatorConfigError,
 };
@@ -59,7 +59,7 @@ pub enum TempoPrecompileError {
 
     /// Error from account keychain precompile
     #[error("Account keychain error: {0:?}")]
-    AccountKeychainError(crate::account_keychain::AccountKeychainError),
+    AccountKeychainError(AccountKeychainError),
 
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -81,8 +81,8 @@ impl TempoPrecompileError {
     }
 }
 
-impl From<crate::account_keychain::AccountKeychainError> for TempoPrecompileError {
-    fn from(err: crate::account_keychain::AccountKeychainError) -> Self {
+impl From<AccountKeychainError> for TempoPrecompileError {
+    fn from(err: AccountKeychainError) -> Self {
         Self::AccountKeychainError(err)
     }
 }

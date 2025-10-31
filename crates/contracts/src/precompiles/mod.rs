@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 pub mod common_errors;
+=======
+pub mod account_keychain;
+>>>>>>> 871f550c (chore(precompiles): update keychain precompile correctly)
 pub mod linking_usd;
 pub mod nonce;
 pub mod stablecoin_exchange;
@@ -12,6 +16,7 @@ pub mod validator_config;
 
 use alloy::primitives::{Address, address};
 pub use common_errors::*;
+pub use account_keychain::*;
 pub use linking_usd::*;
 pub use nonce::*;
 pub use stablecoin_exchange::*;
