@@ -11,7 +11,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
                 PrecompileError::Other("Invalid input: missing function selector".to_string())
             })?
             .try_into()
-            .unwrap();
+            .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
 
         match selector {
             // View functions
