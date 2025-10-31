@@ -343,7 +343,7 @@ where
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
-        // Start with processing of transaction kinds that requre specific sections.
+        // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
         } else if let Some(tx_proposer) = tx.subblock_proposer() {
