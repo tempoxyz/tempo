@@ -11542,6 +11542,7 @@ dependencies = [
  "reth-ethereum-consensus",
  "reth-primitives-traits",
  "tempo-chainspec",
+ "tempo-contracts",
  "tempo-primitives",
 ]
 

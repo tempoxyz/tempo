@@ -3,9 +3,9 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy_consensus::{BlockHeader, EMPTY_OMMER_ROOT_HASH};
+use alloy_consensus::{BlockHeader, EMPTY_OMMER_ROOT_HASH, Transaction};
 use alloy_eips::eip7840::BlobParams;
-use alloy_evm::block::BlockExecutionResult;
+use alloy_evm::{block::BlockExecutionResult, revm::primitives::Address};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
 use reth_consensus_common::validation::{
@@ -17,7 +17,19 @@ use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_primitives::{Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt};
+use tempo_contracts::precompiles::{
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
+};
+use tempo_primitives::{
+    Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+};
+
+const TEMPO_SYSTEM_TX_COUNT: usize = 3;
+const TEMPO_SYSTEM_TX_ADDRESSES: [Address; TEMPO_SYSTEM_TX_COUNT] = [
+    TIP_FEE_MANAGER_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS,
+];
 
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
@@ -187,16 +199,27 @@ impl Consensus<Block> for TempoConsensus {
     }
 
     fn validate_block_pre_execution(&self, block: &SealedBlock<Block>) -> Result<(), Self::Error> {
-        if !block
+        let system_txs = block
             .body()
             .transactions
-            .last()
-            .is_some_and(|tx| tx.is_system_tx())
-        {
+            .iter()
+            .rev()
+            .take(TEMPO_SYSTEM_TX_COUNT)
+            .filter(|tx| tx.is_system_tx())
+            .collect::<Vec<&TempoTxEnvelope>>();
+
+        if system_txs.len() != TEMPO_SYSTEM_TX_COUNT {
             return Err(ConsensusError::Other(
-                "Last transaction must be a system transaction".to_string(),
+                "Block must contain Tempo system txs".to_string(),
             ));
         }
+
+        for (tx, expected_to) in system_txs.into_iter().zip(TEMPO_SYSTEM_TX_ADDRESSES) {
+            if tx.to().unwrap_or_default() != expected_to {
+                return Err(ConsensusError::Other("Invalid system tx order".to_string()));
+            }
+        }
+
         self.inner.validate_block_pre_execution(block)
     }
 }
