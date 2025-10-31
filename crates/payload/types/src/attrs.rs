@@ -24,11 +24,13 @@ impl InterruptHandle {
 /// Container type for all components required to build a payload.
 ///
 /// The `TempoPayloadBuilderAttributes` has an additional feature of interrupting payload.
+/// It also carries optional DKG data to be included in the block's extra_data field.
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
     interrupt: InterruptHandle,
     timestamp_millis_part: u64,
+    optional_extra_data: Option<Vec<u8>>,
 }
 
 impl TempoPayloadBuilderAttributes {
@@ -52,7 +54,26 @@ impl TempoPayloadBuilderAttributes {
             },
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
+            optional_extra_data: None,
         }
+    }
+
+    /// Creates new `TempoPayloadBuilderAttributes` with optional DKG extra data.
+    pub fn with_optional_extra_data(
+        id: PayloadId,
+        parent: B256,
+        suggested_fee_recipient: Address,
+        timestamp_millis: u64,
+        extra_data: Option<Vec<u8>>,
+    ) -> Self {
+        let mut attrs = Self::new(id, parent, suggested_fee_recipient, timestamp_millis);
+        attrs.optional_extra_data = extra_data;
+        attrs
+    }
+
+    /// Returns the optional extra data to be included in the block header.
+    pub fn optional_extra_data(&self) -> Option<&Vec<u8>> {
+        self.optional_extra_data.as_ref()
     }
 
     /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
@@ -81,6 +102,7 @@ impl From<EthPayloadBuilderAttributes> for TempoPayloadBuilderAttributes {
             inner,
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
+            optional_extra_data: None,
         }
     }
 }
@@ -101,6 +123,7 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
             inner: EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
+            optional_extra_data: None,
         })
     }
 
@@ -130,5 +153,64 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
 
     fn withdrawals(&self) -> &Withdrawals {
         self.inner.withdrawals()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_attributes_without_extra_data() {
+        let parent = B256::default();
+        let id = PayloadId::default();
+        let recipient = Address::default();
+        let timestamp_millis = 1000;
+
+        let attrs = TempoPayloadBuilderAttributes::new(id, parent, recipient, timestamp_millis);
+
+        assert_eq!(attrs.optional_extra_data(), None);
+        assert_eq!(attrs.parent(), parent);
+        assert_eq!(attrs.suggested_fee_recipient(), recipient);
+        assert_eq!(attrs.timestamp(), 1); // 1000 ms / 1000 = 1 second
+    }
+
+    #[test]
+    fn test_attributes_with_optional_extra_data() {
+        let parent = B256::default();
+        let id = PayloadId::default();
+        let recipient = Address::default();
+        let timestamp_millis = 1000;
+        let extra_data = vec![1, 2, 3, 4, 5];
+
+        let attrs = TempoPayloadBuilderAttributes::with_optional_extra_data(
+            id,
+            parent,
+            recipient,
+            timestamp_millis,
+            Some(extra_data.clone()),
+        );
+
+        assert_eq!(attrs.optional_extra_data(), Some(&extra_data));
+        assert_eq!(attrs.parent(), parent);
+        assert_eq!(attrs.suggested_fee_recipient(), recipient);
+    }
+
+    #[test]
+    fn test_attributes_with_extra_data_none() {
+        let parent = B256::default();
+        let id = PayloadId::default();
+        let recipient = Address::default();
+        let timestamp_millis = 1000;
+
+        let attrs = TempoPayloadBuilderAttributes::with_optional_extra_data(
+            id,
+            parent,
+            recipient,
+            timestamp_millis,
+            None,
+        );
+
+        assert_eq!(attrs.optional_extra_data(), None);
     }
 }
