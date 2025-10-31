@@ -87,6 +87,7 @@ pub async fn run_consensus_stack(
         views_to_track: config.timeouts.views_to_track,
         views_until_leader_skip: config.timeouts.views_until_leader_skip,
         new_payload_wait_time: config.timeouts.new_payload_wait_time,
+        time_to_build_subblock: config.timeouts.time_to_build_subblock,
     }
     .try_init()
     .await

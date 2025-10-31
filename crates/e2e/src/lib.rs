@@ -133,6 +133,7 @@ pub async fn setup_validators(
             views_to_track: 10,
             views_until_leader_skip: 5,
             new_payload_wait_time: Duration::from_millis(750),
+            time_to_build_subblock: Duration::from_millis(100),
             epoch_length,
         }
         .try_init()

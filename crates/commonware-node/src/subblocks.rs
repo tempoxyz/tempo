@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use crate::{consensus::Digest, epoch::SchemeProvider};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
@@ -66,13 +69,14 @@ pub struct SubBlocksService<Ctx> {
 
     context: Ctx,
     signer: PrivateKey,
+    node: TempoFullNode,
+    fee_recipient: Address,
+    time_to_build_subblock: Duration,
 
     next_proposer: Option<PublicKey>,
     next_parent_hash: Option<BlockHash>,
     subblocks: HashMap<B256, RecoveredSubBlock>,
     subblock_transactions: Arc<Mutex<HashMap<TxHash, Arc<TempoTxEnvelope>>>>,
-    node: TempoFullNode,
-    fee_recipient: Address,
 }
 
 impl<Ctx: Spawner> SubBlocksService<Ctx> {
@@ -82,6 +86,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         scheme_provider: SchemeProvider,
         node: TempoFullNode,
         fee_recipient: Address,
+        time_to_build_subblock: Duration,
     ) -> (Self, SubBlocksHandle) {
         let (actions_tx, actions_rx) = mpsc::unbounded_channel();
         let (validated_subblocks_tx, validated_subblocks_rx) = mpsc::unbounded_channel();
@@ -94,11 +99,12 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             context,
             signer,
             node,
+            fee_recipient,
+            time_to_build_subblock,
             next_proposer: None,
             next_parent_hash: None,
             subblocks: Default::default(),
             subblock_transactions: Default::default(),
-            fee_recipient,
         };
 
         (this, SubBlocksHandle { tx: actions_tx })
@@ -195,33 +201,32 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             return;
         };
 
-        // Clear older subblocks if we have a new parent.
-        if self
-            .next_parent_hash
-            .is_some_and(|hash| Some(hash) != new_tip)
-        {
-            self.subblocks.clear();
-        }
-
-        let num_validators = scheme.participants().len();
-
-        // Record next proposer and parent hash.
+        // Record next proposer.
         self.next_proposer = Some(next_proposer);
-        if let Some(new_tip) = new_tip {
-            self.next_parent_hash = Some(new_tip);
+
+        // If we don't have a new tip, we can keep subblocks state as is.
+        let Some(new_tip) = new_tip else {
+            return;
+        };
+        if self.next_parent_hash == Some(new_tip) {
+            return;
         }
 
-        if let Some(existing) = self.subblock_builder_handle.take() {
-            existing.abort();
-        }
+        self.next_parent_hash = Some(new_tip);
 
+        // Clear subblocks collected so far.
+        self.subblocks.clear();
+
+        // Start new subblock building task.
         let transactions = self.subblock_transactions.clone();
         let node = self.node.clone();
         let Some(parent_hash) = self.next_parent_hash else {
             return;
         };
+        let num_validators = scheme.participants().len();
         let signer = self.signer.clone();
         let fee_recipient = self.fee_recipient;
+        let timeout = self.time_to_build_subblock;
         let handle = self.context.clone().shared(true).spawn(move |_| {
             build_subblock(
                 transactions,
@@ -230,6 +235,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
                 num_validators,
                 signer,
                 fee_recipient,
+                timeout,
             )
         });
 
@@ -390,7 +396,10 @@ async fn build_subblock(
     num_validators: usize,
     signer: PrivateKey,
     fee_recipient: Address,
+    timeout: Duration,
 ) -> RecoveredSubBlock {
+    let start = Instant::now();
+
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
             let mut selected_transactions = Vec::new();
@@ -414,6 +423,10 @@ async fn build_subblock(
                 gas_left -= tx.gas_limit();
                 selected_transactions.push(Arc::unwrap_or_clone(tx));
                 senders.push(sender);
+
+                if start.elapsed() > timeout {
+                    break;
+                }
             }
 
             (selected_transactions, senders)

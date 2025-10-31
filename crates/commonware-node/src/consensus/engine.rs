@@ -91,6 +91,7 @@ pub struct Builder<
     pub views_to_track: u64,
     pub views_until_leader_skip: u64,
     pub new_payload_wait_time: Duration,
+    pub time_to_build_subblock: Duration,
 }
 
 impl<TBlocker, TContext> Builder<TBlocker, TContext>
@@ -181,6 +182,7 @@ where
             scheme_provider.clone(),
             self.execution_node.clone(),
             self.fee_recipient,
+            self.time_to_build_subblock,
         );
 
         let (application, application_mailbox) = application::init(super::application::Config {
