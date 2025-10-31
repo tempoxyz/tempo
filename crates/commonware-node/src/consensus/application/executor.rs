@@ -428,7 +428,7 @@ where
                     error!(
                         execution_layer.number = number,
                         "execution layer knows the block by its hash, but \
-                            the block number is differnt; still attempting to \
+                            the block number is different; still attempting to \
                             send it, but it will probably fail"
                     );
                 }
