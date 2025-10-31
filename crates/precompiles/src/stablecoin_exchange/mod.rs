@@ -30,7 +30,7 @@ use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 
 /// Minimum order size (dust limit): $100 with 6 decimals = 100_000_000
-pub const DUST_LIMIT: u128 = 100_000_000;
+pub const MIN_ORDER_AMOUNT: u128 = 100_000_000;
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
@@ -468,7 +468,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Validate order amount meets dust limit
-        if amount < DUST_LIMIT {
+        if amount < MIN_ORDER_AMOUNT {
             return Err(StablecoinExchangeError::below_minimum_order_size(amount).into());
         }
 
@@ -550,7 +550,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Validate order amount meets dust limit
-        if amount < DUST_LIMIT {
+        if amount < MIN_ORDER_AMOUNT {
             return Err(StablecoinExchangeError::below_minimum_order_size(amount).into());
         }
 

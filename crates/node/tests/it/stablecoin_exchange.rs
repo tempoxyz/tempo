@@ -10,7 +10,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS,
-    stablecoin_exchange::{DUST_LIMIT, MAX_TICK, MIN_TICK},
+    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
     tip20::token_id_to_address,
 };
 
@@ -687,7 +687,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     );
 
     // Try to place a bid order below dust limit (should fail)
-    let below_dust_amount = DUST_LIMIT - 1;
+    let below_dust_amount = MIN_ORDER_AMOUNT - 1;
     let result = exchange
         .place(*base.address(), below_dust_amount, true, 0)
         .call()
@@ -715,13 +715,13 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
 
     // Place an order at exactly the dust limit (should succeed)
     let tx = exchange
-        .place(*base.address(), DUST_LIMIT, true, 0)
+        .place(*base.address(), MIN_ORDER_AMOUNT, true, 0)
         .send()
         .await?;
     tx.get_receipt().await?;
 
     // Place an order above the dust limit (should succeed)
-    let above_dust_amount = DUST_LIMIT + 1;
+    let above_dust_amount = MIN_ORDER_AMOUNT + 1;
     let tx = exchange
         .place(*base.address(), above_dust_amount, false, 0)
         .send()
@@ -784,7 +784,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     );
 
     // Try to place a flip bid order below dust limit (should fail)
-    let below_dust_amount = DUST_LIMIT - 1;
+    let below_dust_amount = MIN_ORDER_AMOUNT - 1;
     let result = exchange
         .placeFlip(*base.address(), below_dust_amount, true, 0, 10)
         .call()
@@ -812,13 +812,13 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
 
     // Place a flip order at exactly the dust limit (should succeed)
     let tx = exchange
-        .placeFlip(*base.address(), DUST_LIMIT, true, 0, 10)
+        .placeFlip(*base.address(), MIN_ORDER_AMOUNT, true, 0, 10)
         .send()
         .await?;
     tx.get_receipt().await?;
 
     // Place a flip order above the dust limit (should succeed)
-    let above_dust_amount = DUST_LIMIT + 1;
+    let above_dust_amount = MIN_ORDER_AMOUNT + 1;
     let tx = exchange
         .placeFlip(*base.address(), above_dust_amount, false, 10, 0)
         .send()
