@@ -14,7 +14,10 @@ use commonware_cryptography::{
     bls12381::{dkg::ops, primitives::variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::simulated::{self, Link, Network, Oracle};
+use commonware_p2p::{
+    Manager,
+    simulated::{self, Link, Network, Oracle},
+};
 
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
@@ -72,12 +75,12 @@ pub async fn setup_validators(
 ) -> (Vec<ValidatorNode>, Oracle<PublicKey>) {
     let threshold = quorum(how_many);
 
-    let (network, oracle) = Network::new(
+    let (network, mut oracle) = Network::new(
         context.with_label("network"),
         simulated::Config {
             max_size: 1024 * 1024,
             disconnect_on_block: true,
-            tracked_peer_sets: None,
+            tracked_peer_sets: Some(3),
         },
     );
     network.start();
@@ -92,6 +95,7 @@ pub async fn setup_validators(
     }
     validators.sort();
     signers.sort_by_key(|s| s.public_key());
+    oracle.update(0, validators.clone().into()).await;
 
     let (polynomial, shares) =
         ops::generate_shares::<_, MinSig>(&mut context, None, how_many, threshold);
