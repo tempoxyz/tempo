@@ -109,6 +109,8 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
     ) {
         loop {
             tokio::select! {
+                biased;
+
                 // Handle messages from consensus engine and service handle.
                 Some(action) = self.actions_rx.recv() => {
                     self.on_new_message(action);
