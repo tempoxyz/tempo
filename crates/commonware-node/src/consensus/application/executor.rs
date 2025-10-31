@@ -10,7 +10,7 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
+use alloy_rpc_types_engine::ForkchoiceState;
 use alloy_rpc_types_eth::SyncStatus;
 use commonware_consensus::{
     Block as _,
@@ -19,7 +19,7 @@ use commonware_consensus::{
 
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
-use eyre::{WrapErr as _, bail, ensure, eyre};
+use eyre::{Report, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
@@ -27,7 +27,7 @@ use futures::{
 use reth_provider::BlockNumReader as _;
 use reth_rpc_eth_api::helpers::EthApiSpec as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, debug, info, instrument, warn};
+use tracing::{Level, Span, debug, error, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -329,7 +329,7 @@ where
         );
 
         if fcu_response.is_invalid() {
-            return Err(eyre::Report::msg(fcu_response.payload_status)
+            return Err(Report::msg(fcu_response.payload_status)
                 .wrap_err("execution layer responded with error for forkchoice-update"));
         }
 
@@ -524,12 +524,6 @@ where
 enum HeadOrFinalized {
     Head,
     Finalized,
-}
-
-impl HeadOrFinalized {
-    fn is_finalized(&self) -> bool {
-        matches!(self, Self::Finalized)
-    }
 }
 
 impl std::fmt::Display for HeadOrFinalized {
