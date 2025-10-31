@@ -10,7 +10,7 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
-use alloy_rpc_types_engine::ForkchoiceState;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use commonware_consensus::{
     Block as _,
     marshal::{Update, ingress::mailbox::Identifier},
@@ -25,7 +25,7 @@ use futures::{
 };
 use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, debug, error, info, instrument, warn};
+use tracing::{Level, Span, debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -76,6 +76,7 @@ impl Builder {
                 head_height: 0,
                 finalized_height: 0,
             },
+            sync_target: None,
         }
     }
 }
@@ -150,7 +151,14 @@ pub(super) struct Executor<TContext> {
     /// the agent.
     my_mailbox: ExecutorMailbox,
 
+    /// The last forkchoice state executor sent to the exeuction layer,
+    /// including the heights corresponding to the head and the finalized block
+    /// hashes.
     last_canonicalized: LastCanonicalized,
+
+    /// The execution layer's sync target. This is set on the first
+    /// forkchoice-state that returned SYNCING.
+    sync_target: Option<u64>,
 }
 
 impl<TContext> Executor<TContext>
@@ -285,7 +293,7 @@ where
         head_or_finalized: HeadOrFinalized,
         height: u64,
         digest: Digest,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Option<PayloadStatus>> {
         let new_canonicalized = match head_or_finalized {
             HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest.0),
             HeadOrFinalized::Finalized => {
@@ -295,7 +303,7 @@ where
 
         if new_canonicalized == self.last_canonicalized {
             info!("would not change forkchoice state; not sending it to the execution layer");
-            return Ok(());
+            return Ok(None);
         }
 
         info!(
@@ -330,7 +338,22 @@ where
 
         self.last_canonicalized = new_canonicalized;
 
-        Ok(())
+        // If the execution layer ever responds with VALID, we can always unset
+        // the sync target. It does not matter if we set the head hash or the
+        // finalized hash.
+        if fcu_response.is_valid() {
+            self.sync_target.take();
+        // But if the fcu responded with SYNCING and we tried updating the
+        // finalized block hash, set the sync target to the finalized block
+        // height, unless a sync target was already set beforehand.
+        } else if fcu_response.is_syncing()
+            && head_or_finalized.is_finalized()
+            && self.sync_target.is_none()
+        {
+            self.sync_target.replace(height);
+        }
+
+        Ok(Some(fcu_response.payload_status))
     }
 
     #[instrument(parent = &cause, skip_all)]
@@ -385,6 +408,7 @@ where
         fields(
             block.digest = %block.digest(),
             block.height = block.height(),
+            execution_layer.sync_target = self.sync_target,
         ),
         err(level = Level::WARN),
         ret,
@@ -412,35 +436,27 @@ where
         }
 
         'new_payload: {
-            match self
-                .execution_node
-                .provider
-                .block_number(block.block_hash())
-            {
-                Ok(Some(number)) if number == block.height() => {
-                    info!(
-                        "execution layer already knows the block; \
-                            not sending it again"
+            match self.sync_target {
+                Some(sync_target) if sync_target.saturating_sub(block.height()) < 65 => {
+                    debug!(
+                        sync_target,
+                        "execution layer has a sync target set, but the \
+                        consensus block is at most 64 heights below it or \
+                        ahead; forwarding it to the execution lasyer",
+                    );
+                }
+                Some(_) => {
+                    debug!(
+                        "block is more than 64 heights below the sync \
+                        target; relying on EL streaming syncc and dropping it"
                     );
                     break 'new_payload;
                 }
-                Ok(Some(number)) => {
-                    error!(
-                        execution_layer.number = number,
-                        "execution layer knows the block by its hash, but \
-                            the block number is different; still attempting to \
-                            send it, but it will probably fail"
-                    );
-                }
-                Ok(None) => {
-                    debug!("execution layer does not know block; sending it");
-                }
-                Err(error) => {
-                    error!(
-                        error = %eyre::Report::new(error),
-                        "failed querying execution layer for the block; \
-                        still attempting to send it, but this is not good"
-                    );
+                None => {
+                    debug!(
+                        "no sync target set on execution layer; forwarding \
+                        payload from consenus layer"
+                    )
                 }
             }
 
@@ -519,6 +535,12 @@ where
 enum HeadOrFinalized {
     Head,
     Finalized,
+}
+
+impl HeadOrFinalized {
+    fn is_finalized(&self) -> bool {
+        matches!(self, HeadOrFinalized::Finalized)
+    }
 }
 
 impl std::fmt::Display for HeadOrFinalized {
