@@ -383,7 +383,8 @@ async fn build_subblock(
             let mut gas_left =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
 
-            for (tx_hash, tx) in transactions.lock().unwrap().clone() {
+            let txs = transactions.lock().unwrap().clone();
+            for (tx_hash, tx) in txs {
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
