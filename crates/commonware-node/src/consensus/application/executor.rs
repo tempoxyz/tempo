@@ -23,7 +23,7 @@ use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
 };
-use reth_provider::BlockNumReader as _;
+use reth_provider::{BlockNumReader as _, BlockReader};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, Span, debug, info, instrument, warn};
 
@@ -411,24 +411,58 @@ where
             );
         }
 
-        let block = block.into_inner();
-        let payload_status = self
-            .execution_node
-            .add_ons_handle
-            .beacon_engine_handle
-            .new_payload(TempoExecutionData(block))
-            .pace(&self.context, Duration::from_millis(20))
-            .await
-            .wrap_err(
-                "failed sending new-payload request to execution engine to \
-                query payload status of finalized block",
-            )?;
+        'new_payload: {
+            match self
+                .execution_node
+                .provider
+                .block_number(block.block_hash())
+            {
+                Ok(Some(number)) if number == block.number() => {
+                    info!(
+                        "execution layer already knows the block; \
+                            not sending it again"
+                    );
+                    break 'new_payload;
+                }
+                Ok(Some(number)) => {
+                    error!(
+                        execution_layer.number = number,
+                        "execution layer knows the block by its hash, but \
+                            the block number is differnt; still attempting to \
+                            send it, but it will probably fail"
+                    );
+                }
+                Ok(None) => {
+                    debug!("execution layer does not know block; sending it");
+                }
+                Err(error) => {
+                    error!(
+                        error = %Report::new(error),
+                        "failed querying execution layer for the block; \
+                        still attempting to send it, but this is not good"
+                    );
+                }
+            }
 
-        ensure!(
-            payload_status.is_valid() || payload_status.is_syncing(),
-            "this is a problem: payload status of block-to-be-finalized was \
-            neither valid nor syncing: `{payload_status}`"
-        );
+            let block = block.into_inner();
+            let payload_status = self
+                .execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .new_payload(TempoExecutionData(block))
+                .pace(&self.context, Duration::from_millis(20))
+                .await
+                .wrap_err(
+                    "failed sending new-payload request to execution engine to \
+                    query payload status of finalized block",
+                )?;
+
+            ensure!(
+                payload_status.is_valid() || payload_status.is_syncing(),
+                "this is a problem: payload status of block-to-be-finalized was \
+                neither valid nor syncing: `{payload_status}`"
+            );
+        }
 
         if let Err(()) = response.send(()) {
             warn!("tried acknowledging finalization but channel was already closed");
