@@ -151,7 +151,7 @@ pub(super) struct Executor<TContext> {
     /// the agent.
     my_mailbox: ExecutorMailbox,
 
-    /// The last forkchoice state executor sent to the exeuction layer,
+    /// The last forkchoice state executor sent to the execution layer,
     /// including the heights corresponding to the head and the finalized block
     /// hashes.
     last_canonicalized: LastCanonicalized,
@@ -539,7 +539,7 @@ enum HeadOrFinalized {
 
 impl HeadOrFinalized {
     fn is_finalized(&self) -> bool {
-        matches!(self, HeadOrFinalized::Finalized)
+        matches!(self, Self::Finalized)
     }
 }
 
