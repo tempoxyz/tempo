@@ -14,7 +14,10 @@ use commonware_cryptography::{
     bls12381::{dkg::ops, primitives::variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::simulated::{self, Link, Network, Oracle};
+use commonware_p2p::{
+    Manager,
+    simulated::{self, Link, Network, Oracle},
+};
 
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
@@ -79,11 +82,12 @@ pub async fn setup_validators(
 ) -> (Vec<ValidatorNode>, Oracle<PublicKey>) {
     let threshold = quorum(how_many);
 
-    let (network, oracle) = Network::new(
+    let (network, mut oracle) = Network::new(
         context.with_label("network"),
         simulated::Config {
             max_size: 1024 * 1024,
             disconnect_on_block: true,
+            tracked_peer_sets: Some(3),
         },
     );
     network.start();
@@ -98,6 +102,7 @@ pub async fn setup_validators(
     }
     validators.sort();
     signers.sort_by_key(|s| s.public_key());
+    oracle.update(0, validators.clone().into()).await;
 
     let (polynomial, shares) =
         ops::generate_shares::<_, MinSig>(&mut context, None, how_many, threshold);
@@ -119,6 +124,7 @@ pub async fn setup_validators(
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: node.node.clone(),
             blocker: oracle.control(public_key.clone()),
+            peer_manager: oracle.clone(),
             partition_prefix: uid.clone(),
             signer: signer.clone(),
             polynomial: polynomial.clone(),
@@ -148,14 +154,46 @@ pub async fn setup_validators(
             subblocks: engine.subblocks_handle(),
             public_key: signer.public_key(),
             start_engine: Some(Box::pin(async move {
-                let pending = oracle.register(signer.public_key(), 0).await.unwrap();
-                let recovered = oracle.register(signer.public_key(), 1).await.unwrap();
-                let resolver = oracle.register(signer.public_key(), 2).await.unwrap();
-                let broadcast = oracle.register(signer.public_key(), 3).await.unwrap();
-                let marshal = oracle.register(signer.public_key(), 4).await.unwrap();
-                let dkg = oracle.register(signer.public_key(), 5).await.unwrap();
-                let boundary_certs = oracle.register(signer.public_key(), 6).await.unwrap();
-                let subblocks = oracle.register(signer.public_key(), 7).await.unwrap();
+                let pending = oracle
+                    .control(signer.public_key())
+                    .register(0)
+                    .await
+                    .unwrap();
+                let recovered = oracle
+                    .control(signer.public_key())
+                    .register(1)
+                    .await
+                    .unwrap();
+                let resolver = oracle
+                    .control(signer.public_key())
+                    .register(2)
+                    .await
+                    .unwrap();
+                let broadcast = oracle
+                    .control(signer.public_key())
+                    .register(3)
+                    .await
+                    .unwrap();
+                let marshal = oracle
+                    .control(signer.public_key())
+                    .register(4)
+                    .await
+                    .unwrap();
+                let dkg = oracle
+                    .control(signer.public_key())
+                    .register(5)
+                    .await
+                    .unwrap();
+                let boundary_certs = oracle
+                    .control(signer.public_key())
+                    .register(6)
+                    .await
+                    .unwrap();
+                let subblocks = oracle
+                    .control(signer.public_key())
+                    .register(7)
+                    .await
+                    .unwrap();
 
                 link_validators(&mut oracle, &validators, link, None).await;
 

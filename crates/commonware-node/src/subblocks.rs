@@ -191,15 +191,11 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             return;
         };
 
-        let leader_idx = select_leader::<Scheme<PublicKey, MinSig>, _>(
+        let (next_proposer, _) = select_leader::<Scheme<PublicKey, MinSig>, _>(
             scheme.participants().as_ref(),
             Round::new(epoch, view + 1),
             Some(seed),
         );
-
-        let Some(next_proposer) = scheme.participants().get(leader_idx as usize).cloned() else {
-            return;
-        };
 
         // Record next proposer.
         self.next_proposer = Some(next_proposer);

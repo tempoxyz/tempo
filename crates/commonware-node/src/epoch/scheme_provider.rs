@@ -9,8 +9,6 @@ use commonware_consensus::{
     marshal, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_resolver::p2p;
-use commonware_utils::set::Ordered;
 
 #[derive(Clone)]
 #[expect(clippy::type_complexity)]
@@ -43,29 +41,5 @@ impl marshal::SchemeProvider for SchemeProvider {
 
     fn scheme(&self, epoch: Epoch) -> Option<Arc<Self::Scheme>> {
         self.inner.lock().unwrap().get(&epoch).cloned()
-    }
-}
-
-/// Implements trait `[p2p::Cordinatoor]` and is passed to the marshal actor.
-#[derive(Clone)]
-pub(crate) struct Coordinator {
-    static_peers: Ordered<PublicKey>,
-}
-
-impl Coordinator {
-    pub(crate) fn new(static_peers: Ordered<PublicKey>) -> Self {
-        Self { static_peers }
-    }
-}
-
-impl p2p::Coordinator for Coordinator {
-    type PublicKey = PublicKey;
-
-    fn peers(&self) -> &[Self::PublicKey] {
-        self.static_peers.as_ref()
-    }
-
-    fn peer_set_id(&self) -> u64 {
-        0
     }
 }
