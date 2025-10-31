@@ -18,16 +18,16 @@ pub mod slots {
     use crate::storage::slots::abi_encode_with_signature;
     use alloy::primitives::{Address, U256};
 
-    /// Base slot for keys mapping: keys[account][keyId]
+    /// Base slot for keys mapping: keys\[account\]\[keyId\]
     pub const KEYS_BASE: U256 = U256::ZERO;
 
-    /// Base slot for spending limits mapping: spendingLimits[account][keyId][token]
+    /// Base slot for spending limits mapping: spendingLimits\[account\]\[keyId\]\[token\]
     pub const SPENDING_LIMITS_BASE: U256 = U256::from_limbs([1, 0, 0, 0]);
 
-    /// Base slot for transaction key mapping: transactionKey[account]
+    /// Base slot for transaction key mapping: transactionKey\[account\]
     pub const TRANSACTION_KEY: U256 = U256::from_limbs([2, 0, 0, 0]);
 
-    /// Compute storage slot for keys[account][keyId]
+    /// Compute storage slot for keys\[account\]\[keyId\]
     pub fn key_slot(account: &Address, key_id: &Address) -> U256 {
         // First hash: keccak256(abi.encode(account, KEYS_BASE))
         let inner_data = abi_encode_with_signature(account, KEYS_BASE.to_be_bytes::<32>());
@@ -38,7 +38,7 @@ pub mod slots {
         U256::from_be_bytes(alloy::primitives::keccak256(&outer_data).0)
     }
 
-    /// Compute storage slot for spendingLimits[account][keyId][token]
+    /// Compute storage slot for spendingLimits\[account\]\[keyId\]\[token\]
     pub fn spending_limit_slot(account: &Address, key_id: &Address, token: &Address) -> U256 {
         // First hash: keccak256(abi.encode(account, SPENDING_LIMITS_BASE))
         let inner1_data =
@@ -54,7 +54,7 @@ pub mod slots {
         U256::from_be_bytes(alloy::primitives::keccak256(&outer_data).0)
     }
 
-    /// Compute storage slot for transactionKey[account]
+    /// Compute storage slot for transactionKey\[account\]
     pub fn transaction_key_slot(account: &Address) -> U256 {
         let data = abi_encode_with_signature(account, TRANSACTION_KEY.to_be_bytes::<32>());
         U256::from_be_bytes(alloy::primitives::keccak256(&data).0)
