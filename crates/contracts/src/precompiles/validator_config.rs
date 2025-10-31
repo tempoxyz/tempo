@@ -17,7 +17,11 @@ sol! {
             bool active;
             uint64 index;
             address validatorAddress;
+            /// Address where other validators can connect to this validator.
+            /// Format: <hostname|ip>:<port>
             string inboundAddress;
+            /// IP address for firewall whitelisting by other validators.
+            /// Format: <ip>:<port> - must be an IP address, not a hostname.
             string outboundAddress;
         }
 
@@ -28,15 +32,15 @@ sol! {
         /// Add a new validator (owner only)
         /// @param newValidatorAddress The address of the new validator
         /// @param publicKey The validator's communication public publicKey
-        /// @param inboundAddress The validator's outbound <hostname>:<port>.
-        /// @param outboundAddress The validator's outbound <hostname>:<port>.
+        /// @param inboundAddress The validator's inbound address <hostname|ip>:<port> for incoming connections
+        /// @param outboundAddress The validator's outbound IP address <ip>:<port> for firewall whitelisting (IP only, no hostnames)
         function addValidator(address newValidatorAddress, bytes32 publicKey, bool active, string calldata inboundAddress, string calldata outboundAddress) external;
 
         /// Update validator information (only validator)
         /// @param newValidatorAddress The new address for this validator
         /// @param publicKey The validator's new communication public publicKey
-        /// @param inboundAddress The validator's outbound <hostname>:<port>.
-        /// @param outboundAddress The validator's outbound <hostname>:<port>.
+        /// @param inboundAddress The validator's inbound address <hostname|ip>:<port> for incoming connections
+        /// @param outboundAddress The validator's outbound IP address <ip>:<port> for firewall whitelisting (IP only, no hostnames)
         function updateValidator(address newValidatorAddress, bytes32 publicKey, string calldata inboundAddress, string calldata outboundAddress) external;
 
         /// Change validator active status (owner only)
@@ -58,6 +62,7 @@ sol! {
         error ValidatorNotFound();
 
         error NotHostPort(string field, string input, string backtrace);
+        error NotIpPort(string field, string input, string backtrace);
     }
 }
 
@@ -79,6 +84,14 @@ impl ValidatorConfigError {
 
     pub fn not_host_port(field: String, input: String, backtrace: String) -> Self {
         Self::NotHostPort(IValidatorConfig::NotHostPort {
+            field,
+            input,
+            backtrace,
+        })
+    }
+
+    pub fn not_ip_port(field: String, input: String, backtrace: String) -> Self {
+        Self::NotIpPort(IValidatorConfig::NotIpPort {
             field,
             input,
             backtrace,

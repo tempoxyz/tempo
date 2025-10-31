@@ -237,9 +237,9 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             call.inboundAddress,
         )?;
 
-        // Store outboundAddress
-        ensure_is_host_port(&call.outboundAddress).map_err(|err| {
-            ValidatorConfigError::not_host_port(
+        // Store outboundAddress (must be IP:port for firewall whitelisting)
+        ensure_is_ip_port(&call.outboundAddress).map_err(|err| {
+            ValidatorConfigError::not_ip_port(
                 "outboundAddress".to_string(),
                 call.outboundAddress.clone(),
                 format!("{err:?}"),
@@ -361,8 +361,8 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             call.inboundAddress,
         )?;
 
-        ensure_is_host_port(&call.outboundAddress).map_err(|err| {
-            ValidatorConfigError::not_host_port(
+        ensure_is_ip_port(&call.outboundAddress).map_err(|err| {
+            ValidatorConfigError::not_ip_port(
                 "outboundAddress".to_string(),
                 call.outboundAddress.clone(),
                 format!("{err:?}"),
@@ -560,6 +560,12 @@ enum HostWithPortParseError {
     NoColon,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum IpWithPortParseError {
+    #[error("input must be an IP address with port")]
+    NotIpPort(#[from] std::net::AddrParseError),
+}
+
 fn ensure_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
     // First, attempt to parse it as a socket addr; this covers the ipv4, ipv6 cases.
     if input.parse::<std::net::SocketAddr>().is_ok() {
@@ -574,6 +580,13 @@ fn ensure_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
         Ok(())
     }
 }
+
+fn ensure_is_ip_port(input: &str) -> Result<(), IpWithPortParseError> {
+    // Only accept IP addresses (v4 or v6) with port
+    input.parse::<std::net::SocketAddr>()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,9 +687,9 @@ mod tests {
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator2,
                 publicKey: FixedBytes::<32>::from([0x66; 32]),
-                inboundAddress: "192.168.1.2".to_string(),
+                inboundAddress: "192.168.1.2:8000".to_string(),
                 active: true,
-                outboundAddress: "192.168.1.2".to_string(),
+                outboundAddress: "192.168.1.2:9000".to_string(),
             },
         );
         assert!(
@@ -716,12 +729,12 @@ mod tests {
         let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
         validator_config.initialize(owner).unwrap();
 
-        // Add first validator with long address (100+ bytes)
+        // Add first validator with long inbound address (100+ bytes)
         let validator1 = Address::from([0x11; 20]);
         let public_key1 = FixedBytes::<32>::from([0x21; 32]);
         let long_host1 = "a.".repeat(100);
         let long_inbound1 = format!("{long_host1}:8000");
-        let long_outbound1 = format!("{long_host1}:9000");
+        let long_outbound1 = "192.168.1.1:9000".to_string();
         validator_config
             .add_validator(
                 &owner,
@@ -741,9 +754,9 @@ mod tests {
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator1,
                 publicKey: FixedBytes::<32>::from([0x22; 32]),
-                inboundAddress: "192.168.1.2".to_string(),
+                inboundAddress: "192.168.1.2:8000".to_string(),
                 active: true,
-                outboundAddress: "192.168.1.2".to_string(),
+                outboundAddress: "192.168.1.2:9000".to_string(),
             },
         );
         assert!(result.is_err(), "Should not allow duplicate validator");
@@ -885,7 +898,7 @@ mod tests {
         let validator3_new = Address::from([0x23; 20]);
         let long_host3 = "b.".repeat(125);
         let long_inbound3 = format!("{long_host3}:8000");
-        let long_outbound3 = format!("{long_host3}:9000");
+        let long_outbound3 = "192.168.1.3:9000".to_string();
         validator_config
             .update_validator(
                 &validator3,
@@ -988,8 +1001,8 @@ mod tests {
             IValidatorConfig::updateValidatorCall {
                 newValidatorAddress: validator,
                 publicKey: FixedBytes::<32>::from([0x22; 32]),
-                inboundAddress: "10.0.0.1".to_string(),
-                outboundAddress: "10.0.0.1".to_string(),
+                inboundAddress: "10.0.0.1:8000".to_string(),
+                outboundAddress: "10.0.0.1:9000".to_string(),
             },
         );
 
@@ -1013,14 +1026,15 @@ mod tests {
         let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
         validator_config.initialize(owner).unwrap();
 
-        // Create a 253-character hostname (max valid DNS length)
+        // Create a 253-character hostname (max valid DNS length) for inbound
         // Using valid DNS characters: a-z, 0-9, hyphens, dots
         let aaa = "a".repeat(63);
         let bbb = "b".repeat(63);
         let ccc = "c".repeat(63);
         let ddd = "d".repeat(61);
         let inbound_address = format!("{aaa}.{bbb}.{ccc}.{ddd}:8000");
-        let outbound_address = format!("{aaa}.{bbb}.{ccc}.{ddd}:9000");
+        // Outbound must be IP address
+        let outbound_address = "192.168.1.1:9000".to_string();
 
         // Add validator with max-length hostname - should succeed
         let public_key = FixedBytes::<32>::from([0x21; 32]);
@@ -1088,10 +1102,10 @@ mod tests {
         let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
         validator_config.initialize(owner).unwrap();
 
-        // Add validator with long addresses that use multiple slots
+        // Add validator with long inbound address that uses multiple slots
         let long_host = "a.".repeat(100);
         let long_inbound = format!("{long_host}:8000");
-        let long_outbound = format!("{long_host}:9000");
+        let long_outbound = "192.168.1.1:9000".to_string();
         let public_key = FixedBytes::<32>::from([0x21; 32]);
 
         validator_config

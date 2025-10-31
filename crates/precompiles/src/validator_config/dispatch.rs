@@ -173,8 +173,8 @@ mod tests {
             newValidatorAddress: validator_addr,
             publicKey: public_key,
             active: true,
-            inboundAddress: "192.168.1.1".to_string(),
-            outboundAddress: "192.168.1.1".to_string(),
+            inboundAddress: "192.168.1.1:8000".to_string(),
+            outboundAddress: "192.168.1.1:9000".to_string(),
         };
         let calldata = add_call.abi_encode();
 
