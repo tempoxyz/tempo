@@ -447,6 +447,8 @@ where
             .map(|g| g.clone())
             .unwrap_or_default();
 
+        println!("num subblocks: {} {}", subblocks.len(), parent_header.hash());
+
         // check if we have a better block or received more subblocks
         if !is_better_payload(best_payload.as_ref(), total_fees)
             && !is_more_subblocks(best_payload.as_ref(), &subblocks)
