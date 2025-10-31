@@ -18,7 +18,7 @@ pub(crate) struct AllocatedField<'a> {
 pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedField<'_>>> {
     let (mut used, mut next) = (std::collections::HashSet::new(), U256::ZERO);
 
-    // First pass: collect custom slots and validate no duplicates
+    // First pass: collect custom slots (both #[slot] and #[base_slot]) and validate no duplicates
     for field in fields.iter() {
         if let Some(slot) = field.slot
             && !used.insert(slot)
@@ -28,6 +28,14 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
                 format!("Duplicate slot assignment: slot {slot} is already used"),
             ));
         }
+        if let Some(base_slot) = field.base_slot
+            && !used.insert(base_slot)
+        {
+            return Err(syn::Error::new_spanned(
+                &field.name,
+                format!("Duplicate slot assignment: slot {base_slot} is already used"),
+            ));
+        }
     }
 
     // Second pass: allocate slots and classify fields
@@ -35,8 +43,14 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
         .iter()
         .map(|field| {
             let assigned_slot = if let Some(explicit) = field.slot {
+                // #[slot(N)] assigns to slot N without changing next counter
                 explicit
+            } else if let Some(base) = field.base_slot {
+                // #[base_slot(N)] assigns to slot N and resets next counter to N+1
+                next = base.saturating_add(U256::from(1));
+                base
             } else {
+                // Auto-assign from current next counter
                 while used.contains(&next) {
                     next = next.saturating_add(U256::from(1));
                 }

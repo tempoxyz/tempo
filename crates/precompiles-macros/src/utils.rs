@@ -33,16 +33,23 @@ pub(crate) fn normalize_to_snake_case(s: &str) -> String {
     result
 }
 
-/// Extracts `#[slot(N)]` and `#[map = "..."]` attributes from a field's attributes.
+/// Extracts `#[slot(N)]`, `#[base_slot(N)]`, and `#[map = "..."]` attributes from a field's attributes.
 ///
 /// This function iterates through the attributes a single time to find both
 /// the slot and map values. It returns a tuple containing the slot number
-/// (if present) and the map string value (if present). The map value is
-/// normalized to snake_case.
+/// (if present), the base_slot number (if present), and the map string value
+/// (if present). The map value is normalized to snake_case.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Both `#[slot]` and `#[base_slot]` are present on the same field
+/// - Duplicate attributes of the same type are found
 pub(crate) fn extract_attributes(
     attrs: &[Attribute],
-) -> syn::Result<(Option<U256>, Option<String>)> {
+) -> syn::Result<(Option<U256>, Option<U256>, Option<String>)> {
     let mut slot_attr: Option<U256> = None;
+    let mut base_slot_attr: Option<U256> = None;
     let mut map_attr: Option<String> = None;
 
     for attr in attrs {
@@ -50,6 +57,12 @@ pub(crate) fn extract_attributes(
         if attr.path().is_ident("slot") {
             if slot_attr.is_some() {
                 return Err(syn::Error::new_spanned(attr, "Duplicate 'slot' attribute"));
+            }
+            if base_slot_attr.is_some() {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "Cannot use both 'slot' and 'base_slot' attributes on the same field",
+                ));
             }
 
             let value: Lit = attr.parse_args()?;
@@ -66,6 +79,35 @@ pub(crate) fn extract_attributes(
                 return Err(syn::Error::new_spanned(
                     value,
                     "slot attribute must be an integer literal",
+                ));
+            }
+        }
+        // Extract `#[base_slot(N)]` attribute
+        else if attr.path().is_ident("base_slot") {
+            if base_slot_attr.is_some() {
+                return Err(syn::Error::new_spanned(attr, "Duplicate 'base_slot' attribute"));
+            }
+            if slot_attr.is_some() {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "Cannot use both 'slot' and 'base_slot' attributes on the same field",
+                ));
+            }
+
+            let value: Lit = attr.parse_args()?;
+            if let Lit::Int(lit_int) = value {
+                let lit_str = lit_int.to_string();
+                let slot = if let Some(hex) = lit_str.strip_prefix("0x") {
+                    U256::from_str_radix(hex, 16)
+                } else {
+                    U256::from_str_radix(&lit_str, 10)
+                }
+                .map_err(|_| syn::Error::new_spanned(&lit_int, "Invalid base_slot number"))?;
+                base_slot_attr = Some(slot);
+            } else {
+                return Err(syn::Error::new_spanned(
+                    value,
+                    "base_slot attribute must be an integer literal",
                 ));
             }
         }
@@ -96,7 +138,7 @@ pub(crate) fn extract_attributes(
         }
     }
 
-    Ok((slot_attr, map_attr))
+    Ok((slot_attr, base_slot_attr, map_attr))
 }
 
 /// Extracts the type parameters from Mapping<K, V>.

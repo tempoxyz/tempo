@@ -119,3 +119,91 @@ fn test_slots_module_generation() {
     assert_eq!(slots::FIELD_C, U256::from(1));
     assert_eq!(slots::MAPPING_FIELD, U256::from(10));
 }
+
+#[test]
+fn test_base_slots() {
+    #[contract]
+    pub struct Layout {
+        pub field_a: U256, // Auto: slot 0
+        #[base_slot(100)]
+        pub field_b: U256, // base_slot: slot 100, counter -> 101
+        pub field_c: U256, // Auto: slot 101
+        #[base_slot(200)]
+        pub field_d: U256, // base_slot: slot 200, counter -> 201
+        pub field_e: U256, // Auto: slot 201
+        #[base_slot(50)]
+        pub field_f: U256, // base_slot: slot 50, counter -> 51 (goes backwards)
+        pub field_g: U256, // Auto: slot 51
+    }
+
+    let mut storage = HashMapStorageProvider::new(1);
+    let addr = test_address(1);
+
+    let mut layout = Layout::_new(addr, &mut storage);
+
+    // Set values to verify slot assignments
+    layout._set_field_a(U256::from(1)).unwrap();
+    layout._set_field_b(U256::from(2)).unwrap();
+    layout._set_field_c(U256::from(3)).unwrap();
+    layout._set_field_d(U256::from(4)).unwrap();
+    layout._set_field_e(U256::from(5)).unwrap();
+    layout._set_field_f(U256::from(6)).unwrap();
+    layout._set_field_g(U256::from(7)).unwrap();
+
+    // Verify actual slot assignments
+    assert_eq!(storage.sload(addr, U256::from(0)), Ok(U256::from(1))); // field_a
+    assert_eq!(storage.sload(addr, U256::from(100)), Ok(U256::from(2))); // field_b
+    assert_eq!(storage.sload(addr, U256::from(101)), Ok(U256::from(3))); // field_c
+    assert_eq!(storage.sload(addr, U256::from(200)), Ok(U256::from(4))); // field_d
+    assert_eq!(storage.sload(addr, U256::from(201)), Ok(U256::from(5))); // field_e
+    assert_eq!(storage.sload(addr, U256::from(50)), Ok(U256::from(6))); // field_f
+    assert_eq!(storage.sload(addr, U256::from(51)), Ok(U256::from(7))); // field_g
+
+    // Verify slots module
+    assert_eq!(slots::FIELD_A, U256::from(0));
+    assert_eq!(slots::FIELD_B, U256::from(100));
+    assert_eq!(slots::FIELD_C, U256::from(101));
+    assert_eq!(slots::FIELD_D, U256::from(200));
+    assert_eq!(slots::FIELD_E, U256::from(201));
+    assert_eq!(slots::FIELD_F, U256::from(50));
+    assert_eq!(slots::FIELD_G, U256::from(51));
+}
+
+#[test]
+fn test_base_slot_with_regular_slot() {
+    #[contract]
+    pub struct Layout {
+        pub field_a: U256, // Auto: slot 0
+        #[base_slot(100)]
+        pub field_b: U256, // base_slot: slot 100, counter -> 101
+        pub field_c: U256, // Auto: slot 101
+        #[slot(50)]
+        pub field_d: U256, // Explicit: slot 50, counter stays at 102
+        pub field_e: U256, // Auto: slot 102
+    }
+
+    let mut storage = HashMapStorageProvider::new(1);
+    let addr = test_address(1);
+
+    let mut layout = Layout::_new(addr, &mut storage);
+
+    layout._set_field_a(U256::from(1)).unwrap();
+    layout._set_field_b(U256::from(2)).unwrap();
+    layout._set_field_c(U256::from(3)).unwrap();
+    layout._set_field_d(U256::from(4)).unwrap();
+    layout._set_field_e(U256::from(5)).unwrap();
+
+    // Verify slot assignments
+    assert_eq!(storage.sload(addr, U256::from(0)), Ok(U256::from(1))); // field_a
+    assert_eq!(storage.sload(addr, U256::from(100)), Ok(U256::from(2))); // field_b
+    assert_eq!(storage.sload(addr, U256::from(101)), Ok(U256::from(3))); // field_c
+    assert_eq!(storage.sload(addr, U256::from(50)), Ok(U256::from(4))); // field_d
+    assert_eq!(storage.sload(addr, U256::from(102)), Ok(U256::from(5))); // field_e
+
+    // Verify slots module
+    assert_eq!(slots::FIELD_A, U256::from(0));
+    assert_eq!(slots::FIELD_B, U256::from(100));
+    assert_eq!(slots::FIELD_C, U256::from(101));
+    assert_eq!(slots::FIELD_D, U256::from(50));
+    assert_eq!(slots::FIELD_E, U256::from(102));
+}

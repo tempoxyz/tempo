@@ -164,6 +164,7 @@ struct FieldInfo {
     name: Ident,
     ty: Type,
     slot: Option<U256>,
+    base_slot: Option<U256>,
     map: Option<String>,
     /// Lazily computed from `map` and `name`
     effective_name: OnceCell<String>,
@@ -231,11 +232,12 @@ fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
                 ));
             }
 
-            let (slot, map) = extract_attributes(&field.attrs)?;
+            let (slot, base_slot, map) = extract_attributes(&field.attrs)?;
             Ok(FieldInfo {
                 name: name.to_owned(),
                 ty: field.ty,
                 slot,
+                base_slot,
                 map,
                 effective_name: OnceCell::new(),
             })
