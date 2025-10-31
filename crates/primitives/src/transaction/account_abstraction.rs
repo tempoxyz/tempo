@@ -1,12 +1,13 @@
 use alloy_consensus::{SignableTransaction, Transaction};
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
-use alloy_primitives::{
-    Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256, wrap_fixed_bytes,
-};
+use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 
-use crate::transaction::{AASignature, AASigned, AASignedAuthorization};
+use crate::{
+    subblock::{PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
+    transaction::{AASignature, AASigned, AASignedAuthorization},
+};
 
 /// Account abstraction transaction type byte (0x76)
 pub const AA_TX_TYPE_ID: u8 = 0x76;
@@ -18,14 +19,6 @@ pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
 pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
-
-/// Nonce key prefix marking a subblock transaction.
-pub const TEMPO_SUBBLOCK_NONCE_KEY_PREFIX: u8 = 0x5b;
-
-wrap_fixed_bytes! {
-    /// Partial validator public key encoded inside the nonce key.
-    pub struct PartialValidatorKey<15>;
-}
 
 impl PartialValidatorKey {
     /// Returns whether this partial public key matches the given validator public key.

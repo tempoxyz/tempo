@@ -7,7 +7,7 @@ mod metrics;
 
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
-use alloy_rlp::Encodable;
+use alloy_rlp::{Decodable, Encodable};
 use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -34,21 +34,18 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-use tempo_payload_types::{SubBlockMetadata, TempoPayloadBuilderAttributes};
+use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
     stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
     tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
-    TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use tempo_transaction_pool::{
@@ -91,7 +88,7 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     fn build_seal_block_txs(
         &self,
         block_env: &BlockEnv,
-        subblocks: Vec<SubBlockMetadata>,
+        subblocks: Vec<RecoveredSubBlock>,
     ) -> Vec<Recovered<TempoTxEnvelope>> {
         let chain_id = Some(self.provider.chain_spec().chain().id());
 
@@ -164,6 +161,10 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             TEMPO_SYSTEM_TX_SENDER,
         );
 
+        let subblocks = subblocks
+            .iter()
+            .map(|s| s.metadata())
+            .collect::<Vec<SubBlockMetadata>>();
         let subblocks_input = alloy_rlp::encode(&subblocks)
             .into_iter()
             .chain(block_env.number.to_be_bytes_vec())
@@ -439,45 +440,31 @@ where
             cumulative_gas_used += gas_used;
         }
 
-        let mut selected_subblocks: Vec<SubBlockMetadata> = Vec::new();
+        let subblocks = attributes
+            .subblocks()
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
 
-        // Subblocks will most likely arrive after we've started building the payload,
-        // so we need to wait for a bit to ensure we collect as many as possible.
-        loop {
-            let Ok(subblocks) = attributes.subblocks().lock() else {
-                break;
-            };
+        // check if we have a better block or received more subblocks
+        if !is_better_payload(best_payload.as_ref(), total_fees)
+            && !is_more_subblocks(best_payload.as_ref(), &subblocks)
+        {
+            // Release db
+            drop(builder);
+            // can skip building the block
+            return Ok(BuildOutcome::Aborted {
+                fees: total_fees,
+                cached_reads,
+            });
+        }
 
-            // Select subblocks to execute while ensuring one subblock per validator
-            let mut to_execute = Vec::new();
-            for subblock in subblocks.iter() {
-                if selected_subblocks
-                    .iter()
-                    .any(|s| s.validator == subblock.validator())
-                {
-                    continue;
-                }
-                to_execute.push(subblock.clone());
-            }
-
-            drop(subblocks);
-
-            for subblock in to_execute {
-                for tx in subblock.transactions_recovered() {
-                    builder
-                        .execute_transaction(tx.cloned())
-                        .map_err(PayloadBuilderError::evm)?;
-                }
-
-                selected_subblocks.push(subblock.metadata());
-            }
-
-            // exit the loop if the job was interrupted
-            if attributes.is_interrupted() {
-                break;
-            } else {
-                // sleep for 100ms to let the subblocks to be collected
-                std::thread::sleep(Duration::from_millis(100));
+        for subblock in &subblocks {
+            for tx in subblock.transactions_recovered() {
+                builder
+                    .execute_transaction(tx.cloned())
+                    .map_err(PayloadBuilderError::evm)?;
             }
         }
 
@@ -489,19 +476,8 @@ where
             .payment_transactions
             .record(payment_transactions);
 
-        // check if we have a better block
-        if !is_better_payload(best_payload.as_ref(), total_fees) {
-            // Release db
-            drop(builder);
-            // can skip building the block
-            return Ok(BuildOutcome::Aborted {
-                fees: total_fees,
-                cached_reads,
-            });
-        }
-
         // Include system transactions in the block
-        for system_tx in self.build_seal_block_txs(builder.evm().block(), selected_subblocks) {
+        for system_tx in self.build_seal_block_txs(builder.evm().block(), subblocks) {
             builder
                 .execute_transaction(system_tx)
                 .map_err(PayloadBuilderError::evm)?;
@@ -555,4 +531,25 @@ where
             cached_reads,
         })
     }
+}
+
+pub fn is_more_subblocks(
+    best_payload: Option<&EthBuiltPayload<TempoPrimitives>>,
+    subblocks: &[RecoveredSubBlock],
+) -> bool {
+    let Some(best_payload) = best_payload else {
+        return false;
+    };
+    let Some(best_metadata) = best_payload
+        .block()
+        .body()
+        .transactions
+        .iter()
+        .rev()
+        .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
+    else {
+        return false;
+    };
+
+    subblocks.len() > best_metadata.len()
 }

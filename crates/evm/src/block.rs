@@ -22,13 +22,14 @@ use commonware_cryptography::{
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use std::collections::HashSet;
 use tempo_chainspec::TempoChainSpec;
-use tempo_payload_types::{SubBlock, SubBlockMetadata, SubBlockVersion};
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
     stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
     tip20_rewards_registry::ITIP20RewardsRegistry,
 };
-use tempo_primitives::{TempoReceipt, TempoTxEnvelope, transaction::PartialValidatorKey};
+use tempo_primitives::{
+    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
+};
 use tempo_revm::evm::TempoContext;
 use tracing::trace;
 
@@ -294,7 +295,8 @@ where
             let reserved_gas = transactions.iter().map(|tx| tx.gas_limit()).sum::<u64>();
 
             let signature_hash = SubBlock {
-                version: SubBlockVersion::V1,
+                version: metadata.version,
+                fee_recipient: metadata.fee_recipient,
                 parent_hash: self.inner.ctx.parent_hash,
                 transactions: transactions.clone(),
             }

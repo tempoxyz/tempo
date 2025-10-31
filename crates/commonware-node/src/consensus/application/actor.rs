@@ -569,20 +569,28 @@ impl Inner<Init> {
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
             .wrap_err("failed requesting new payload from the execution layer")?;
 
-        let subblocks_updates = context.clone().spawn(move |context| async move {
-            loop {
-                context.sleep(Duration::from_millis(100)).await;
+        // Spawn a task to update the subblocks set for the payload builder.
+        {
+            let interrupt_handle = interrupt_handle.clone();
+            context.clone().spawn(move |context| async move {
+                loop {
+                    context.sleep(Duration::from_millis(100)).await;
 
-                let Ok(new_subblocks) = self.subblocks.get_subblocks(parent.block_hash()).await
-                else {
-                    continue;
-                };
-                let Ok(mut subblocks) = attrs.subblocks().lock() else {
-                    continue;
-                };
-                *subblocks = new_subblocks;
-            }
-        });
+                    if interrupt_handle.is_interrupted() {
+                        break;
+                    }
+
+                    let Ok(new_subblocks) = self.subblocks.get_subblocks(parent.block_hash()).await
+                    else {
+                        continue;
+                    };
+                    let Ok(mut subblocks) = attrs.subblocks().lock() else {
+                        continue;
+                    };
+                    *subblocks = new_subblocks;
+                }
+            });
+        }
 
         debug!(
             timeout_ms = self.new_payload_wait_time.as_millis(),
@@ -591,7 +599,6 @@ impl Inner<Init> {
         context.sleep(self.new_payload_wait_time).await;
 
         interrupt_handle.interrupt();
-        subblocks_updates.abort();
 
         let payload = self
             .execution_node

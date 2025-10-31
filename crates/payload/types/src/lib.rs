@@ -4,13 +4,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 mod attrs;
-mod subblock;
 
 use alloy_primitives::B256;
 pub use attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
-pub use subblock::{
-    RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockMetadata, SubBlockVersion,
-};
 
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;

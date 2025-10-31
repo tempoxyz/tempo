@@ -11724,10 +11724,8 @@ name = "tempo-payload-types"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "alloy-rlp",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
- "derive_more",
  "reth-ethereum-engine-primitives",
  "reth-node-api",
  "reth-primitives-traits",

@@ -1,4 +1,4 @@
-use crate::transaction::account_abstraction::PartialValidatorKey;
+use crate::subblock::PartialValidatorKey;
 
 use super::{aa_signed::AASigned, fee_token::TxFeeToken};
 use alloy_consensus::{

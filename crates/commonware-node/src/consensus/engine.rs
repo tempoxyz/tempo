@@ -180,6 +180,7 @@ where
             self.signer.clone(),
             scheme_provider.clone(),
             self.execution_node.clone(),
+            self.fee_recipient,
         );
 
         let (application, application_mailbox) = application::init(super::application::Config {

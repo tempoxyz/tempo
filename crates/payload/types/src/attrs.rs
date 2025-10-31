@@ -1,4 +1,3 @@
-use crate::RecoveredSubBlock;
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::{PayloadAttributes, PayloadId};
 use alloy_rpc_types_eth::Withdrawals;
@@ -8,6 +7,7 @@ use std::{
     convert::Infallible,
     sync::{Arc, Mutex, atomic, atomic::Ordering},
 };
+use tempo_primitives::RecoveredSubBlock;
 
 /// A handle for a payload interrupt flag.
 ///
@@ -19,6 +19,11 @@ impl InterruptHandle {
     /// Turns on the interrupt flag on the associated payload.
     pub fn interrupt(&self) {
         self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns whether the interrupt flag is set.
+    pub fn is_interrupted(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
     }
 }
 

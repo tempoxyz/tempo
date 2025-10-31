@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{consensus::Digest, epoch::SchemeProvider};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
-use alloy_primitives::{B256, BlockHash, Bytes, TxHash, map::HashMap};
+use alloy_primitives::{Address, B256, BlockHash, Bytes, TxHash, map::HashMap};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_consensus::{
@@ -29,8 +29,9 @@ use reth_primitives_traits::SignedTransaction;
 use reth_provider::{BlockReader, ProviderError, StateProviderBox, StateProviderFactory};
 use reth_revm::database::StateProviderDatabase;
 use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::TempoEvm};
-use tempo_payload_types::{RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{
+    RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
+};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, instrument, warn};
 
@@ -71,6 +72,7 @@ pub struct SubBlocksService<Ctx> {
     subblocks: HashMap<B256, RecoveredSubBlock>,
     subblock_transactions: Arc<Mutex<HashMap<TxHash, Arc<TempoTxEnvelope>>>>,
     node: TempoFullNode,
+    fee_recipient: Address,
 }
 
 impl<Ctx: Spawner> SubBlocksService<Ctx> {
@@ -79,6 +81,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         signer: PrivateKey,
         scheme_provider: SchemeProvider,
         node: TempoFullNode,
+        fee_recipient: Address,
     ) -> (Self, SubBlocksHandle) {
         let (actions_tx, actions_rx) = mpsc::unbounded_channel();
         let (validated_subblocks_tx, validated_subblocks_rx) = mpsc::unbounded_channel();
@@ -95,6 +98,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             next_parent_hash: None,
             subblocks: Default::default(),
             subblock_transactions: Default::default(),
+            fee_recipient,
         };
 
         (this, SubBlocksHandle { tx: actions_tx })
@@ -217,8 +221,16 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             return;
         };
         let signer = self.signer.clone();
+        let fee_recipient = self.fee_recipient;
         let handle = self.context.clone().shared(true).spawn(move |_| {
-            build_subblock(transactions, node, parent_hash, num_validators, signer)
+            build_subblock(
+                transactions,
+                node,
+                parent_hash,
+                num_validators,
+                signer,
+                fee_recipient,
+            )
         });
 
         self.subblock_builder_handle = Some(handle);
@@ -377,6 +389,7 @@ async fn build_subblock(
     parent_hash: BlockHash,
     num_validators: usize,
     signer: PrivateKey,
+    fee_recipient: Address,
 ) -> RecoveredSubBlock {
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
@@ -414,6 +427,7 @@ async fn build_subblock(
 
     let subblock = SubBlock {
         version: SubBlockVersion::V1,
+        fee_recipient,
         parent_hash,
         transactions,
     };

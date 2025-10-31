@@ -1,11 +1,18 @@
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use crate::TempoTxEnvelope;
+use alloy_primitives::{Address, B256, Bytes, keccak256, wrap_fixed_bytes};
 use alloy_rlp::{BufMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
-use alloy_rpc_types_eth::TransactionTrait;
 use reth_primitives_traits::{Recovered, crypto::RecoveryError};
-use tempo_primitives::TempoTxEnvelope;
 
 /// Magic byte for the subblock signature hash.
-const SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE: u8 = 0x77;
+const SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE: u8 = 0x78;
+
+/// Nonce key prefix marking a subblock transaction.
+pub const TEMPO_SUBBLOCK_NONCE_KEY_PREFIX: u8 = 0x5b;
+
+wrap_fixed_bytes! {
+    /// Partial validator public key encoded inside the nonce key.
+    pub struct PartialValidatorKey<15>;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubBlockVersion {
@@ -52,11 +59,13 @@ impl Decodable for SubBlockVersion {
 pub struct SubBlock {
     /// Version of the subblock.
     pub version: SubBlockVersion,
-    /// Transactions included in the subblock.
-    pub transactions: Vec<TempoTxEnvelope>,
     /// Hash of the parent block. This subblock can only be included as
     /// part of the block building on top of the specified parent.
     pub parent_hash: B256,
+    /// Recipient of the fees for the subblock.
+    pub fee_recipient: Address,
+    /// Transactions included in the subblock.
+    pub transactions: Vec<TempoTxEnvelope>,
 }
 
 impl SubBlock {
@@ -68,27 +77,41 @@ impl SubBlock {
         keccak256(&buf)
     }
 
-    /// Returns the total gas occupied by the subblock.
-    pub fn occupied_gas(&self) -> u64 {
-        self.transactions.iter().map(|tx| tx.gas_limit()).sum()
-    }
-
     fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
         self.version.encode(out);
-        self.transactions.encode(out);
         self.parent_hash.encode(out);
+        self.fee_recipient.encode(out);
+        self.transactions.encode(out);
     }
 
     fn rlp_encoded_fields_length(&self) -> usize {
-        self.version.length() + self.transactions.length() + self.parent_hash.length()
+        self.version.length()
+            + self.parent_hash.length()
+            + self.fee_recipient.length()
+            + self.transactions.length()
+    }
+
+    fn rlp_header(&self) -> alloy_rlp::Header {
+        alloy_rlp::Header {
+            list: true,
+            payload_length: self.rlp_encoded_fields_length(),
+        }
     }
 
     fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         Ok(Self {
             version: Decodable::decode(buf)?,
-            transactions: Decodable::decode(buf)?,
             parent_hash: Decodable::decode(buf)?,
+            fee_recipient: Decodable::decode(buf)?,
+            transactions: Decodable::decode(buf)?,
         })
+    }
+}
+
+impl Encodable for SubBlock {
+    fn encode(&self, out: &mut dyn BufMut) {
+        self.rlp_header().encode(out);
+        self.rlp_encode_fields(out);
     }
 }
 
@@ -214,7 +237,9 @@ impl RecoveredSubBlock {
     /// Returns the metadata for the subblock.
     pub fn metadata(&self) -> SubBlockMetadata {
         SubBlockMetadata {
-            validator: self.validator(),
+            validator: self.validator,
+            fee_recipient: self.fee_recipient,
+            version: self.version,
             signature: self.signature.clone(),
         }
     }
@@ -223,8 +248,12 @@ impl RecoveredSubBlock {
 /// Metadata for an included subblock.
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable)]
 pub struct SubBlockMetadata {
+    /// Version of the subblock.
+    pub version: SubBlockVersion,
     /// Validator that submitted the subblock.
     pub validator: B256,
+    /// Recipient of the fees for the subblock.
+    pub fee_recipient: Address,
     /// Signature of the subblock.
     pub signature: Bytes,
 }

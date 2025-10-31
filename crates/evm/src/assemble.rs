@@ -70,6 +70,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             inner,
             general_gas_limit,
             timestamp_millis_part,
+            shared_gas_limit,
         }))
     }
 }

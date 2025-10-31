@@ -10,7 +10,7 @@ pub use aa_authorization::{AASignedAuthorization, MAGIC};
 pub use aa_signature::{AASignature, derive_p256_address};
 pub use aa_signed::AASigned;
 pub use account_abstraction::{
-    AA_TX_TYPE_ID, Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, PartialValidatorKey,
+    AA_TX_TYPE_ID, Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,
     SECP256K1_SIGNATURE_LENGTH, SignatureType, TxAA,
 };
 pub use alloy_eips::eip7702::Authorization;

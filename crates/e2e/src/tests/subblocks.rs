@@ -17,8 +17,7 @@ use reth_ethereum::{
 };
 use reth_node_core::primitives::transaction::TxHashRef;
 use tempo_node::primitives::{
-    TempoTxEnvelope, TxAA,
-    transaction::{Call, account_abstraction::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
+    TempoTxEnvelope, TxAA, subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX, transaction::Call,
 };
 
 use crate::{ExecutionRuntime, Setup, ValidatorNode, setup_validators};
