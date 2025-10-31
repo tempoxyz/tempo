@@ -336,10 +336,6 @@ fn test_constructor_and_contract_storage_trait() {
     let _storage_ref: &mut HashMapStorageProvider = contract.storage();
 }
 
-// ============================================================================
-// E2E Dispatcher Tests
-// ============================================================================
-
 #[test]
 fn test_dispatcher_metadata_functions() {
     let mut storage = HashMapStorageProvider::new(1);
@@ -633,10 +629,6 @@ fn test_dispatcher_all_function_types_together() {
     assert_eq!(U256::abi_decode(&result.bytes).unwrap(), U256::from(600));
 }
 
-// ============================================================================
-// Multi-Interface Tests
-// ============================================================================
-
 #[test]
 fn test_multi_interface_contract() {
     // Test contract with multiple interfaces
@@ -654,9 +646,10 @@ fn test_multi_interface_contract() {
         pub owner: Address,
     }
 
-    // Implement ITestToken methods
-    impl<S: storage::PrecompileStorageProvider> MultiInterfaceToken_ITestToken for MultiInterfaceToken<'_, S> {
-        // Some methods auto-generated: name, symbol, balanceOf, allowance
+    impl<S: storage::PrecompileStorageProvider> MultiInterfaceToken_ITestToken
+        for MultiInterfaceToken<'_, S>
+    {
+        // Implement ITestToken methods (auto-generated: name, symbol, balanceOf, allowance)
         fn decimals(&mut self) -> tempo_precompiles::error::Result<u8> {
             Ok(18)
         }
@@ -712,8 +705,11 @@ fn test_multi_interface_contract() {
         }
     }
 
-    // Implement IMetadata methods (all auto-generated: version, owner)
-    impl<S: storage::PrecompileStorageProvider> MultiInterfaceToken_IMetadata for MultiInterfaceToken<'_, S> {}
+    impl<S: storage::PrecompileStorageProvider> MultiInterfaceToken_IMetadata
+        for MultiInterfaceToken<'_, S>
+    {
+        // Implement IMetadata methods (all auto-generated: version, owner)
+    }
 
     let mut storage = HashMapStorageProvider::new(1);
     let addr = test_address(1);

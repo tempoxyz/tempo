@@ -80,20 +80,58 @@ fn find_field_getter<'a>(func: &'a InterfaceFunction, fields: &'a [FieldInfo]) -
         .unwrap_or(GetterInfo::NoMatch)
 }
 
-// TODO(rusowsky): match based on actual param types, not just on compatibility based on number of fields
+/// Compares `syn::Type` instances for equality by comparing their token streams.
+fn types_equal(a: &Type, b: &Type) -> bool {
+    use quote::ToTokens;
+    a.to_token_stream().to_string() == b.to_token_stream().to_string()
+}
+
 /// Matches a function to a field based on type compatibility.
+///
+/// This function validates that both, the parameter count and the types, match:
+/// - Direct fields: No params, return type matches field type
+/// - Mapping fields: 1 param matching key type, return type matches value type
+/// - Nested Mapping fields: 2 params matching key types, return type matches inner value type
 fn match_by_type<'a>(func: &'a InterfaceFunction, field: &'a FieldInfo) -> GetterInfo<'a> {
     match (func.params.len(), extract_mapping_types(&field.ty)) {
-        (0, None) => GetterInfo::Direct { field },
-        (1, Some((_, value))) if extract_mapping_types(value).is_none() => GetterInfo::Mapping {
-            field,
-            key_param: func.params[0].0,
-        },
-        (2, Some((_, value))) if extract_mapping_types(value).is_some() => {
-            GetterInfo::NestedMapping {
-                field,
-                key1_param: func.params[0].0,
-                key2_param: func.params[1].0,
+        // Direct field: no params, return type must match field type
+        (0, None) => {
+            if types_equal(&func.return_type, &field.ty) {
+                GetterInfo::Direct { field }
+            } else {
+                GetterInfo::NoMatch
+            }
+        }
+        // Mapping: 1 param must match key type, return type must match value type
+        (1, Some((key_ty, value_ty))) if extract_mapping_types(value_ty).is_none() => {
+            let param_ty = &func.params[0].1;
+            if types_equal(param_ty, key_ty) && types_equal(&func.return_type, value_ty) {
+                GetterInfo::Mapping {
+                    field,
+                    key_param: func.params[0].0,
+                }
+            } else {
+                GetterInfo::NoMatch
+            }
+        }
+        // Nested Mapping: 2 params must match key types, return type must match inner value type
+        (2, Some((key1_ty, value))) if extract_mapping_types(value).is_some() => {
+            let Some((key2_ty, inner_value_ty)) = extract_mapping_types(value) else {
+                return GetterInfo::NoMatch;
+            };
+            let param1_ty = &func.params[0].1;
+            let param2_ty = &func.params[1].1;
+            if types_equal(param1_ty, key1_ty)
+                && types_equal(param2_ty, key2_ty)
+                && types_equal(&func.return_type, inner_value_ty)
+            {
+                GetterInfo::NestedMapping {
+                    field,
+                    key1_param: func.params[0].0,
+                    key2_param: func.params[1].0,
+                }
+            } else {
+                GetterInfo::NoMatch
             }
         }
         _ => GetterInfo::NoMatch,
@@ -479,7 +517,13 @@ mod tests_match {
 
     #[test]
     fn test_direct_field_getter() {
-        let func = create_function("name", vec![]);
+        let func = InterfaceFunction {
+            name: "name",
+            params: vec![],
+            return_type: parse_quote!(String),
+            is_view: true,
+            call_type_path: quote::quote!(ITIP20::nameCall),
+        };
         let fields = vec![create_field("name", parse_quote!(String), vec![])];
 
         let field_match = find_field_getter(&func, &fields);
@@ -565,6 +609,133 @@ mod tests_match {
             }
             _ => panic!("Expected Mapping match with CamelCase map attribute"),
         }
+    }
+
+    #[test]
+    fn test_direct_field_type_mismatch() {
+        let func = InterfaceFunction {
+            name: "name",
+            params: vec![],
+            return_type: parse_quote!(U256), // Wrong return type
+            is_view: true,
+            call_type_path: quote::quote!(ITIP20::nameCall),
+        };
+        let fields = vec![create_field("name", parse_quote!(String), vec![])];
+
+        let field_match = find_field_getter(&func, &fields);
+        assert!(
+            matches!(field_match, GetterInfo::NoMatch),
+            "Expected NoMatch due to return type mismatch"
+        );
+    }
+
+    #[test]
+    fn test_mapping_type_mismatch() {
+        // key mismatch
+        let func = create_function("balance_of", vec![("account", parse_quote!(U256))]);
+        let fields = vec![create_field(
+            "balances",
+            parse_quote!(Mapping<Address, U256>),
+            vec![parse_quote!(#[map = "balance_of"])],
+        )];
+
+        let field_match = find_field_getter(&func, &fields);
+        assert!(
+            matches!(field_match, GetterInfo::NoMatch),
+            "Expected NoMatch due to key type mismatch (U256 vs Address)"
+        );
+
+        // return mismatch
+        let func = InterfaceFunction {
+            name: "balance_of",
+            params: vec![("account", parse_quote!(Address))],
+            return_type: parse_quote!(bool), // Wrong return type
+            is_view: true,
+            call_type_path: quote::quote!(ITIP20::balanceOfCall),
+        };
+        let fields = vec![create_field(
+            "balances",
+            parse_quote!(Mapping<Address, U256>),
+            vec![parse_quote!(#[map = "balance_of"])],
+        )];
+
+        let field_match = find_field_getter(&func, &fields);
+        assert!(
+            matches!(field_match, GetterInfo::NoMatch),
+            "Expected NoMatch due to return type mismatch (bool vs U256)"
+        );
+    }
+
+    #[test]
+    fn test_nested_mapping_type_mismatch() {
+        // key1 mismatch
+        let func = InterfaceFunction {
+            name: "allowance",
+            params: vec![
+                ("owner", parse_quote!(U256)), // Wrong type
+                ("spender", parse_quote!(Address)),
+            ],
+            return_type: parse_quote!(U256),
+            is_view: true,
+            call_type_path: quote::quote!(ITIP20::allowanceCall),
+        };
+        let fields = vec![create_field(
+            "allowances",
+            parse_quote!(Mapping<Address, Mapping<Address, U256>>),
+            vec![parse_quote!(#[map = "allowance"])],
+        )];
+
+        let field_match = find_field_getter(&func, &fields);
+        assert!(
+            matches!(field_match, GetterInfo::NoMatch),
+            "Expected NoMatch due to first key type mismatch"
+        );
+
+        // key2 mismatch
+        let func = InterfaceFunction {
+            name: "allowance",
+            params: vec![
+                ("owner", parse_quote!(Address)),
+                ("spender", parse_quote!(U256)), // Wrong type
+            ],
+            return_type: parse_quote!(U256),
+            is_view: true,
+            call_type_path: quote::quote!(ITIP20::allowanceCall),
+        };
+        let fields = vec![create_field(
+            "allowances",
+            parse_quote!(Mapping<Address, Mapping<Address, U256>>),
+            vec![parse_quote!(#[map = "allowance"])],
+        )];
+
+        let field_match = find_field_getter(&func, &fields);
+        assert!(
+            matches!(field_match, GetterInfo::NoMatch),
+            "Expected NoMatch due to second key type mismatch"
+        );
+
+        // return mismatch
+        let func = InterfaceFunction {
+            name: "allowance",
+            params: vec![
+                ("owner", parse_quote!(Address)),
+                ("spender", parse_quote!(Address)),
+            ],
+            return_type: parse_quote!(bool), // Wrong return type
+            is_view: true,
+            call_type_path: quote::quote!(ITIP20::allowanceCall),
+        };
+        let fields = vec![create_field(
+            "allowances",
+            parse_quote!(Mapping<Address, Mapping<Address, U256>>),
+            vec![parse_quote!(#[map = "allowance"])],
+        )];
+
+        let field_match = find_field_getter(&func, &fields);
+        assert!(
+            matches!(field_match, GetterInfo::NoMatch),
+            "Expected NoMatch due to return type mismatch (bool vs U256)"
+        );
     }
 }
 
