@@ -11,6 +11,7 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
+use alloy_rpc_types_eth::SyncStatus;
 use commonware_consensus::{
     Block as _,
     marshal::{Update, ingress::mailbox::Identifier},
@@ -24,6 +25,7 @@ use futures::{
     channel::{mpsc, oneshot},
 };
 use reth_provider::BlockNumReader as _;
+use reth_rpc_eth_api::helpers::EthApiSpec as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, Span, debug, info, instrument, warn};
 
@@ -76,7 +78,6 @@ impl Builder {
                 head_height: 0,
                 finalized_height: 0,
             },
-            sync_target: None,
         }
     }
 }
@@ -155,10 +156,6 @@ pub(super) struct Executor<TContext> {
     /// including the heights corresponding to the head and the finalized block
     /// hashes.
     last_canonicalized: LastCanonicalized,
-
-    /// The execution layer's sync target. This is set on the first
-    /// forkchoice-state that returned SYNCING.
-    sync_target: Option<u64>,
 }
 
 impl<TContext> Executor<TContext>
@@ -243,7 +240,7 @@ where
             );
             self.backfill(
                 latest_execution_block_number.saturating_add(1),
-                latest_execution_block_number,
+                finalized_consensus_height,
             )
             .await
             .wrap_err(
@@ -293,7 +290,7 @@ where
         head_or_finalized: HeadOrFinalized,
         height: u64,
         digest: Digest,
-    ) -> eyre::Result<Option<PayloadStatus>> {
+    ) -> eyre::Result<()> {
         let new_canonicalized = match head_or_finalized {
             HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest.0),
             HeadOrFinalized::Finalized => {
@@ -303,7 +300,7 @@ where
 
         if new_canonicalized == self.last_canonicalized {
             info!("would not change forkchoice state; not sending it to the execution layer");
-            return Ok(None);
+            return Ok(());
         }
 
         info!(
@@ -338,22 +335,7 @@ where
 
         self.last_canonicalized = new_canonicalized;
 
-        // If the execution layer ever responds with VALID, we can always unset
-        // the sync target. It does not matter if we set the head hash or the
-        // finalized hash.
-        if fcu_response.is_valid() {
-            self.sync_target.take();
-        // But if the fcu responded with SYNCING and we tried updating the
-        // finalized block hash, set the sync target to the finalized block
-        // height, unless a sync target was already set beforehand.
-        } else if fcu_response.is_syncing()
-            && head_or_finalized.is_finalized()
-            && self.sync_target.is_none()
-        {
-            self.sync_target.replace(height);
-        }
-
-        Ok(Some(fcu_response.payload_status))
+        Ok(())
     }
 
     #[instrument(parent = &cause, skip_all)]
@@ -408,7 +390,6 @@ where
         fields(
             block.digest = %block.digest(),
             block.height = block.height(),
-            execution_layer.sync_target = self.sync_target,
         ),
         err(level = Level::WARN),
         ret,
@@ -436,28 +417,36 @@ where
         }
 
         'new_payload: {
-            match self.sync_target {
-                Some(sync_target) if sync_target.saturating_sub(block.height()) < 65 => {
+            match self.execution_node.eth_api().sync_status() {
+                Err(error) => error!(
+                    error = %Report::new(error),
+                    "could not query sync status of execution layer; going to \
+                    send the finalized block as a NEW PAYLOAD request; but \
+                    this really should not happen",
+                ),
+                Ok(SyncStatus::Info(info))
+                    if info.current_block >= block.height().saturating_sub(64) =>
+                {
                     debug!(
-                        sync_target,
-                        "execution layer has a sync target set, but the \
-                        consensus block is at most 64 heights below it or \
-                        ahead; forwarding it to the execution lasyer",
+                        sync_status.current_block = %info.current_block,
+                        "execution layer reported SYNCING, but its current \
+                        block is within 64 heights of the finalized block; \
+                        sending it as NEW PAYLOAD",
                     );
                 }
-                Some(_) => {
+                Ok(SyncStatus::Info(info)) => {
                     debug!(
-                        "block is more than 64 heights below the sync \
-                        target; relying on EL streaming syncc and dropping it"
+                        sync_status.current_block = %info.current_block,
+                        "execution layer reported SYNCING and its current \
+                        block is outdated; DROPPING the finalized block \
+                        without sending it as NEW PAYLOAD"
                     );
                     break 'new_payload;
                 }
-                None => {
-                    debug!(
-                        "no sync target set on execution layer; forwarding \
-                        payload from consensus layer"
-                    )
-                }
+                Ok(SyncStatus::None) => debug!(
+                    "execution layer reported no sync status; sending new \
+                    block as NEW PAYLOAD"
+                ),
             }
 
             let block = block.into_inner();
