@@ -16,7 +16,7 @@ mod ingress;
 pub(super) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use crate::{epoch::SchemeProvider, subblocks::SubBlocksHandle};
+use crate::{epoch::SchemeProvider, subblocks};
 
 pub(super) async fn init<TContext>(
     config: Config<TContext>,
@@ -49,7 +49,7 @@ pub(super) struct Config<TContext> {
     pub(super) execution_node: TempoFullNode,
 
     /// A handle to the subblocks service to get subblocks for proposals.
-    pub(crate) subblocks: SubBlocksHandle,
+    pub(crate) subblocks: subblocks::Mailbox,
 
     /// The minimum amount of time to wait before resolving a new payload from the builder
     pub(super) new_payload_wait_time: Duration,

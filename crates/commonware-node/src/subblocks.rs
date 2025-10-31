@@ -60,7 +60,7 @@ enum Message {
 }
 
 /// Task managing collected subblocks.
-pub struct SubBlocksService<Ctx> {
+pub struct Actor<Ctx> {
     actions_rx: mpsc::UnboundedReceiver<Message>,
     scheme_provider: SchemeProvider,
     subblock_builder_handle: Option<Handle<RecoveredSubBlock>>,
@@ -79,7 +79,7 @@ pub struct SubBlocksService<Ctx> {
     subblock_transactions: Arc<Mutex<HashMap<TxHash, Arc<TempoTxEnvelope>>>>,
 }
 
-impl<Ctx: Spawner> SubBlocksService<Ctx> {
+impl<Ctx: Spawner> Actor<Ctx> {
     pub(crate) fn new(
         context: Ctx,
         signer: PrivateKey,
@@ -87,7 +87,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
         node: TempoFullNode,
         fee_recipient: Address,
         time_to_build_subblock: Duration,
-    ) -> (Self, SubBlocksHandle) {
+    ) -> (Self, Mailbox) {
         let (actions_tx, actions_rx) = mpsc::unbounded_channel();
         let (validated_subblocks_tx, validated_subblocks_rx) = mpsc::unbounded_channel();
         let this = Self {
@@ -107,7 +107,7 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
             subblock_transactions: Default::default(),
         };
 
-        (this, SubBlocksHandle { tx: actions_tx })
+        (this, Mailbox { tx: actions_tx })
     }
 
     pub async fn run(
@@ -341,11 +341,11 @@ impl<Ctx: Spawner> SubBlocksService<Ctx> {
 
 /// Handle to the spawned subblocks service.
 #[derive(Clone)]
-pub struct SubBlocksHandle {
+pub struct Mailbox {
     tx: mpsc::UnboundedSender<Message>,
 }
 
-impl SubBlocksHandle {
+impl Mailbox {
     pub fn get_subblocks(&self, parent: BlockHash) -> oneshot::Receiver<Vec<RecoveredSubBlock>> {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Message::GetSubBlocks {
@@ -360,7 +360,7 @@ impl SubBlocksHandle {
     }
 }
 
-impl Reporter for SubBlocksHandle {
+impl Reporter for Mailbox {
     type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
     async fn report(&mut self, activity: Self::Activity) -> () {

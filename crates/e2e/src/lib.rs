@@ -25,7 +25,7 @@ use commonware_runtime::{
 };
 use commonware_utils::quorum;
 use futures::future::join_all;
-use tempo_commonware_node::subblocks::SubBlocksHandle;
+use tempo_commonware_node::subblocks;
 use tracing::debug;
 
 pub mod execution_runtime;
@@ -42,7 +42,7 @@ pub struct ValidatorNode {
     pub node: ExecutionNode,
 
     /// Handle to the subblocks service.
-    pub subblocks: SubBlocksHandle,
+    pub subblocks: subblocks::Mailbox,
 
     /// Public key of the validator.
     pub public_key: PublicKey,

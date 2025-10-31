@@ -33,7 +33,7 @@ use crate::{
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
-    subblocks::{SubBlocksHandle, SubBlocksService},
+    subblocks,
 };
 
 use super::block::Block;
@@ -175,7 +175,7 @@ where
         )
         .await;
 
-        let (subblocks, subblocks_handle) = SubBlocksService::new(
+        let (subblocks, subblocks_handle) = subblocks::Actor::new(
             self.context.clone(),
             self.signer.clone(),
             scheme_provider.clone(),
@@ -299,8 +299,8 @@ where
 
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
 
-    subblocks: SubBlocksService<TContext>,
-    subblocks_handle: SubBlocksHandle,
+    subblocks: subblocks::Actor<TContext>,
+    subblocks_handle: subblocks::Mailbox,
 }
 
 impl<TBlocker, TContext, TPeerManager> Engine<TBlocker, TContext, TPeerManager>
@@ -453,7 +453,7 @@ where
     }
 
     /// Returns a handle to the subblocks service.
-    pub fn subblocks_handle(&self) -> SubBlocksHandle {
+    pub fn subblocks_handle(&self) -> subblocks::Mailbox {
         self.subblocks_handle.clone()
     }
 }

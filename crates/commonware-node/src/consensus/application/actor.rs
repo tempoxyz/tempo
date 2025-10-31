@@ -54,7 +54,7 @@ use crate::{
     dkg::PublicOutcome,
     epoch::{self, SchemeProvider},
     marshal_utils::UpdateExt,
-    subblocks::SubBlocksHandle,
+    subblocks,
 };
 
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
@@ -209,7 +209,7 @@ struct Inner<TState> {
 
     genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
-    subblocks: SubBlocksHandle,
+    subblocks: subblocks::Mailbox,
     scheme_provider: SchemeProvider,
 
     state: TState,
