@@ -1,5 +1,5 @@
 use crate::rpc::pagination::{FieldName, FilterRange};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;
 
@@ -28,7 +28,7 @@ pub struct Pool {
     /// Effective reserve of validator token after pending swaps
     pub effective_reserve_validator_token: U256,
     /// Pool ID (keccak256 of userToken and validatorToken)
-    pub pool_id: U256,
+    pub pool_id: B256,
     /// User token reserve
     pub reserve_user_token: U256,
     /// Validator token reserve

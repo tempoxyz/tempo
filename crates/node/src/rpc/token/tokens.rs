@@ -52,7 +52,7 @@ pub struct Token {
     /// Unique token ID from factory
     pub token_id: B256,
     /// Current total supply
-    pub total_supply: B256,
+    pub total_supply: U256,
     /// Current transfer policy ID
     pub transfer_policy_id: B256,
 }
