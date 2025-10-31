@@ -1,5 +1,5 @@
 use crate::rpc::{
-    dex::{PaginationParams, types::FieldName},
+    pagination::{FieldName, PaginationParams},
     token::tokens::{Token, TokensFilters},
 };
 use alloy_primitives::{Address, B256, U256};

@@ -1,10 +1,11 @@
 pub use books::{Orderbook, OrderbooksFilter};
 pub use error::DexApiError;
-pub use types::{
-    FilterRange, Order, OrdersFilters, OrdersSort, OrdersSortOrder, PaginationParams, Tick,
-};
+pub use orders::{Order, OrdersFilters, OrdersSort, OrdersSortOrder, Tick};
 
-use crate::rpc::{TempoDexApiServer, dex::types::PaginationResponse};
+use crate::rpc::{
+    TempoDexApiServer,
+    pagination::{PaginationParams, PaginationResponse},
+};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{Address, B256, Sealable};
 use jsonrpsee::core::RpcResult;
@@ -25,7 +26,7 @@ use tempo_precompiles::{
 use tempo_primitives::TempoHeader;
 
 pub mod api;
-pub mod types;
+pub mod orders;
 
 mod books;
 mod error;

@@ -1,4 +1,4 @@
-use crate::rpc::dex::types::FieldName;
+use crate::rpc::pagination::FieldName;
 use alloy_primitives::Address;
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;

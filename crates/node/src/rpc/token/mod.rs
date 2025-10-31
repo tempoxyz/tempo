@@ -1,5 +1,5 @@
 use crate::rpc::{
-    dex::{PaginationParams, types::PaginationResponse},
+    pagination::{PaginationParams, PaginationResponse},
     token::{
         role_history::{RoleChange, RoleHistoryFilters},
         tokens::{Token, TokensFilters},

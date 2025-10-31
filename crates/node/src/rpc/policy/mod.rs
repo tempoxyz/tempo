@@ -1,6 +1,6 @@
 pub use addresses::{AddressesFilters, PolicyAddress};
 
-use crate::rpc::{dex::types::PaginationResponse, policy::addresses::AddressesParams};
+use crate::rpc::{pagination::PaginationResponse, policy::addresses::AddressesParams};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::RpcNodeCore;

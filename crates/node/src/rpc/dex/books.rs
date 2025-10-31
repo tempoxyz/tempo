@@ -1,6 +1,6 @@
-use crate::rpc::dex::{
-    FilterRange,
-    types::{FieldName, Tick},
+use crate::rpc::{
+    dex::orders::Tick,
+    pagination::{FieldName, FilterRange},
 };
 use alloy_primitives::{Address, B256};
 use jsonrpsee::core::Serialize;

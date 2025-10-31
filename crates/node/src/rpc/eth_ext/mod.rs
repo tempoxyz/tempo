@@ -1,8 +1,8 @@
 pub use transactions::TransactionsFilter;
 
 use crate::rpc::{
-    dex::{PaginationParams, types::PaginationResponse},
     eth_ext::transactions::Transaction,
+    pagination::{PaginationParams, PaginationResponse},
 };
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;

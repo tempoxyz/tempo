@@ -1,6 +1,6 @@
 pub use pools::{Pool, PoolsFilters};
 
-use crate::rpc::dex::{PaginationParams, types::PaginationResponse};
+use crate::rpc::pagination::{PaginationParams, PaginationResponse};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::RpcNodeCore;

@@ -1,4 +1,4 @@
-use crate::rpc::dex::{FilterRange, types::FieldName};
+use crate::rpc::pagination::{FieldName, FilterRange};
 use alloy_primitives::{Address, B256, U256};
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;

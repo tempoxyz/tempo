@@ -1,5 +1,6 @@
-use crate::rpc::dex::{
-    Order, Orderbook, OrderbooksFilter, OrdersFilters, PaginationParams, types::PaginationResponse,
+use crate::rpc::{
+    dex::{Order, Orderbook, OrderbooksFilter, OrdersFilters},
+    pagination::{PaginationParams, PaginationResponse},
 };
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 
