@@ -1593,6 +1593,43 @@ mod tests {
     }
 
     #[test]
+    fn test_place_order_below_minimum_amount() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let below_minimum = MIN_ORDER_AMOUNT - 1;
+        let tick = 100i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let escrow_amount = (below_minimum * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            escrow_amount,
+        );
+
+        // Create the pair
+        exchange
+            .create_pair(base_token)
+            .expect("Could not create pair");
+
+        // Try to place an order below minimum amount
+        let result = exchange.place(alice, base_token, below_minimum, true, tick);
+        assert_eq!(
+            result,
+            Err(StablecoinExchangeError::below_minimum_order_size(below_minimum).into())
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_place_bid_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
@@ -1723,6 +1760,44 @@ mod tests {
             })?;
             assert_eq!(exchange_balance, U256::from(amount));
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_order_below_minimum_amount() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let below_minimum = MIN_ORDER_AMOUNT - 1;
+        let tick = 100i16;
+        let flip_tick = 200i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let escrow_amount = (below_minimum * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            escrow_amount,
+        );
+
+        // Create the pair
+        exchange
+            .create_pair(base_token)
+            .expect("Could not create pair");
+
+        // Try to place a flip order below minimum amount
+        let result = exchange.place_flip(alice, base_token, below_minimum, true, tick, flip_tick);
+        assert_eq!(
+            result,
+            Err(StablecoinExchangeError::below_minimum_order_size(below_minimum).into())
+        );
 
         Ok(())
     }
