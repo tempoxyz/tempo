@@ -1569,7 +1569,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let amount = 100_000_000u128;
+        let amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
 
         let price = orderbook::tick_to_price(tick);
@@ -1600,7 +1600,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let amount = 100_000_000u128;
+        let amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
 
         let price = orderbook::tick_to_price(tick);
@@ -1673,7 +1673,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let amount = 100_000_000u128;
+        let amount = MIN_ORDER_AMOUNT;
         let tick = 50i16; // Use positive tick to avoid conversion issues
 
         // Setup tokens with enough base token balance for the order
@@ -1735,7 +1735,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let amount = 100_000_000u128;
+        let amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
         let flip_tick = 200i16; // Must be > tick for bid flip orders
 
@@ -1808,7 +1808,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let amount = 100_000_000u128;
+        let amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
 
         // Calculate escrow amount needed for bid
@@ -1873,7 +1873,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let amount = 100_000_000u128;
+        let amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
 
         // Calculate escrow amount needed for both orders
@@ -1969,7 +1969,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let amount = 100_000_000u128;
+        let amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
         let price = orderbook::tick_to_price(tick);
         let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
@@ -2034,7 +2034,7 @@ mod tests {
             admin,
             alice,
             exchange.address,
-            100_000_000u128,
+            MIN_ORDER_AMOUNT,
         );
 
         // Alice has 0 balance on the exchange
@@ -2073,7 +2073,7 @@ mod tests {
             .create_pair(base_token)
             .expect("Could not create pair");
 
-        let order_amount = 100_000_000u128;
+        let order_amount = MIN_ORDER_AMOUNT;
         exchange
             .place(alice, base_token, order_amount, false, tick)
             .expect("Order should succeed");
@@ -2113,7 +2113,7 @@ mod tests {
             .create_pair(base_token)
             .expect("Could not create pair");
 
-        let order_amount = 100_000_000u128;
+        let order_amount = MIN_ORDER_AMOUNT;
         exchange
             .place(alice, base_token, order_amount, true, tick)
             .expect("Place bid order should succeed");
@@ -2155,7 +2155,7 @@ mod tests {
             .expect("Could not create pair");
 
         // Alice places a bid: willing to BUY base using quote
-        let order_amount = 100_000_000u128;
+        let order_amount = MIN_ORDER_AMOUNT;
         exchange
             .place(alice, base_token, order_amount, true, tick)
             .expect("Place bid order should succeed");
@@ -2198,7 +2198,7 @@ mod tests {
             .create_pair(base_token)
             .expect("Could not create pair");
 
-        let order_amount = 100_000_000u128;
+        let order_amount = MIN_ORDER_AMOUNT;
         exchange
             .place(alice, base_token, order_amount, false, tick)
             .expect("Order should succeed");
@@ -2251,7 +2251,7 @@ mod tests {
             .create_pair(base_token)
             .expect("Could not create pair");
 
-        let order_amount = 100_000_000u128;
+        let order_amount = MIN_ORDER_AMOUNT;
         exchange
             .place(alice, base_token, order_amount, true, tick)
             .expect("Order should succeed");
@@ -2290,7 +2290,7 @@ mod tests {
         let alice = Address::random();
         let bob = Address::random();
         let admin = Address::random();
-        let amount = 100_000_000u128;
+        let amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
         let flip_tick = 200i16;
 
@@ -2358,7 +2358,7 @@ mod tests {
             admin,
             alice,
             exchange.address,
-            100_000_000u128,
+            MIN_ORDER_AMOUNT,
         );
 
         // Create the pair
@@ -2395,7 +2395,7 @@ mod tests {
             admin,
             alice,
             exchange.address,
-            100_000_000u128,
+            MIN_ORDER_AMOUNT,
         );
 
         exchange
@@ -2492,7 +2492,7 @@ mod tests {
             admin,
             user,
             exchange.address,
-            100_000_000u128,
+            MIN_ORDER_AMOUNT,
         );
 
         // Trading same token should error with IdenticalTokens
@@ -2521,7 +2521,7 @@ mod tests {
             admin,
             user,
             exchange.address,
-            100_000_000u128,
+            MIN_ORDER_AMOUNT,
         );
 
         // Create the pair first
@@ -2560,7 +2560,7 @@ mod tests {
             admin,
             user,
             exchange.address,
-            100_000_000u128,
+            MIN_ORDER_AMOUNT,
         );
 
         // Create the pair first
@@ -2700,7 +2700,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: alice,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to mint USDC");
@@ -2714,7 +2714,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: alice,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to mint EURC");
@@ -2730,7 +2730,7 @@ mod tests {
                     admin,
                     ITIP20::mintCall {
                         to: alice,
-                        amount: U256::from(1_000_000_000u128),
+                        amount: U256::from(MIN_ORDER_AMOUNT * 10),
                     },
                 )
                 .expect("Failed to mint LinkingUSD");
@@ -2743,7 +2743,7 @@ mod tests {
                 alice,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to approve USDC");
@@ -2755,7 +2755,7 @@ mod tests {
                 alice,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to approve EURC");
@@ -2769,7 +2769,7 @@ mod tests {
                     alice,
                     ITIP20::approveCall {
                         spender: exchange.address,
-                        amount: U256::from(1_000_000_000u128),
+                        amount: U256::from(MIN_ORDER_AMOUNT * 10),
                     },
                 )
                 .expect("Failed to approve LinkingUSD");
@@ -2782,12 +2782,12 @@ mod tests {
 
         // USDC bid: buy USDC with LinkingUSD
         exchange
-            .place(alice, usdc_addr, 500_000_000u128, true, 0)
+            .place(alice, usdc_addr, MIN_ORDER_AMOUNT * 5, true, 0)
             .expect("Failed to place USDC bid order");
 
         // EURC ask: sell EURC for LinkingUSD
         exchange
-            .place(alice, eurc_addr, 500_000_000u128, false, 0)
+            .place(alice, eurc_addr, MIN_ORDER_AMOUNT * 5, false, 0)
             .expect("Failed to place EURC ask order");
 
         exchange
@@ -2795,7 +2795,7 @@ mod tests {
             .expect("Failed to execute block");
 
         // Quote multi-hop: USDC -> LinkingUSD -> EURC
-        let amount_in = 100_000_000u128;
+        let amount_in = MIN_ORDER_AMOUNT;
         let amount_out = exchange
             .quote_swap_exact_amount_in(usdc_addr, eurc_addr, amount_in)
             .expect("Should quote multi-hop trade");
@@ -2858,7 +2858,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: alice,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to mint USDC");
@@ -2866,7 +2866,7 @@ mod tests {
                 alice,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to approve USDC");
@@ -2880,7 +2880,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: alice,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to mint EURC");
@@ -2888,7 +2888,7 @@ mod tests {
                 alice,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to approve EURC");
@@ -2904,7 +2904,7 @@ mod tests {
                     admin,
                     ITIP20::mintCall {
                         to: alice,
-                        amount: U256::from(1_000_000_000u128),
+                        amount: U256::from(MIN_ORDER_AMOUNT * 10),
                     },
                 )
                 .expect("Failed to mint LinkingUSD");
@@ -2914,7 +2914,7 @@ mod tests {
                     alice,
                     ITIP20::approveCall {
                         spender: exchange.address,
-                        amount: U256::from(1_000_000_000u128),
+                        amount: U256::from(MIN_ORDER_AMOUNT * 10),
                     },
                 )
                 .expect("Failed to approve LinkingUSD");
@@ -2922,10 +2922,10 @@ mod tests {
 
         // Place orders at 1:1 rate
         exchange
-            .place(alice, usdc_addr, 500_000_000u128, true, 0)
+            .place(alice, usdc_addr, MIN_ORDER_AMOUNT * 5, true, 0)
             .expect("Failed to place USDC bid order");
         exchange
-            .place(alice, eurc_addr, 500_000_000u128, false, 0)
+            .place(alice, eurc_addr, MIN_ORDER_AMOUNT * 5, false, 0)
             .expect("Failed to place EURC ask order");
 
         exchange
@@ -2933,7 +2933,7 @@ mod tests {
             .expect("Failed to execute block");
 
         // Quote multi-hop for exact output: USDC -> LinkingUSD -> EURC
-        let amount_out = 100_000_000u128;
+        let amount_out = MIN_ORDER_AMOUNT;
         let amount_in = exchange
             .quote_swap_exact_amount_out(usdc_addr, eurc_addr, amount_out)
             .expect("Should quote multi-hop trade for exact output");
@@ -2996,7 +2996,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: alice,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to mint USDC");
@@ -3004,7 +3004,7 @@ mod tests {
                 alice,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to approve USDC");
@@ -3018,7 +3018,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: alice,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to mint EURC");
@@ -3026,7 +3026,7 @@ mod tests {
                 alice,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to approve EURC");
@@ -3040,7 +3040,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: alice,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )?;
 
@@ -3048,7 +3048,7 @@ mod tests {
                 alice,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )?;
         }
@@ -3060,7 +3060,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: bob,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )?;
 
@@ -3068,17 +3068,17 @@ mod tests {
                 bob,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )?;
         }
 
         // Place liquidity orders at 1:1
         exchange
-            .place(alice, usdc_addr, 500_000_000u128, true, 0)
+            .place(alice, usdc_addr, MIN_ORDER_AMOUNT * 5, true, 0)
             .expect("Failed to place USDC bid order");
         exchange
-            .place(alice, eurc_addr, 500_000_000u128, false, 0)
+            .place(alice, eurc_addr, MIN_ORDER_AMOUNT * 5, false, 0)
             .expect("Failed to place EURC ask order");
         exchange
             .execute_block(Address::ZERO)
@@ -3095,7 +3095,7 @@ mod tests {
         };
 
         // Execute multi-hop swap: USDC -> LinkingUSD -> EURC
-        let amount_in = 100_000_000u128;
+        let amount_in = MIN_ORDER_AMOUNT;
         let amount_out = exchange
             .swap_exact_amount_in(
                 bob, usdc_addr, eurc_addr, amount_in, 0, // min_amount_out
@@ -3197,7 +3197,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: alice,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to mint USDC");
@@ -3205,7 +3205,7 @@ mod tests {
                 alice,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to approve USDC");
@@ -3219,7 +3219,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: alice,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to mint EURC");
@@ -3227,7 +3227,7 @@ mod tests {
                 alice,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to approve EURC");
@@ -3243,7 +3243,7 @@ mod tests {
                     admin,
                     ITIP20::mintCall {
                         to: alice,
-                        amount: U256::from(1_000_000_000u128),
+                        amount: U256::from(MIN_ORDER_AMOUNT * 10),
                     },
                 )
                 .expect("Failed to mint LinkingUSD");
@@ -3253,7 +3253,7 @@ mod tests {
                     alice,
                     ITIP20::approveCall {
                         spender: exchange.address,
-                        amount: U256::from(1_000_000_000u128),
+                        amount: U256::from(MIN_ORDER_AMOUNT * 10),
                     },
                 )
                 .expect("Failed to approve LinkingUSD");
@@ -3266,7 +3266,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: bob,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to mint USDC for bob");
@@ -3274,7 +3274,7 @@ mod tests {
                 bob,
                 ITIP20::approveCall {
                     spender: exchange.address,
-                    amount: U256::from(1_000_000_000u128),
+                    amount: U256::from(MIN_ORDER_AMOUNT * 10),
                 },
             )
             .expect("Failed to approve USDC for bob");
@@ -3282,10 +3282,10 @@ mod tests {
 
         // Place liquidity orders at 1:1
         exchange
-            .place(alice, usdc_addr, 500_000_000u128, true, 0)
+            .place(alice, usdc_addr, MIN_ORDER_AMOUNT * 5, true, 0)
             .expect("Failed to place USDC bid order");
         exchange
-            .place(alice, eurc_addr, 500_000_000u128, false, 0)
+            .place(alice, eurc_addr, MIN_ORDER_AMOUNT * 5, false, 0)
             .expect("Failed to place EURC ask order");
         exchange
             .execute_block(Address::ZERO)
