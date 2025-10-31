@@ -71,12 +71,6 @@ impl TempoPrecompileError {
     }
 }
 
-impl From<ValidatorConfigError> for TempoPrecompileError {
-    fn from(err: ValidatorConfigError) -> Self {
-        Self::ValidatorConfigError(err)
-    }
-}
-
 /// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
 pub trait IntoPrecompileResult<T> {
     fn into_precompile_result(

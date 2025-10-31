@@ -4,7 +4,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
-    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
@@ -29,26 +29,26 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
                 mutate_void::<IValidatorConfig::addValidatorCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.add_validator(s, call),
+                    |s, call| self.add_validator(&s, call),
                 )
             }
             IValidatorConfig::updateValidatorCall::SELECTOR => {
                 mutate_void::<IValidatorConfig::updateValidatorCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.update_validator(s, call),
+                    |s, call| self.update_validator(&s, call),
                 )
             }
             IValidatorConfig::changeValidatorStatusCall::SELECTOR => {
                 mutate_void::<IValidatorConfig::changeValidatorStatusCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.change_validator_status(s, call),
+                    |s, call| self.change_validator_status(&s, call),
                 )
             }
             IValidatorConfig::changeOwnerCall::SELECTOR => {
                 mutate_void::<IValidatorConfig::changeOwnerCall>(calldata, msg_sender, |s, call| {
-                    self.change_owner(s, call)
+                    self.change_owner(&s, call)
                 })
             }
 
@@ -84,11 +84,11 @@ mod tests {
         validator_config.initialize(owner).unwrap();
 
         // Test invalid selector
-        let result = validator_config.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), &sender);
+        let result = validator_config.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
 
         // Test insufficient calldata
-        let result = validator_config.call(&Bytes::from([0x12, 0x34]), &sender);
+        let result = validator_config.call(&Bytes::from([0x12, 0x34]), sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
     }
 
@@ -108,7 +108,7 @@ mod tests {
         let calldata = owner_call.abi_encode();
 
         let result = validator_config
-            .call(&Bytes::from(calldata), &sender)
+            .call(&Bytes::from(calldata), sender)
             .unwrap();
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
 
@@ -140,7 +140,7 @@ mod tests {
         let calldata = add_call.abi_encode();
 
         let result = validator_config
-            .call(&Bytes::from(calldata), &owner)
+            .call(&Bytes::from(calldata), owner)
             .unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
@@ -178,7 +178,7 @@ mod tests {
         };
         let calldata = add_call.abi_encode();
 
-        let result = validator_config.call(&Bytes::from(calldata), &non_owner);
+        let result = validator_config.call(&Bytes::from(calldata), non_owner);
         expect_precompile_revert(&result, ValidatorConfigError::unauthorized());
     }
 }
