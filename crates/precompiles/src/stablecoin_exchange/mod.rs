@@ -469,9 +469,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Validate order amount meets dust limit
         if amount < DUST_LIMIT {
-            return Err(
-                StablecoinExchangeError::below_minimum_order_size(amount, DUST_LIMIT).into(),
-            );
+            return Err(StablecoinExchangeError::below_minimum_order_size(amount).into());
         }
 
         // Calculate escrow amount and token based on order side
@@ -553,9 +551,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Validate order amount meets dust limit
         if amount < DUST_LIMIT {
-            return Err(
-                StablecoinExchangeError::below_minimum_order_size(amount, DUST_LIMIT).into(),
-            );
+            return Err(StablecoinExchangeError::below_minimum_order_size(amount).into());
         }
 
         // Calculate escrow amount and token based on order side
