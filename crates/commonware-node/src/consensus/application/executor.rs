@@ -80,7 +80,7 @@ impl Builder {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LastCanonicalized {
     forkchoice: ForkchoiceState,
     head_height: u64,
