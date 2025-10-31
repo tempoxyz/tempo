@@ -184,16 +184,19 @@ impl<Ctx: Spawner> Actor<Ctx> {
 
     #[instrument(skip_all, fields(event.epoch = event.epoch(), event.view = event.view()))]
     fn on_consensus_event(&mut self, event: Activity<Scheme<PublicKey, MinSig>, Digest>) {
-        let (new_tip, round, certificate) = match event {
-            Activity::Notarization(n) => {
-                (Some(n.proposal.payload.0), n.proposal.round, n.certificate)
+        let (tip, round, certificate) = match event {
+            Activity::Notarization(n) => (n.proposal.payload.0, n.proposal.round, n.certificate),
+            Activity::Nullification(n) => {
+                // If we haven't seen any notarizations yet, we can't derive much context from a nullification.
+                let Some(tip) = self.next_parent_hash else {
+                    return;
+                };
+                (tip, n.round, n.certificate)
             }
-            Activity::Nullification(n) => (None, n.round, n.certificate),
             _ => return,
         };
 
-        let (next_block_round, seed) = if let Some(tip) = new_tip
-            && let Ok(Some(header)) = self.node.provider.header(tip)
+        let (next_block_round, seed) = if let Ok(Some(header)) = self.node.provider.header(tip)
             && epoch::is_last_height(header.number(), self.epoch_length)
         {
             // If next block is the first block of the next epoch, next round will be first view of the new epoch.
@@ -228,14 +231,11 @@ impl<Ctx: Spawner> Actor<Ctx> {
         self.next_block_epoch = Some(next_block_round.epoch());
 
         // If we don't have a new tip, we can keep subblocks state as is.
-        let Some(new_tip) = new_tip else {
-            return;
-        };
-        if self.next_parent_hash == Some(new_tip) {
+        if self.next_parent_hash == Some(tip) {
             return;
         }
 
-        self.next_parent_hash = Some(new_tip);
+        self.next_parent_hash = Some(tip);
 
         // Clear subblocks collected so far.
         self.subblocks.clear();
