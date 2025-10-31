@@ -44,7 +44,7 @@ enum Message {
     /// Returns all subblocks collected so far.
     ///
     /// This will return nothing if parent hash does not match the current chain view
-    /// of the [`SubBlocksService`] or if no subblocks have been collected yet.
+    /// of the service or if no subblocks have been collected yet.
     GetSubBlocks {
         /// Parent block to return subblocks for.
         parent: BlockHash,
