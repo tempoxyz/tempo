@@ -113,7 +113,7 @@ impl LastCanonicalized {
         this.update_head(height, hash)
     }
 
-    /// UPdates the head height and head block hash to `height` and `hash`.
+    /// Updates the head height and head block hash to `height` and `hash`.
     ///
     /// `head` must be ahead of the latest canonicalized head height. If it is
     /// not, then this is a no-op.
