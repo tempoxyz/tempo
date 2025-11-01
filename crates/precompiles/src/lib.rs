@@ -16,6 +16,7 @@ pub mod tip403_registry;
 pub mod tip4217_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
+pub mod validator_config;
 
 use crate::{
     error::IntoPrecompileResult,
@@ -30,12 +31,13 @@ use crate::{
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     tip4217_registry::TIP4217Registry,
+    validator_config::ValidatorConfig,
 };
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{
-    primitives::{Address, Bytes, address},
+    primitives::{Address, Bytes},
     sol,
     sol_types::{SolCall, SolError},
 };
@@ -45,20 +47,12 @@ use revm::{
     precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
-pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
-pub const LINKING_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
-pub const DEFAULT_FEE_TOKEN: Address = address!("0x20C0000000000000000000000000000000000001");
-pub const TIP403_REGISTRY_ADDRESS: Address = address!("0x403C000000000000000000000000000000000000");
-pub const TIP20_FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");
-pub const TIP20_REWARDS_REGISTRY_ADDRESS: Address =
-    address!("0x2100000000000000000000000000000000000000");
-pub const TIP4217_REGISTRY_ADDRESS: Address =
-    address!("0x4217C00000000000000000000000000000000000");
-pub const TIP_ACCOUNT_REGISTRAR: Address = address!("0x7702ac0000000000000000000000000000000000");
-pub const STABLECOIN_EXCHANGE_ADDRESS: Address =
-    address!("0xdec0000000000000000000000000000000000000");
-pub const NONCE_PRECOMPILE_ADDRESS: Address =
-    address!("0x4E4F4E4345000000000000000000000000000000");
+pub use tempo_contracts::precompiles::{
+    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS,
+};
 
 const METADATA_GAS: u64 = 50;
 const VIEW_FUNC_GAS: u64 = 100;
@@ -93,6 +87,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             Some(StablecoinExchangePrecompile::create(chain_id))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
             Some(NoncePrecompile::create(chain_id))
+        } else if *address == VALIDATOR_CONFIG_ADDRESS {
+            Some(ValidatorConfigPrecompile::create(chain_id))
         } else {
             None
         }
@@ -204,6 +200,16 @@ pub struct LinkingUSDPrecompile;
 impl LinkingUSDPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+        ))
+    }
+}
+
+pub struct ValidatorConfigPrecompile;
+impl ValidatorConfigPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("ValidatorConfig", |input| ValidatorConfig::new(
+            VALIDATOR_CONFIG_ADDRESS,
             &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
         ))
     }

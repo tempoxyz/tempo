@@ -9,6 +9,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
     Block as _,
@@ -24,12 +25,9 @@ use futures::{
 };
 use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, debug, field, info, instrument, warn};
+use tracing::{Level, Span, debug, info, instrument, warn};
 
-use crate::{
-    consensus::{Digest, block::Block},
-    marshal_utils::UpdateExt as _,
-};
+use crate::consensus::{Digest, block::Block};
 
 pub(super) struct Builder {
     /// A handle to the execution node layer. Used to forward finalized blocks
@@ -61,6 +59,7 @@ impl Builder {
 
         let my_mailbox = ExecutorMailbox { inner: to_me };
 
+        let genesis_hash = genesis_block.block_hash();
         Executor {
             context: ContextCell::new(context),
             execution_node,
@@ -68,16 +67,64 @@ impl Builder {
             mailbox: from_app,
             marshal,
             my_mailbox,
-            last_canonicalized: None,
+            last_canonicalized: LastCanonicalized {
+                forkchoice: ForkchoiceState {
+                    head_block_hash: genesis_hash,
+                    safe_block_hash: genesis_hash,
+                    finalized_block_hash: genesis_hash,
+                },
+                head_height: 0,
+                finalized_height: 0,
+            },
         }
     }
 }
 
-#[derive(Debug, Clone)]
+/// Tracks the last forkchoice state that the executor sent to the execution layer.
+///
+/// Also tracks the corresponding heights corresponding to
+/// `forkchoice_state.head_block_hash` and
+/// `forkchoice_state.finalized_block_hash`, respectively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LastCanonicalized {
     forkchoice: ForkchoiceState,
     head_height: u64,
     finalized_height: u64,
+}
+
+impl LastCanonicalized {
+    /// Updates the finalized height and finalized block hash to `height` and `hash`.
+    ///
+    /// `height` must be ahead of the latest canonicalized finalized height. If
+    /// it is not, then this is a no-op.
+    ///
+    /// Similarly, if `height` is ahead or the same as the latest canonicalized
+    /// head height, it also updates the head height.
+    ///
+    /// This is to ensure that the finalized block hash is never ahead of the
+    /// head hash.
+    fn update_finalized(self, height: u64, hash: B256) -> Self {
+        let mut this = self;
+        if height > this.finalized_height {
+            this.finalized_height = height;
+            this.forkchoice.safe_block_hash = hash;
+            this.forkchoice.finalized_block_hash = hash;
+        }
+        this.update_head(height, hash)
+    }
+
+    /// Updates the head height and head block hash to `height` and `hash`.
+    ///
+    /// `head` must be ahead of the latest canonicalized head height. If it is
+    /// not, then this is a no-op.
+    fn update_head(self, height: u64, hash: B256) -> Self {
+        let mut this = self;
+        if height >= this.head_height {
+            this.head_height = height;
+            this.forkchoice.head_block_hash = hash;
+        }
+        this
+    }
 }
 
 pub(super) struct Executor<TContext> {
@@ -103,7 +150,7 @@ pub(super) struct Executor<TContext> {
     /// the agent.
     my_mailbox: ExecutorMailbox,
 
-    last_canonicalized: Option<LastCanonicalized>,
+    last_canonicalized: LastCanonicalized,
 }
 
 impl<TContext> Executor<TContext>
@@ -158,8 +205,9 @@ where
 
         self.canonicalize(
             Span::current(),
-            (finalized_consensus_height, finalized_consensus_digest),
-            (finalized_consensus_height, finalized_consensus_digest),
+            HeadOrFinalized::Finalized,
+            finalized_consensus_height,
+            finalized_consensus_digest,
         )
         .await
         .wrap_err("failed setting initial canonical state; can't go on like this")?;
@@ -208,98 +256,53 @@ where
     async fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
-            Command::Canonicalize { head, finalized } => {
-                let _ = self.canonicalize(cause, head, finalized).await;
+            Command::CanonicalizeHead { height, digest } => {
+                let _ = self
+                    .canonicalize(cause, HeadOrFinalized::Head, height, digest)
+                    .await;
             }
-            Command::ForwardFinalized { update, response } => {
-                let _ = self.forward_finalized(*update, response, cause).await;
+            Command::Finalize { update, response } => {
+                // let _ = self.forward_finalized(*update, response, cause).await;
+                let _ = self.finalize(cause, *update, response).await;
             }
         }
     }
 
-    /// Canonicalizes `digest` by setting it as the head of the execution layer.
-    ///
-    /// This function sends a forkchoice-update to the execution layer, setting
-    /// `head_block_hash = digest` and
-    /// `finalized_block_hash = self.latest_finalized_digest`.
-    ///
-    /// If `digest` is not found in the execution layer, the agent attempts to
-    /// backfill it and its ancestors from the consensus layer.
+    /// Canonicalizes `digest` by sending a forkchoice update to the execution layer.
     #[instrument(
         skip_all,
         follows_from = [cause],
         fields(
-            head.height = head.0,
-            head.digest = %head.1,
-            finalized.height = finalized.0,
-            finalized.digest = %finalized.1,
+            head.height = height,
+            head.digest = %digest,
+            %head_or_finalized,
         ),
         err,
     )]
     async fn canonicalize(
         &mut self,
         cause: Span,
-        head: (u64, Digest),
-        finalized: (u64, Digest),
+        head_or_finalized: HeadOrFinalized,
+        height: u64,
+        digest: Digest,
     ) -> eyre::Result<()> {
-        assert!(
-            head.0 >= finalized.0,
-            "invariant violated: finalized head must never exceed tip",
-        );
-
-        // Compare with the last send forkchoice state: if either head or
-        // finalized are newer, don't update the other.
-        let last_canonicalized = match &self.last_canonicalized {
-            None => LastCanonicalized {
-                forkchoice: ForkchoiceState {
-                    head_block_hash: head.1.0,
-                    safe_block_hash: finalized.1.0,
-                    finalized_block_hash: finalized.1.0,
-                },
-                head_height: head.0,
-                finalized_height: finalized.0,
-            },
-            Some(last_canonicalized) => {
-                // Only take the new finalized hash if the head is higher.
-                // Reason: the finalized hash must not change.
-                let (finalized_height, finalized_block_hash) =
-                    if finalized.0 > last_canonicalized.finalized_height {
-                        (finalized.0, finalized.1.0)
-                    } else {
-                        (
-                            last_canonicalized.finalized_height,
-                            last_canonicalized.forkchoice.finalized_block_hash,
-                        )
-                    };
-
-                // Take the head hash if the height is higher or the same.
-                // Reason: the head hash is allowed to change.
-                let (head_height, head_block_hash) = if head.0 >= last_canonicalized.head_height {
-                    (head.0, head.1.0)
-                } else {
-                    (
-                        last_canonicalized.head_height,
-                        last_canonicalized.forkchoice.head_block_hash,
-                    )
-                };
-
-                LastCanonicalized {
-                    forkchoice: ForkchoiceState {
-                        head_block_hash,
-                        safe_block_hash: finalized_block_hash,
-                        finalized_block_hash,
-                    },
-                    head_height,
-                    finalized_height,
-                }
+        let new_canonicalized = match head_or_finalized {
+            HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest.0),
+            HeadOrFinalized::Finalized => {
+                self.last_canonicalized.update_finalized(height, digest.0)
             }
         };
 
+        if new_canonicalized == self.last_canonicalized {
+            info!("would not change forkchoice state; not sending it to the execution layer");
+            return Ok(());
+        }
+
         info!(
-            head_block_hash = %last_canonicalized.forkchoice.head_block_hash,
-            head_block_height = last_canonicalized.head_height,
-            finalized_block_hash = %last_canonicalized.forkchoice.finalized_block_hash,
-            finalized_block_height = last_canonicalized.finalized_height,
+            head_block_hash = %new_canonicalized.forkchoice.head_block_hash,
+            head_block_height = new_canonicalized.head_height,
+            finalized_block_hash = %new_canonicalized.forkchoice.finalized_block_hash,
+            finalized_block_height = new_canonicalized.finalized_height,
             "sending forkchoice-update",
         );
         let fcu_response = self
@@ -307,7 +310,7 @@ where
             .add_ons_handle
             .beacon_engine_handle
             .fork_choice_updated(
-                last_canonicalized.forkchoice,
+                new_canonicalized.forkchoice,
                 None,
                 reth_node_builder::EngineApiMessageVersion::V3,
             )
@@ -325,9 +328,36 @@ where
                 .wrap_err("execution layer responded with error for forkchoice-update"));
         }
 
-        self.last_canonicalized.replace(last_canonicalized);
+        self.last_canonicalized = new_canonicalized;
 
         Ok(())
+    }
+
+    #[instrument(parent = &cause, skip_all)]
+    /// Handles finalization events.
+    async fn finalize(
+        &mut self,
+        cause: Span,
+        update: Update<Block>,
+        response: oneshot::Sender<()>,
+    ) {
+        match update {
+            Update::Tip(height, digest) => {
+                let _: Result<_, _> = self
+                    .canonicalize(Span::current(), HeadOrFinalized::Finalized, height, digest)
+                    .await;
+                if response.send(()).is_err() {
+                    info!(
+                        "attempted to acknowledge canonicalizing finalized tip, but sender already went way"
+                    );
+                }
+            }
+            Update::Block(block) => {
+                let _: Result<_, _> = self
+                    .forward_finalized(Span::current(), block, response)
+                    .await;
+            }
+        }
     }
 
     /// Finalizes `block` by sending it to the execution layer.
@@ -351,48 +381,34 @@ where
     /// marshal agent.
     #[instrument(
         skip_all,
-        follows_from = [cause],
+        parent = &cause,
         fields(
-            block.digest = update.as_block().map(|b| field::display(b.digest())),
-            block.height = update.as_block().map(|b| b.height()),
+            block.digest = %block.digest(),
+            block.height = block.height(),
         ),
         err(level = Level::WARN),
         ret,
     )]
     async fn forward_finalized(
         &mut self,
-        update: Update<Block>,
-        response: oneshot::Sender<()>,
         cause: Span,
+        block: Block,
+        response: oneshot::Sender<()>,
     ) -> eyre::Result<()> {
-        let Some(block) = update.into_block() else {
-            return Ok(());
-        };
-
-        let LastCanonicalized {
-            forkchoice,
-            head_height,
-            finalized_height,
-        } = self
-            .last_canonicalized
-            .clone()
-            .expect("must always be set in the event loop handlers");
-
-        // If we get a finalized block ahead of the last finalized hash sent to
-        // the executionl layer, canonicalize the finalized hash.
-        //
-        // If the finalized block is also ahead of the head hash, then also
-        // update that.
-        if block.height() > finalized_height {
-            let finalized = (block.height(), block.digest());
-            let head = if finalized.0 > head_height {
-                finalized
-            } else {
-                (head_height, Digest(forkchoice.head_block_hash))
-            };
-            self.canonicalize(Span::current(), head, finalized)
-                .await
-                .wrap_err("failed canonicalizing finalized block")?;
+        if let Err(error) = self
+            .canonicalize(
+                Span::current(),
+                HeadOrFinalized::Finalized,
+                block.height(),
+                block.digest(),
+            )
+            .await
+        {
+            warn!(
+                %error,
+                "failed canonicalizing finalized block; will still attempt \
+                forwarding it to the execution layer",
+            );
         }
 
         let block = block.into_inner();
@@ -472,25 +488,35 @@ where
     }
 }
 
+/// Marker to indicate whether the head hash or finalized hash should be updated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadOrFinalized {
+    Head,
+    Finalized,
+}
+
+impl std::fmt::Display for HeadOrFinalized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg = match self {
+            Self::Head => "head",
+            Self::Finalized => "finalized",
+        };
+        f.write_str(msg)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct ExecutorMailbox {
     inner: mpsc::UnboundedSender<Message>,
 }
 
 impl ExecutorMailbox {
-    /// Requests the agent to update the canonical chain to `digest`.
-    ///
-    /// Of `round` is set, the agent will also attempt to backfill the ancestors
-    /// of `digest`.
-    pub(super) fn canonicalize(
-        &self,
-        head: (u64, Digest),
-        finalized: (u64, Digest),
-    ) -> eyre::Result<()> {
+    /// Requests the agent to update the head of the canonical chain to `digest`.
+    pub(super) fn canonicalize_head(&self, height: u64, digest: Digest) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),
-                command: Command::Canonicalize { head, finalized },
+                command: Command::CanonicalizeHead { height, digest },
             })
             .wrap_err("failed sending canonicalize request to agent, this means it exited")
     }
@@ -503,7 +529,7 @@ impl ExecutorMailbox {
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),
-                command: Command::ForwardFinalized {
+                command: Command::Finalize {
                     update: Box::new(finalized.update),
                     response: finalized.response,
                 },
@@ -520,15 +546,8 @@ struct Message {
 
 #[derive(Debug)]
 enum Command {
-    /// Requests the agent to canonicalize `digest`.
-    ///
-    /// This variant is used by the `ExecutorMailbox::canonicalize` method.
-    /// If `round` information is set the agent will attempt to backfill
-    /// `digest` and ancestors to the execution layer.
-    Canonicalize {
-        head: (u64, Digest),
-        finalized: (u64, Digest),
-    },
+    /// Requests the agent to set the head of the canonical chain to `digest`.
+    CanonicalizeHead { height: u64, digest: Digest },
     /// Requests the agent to forward a block to the execution layer.
     ///
     /// This variant is used for both ExecutorMailbox::forward_block and
@@ -538,7 +557,7 @@ enum Command {
     /// sent, i.e. a block tip of the finalized chain. This is the case when a
     /// finalized block is received from the commonware marshaller, which
     /// expects an acknowledgmenet of finalization.
-    ForwardFinalized {
+    Finalize {
         update: Box<Update<Block>>,
         response: oneshot::Sender<()>,
     },

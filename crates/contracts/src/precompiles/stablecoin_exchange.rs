@@ -92,6 +92,7 @@ sol! {
         error InsufficientLiquidity();
         error InsufficientOutput();
         error MaxInputExceeded();
+        error BelowMinimumOrderSize(uint128 amount);
     }
 }
 
@@ -154,5 +155,10 @@ impl StablecoinExchangeError {
     /// Creates an error for max input exceeded.
     pub const fn max_input_exceeded() -> Self {
         Self::MaxInputExceeded(IStablecoinExchange::MaxInputExceeded {})
+    }
+
+    /// Creates an error for order amount below minimum.
+    pub const fn below_minimum_order_size(amount: u128) -> Self {
+        Self::BelowMinimumOrderSize(IStablecoinExchange::BelowMinimumOrderSize { amount })
     }
 }

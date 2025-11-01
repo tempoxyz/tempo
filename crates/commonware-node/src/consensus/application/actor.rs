@@ -31,7 +31,7 @@ use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
-    future::{Either, always_ready, ready, try_join},
+    future::{Either, always_ready, try_join},
 };
 use rand::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
@@ -307,7 +307,7 @@ impl Inner<Init> {
             round,
         } = request;
 
-        let (mut proposal, grandparent_info) = select!(
+        let mut proposal = select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
@@ -403,7 +403,7 @@ impl Inner<Init> {
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize((proposal_height, proposal_digest), grandparent_info)
+            .canonicalize_head(proposal_height, proposal_digest)
         {
             warn!(
                 %error,
@@ -459,14 +459,14 @@ impl Inner<Init> {
         let _ = report_verification_result(response, &result);
 
         // 2. make the forkchoice state available && cache the block
-        if let Ok((block, grandparent_info, true)) = result {
+        if let Ok((block, true)) = result {
             // Only make the verified block canonical when not doing a
             // re-propose at the end of an epoch.
             if parent.1 != payload
                 && let Err(error) = self
                     .state
                     .executor_mailbox
-                    .canonicalize((block.height(), block.digest()), grandparent_info)
+                    .canonicalize_head(block.height(), block.digest())
             {
                 tracing::warn!(
                     %error,
@@ -483,7 +483,7 @@ impl Inner<Init> {
         parent_view: View,
         parent_digest: Digest,
         round: Round,
-    ) -> eyre::Result<(Block, (u64, Digest))> {
+    ) -> eyre::Result<Block> {
         let genesis_block = self.genesis_block.clone();
         let parent_request = if parent_digest == genesis_block.digest() {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
@@ -502,44 +502,24 @@ impl Inner<Init> {
 
         debug!(height = parent.height(), "retrieved parent block",);
 
-        let grandparent_digest = parent.parent_digest();
-        let grandparent_info = if parent.digest() == genesis_block.digest()
-            || grandparent_digest == genesis_block.digest()
-        {
-            Either::Left(ready(Some((0, genesis_block.digest()))))
-        } else {
-            Either::Right(self.marshal.get_info(&grandparent_digest))
-        }
-        .await
-        .ok_or_else(|| {
-            eyre!(
-                "could not find information on the grand parent, digest `{}`, \
-                height `{}`",
-                parent.parent_digest(),
-                parent.height(),
-            )
-        })?;
-
         // XXX: Re-propose the parent if the parent is the last height of the
         // epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
         if epoch::is_last_height_of_epoch(parent.height(), round.epoch(), self.epoch_length) {
             info!("last height of epoch reached; re-proposing parent");
-            return Ok((parent, grandparent_info));
+            return Ok(parent);
         }
 
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize((parent.height(), parent.digest()), grandparent_info)
+            .canonicalize_head(parent.height(), parent.digest())
         {
             tracing::warn!(
                 %error,
                 parent.height = parent.height(),
                 parent.digest = %parent.digest(),
-                grandparent.height = grandparent_info.0,
-                grandparent.digest = %grandparent_info.1,
-                "failed canonicalizing parent and grandparent",
+                "failed updating canonical head to parent",
             );
         }
 
@@ -595,10 +575,7 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
-        Ok((
-            Block::from_execution_block(payload.block().clone()),
-            grandparent_info,
-        ))
+        Ok(Block::from_execution_block(payload.block().clone()))
     }
 
     async fn verify<TContext: Pacer>(
@@ -607,7 +584,7 @@ impl Inner<Init> {
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         round: Round,
-    ) -> eyre::Result<(Block, (u64, Digest), bool)> {
+    ) -> eyre::Result<(Block, bool)> {
         let genesis_block = self.genesis_block.clone();
         let parent_request = if parent_digest == genesis_block.digest() {
             Either::Left(always_ready(|| Ok((*genesis_block).clone())))
@@ -629,24 +606,6 @@ impl Inner<Init> {
             .await
             .wrap_err("failed getting required blocks from syncer")?;
 
-        let grandparent_digest = parent.parent_digest();
-        let grandparent_info = if parent.digest() == genesis_block.digest()
-            || grandparent_digest == genesis_block.digest()
-        {
-            Either::Left(ready(Some((0, genesis_block.digest()))))
-        } else {
-            Either::Right(self.marshal.get_info(&grandparent_digest))
-        }
-        .await
-        .ok_or_else(|| {
-            eyre!(
-                "could not find information on the grand parent, digest `{}`, \
-                height `{}`",
-                parent.parent_digest(),
-                parent.height(),
-            )
-        })?;
-
         // Can only repropose at the end of an epoch.
         //
         // NOTE: fetching block and parent twice (in the case block == parent)
@@ -655,9 +614,9 @@ impl Inner<Init> {
         // general case.
         if payload == parent_digest {
             if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length) {
-                return Ok((block, grandparent_info, true));
+                return Ok((block, true));
             } else {
-                return Ok((block, grandparent_info, false));
+                return Ok((block, false));
             }
         }
 
@@ -680,7 +639,7 @@ impl Inner<Init> {
                         error = %eyre::Report::new(error),
                         "cannot decode extra data header field of boundary block as public ceremony outcome; failing block",
                     );
-                    return Ok((block, grandparent_info, false));
+                    return Ok((block, false));
                 }
                 Ok(block_outcome) => block_outcome,
             };
@@ -692,22 +651,20 @@ impl Inner<Init> {
                     block.public = ?block_outcome.public,
                     "our public dkg ceremont outcome does not match what's stored in the block; failing block",
                 );
-                return Ok((block, grandparent_info, false));
+                return Ok((block, false));
             }
         };
 
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize((parent.height(), parent.digest()), grandparent_info)
+            .canonicalize_head(parent.height(), parent.digest())
         {
             tracing::warn!(
                 %error,
                 parent.height = parent.height(),
                 parent.digest = %parent.digest(),
-                grandparent.height = grandparent_info.0,
-                grandparent.digest = %grandparent_info.1,
-                "failed canonicalizing parent and grandparent",
+                "failed updating canonical head to parent",
             );
         }
 
@@ -726,7 +683,7 @@ impl Inner<Init> {
         .await
         .wrap_err("failed verifying block against execution layer")?;
 
-        Ok((block, grandparent_info, is_good))
+        Ok((block, is_good))
     }
 }
 
@@ -879,10 +836,10 @@ fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
 #[instrument(skip_all, err)]
 fn report_verification_result(
     response: oneshot::Sender<bool>,
-    verification_result: &eyre::Result<(Block, (u64, Digest), bool)>,
+    verification_result: &eyre::Result<(Block, bool)>,
 ) -> eyre::Result<()> {
     match &verification_result {
-        Ok((_, _, is_good)) => {
+        Ok((_, is_good)) => {
             info!(
                 proposal_valid = is_good,
                 "returning proposal verification result to consensus",
