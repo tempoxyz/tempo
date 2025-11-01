@@ -23,7 +23,7 @@ use futures::{
     future::{FusedFuture, pending},
 };
 use reth_ethereum::cli::{Cli, Commands};
-use reth_node_builder::NodeHandle;
+use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
@@ -47,6 +47,9 @@ struct TempoArgs {
     /// Start the node without consensus
     #[arg(long)]
     pub no_consensus: bool,
+    /// Follow a remote node
+    #[arg(long, requires = "no_consensus")]
+    pub follow: bool,
 
     #[clap(long, value_name = "FILE", required_unless_present_any = ["no_consensus", "dev"])]
     pub consensus_config: Option<camino::Utf8PathBuf>,
@@ -188,6 +191,12 @@ fn main() -> eyre::Result<()> {
                 no_consensus: args.no_consensus,
                 faucet_args: args.faucet_args.clone(),
             }))
+            .apply(|mut builder: WithLaunchContext<_>| {
+                if args.follow {
+                    let url = &builder.config_mut().debug.rpc_consensus_url;
+                }
+                builder
+            })
             .extend_rpc_modules(move |ctx| {
                 if faucet_args.enabled {
                     let txpool = ctx.pool().clone();
