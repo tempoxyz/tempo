@@ -85,6 +85,8 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     /// Returns a vector of system transactions that must be executed at the end of each block:
     /// 1. Fee manager executeBlock - processes collected fees
     /// 2. Stablecoin exchange executeBlock - commits pending orders
+    /// 3. TIP20 rewards registry finalizeStreams - finalizes TIP20 rewards streams
+    /// 4. Subblocks signatures - includes subblock signatures for the block
     fn build_seal_block_txs(
         &self,
         block_env: &BlockEnv,

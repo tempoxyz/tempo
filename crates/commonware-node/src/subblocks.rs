@@ -463,6 +463,9 @@ fn evm_at_block(
     Ok(node.evm_config.evm_for_block(db, &header)?)
 }
 
+/// Builds a subblock from candidate transactions we've collected so far.
+///
+/// This will include as many valid transactions as possible within the given timeout.
 async fn build_subblock(
     transactions: Arc<Mutex<HashMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
     node: TempoFullNode,
@@ -529,6 +532,13 @@ async fn build_subblock(
     )
 }
 
+/// Validates a subblock and reports it to the subblocks service.
+///
+/// Validation checks include:
+/// 1. Signature verification
+/// 2. Ensuring that sender is a validator for the block's epoch
+/// 3. Ensuring that all transactions have corresponding nonce key set.
+/// 4. Ensuring that all transactions are valid.
 async fn validate_subblock(
     sender: PublicKey,
     node: TempoFullNode,
