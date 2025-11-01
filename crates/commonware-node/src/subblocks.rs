@@ -32,9 +32,7 @@ use parking_lot::Mutex;
 use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
 use reth_primitives_traits::Recovered;
-use reth_provider::{
-    BlockReader, HeaderProvider, ProviderError, StateProviderBox, StateProviderFactory,
-};
+use reth_provider::{HeaderProvider, ProviderError, StateProviderBox, StateProviderFactory};
 use reth_revm::database::StateProviderDatabase;
 use std::{
     sync::{Arc, mpsc::RecvError},
@@ -457,12 +455,12 @@ fn evm_at_block(
             node.provider.state_by_block_hash(hash)?,
         ))
         .build();
-    let block = node
+    let header = node
         .provider
-        .sealed_block_with_senders(hash.into(), Default::default())?
+        .header(hash)?
         .ok_or(ProviderError::BestBlockNotFound)?;
 
-    Ok(node.evm_config.evm_for_block(db, block.sealed_block())?)
+    Ok(node.evm_config.evm_for_block(db, &header)?)
 }
 
 async fn build_subblock(
