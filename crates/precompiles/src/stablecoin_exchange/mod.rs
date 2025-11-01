@@ -29,15 +29,8 @@ use crate::{
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 
-/// Minimum order size in token units (10 units of the token)
-pub const MIN_ORDER_UNITS: u128 = 10;
-
-/// Calculate minimum order amount based on token decimals
-/// Returns MIN_ORDER_UNITS scaled by the token's decimals
-/// For example: 6 decimals -> 10_000_000, 18 decimals -> 10_000_000_000_000_000_000
-pub fn calculate_min_order_amount(decimals: u8) -> u128 {
-    MIN_ORDER_UNITS * 10u128.pow(decimals as u32)
-}
+/// Minimum order size of $100 USD
+pub const MIN_ORDER_AMOUNT: u128 = 100_000_000;
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
@@ -459,10 +452,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         is_bid: bool,
         tick: i16,
     ) -> Result<u128, TempoPrecompileError> {
-        // Lookup quote token and decimals from TIP20 token
-        let mut token_contract = TIP20Token::from_address(token, self.storage);
-        let quote_token = token_contract.quote_token()?;
-        let decimals = token_contract.decimals()?;
+        let quote_token = TIP20Token::from_address(token, self.storage).quote_token()?;
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -477,8 +467,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Validate order amount meets minimum requirement
-        let min_order_amount = calculate_min_order_amount(decimals);
-        if amount < min_order_amount {
+        if amount < MIN_ORDER_AMOUNT {
             return Err(StablecoinExchangeError::below_minimum_order_size(amount).into());
         }
 
@@ -540,10 +529,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         tick: i16,
         flip_tick: i16,
     ) -> Result<u128, TempoPrecompileError> {
-        // Lookup quote token and decimals from TIP20 token
-        let mut token_contract = TIP20Token::from_address(token, self.storage);
-        let quote_token = token_contract.quote_token()?;
-        let decimals = token_contract.decimals()?;
+        let quote_token = TIP20Token::from_address(token, self.storage).quote_token()?;
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -562,8 +548,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Validate order amount meets minimum requirement
-        let min_order_amount = calculate_min_order_amount(decimals);
-        if amount < min_order_amount {
+        if amount < MIN_ORDER_AMOUNT {
             return Err(StablecoinExchangeError::below_minimum_order_size(amount).into());
         }
 
@@ -1582,7 +1567,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
 
         let price = orderbook::tick_to_price(tick);
@@ -1613,7 +1598,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let below_minimum = min_order_amount - 1;
         let tick = 100i16;
 
@@ -1651,7 +1636,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
 
         let price = orderbook::tick_to_price(tick);
@@ -1724,7 +1709,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let tick = 50i16; // Use positive tick to avoid conversion issues
 
         // Setup tokens with enough base token balance for the order
@@ -1791,7 +1776,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let below_minimum = min_order_amount - 1;
         let tick = 100i16;
         let flip_tick = 200i16;
@@ -1830,7 +1815,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
         let flip_tick = 200i16; // Must be > tick for bid flip orders
 
@@ -1903,7 +1888,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
 
         // Calculate escrow amount needed for bid
@@ -1968,7 +1953,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
 
         // Calculate escrow amount needed for both orders
@@ -2064,7 +2049,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
         let price = orderbook::tick_to_price(tick);
         let expected_escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
@@ -2124,7 +2109,7 @@ mod tests {
         let alice = Address::random();
         let admin = Address::random();
 
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let (_base_token, quote_token) = setup_test_tokens(
             exchange.storage,
             admin,
@@ -2155,7 +2140,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_out = 500_000u128;
         let tick = 1;
 
@@ -2196,7 +2181,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_in = 500_000u128;
         let tick = 1;
 
@@ -2238,7 +2223,7 @@ mod tests {
 
         let alice = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_out = 500_000u128;
         let tick = 0;
 
@@ -2283,7 +2268,7 @@ mod tests {
         let alice = Address::random();
         let bob = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_out = 500_000u128;
         let tick = 1;
 
@@ -2337,7 +2322,7 @@ mod tests {
         let alice = Address::random();
         let bob = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_in = 500_000u128;
         let tick = 1;
 
@@ -2391,7 +2376,7 @@ mod tests {
         let alice = Address::random();
         let bob = Address::random();
         let admin = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let amount = min_order_amount;
         let tick = 100i16;
         let flip_tick = 200i16;
@@ -2454,7 +2439,7 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         // Setup tokens
         let (base_token, quote_token) = setup_test_tokens(
             exchange.storage,
@@ -2492,7 +2477,7 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         // Setup tokens
         let (base_token, _) = setup_test_tokens(
             exchange.storage,
@@ -2591,7 +2576,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
 
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         let (token, _) = setup_test_tokens(
             exchange.storage,
             admin,
@@ -2620,7 +2605,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
 
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         // Setup: LinkingUSD <- Token (direct pair)
         let (token, linking_usd) = setup_test_tokens(
             exchange.storage,
@@ -2660,7 +2645,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
 
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         // Setup: LinkingUSD <- Token
         let (token, linking_usd) = setup_test_tokens(
             exchange.storage,
@@ -2765,7 +2750,7 @@ mod tests {
 
         let admin = Address::random();
         let alice = Address::random();
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
 
         // Setup: LinkingUSD <- USDC
         //        LinkingUSD <- EURC
@@ -2926,7 +2911,7 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         // Setup: LinkingUSD <- USDC
         //        LinkingUSD <- EURC
         let linking_usd_addr = {
@@ -3066,7 +3051,7 @@ mod tests {
         let alice = Address::random();
         let bob = Address::random();
 
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         // Setup: LinkingUSD <- USDC <- EURC
         let linking_usd_addr = {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
@@ -3268,7 +3253,7 @@ mod tests {
         let alice = Address::random();
         let bob = Address::random();
 
-        let min_order_amount = calculate_min_order_amount(6);
+        let min_order_amount = MIN_ORDER_AMOUNT;
         // Setup: LinkingUSD <- USDC <- EURC
         let linking_usd_addr = {
             let mut linking_usd = LinkingUSD::new(exchange.storage);

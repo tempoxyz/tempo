@@ -10,7 +10,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS,
-    stablecoin_exchange::{MAX_TICK, MIN_TICK, calculate_min_order_amount},
+    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
     tip20::token_id_to_address,
 };
 
@@ -687,7 +687,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     );
 
     // Try to place a bid order below dust limit (should fail)
-    let min_order_amount = calculate_min_order_amount(6);
+    let min_order_amount = MIN_ORDER_AMOUNT;
     let below_dust_amount = min_order_amount - 1;
     let result = exchange
         .place(*base.address(), below_dust_amount, true, 0)
@@ -785,7 +785,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     );
 
     // Try to place a flip bid order below dust limit (should fail)
-    let min_order_amount = calculate_min_order_amount(6);
+    let min_order_amount = MIN_ORDER_AMOUNT;
     let below_dust_amount = min_order_amount - 1;
     let result = exchange
         .placeFlip(*base.address(), below_dust_amount, true, 0, 10)
