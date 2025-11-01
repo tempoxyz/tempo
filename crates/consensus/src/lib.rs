@@ -29,7 +29,7 @@ const TEMPO_SYSTEM_TX_ADDRESSES: [Address; TEMPO_SYSTEM_TX_COUNT] = [
     TIP_FEE_MANAGER_ADDRESS,
     STABLECOIN_EXCHANGE_ADDRESS,
     TIP20_REWARDS_REGISTRY_ADDRESS,
-    Address::ZERO
+    Address::ZERO,
 ];
 
 /// Tempo consensus implementation.
