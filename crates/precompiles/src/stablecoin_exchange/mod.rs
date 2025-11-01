@@ -29,8 +29,8 @@ use crate::{
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 
-/// Minimum order size of $100 USD
-pub const MIN_ORDER_AMOUNT: u128 = 100_000_000;
+/// Minimum order size of $10 USD
+pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
