@@ -440,12 +440,7 @@ where
             cumulative_gas_used += gas_used;
         }
 
-        let subblocks = attributes
-            .subblocks()
-            .lock()
-            .ok()
-            .map(|g| g.clone())
-            .unwrap_or_default();
+        let subblocks = attributes.subblocks();
 
         // check if we have a better block or received more subblocks
         if !is_better_payload(best_payload.as_ref(), total_fees)

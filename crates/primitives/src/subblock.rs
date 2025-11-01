@@ -15,6 +15,7 @@ wrap_fixed_bytes! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum SubBlockVersion {
     /// Subblock version 1.
     V1 = 1,
@@ -55,7 +56,8 @@ impl Decodable for SubBlockVersion {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct SubBlock {
     /// Version of the subblock.
     pub version: SubBlockVersion,
@@ -71,9 +73,9 @@ pub struct SubBlock {
 impl SubBlock {
     /// Returns the hash for the signature.
     pub fn signature_hash(&self) -> B256 {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(self.length() + 1);
         buf.put_u8(SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE);
-        self.rlp_encode_fields(&mut buf);
+        self.encode(&mut buf);
         keccak256(&buf)
     }
 
@@ -116,7 +118,9 @@ impl Encodable for SubBlock {
 }
 
 /// A subblock with a signature.
-#[derive(Debug, Clone, derive_more::Deref, derive_more::DerefMut)]
+#[derive(Debug, Clone, derive_more::Deref, derive_more::DerefMut, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct SignedSubBlock {
     /// The subblock.
     #[deref]
@@ -196,7 +200,7 @@ impl Decodable for SignedSubBlock {
 }
 
 /// A subblock with recovered senders.
-#[derive(Debug, Clone, RlpEncodable, RlpDecodable, derive_more::Deref, derive_more::DerefMut)]
+#[derive(Debug, Clone, derive_more::Deref, derive_more::DerefMut)]
 pub struct RecoveredSubBlock {
     /// Inner subblock.
     #[deref]

@@ -1,8 +1,3 @@
-use std::{
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
-
 use crate::{
     consensus::Digest,
     epoch::{self, SchemeProvider},
@@ -16,10 +11,13 @@ use commonware_consensus::{
     marshal::SchemeProvider as _,
     simplex::{
         select_leader,
-        signing_scheme::{Scheme as _, bls12381_threshold::Scheme},
+        signing_scheme::{
+            Scheme as _,
+            bls12381_threshold::{self, Scheme},
+        },
         types::Activity,
     },
-    types::{Epoch, Round},
+    types::Round,
 };
 use commonware_cryptography::{
     Signer, Verifier,
@@ -28,62 +26,67 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{Receiver, Recipients, Sender};
 use commonware_runtime::{Handle, Spawner};
+use eyre::OptionExt;
 use futures::future::OptionFuture;
+use parking_lot::Mutex;
 use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
-use reth_primitives_traits::SignedTransaction;
+use reth_primitives_traits::Recovered;
 use reth_provider::{
     BlockReader, HeaderProvider, ProviderError, StateProviderBox, StateProviderFactory,
 };
 use reth_revm::database::StateProviderDatabase;
+use std::{
+    sync::{Arc, mpsc::RecvError},
+    time::{Duration, Instant},
+};
 use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::TempoEvm};
 use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tracing::{debug, instrument, warn};
 
-/// Actions processed by the subblocks service.
-#[derive(Debug)]
-enum Message {
-    /// Returns all subblocks collected so far.
-    ///
-    /// This will return nothing if parent hash does not match the current chain view
-    /// of the service or if no subblocks have been collected yet.
-    GetSubBlocks {
-        /// Parent block to return subblocks for.
-        parent: BlockHash,
-        /// Response channel.
-        response: oneshot::Sender<Vec<RecoveredSubBlock>>,
-    },
-
-    /// Sends a new transaction to the subblocks service.
-    AddTransaction(Box<TempoTxEnvelope>),
-
-    /// Reports a new consensus event.
-    Consensus(Box<Activity<Scheme<PublicKey, MinSig>, Digest>>),
-}
-
 /// Task managing collected subblocks.
+///
+/// This actor is responsible for tracking consensus events and determining
+/// current tip of the chain and next block's proposer.
+///
+/// Once next block proposer is known, we immediately start building a new subblock.
+/// Once it's built, we broadcast it to the next proposer directly.
+///
+/// Upon receiving a subblock from the network, we ensure that we are
+/// the proposer and verify the block on top of latest state.
 pub struct Actor<Ctx> {
+    /// Sender of messages to the service.
+    actions_tx: mpsc::UnboundedSender<Message>,
+    /// Receiver of events to the service.
     actions_rx: mpsc::UnboundedReceiver<Message>,
-    scheme_provider: SchemeProvider,
-    subblock_builder_handle: Option<Handle<RecoveredSubBlock>>,
-    validated_subblocks_tx: mpsc::UnboundedSender<RecoveredSubBlock>,
-    validated_subblocks_rx: mpsc::UnboundedReceiver<RecoveredSubBlock>,
+    /// Handle to a task building a new subblock.
+    subblock_builder_handle: Option<BuildSubblockTask>,
 
+    /// Scheme provider to track participants of each epoch.
+    scheme_provider: SchemeProvider,
+    /// Commonware runtime context.
     context: Ctx,
+    /// ed25519 private key used for consensus.
     signer: PrivateKey,
+    /// Execution layer node.
     node: TempoFullNode,
+    /// Fee recipient address to set for subblocks.
     fee_recipient: Address,
+    /// Timeout for building a subblock.
     time_to_build_subblock: Duration,
+    /// Length of an epoch in blocks.
     epoch_length: u64,
 
-    next_proposer: Option<PublicKey>,
-    next_parent_hash: Option<BlockHash>,
-    next_block_epoch: Option<Epoch>,
+    /// Current consensus tip. Includes highest observed round, digest and certificate.
+    consensus_tip: Option<(Round, BlockHash, bls12381_threshold::Signature<MinSig>)>,
+
+    /// Collected subblocks keyed by validator public key.
     subblocks: HashMap<B256, RecoveredSubBlock>,
-    subblock_transactions: Arc<Mutex<HashMap<TxHash, Arc<TempoTxEnvelope>>>>,
+    /// Subblock candidate transactions.
+    subblock_transactions: Arc<Mutex<HashMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
 }
 
 impl<Ctx: Spawner> Actor<Ctx> {
@@ -95,14 +98,12 @@ impl<Ctx: Spawner> Actor<Ctx> {
         fee_recipient: Address,
         time_to_build_subblock: Duration,
         epoch_length: u64,
-    ) -> (Self, Mailbox) {
+    ) -> Self {
         let (actions_tx, actions_rx) = mpsc::unbounded_channel();
-        let (validated_subblocks_tx, validated_subblocks_rx) = mpsc::unbounded_channel();
-        let this = Self {
+        Self {
             subblock_builder_handle: None,
-            validated_subblocks_rx,
-            validated_subblocks_tx,
             scheme_provider,
+            actions_tx,
             actions_rx,
             context,
             signer,
@@ -110,14 +111,17 @@ impl<Ctx: Spawner> Actor<Ctx> {
             fee_recipient,
             time_to_build_subblock,
             epoch_length,
-            next_proposer: None,
-            next_parent_hash: None,
-            next_block_epoch: None,
+            consensus_tip: None,
             subblocks: Default::default(),
             subblock_transactions: Default::default(),
-        };
+        }
+    }
 
-        (this, Mailbox { tx: actions_tx })
+    /// Returns a handle to the subblocks service.
+    pub fn mailbox(&self) -> Mailbox {
+        Mailbox {
+            tx: self.actions_tx.clone(),
+        }
     }
 
     pub async fn run(
@@ -139,24 +143,25 @@ impl<Ctx: Spawner> Actor<Ctx> {
                 Ok((sender, message)) = network_rx.recv() => {
                     self.on_network_message(sender, message);
                 }
-                // Handle validated subblocks.
-                Some(subblock) = self.validated_subblocks_rx.recv() => {
-                    self.on_validated_subblock(subblock);
-                }
                 // Handle built subblocks.
-                Some(subblock) = OptionFuture::from(self.subblock_builder_handle.as_mut()) => {
-                    self.subblock_builder_handle = None;
-                    self.on_built_subblock(subblock, &mut network_tx).await;
+                Some(subblock) = OptionFuture::from(self.subblock_builder_handle.as_mut().map(|t| &mut t.handle)) => {
+                    let task = self.subblock_builder_handle.take().unwrap();
+                    self.on_built_subblock(subblock, task.proposer, &mut network_tx).await;
                 }
             }
         }
+    }
+
+    /// Returns the current consensus tip.
+    fn tip(&self) -> Option<BlockHash> {
+        self.consensus_tip.as_ref().map(|(_, tip, _)| *tip)
     }
 
     fn on_new_message(&mut self, action: Message) {
         match action {
             Message::GetSubBlocks { parent, response } => {
                 // This should never happen, but just in case.
-                if self.next_parent_hash != Some(parent) {
+                if self.tip() != Some(parent) {
                     let _ = response.send(Vec::new());
                     return;
                 }
@@ -171,81 +176,103 @@ impl<Ctx: Spawner> Actor<Ctx> {
                 {
                     return;
                 }
-                let Ok(mut transactions) = self.subblock_transactions.lock() else {
-                    return;
-                };
-                transactions.insert(*transaction.tx_hash(), Arc::new(*transaction));
+                self.subblock_transactions
+                    .lock()
+                    .insert(*transaction.tx_hash(), Arc::new(*transaction));
             }
-            Message::Consensus(activity) => {
-                self.on_consensus_event(*activity);
-            }
+            Message::Consensus(activity) => self.on_consensus_event(*activity),
+            Message::ValidatedSubblock(subblock) => self.on_validated_subblock(subblock),
         }
     }
 
+    /// Tracking of the current sconsensus state by listening to notarizations and nullifications.
     #[instrument(skip_all, fields(event.epoch = event.epoch(), event.view = event.view()))]
     fn on_consensus_event(&mut self, event: Activity<Scheme<PublicKey, MinSig>, Digest>) {
-        let (tip, round, certificate) = match event {
-            Activity::Notarization(n) => (n.proposal.payload.0, n.proposal.round, n.certificate),
+        match event {
+            Activity::Notarization(n) => {
+                if let Some((round, tip, cert)) = &mut self.consensus_tip
+                    && *round < n.proposal.round
+                {
+                    if *tip != n.proposal.payload.0 {
+                        // Clear collected subblocks if we have a new tip.
+                        self.subblocks.clear();
+                    }
+                    *round = n.proposal.round;
+                    *tip = n.proposal.payload.0;
+                    *cert = n.certificate;
+                } else {
+                    self.consensus_tip =
+                        Some((n.proposal.round, n.proposal.payload.0, n.certificate));
+                }
+            }
             Activity::Nullification(n) => {
-                // If we haven't seen any notarizations yet, we can't derive much context from a nullification.
-                let Some(tip) = self.next_parent_hash else {
-                    return;
-                };
-                (tip, n.round, n.certificate)
+                // On new nullification, update round and certificate.
+                if let Some((round, _, cert)) = &mut self.consensus_tip
+                    && *round < n.round
+                {
+                    *round = n.round;
+                    *cert = n.certificate;
+                }
             }
             _ => return,
         };
 
-        let (next_block_round, seed) = if let Ok(Some(header)) = self.node.provider.header(tip)
-            && epoch::is_last_height(header.number(), self.epoch_length)
-        {
-            // If next block is the first block of the next epoch, next round will be first view of the new epoch.
-            // For the first view of the new epoch, there is no seed yet.
-            (Round::new(round.epoch() + 1, 1), None)
-        } else {
-            let Some(scheme) = self.scheme_provider.scheme(round.epoch()) else {
-                return;
-            };
-
-            // If next block will be in the same epoch, use notarization/nullification certificate to get the seed.
-            (
-                Round::new(round.epoch(), round.view() + 1),
-                scheme.seed(round, &certificate),
-            )
+        let Some((round, tip, certificate)) = self.consensus_tip.clone() else {
+            return;
         };
 
-        let Some(scheme) = self.scheme_provider.scheme(next_block_round.epoch()) else {
+        let Ok(Some(header)) = self.node.provider.header(tip) else {
             return;
+        };
+
+        let next_epoch = if epoch::is_last_height(header.number(), self.epoch_length) {
+            epoch::of_height(header.number(), self.epoch_length).unwrap() + 1
+        } else {
+            round.epoch()
+        };
+
+        // Can't proceed without knowing a validator set for the current epoch.
+        let Some(scheme) = self.scheme_provider.scheme(next_epoch) else {
+            return;
+        };
+
+        let next_round = if round.epoch() == next_epoch {
+            Round::new(round.epoch(), round.view() + 1)
+        } else {
+            Round::new(next_epoch, 1)
+        };
+
+        let seed = if next_round.view() == 1 {
+            // First view does not have a seed.
+            None
+        } else {
+            scheme.seed(round, &certificate)
         };
 
         let (next_proposer, _) = select_leader::<Scheme<PublicKey, MinSig>, _>(
             scheme.participants().as_ref(),
-            next_block_round,
+            next_round,
             seed,
         );
 
-        // Record next proposer.
-        self.next_proposer = Some(next_proposer);
-
-        // Record next block epoch.
-        self.next_block_epoch = Some(next_block_round.epoch());
-
-        // If we don't have a new tip, we can keep subblocks state as is.
-        if self.next_parent_hash == Some(tip) {
-            return;
+        // Spawn new subblock building task if the current one is assuming different proposer or parent hash.
+        if self
+            .subblock_builder_handle
+            .as_ref()
+            .is_none_or(|task| task.proposer != next_proposer || task.parent_hash != tip)
+        {
+            self.build_new_subblock(tip, next_proposer, scheme);
         }
+    }
 
-        self.next_parent_hash = Some(tip);
-
-        // Clear subblocks collected so far.
-        self.subblocks.clear();
-
-        // Start new subblock building task.
+    fn build_new_subblock(
+        &mut self,
+        parent_hash: BlockHash,
+        next_proposer: PublicKey,
+        scheme: Arc<Scheme<PublicKey, MinSig>>,
+    ) {
         let transactions = self.subblock_transactions.clone();
         let node = self.node.clone();
-        let Some(parent_hash) = self.next_parent_hash else {
-            return;
-        };
         let num_validators = scheme.participants().len();
         let signer = self.signer.clone();
         let fee_recipient = self.fee_recipient;
@@ -262,7 +289,11 @@ impl<Ctx: Spawner> Actor<Ctx> {
             )
         });
 
-        self.subblock_builder_handle = Some(handle);
+        self.subblock_builder_handle = Some(BuildSubblockTask {
+            handle,
+            parent_hash,
+            proposer: next_proposer,
+        });
     }
 
     #[instrument(skip_all, fields(sender = %sender))]
@@ -271,36 +302,20 @@ impl<Ctx: Spawner> Actor<Ctx> {
             return;
         };
 
-        let Some(next_parent_hash) = self.next_parent_hash else {
+        let Some(tip) = self.tip() else {
             return;
         };
-
-        let Some(next_block_epoch) = self.next_block_epoch else {
-            return;
-        };
-
-        let Some(scheme) = self.scheme_provider.scheme(next_block_epoch) else {
-            return;
-        };
-
-        // Ensure that sender is actually a validator.
-        if !scheme.participants().iter().any(|p| p == &sender) {
-            return;
-        }
 
         // Skip subblocks that are not built on top of the tip.
-        if next_parent_hash != subblock.parent_hash {
-            return;
-        }
-
-        // Skip subblocks if we are not proposing
-        if self.next_proposer != Some(self.signer.public_key()) {
+        if subblock.parent_hash != tip {
             return;
         }
 
         // Spawn task to validate the subblock.
         let node = self.node.clone();
-        let validated_subblocks_tx = self.validated_subblocks_tx.clone();
+        let validated_subblocks_tx = self.actions_tx.clone();
+        let scheme_provider = self.scheme_provider.clone();
+        let epoch_length = self.epoch_length;
         self.context
             .clone()
             .shared(true)
@@ -309,8 +324,9 @@ impl<Ctx: Spawner> Actor<Ctx> {
                     sender.clone(),
                     node,
                     subblock,
-                    next_parent_hash,
                     validated_subblocks_tx,
+                    scheme_provider,
+                    epoch_length,
                 )
                 .await
                 {
@@ -326,7 +342,7 @@ impl<Ctx: Spawner> Actor<Ctx> {
     #[instrument(skip_all, fields(subblock.validator = %subblock.validator(), subblock.parent_hash = %subblock.parent_hash))]
     fn on_validated_subblock(&mut self, subblock: RecoveredSubBlock) {
         // SKip subblock if we are already past its parent
-        if Some(subblock.parent_hash) != self.next_parent_hash {
+        if Some(subblock.parent_hash) != self.tip() {
             return;
         }
 
@@ -339,15 +355,9 @@ impl<Ctx: Spawner> Actor<Ctx> {
     async fn on_built_subblock(
         &mut self,
         subblock: Result<RecoveredSubBlock, commonware_runtime::Error>,
+        next_proposer: PublicKey,
         network_tx: &mut impl Sender<PublicKey = PublicKey>,
     ) {
-        let Some(next_parent_hash) = self.next_parent_hash else {
-            return;
-        };
-        let Some(next_proposer) = &self.next_proposer else {
-            return;
-        };
-
         let subblock = match subblock {
             Ok(subblock) => subblock,
             Err(err) => {
@@ -356,7 +366,7 @@ impl<Ctx: Spawner> Actor<Ctx> {
             }
         };
 
-        if subblock.parent_hash != next_parent_hash {
+        if Some(subblock.parent_hash) != self.tip() {
             return;
         }
 
@@ -365,10 +375,10 @@ impl<Ctx: Spawner> Actor<Ctx> {
             ?next_proposer,
             "sending subblock to the next proposer"
         );
-        if next_proposer != &self.signer.public_key() {
+        if next_proposer != self.signer.public_key() {
             let _ = network_tx
                 .send(
-                    Recipients::One(next_proposer.clone()),
+                    Recipients::One(next_proposer),
                     alloy_rlp::encode(&*subblock).into(),
                     true,
                 )
@@ -379,6 +389,36 @@ impl<Ctx: Spawner> Actor<Ctx> {
     }
 }
 
+/// Actions processed by the subblocks service.
+#[derive(Debug)]
+enum Message {
+    /// Returns all subblocks collected so far.
+    ///
+    /// This will return nothing if parent hash does not match the current chain view
+    /// of the service or if no subblocks have been collected yet.
+    GetSubBlocks {
+        /// Parent block to return subblocks for.
+        parent: BlockHash,
+        /// Response channel.
+        response: std::sync::mpsc::SyncSender<Vec<RecoveredSubBlock>>,
+    },
+
+    /// Sends a new transaction to the subblocks service.
+    AddTransaction(Box<Recovered<TempoTxEnvelope>>),
+
+    /// Reports a new consensus event.
+    Consensus(Box<Activity<Scheme<PublicKey, MinSig>, Digest>>),
+
+    /// Reports a new validated subblock.
+    ValidatedSubblock(RecoveredSubBlock),
+}
+
+struct BuildSubblockTask {
+    handle: Handle<RecoveredSubBlock>,
+    parent_hash: BlockHash,
+    proposer: PublicKey,
+}
+
 /// Handle to the spawned subblocks service.
 #[derive(Clone)]
 pub struct Mailbox {
@@ -386,16 +426,16 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
-    pub fn get_subblocks(&self, parent: BlockHash) -> oneshot::Receiver<Vec<RecoveredSubBlock>> {
-        let (tx, rx) = oneshot::channel();
+    pub fn get_subblocks(&self, parent: BlockHash) -> Result<Vec<RecoveredSubBlock>, RecvError> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let _ = self.tx.send(Message::GetSubBlocks {
             parent,
             response: tx,
         });
-        rx
+        rx.recv()
     }
 
-    pub fn add_transaction(&self, tx: TempoTxEnvelope) {
+    pub fn add_transaction(&self, tx: Recovered<TempoTxEnvelope>) {
         let _ = self.tx.send(Message::AddTransaction(tx.into()));
     }
 }
@@ -426,7 +466,7 @@ fn evm_at_block(
 }
 
 async fn build_subblock(
-    transactions: Arc<Mutex<HashMap<TxHash, Arc<TempoTxEnvelope>>>>,
+    transactions: Arc<Mutex<HashMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
     node: TempoFullNode,
     parent_hash: BlockHash,
     num_validators: usize,
@@ -443,22 +483,19 @@ async fn build_subblock(
             let mut gas_left =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
 
-            let txs = transactions.lock().unwrap().clone();
+            let txs = transactions.lock().clone();
             for (tx_hash, tx) in txs {
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
-                let Ok(sender) = tx.try_recover() else {
-                    continue;
-                };
-                if evm.transact_commit(tx.with_signer_ref(sender)).is_err() {
+                if evm.transact_commit(&*tx).is_err() {
                     // Remove invalid transactions from the set.
-                    transactions.lock().unwrap().remove(&tx_hash);
+                    transactions.lock().remove(&tx_hash);
                     continue;
                 }
                 gas_left -= tx.gas_limit();
-                selected_transactions.push(Arc::unwrap_or_clone(tx));
-                senders.push(sender);
+                selected_transactions.push(tx.inner().clone());
+                senders.push(tx.signer());
 
                 if start.elapsed() > timeout {
                     break;
@@ -498,8 +535,9 @@ async fn validate_subblock(
     sender: PublicKey,
     node: TempoFullNode,
     subblock: SignedSubBlock,
-    parent_hash: BlockHash,
-    validated_subblocks_tx: mpsc::UnboundedSender<RecoveredSubBlock>,
+    actions_tx: mpsc::UnboundedSender<Message>,
+    scheme_provider: SchemeProvider,
+    epoch_length: u64,
 ) -> eyre::Result<()> {
     let Ok(signature) = Signature::decode(&mut subblock.signature.as_ref()) else {
         return Err(eyre::eyre!("invalid signature"));
@@ -520,7 +558,18 @@ async fn validate_subblock(
 
     let subblock = subblock.try_into_recovered(B256::from_slice(&sender))?;
 
-    let mut evm = evm_at_block(&node, parent_hash)?;
+    let mut evm = evm_at_block(&node, subblock.parent_hash)?;
+
+    let epoch = epoch::of_height(evm.block().number.to::<u64>() + 1, epoch_length)
+        .ok_or_eyre("failed to compute epoch from block number")?;
+
+    let scheme = scheme_provider
+        .scheme(epoch)
+        .ok_or_eyre("scheme not found")?;
+
+    if !scheme.participants().iter().any(|p| p == &sender) {
+        return Err(eyre::eyre!("sender is not a validator"));
+    }
 
     for tx in subblock.transactions_recovered() {
         if let Err(err) = evm.transact_commit(tx) {
@@ -528,7 +577,7 @@ async fn validate_subblock(
         }
     }
 
-    let _ = validated_subblocks_tx.send(subblock);
+    let _ = actions_tx.send(Message::ValidatedSubblock(subblock));
 
     Ok(())
 }

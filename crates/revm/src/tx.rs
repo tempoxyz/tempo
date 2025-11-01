@@ -35,6 +35,9 @@ pub struct AATxEnv {
 
     /// Nonce key for 2D nonce system
     pub nonce_key: U256,
+
+    /// Whether the transaction is a subblock transaction.
+    pub subblock_transaction: bool,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -59,9 +62,6 @@ pub struct TempoTxEnv {
 
     /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
     pub aa_tx_env: Option<Box<AATxEnv>>,
-
-    /// Whether the transaction is a subblock transaction.
-    pub subblock_transaction: bool,
 }
 
 impl TempoTxEnv {
@@ -236,7 +236,6 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
                     .ok()
             }),
             aa_tx_env: None, // Non-AA transaction
-            subblock_transaction: false,
         }
     }
 }
@@ -315,8 +314,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 aa_calls: calls.clone(),
                 aa_authorization_list: aa_authorization_list.clone(),
                 nonce_key: *nonce_key,
+                subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
             })),
-            subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
         }
     }
 }
@@ -330,7 +329,6 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 is_system_tx: tx.is_system_tx(),
                 fee_payer: None,
                 aa_tx_env: None, // Non-AA transaction
-                subblock_transaction: false,
             },
             TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
@@ -366,27 +364,5 @@ impl FromTxWithEncoded<AASigned> for TempoTxEnv {
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
     fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
-    }
-}
-
-#[cfg(feature = "rpc")]
-impl reth_rpc_convert::transaction::TryIntoTxEnv<TempoTxEnv>
-    for alloy_rpc_types_eth::TransactionRequest
-{
-    type Err = reth_rpc_convert::transaction::EthTxEnvError;
-
-    fn try_into_tx_env<Spec>(
-        self,
-        cfg_env: &revm::context::CfgEnv<Spec>,
-        block_env: &revm::context::BlockEnv,
-    ) -> Result<TempoTxEnv, Self::Err> {
-        Ok(TempoTxEnv {
-            inner: self.try_into_tx_env(cfg_env, block_env)?,
-            fee_token: None,
-            is_system_tx: false,
-            fee_payer: None,
-            aa_tx_env: None, // RPC transactions are not AA transactions
-            subblock_transaction: false,
-        })
     }
 }

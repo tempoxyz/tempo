@@ -41,6 +41,7 @@ eyre.workspace = true
 futures.workspace = true
 governor.workspace = true
 indexmap.workspace = true
+parking_lot.workspace = true
 
 prometheus-client.workspace = true
 rand.workspace = true

@@ -248,7 +248,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                     ..Default::default()
                 })
             }),
-            subblock_transaction: false,
         })
     }
 }

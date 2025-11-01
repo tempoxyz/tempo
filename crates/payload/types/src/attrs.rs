@@ -5,7 +5,7 @@ use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
 use reth_node_api::PayloadBuilderAttributes;
 use std::{
     convert::Infallible,
-    sync::{Arc, Mutex, atomic, atomic::Ordering},
+    sync::{Arc, atomic, atomic::Ordering},
 };
 use tempo_primitives::RecoveredSubBlock;
 
@@ -30,12 +30,13 @@ impl InterruptHandle {
 /// Container type for all components required to build a payload.
 ///
 /// The `TempoPayloadBuilderAttributes` has an additional feature of interrupting payload.
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
     interrupt: InterruptHandle,
     timestamp_millis_part: u64,
-    subblocks: Arc<Mutex<Vec<RecoveredSubBlock>>>,
+    #[debug(skip)]
+    subblocks: Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static>,
 }
 
 impl TempoPayloadBuilderAttributes {
@@ -45,7 +46,7 @@ impl TempoPayloadBuilderAttributes {
         parent: B256,
         suggested_fee_recipient: Address,
         timestamp_millis: u64,
-        subblocks: Vec<RecoveredSubBlock>,
+        subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
     ) -> Self {
         let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
         Self {
@@ -60,7 +61,7 @@ impl TempoPayloadBuilderAttributes {
             },
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
-            subblocks: Arc::new(Mutex::new(subblocks)),
+            subblocks: Arc::new(subblocks),
         }
     }
 
@@ -81,8 +82,8 @@ impl TempoPayloadBuilderAttributes {
     }
 
     /// Returns the subblocks.
-    pub fn subblocks(&self) -> &Mutex<Vec<RecoveredSubBlock>> {
-        &self.subblocks
+    pub fn subblocks(&self) -> Vec<RecoveredSubBlock> {
+        (self.subblocks)()
     }
 }
 
@@ -95,7 +96,7 @@ impl From<EthPayloadBuilderAttributes> for TempoPayloadBuilderAttributes {
             inner,
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
-            subblocks: Default::default(),
+            subblocks: Arc::new(Vec::new),
         }
     }
 }
@@ -116,7 +117,7 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
             inner: EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
-            subblocks: Default::default(),
+            subblocks: Arc::new(Vec::new),
         })
     }
 

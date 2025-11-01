@@ -15,7 +15,7 @@ use reth_ethereum::{
     primitives::AlloyBlockHeader,
     provider::{CanonStateNotification, CanonStateSubscriptions},
 };
-use reth_node_core::primitives::transaction::TxHashRef;
+use reth_node_core::primitives::{SignerRecoverable, transaction::TxHashRef};
 use tempo_node::primitives::{
     TempoTxEnvelope, TxAA, subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX, transaction::Call,
 };
@@ -37,7 +37,7 @@ fn subblocks_are_included() {
                 jitter: Duration::from_millis(1),
                 success_rate: 1.0,
             },
-            epoch_length: 100,
+            epoch_length: 10,
         };
 
         // Setup and start all nodes.
@@ -106,7 +106,8 @@ fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
 
     let tx = TempoTxEnvelope::AA(tx.into_signed(signature.into()));
     let tx_hash = *tx.tx_hash();
-    node.subblocks.add_transaction(tx);
+    node.subblocks
+        .add_transaction(tx.try_into_recovered().unwrap());
 
     tx_hash
 }

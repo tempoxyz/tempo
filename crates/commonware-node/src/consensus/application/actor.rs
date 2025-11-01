@@ -555,7 +555,11 @@ impl Inner<Init> {
             parent.block_hash(),
             self.fee_recipient,
             context.current().epoch_millis(),
-            self.subblocks.get_subblocks(parent.block_hash()).await?,
+            move || {
+                self.subblocks
+                    .get_subblocks(parent.block_hash())
+                    .unwrap_or_default()
+            },
         );
 
         let interrupt_handle = attrs.interrupt_handle().clone();
@@ -569,33 +573,6 @@ impl Inner<Init> {
             .map_err(|_| eyre!("channel was closed before a response was returned"))
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
             .wrap_err("failed requesting new payload from the execution layer")?;
-
-        // Spawn a task to update the subblocks set for the payload builder.
-        //
-        // It is likely that the subblocks will be arriving as we are building the block,
-        // thus we rely on multiple iterations of payload building to happen, and build
-        // blocks with as many subblocks as possible.
-        {
-            let interrupt_handle = interrupt_handle.clone();
-            context.clone().spawn(move |context| async move {
-                loop {
-                    context.sleep(Duration::from_millis(100)).await;
-
-                    if interrupt_handle.is_interrupted() {
-                        break;
-                    }
-
-                    let Ok(new_subblocks) = self.subblocks.get_subblocks(parent.block_hash()).await
-                    else {
-                        continue;
-                    };
-                    let Ok(mut subblocks) = attrs.subblocks().lock() else {
-                        continue;
-                    };
-                    *subblocks = new_subblocks;
-                }
-            });
-        }
 
         debug!(
             timeout_ms = self.new_payload_wait_time.as_millis(),

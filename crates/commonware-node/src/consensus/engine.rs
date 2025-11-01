@@ -175,7 +175,7 @@ where
         )
         .await;
 
-        let (subblocks, subblocks_handle) = subblocks::Actor::new(
+        let subblocks = subblocks::Actor::new(
             self.context.clone(),
             self.signer.clone(),
             scheme_provider.clone(),
@@ -193,7 +193,7 @@ where
             marshal: marshal_mailbox.clone(),
             execution_node: self.execution_node,
             new_payload_wait_time: self.new_payload_wait_time,
-            subblocks: subblocks_handle.clone(),
+            subblocks: subblocks.mailbox(),
             epoch_length: self.epoch_length,
             scheme_provider: scheme_provider.clone(),
         })
@@ -209,7 +209,7 @@ where
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
-                subblocks: subblocks_handle.clone(),
+                subblocks: subblocks.mailbox(),
                 marshal: marshal_mailbox,
                 scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
@@ -255,7 +255,6 @@ where
             epoch_manager,
 
             subblocks,
-            subblocks_handle,
         })
     }
 }
@@ -301,7 +300,6 @@ where
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
 
     subblocks: subblocks::Actor<TContext>,
-    subblocks_handle: subblocks::Mailbox,
 }
 
 impl<TBlocker, TContext, TPeerManager> Engine<TBlocker, TContext, TPeerManager>
@@ -455,6 +453,6 @@ where
 
     /// Returns a handle to the subblocks service.
     pub fn subblocks_handle(&self) -> subblocks::Mailbox {
-        self.subblocks_handle.clone()
+        self.subblocks.mailbox()
     }
 }
