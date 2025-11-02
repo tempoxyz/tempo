@@ -11,6 +11,7 @@ use alloy::{
     primitives::{Address, Bytes, U256, keccak256},
     sol_types::SolValue,
 };
+use alloy_primitives::B256;
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
@@ -25,9 +26,12 @@ pub mod slots {
     // Mapping of (uint128 => []address) to indicate all tip20 tokens with reward streams
     // ending at the specified timestamp
     pub const STREAMS_ENDING_AT: U256 = uint!(1_U256);
+    // TODO: FIXME: remove
     // Mapping of (bytes32 => bool) to indicate if a rewards stream exists.
     // Mapping key is derived via keccak256(abi.encode(tip20_address, end_time))
     pub const STREAM_REGISTERED: U256 = uint!(2_U256);
+    // Mapping of (bytes32 => U256) mapping `streamKey` to `index` in `streamsEndingAt` array
+    pub const STREAM_INDEX: U256 = uint!(2_U256);
 }
 
 /// TIPRewardsRegistry precompile that tracks stream end times
@@ -92,19 +96,66 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         self.storage.sstore(self.address, slot, U256::from(true))
     }
 
+    fn get_stream_index(&mut self, stream_key: B256) -> Result<U256, TempoPrecompileError> {
+        let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
+        self.storage.sload(self.address, index_slot)
+    }
+
+    fn remove_stream_index(&mut self, stream_key: B256) -> Result<(), TempoPrecompileError> {
+        let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
+        self.storage.sstore(self.address, index_slot, U256::ZERO)
+    }
+
     /// Add a token to the registry for a given stream end time
     pub fn add_stream(
         &mut self,
         token: Address,
         end_time: u128,
     ) -> Result<(), TempoPrecompileError> {
-        // Check if already registered
-        if self.get_stream_registered(token, end_time)? {
-            return Ok(());
+        let stream_key = keccak256((token, end_time).abi_encode());
+
+        let array_slot = mapping_slot(end_time.to_be_bytes(), slots::STREAMS_ENDING_AT);
+        let index = self.storage.sload(self.address, array_slot)?;
+        let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
+        self.storage.sstore(self.address, index_slot, index)?;
+
+        self.push_stream_ending_at_timestamp(token, end_time)?;
+
+        Ok(())
+    }
+
+    /// Remove stream before it is finalized
+    pub fn remove_stream(
+        &mut self,
+        token: Address,
+        end_time: u128,
+    ) -> Result<(), TempoPrecompileError> {
+        let stream_key = keccak256((token, end_time).abi_encode());
+        let index = self.get_stream_index(stream_key)?;
+
+        let array_slot = mapping_slot(end_time.to_be_bytes(), slots::STREAMS_ENDING_AT);
+        let length = self.storage.sload(self.address, array_slot)?;
+        let last_index = length - U256::ONE;
+
+        if index != last_index {
+            let last_element_slot = array_slot + last_index;
+            let last_token = self
+                .storage
+                .sload(self.address, last_element_slot)?
+                .into_address();
+
+            let current_element_slot = array_slot + index;
+            self.storage
+                .sstore(self.address, current_element_slot, last_token.into_u256())?;
+
+            let last_stream_key = keccak256((last_token, end_time).abi_encode());
+            let last_index_slot = mapping_slot(last_stream_key, slots::STREAM_INDEX);
+            self.storage.sstore(self.address, last_index_slot, index)?;
         }
 
-        self.set_stream_registered(token, end_time)?;
-        self.push_stream_ending_at_timestamp(token, end_time)?;
+        // Update length of the array and remove the stream key from `streamIndex`
+        self.storage.sstore(self.address, array_slot, last_index)?;
+        self.remove_stream_index(stream_key)?;
 
         Ok(())
     }
