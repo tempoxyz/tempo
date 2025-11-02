@@ -8,10 +8,9 @@ use crate::{
     tip20::{TIP20Token, address_to_token_id_unchecked},
 };
 use alloy::{
-    primitives::{Address, Bytes, U256, keccak256},
+    primitives::{Address, B256, Bytes, U256, keccak256},
     sol_types::SolValue,
 };
-use alloy_primitives::B256;
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
@@ -26,10 +25,6 @@ pub mod slots {
     // Mapping of (uint128 => []address) to indicate all tip20 tokens with reward streams
     // ending at the specified timestamp
     pub const STREAMS_ENDING_AT: U256 = uint!(1_U256);
-    // TODO: FIXME: remove
-    // Mapping of (bytes32 => bool) to indicate if a rewards stream exists.
-    // Mapping key is derived via keccak256(abi.encode(tip20_address, end_time))
-    pub const STREAM_REGISTERED: U256 = uint!(2_U256);
     // Mapping of (bytes32 => U256) mapping `streamKey` to `index` in `streamsEndingAt` array
     pub const STREAM_INDEX: U256 = uint!(2_U256);
 }
@@ -74,26 +69,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             slots::LAST_UPDATED_TIMESTAMP,
             U256::from(timestamp),
         )
-    }
-
-    fn get_stream_registered(
-        &mut self,
-        token: Address,
-        end_time: u128,
-    ) -> Result<bool, TempoPrecompileError> {
-        let key = keccak256((token, end_time).abi_encode());
-        let slot = mapping_slot(key, slots::STREAM_REGISTERED);
-        Ok(self.storage.sload(self.address, slot)?.to::<bool>())
-    }
-
-    fn set_stream_registered(
-        &mut self,
-        token: Address,
-        end_time: u128,
-    ) -> Result<(), TempoPrecompileError> {
-        let key = keccak256((token, end_time).abi_encode());
-        let slot = mapping_slot(key, slots::STREAM_REGISTERED);
-        self.storage.sstore(self.address, slot, U256::from(true))
     }
 
     fn get_stream_index(&mut self, stream_key: B256) -> Result<U256, TempoPrecompileError> {
