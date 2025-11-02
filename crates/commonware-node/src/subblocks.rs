@@ -217,11 +217,11 @@ impl<Ctx: Spawner> Actor<Ctx> {
             _ => return,
         };
 
-        let Some((round, tip, certificate)) = self.consensus_tip.clone() else {
+        let Some((round, tip, certificate)) = &self.consensus_tip else {
             return;
         };
 
-        let Ok(Some(header)) = self.node.provider.header(tip) else {
+        let Ok(Some(header)) = self.node.provider.header(*tip) else {
             return;
         };
 
@@ -246,7 +246,7 @@ impl<Ctx: Spawner> Actor<Ctx> {
             // First view does not have a seed.
             None
         } else {
-            scheme.seed(round, &certificate)
+            scheme.seed(*round, certificate)
         };
 
         let (next_proposer, _) = select_leader::<Scheme<PublicKey, MinSig>, _>(
@@ -259,9 +259,9 @@ impl<Ctx: Spawner> Actor<Ctx> {
         if self
             .subblock_builder_handle
             .as_ref()
-            .is_none_or(|task| task.proposer != next_proposer || task.parent_hash != tip)
+            .is_none_or(|task| task.proposer != next_proposer || task.parent_hash != *tip)
         {
-            self.build_new_subblock(tip, next_proposer, scheme);
+            self.build_new_subblock(*tip, next_proposer, scheme);
         }
     }
 
@@ -413,9 +413,13 @@ enum Message {
     ValidatedSubblock(RecoveredSubBlock),
 }
 
+/// Task for building a subblock.
 struct BuildSubblockTask {
+    /// Handle to the spawned task.
     handle: Handle<RecoveredSubBlock>,
+    /// Parent hash subblock is being built on top of.
     parent_hash: BlockHash,
+    /// Proposer we are going to send the subblock to.
     proposer: PublicKey,
 }
 
