@@ -205,28 +205,33 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         }
 
         let current_timestamp = self.storage.timestamp().to::<u128>();
-        let mut last_updated_timestamp = self.get_last_updated_timestamp()?;
-        if last_updated_timestamp == 0 {
-            last_updated_timestamp = current_timestamp - 1;
-        }
+        let last_updated = self.get_last_updated_timestamp()?;
 
-        if current_timestamp == last_updated_timestamp {
+        if current_timestamp == last_updated {
             return Ok(());
         }
 
-        let mut next_timestamp = last_updated_timestamp + 1;
-        // Loop through all streams ending at current timestamp and finalize each token stream
+        let mut next_timestamp = last_updated + 1;
+
         while current_timestamp >= next_timestamp {
             let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
-            for addr in tokens {
-                let token_id = address_to_token_id_unchecked(addr);
-                let mut token = TIP20Token::new(token_id, self.storage);
-                token.finalize_streams(self.address, next_timestamp)?;
+
+            for token in tokens {
+                let token_id = address_to_token_id_unchecked(token);
+                let mut tip20_token = TIP20Token::new(token_id, self.storage);
+                tip20_token.finalize_streams(self.address, next_timestamp)?;
+
+                let stream_key = keccak256((token, next_timestamp).abi_encode());
+                self.remove_stream_index(stream_key)?;
             }
+
+            let array_slot = mapping_slot(next_timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
+            self.storage.sstore(self.address, array_slot, U256::ZERO)?;
+
             next_timestamp += 1;
         }
 
-        self.set_last_updated_timestamp(next_timestamp)?;
+        self.set_last_updated_timestamp(current_timestamp)?;
 
         Ok(())
     }
