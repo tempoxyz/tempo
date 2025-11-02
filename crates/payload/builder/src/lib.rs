@@ -442,7 +442,22 @@ where
             cumulative_gas_used += gas_used;
         }
 
-        let subblocks = attributes.subblocks();
+        let mut subblocks = attributes.subblocks();
+
+        // Edge case: remove subblocks with expired transactions
+        //
+        // We pre-validate all of the subblocks on top of parent state in subblocks service
+        // which leaves the only reason for transactions to get invalidated by expiry of
+        // `valid_before` field.
+        subblocks.retain(|subblock| {
+            !subblock.transactions.iter().any(|tx| {
+                tx.as_aa().is_some_and(|tx| {
+                    tx.tx()
+                        .valid_before
+                        .is_some_and(|valid| valid < attributes.timestamp())
+                })
+            })
+        });
 
         // check if we have a better block or received more subblocks
         if !is_better_payload(best_payload.as_ref(), total_fees)

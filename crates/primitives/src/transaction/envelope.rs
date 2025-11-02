@@ -203,6 +203,14 @@ impl TempoTxEnvelope {
         let Self::AA(tx) = &self else { return None };
         tx.tx().subblock_proposer()
     }
+
+    /// Returns the [`AASigned`] transaction if this is an AA transaction.
+    pub fn as_aa(&self) -> Option<&AASigned> {
+        match self {
+            Self::AA(tx) => Some(tx),
+            _ => None,
+        }
+    }
 }
 
 impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
