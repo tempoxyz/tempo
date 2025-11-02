@@ -198,7 +198,7 @@ impl<Ctx: Spawner> Actor<Ctx> {
                     *round = n.proposal.round;
                     *tip = n.proposal.payload.0;
                     *cert = n.certificate;
-                } else {
+                } else if self.consensus_tip.is_none() {
                     self.consensus_tip =
                         Some((n.proposal.round, n.proposal.payload.0, n.certificate));
                 }
