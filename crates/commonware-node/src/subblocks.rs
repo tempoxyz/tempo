@@ -188,6 +188,7 @@ impl<Ctx: Spawner> Actor<Ctx> {
     fn on_consensus_event(&mut self, event: Activity<Scheme<PublicKey, MinSig>, Digest>) {
         match event {
             Activity::Notarization(n) => {
+                // If we have a newer notarization, record new tip and certificate.
                 if let Some((round, tip, cert)) = &mut self.consensus_tip
                     && *round < n.proposal.round
                 {
@@ -199,12 +200,13 @@ impl<Ctx: Spawner> Actor<Ctx> {
                     *tip = n.proposal.payload.0;
                     *cert = n.certificate;
                 } else if self.consensus_tip.is_none() {
+                    // Record initial tip on first notarization.
                     self.consensus_tip =
                         Some((n.proposal.round, n.proposal.payload.0, n.certificate));
                 }
             }
             Activity::Nullification(n) => {
-                // On new nullification, update round and certificate.
+                // On a newer nullification, update round and certificate.
                 if let Some((round, _, cert)) = &mut self.consensus_tip
                     && *round < n.round
                 {
