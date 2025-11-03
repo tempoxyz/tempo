@@ -796,17 +796,18 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         to: Address,
         amount: U256,
     ) -> Result<(), TempoPrecompileError> {
-        // Accrue before balance changes
-        let timestamp = self.storage.timestamp();
-        self.accrue(timestamp)?;
-        self.handle_rewards_on_transfer(from, to, amount)?;
-
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
             return Err(
                 TIP20Error::insufficient_balance(from_balance, amount, self.token_address).into(),
             );
         }
+
+        // Accrue before balance changes
+        let timestamp = self.storage.timestamp();
+        self.accrue(timestamp)?;
+
+        self.handle_rewards_on_transfer(from, to, amount)?;
 
         // Adjust balances
         let from_balance = self.get_balance(from)?;
