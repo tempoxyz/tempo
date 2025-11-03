@@ -2,10 +2,6 @@ use super::account_abstraction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
-<<<<<<< HEAD
-use alloy_rlp::{BufMut, Decodable, Encodable};
-=======
->>>>>>> ac1731f (chore: primmitive signature struct)
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     EncodedPoint,
@@ -131,16 +127,13 @@ impl alloy_rlp::Encodable for AASignature {
     }
 }
 
-<<<<<<< HEAD
-impl Decodable for AASignature {
+impl alloy_rlp::Decodable for AASignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let bytes: Bytes = Decodable::decode(buf)?;
+        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
         Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
     }
 }
 
-impl AASignature {
-=======
 #[cfg(feature = "reth-codec")]
 impl reth_codecs::Compact for AASignature {
     fn to_compact<B>(&self, buf: &mut B) -> usize
@@ -307,7 +300,6 @@ impl reth_codecs::Compact for PrimitiveSignature {
 }
 
 impl PrimitiveSignature {
->>>>>>> ac1731f (chore: primmitive signature struct)
     /// Parse signature from bytes with backward compatibility
     ///
     /// For backward compatibility with existing secp256k1 signatures:
@@ -584,6 +576,16 @@ impl AASignature {
                 PrimitiveSignature::WebAuthn(webauthn_sig.clone()).signature_type()
             }
             Self::Keychain(keychain_sig) => keychain_sig.signature.signature_type(),
+        }
+    }
+
+    /// Get the in-memory size of the signature
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
+            Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
+            Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
+            Self::Keychain(keychain_sig) => 1 + 20 + keychain_sig.signature.size(),
         }
     }
 

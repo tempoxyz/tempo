@@ -533,13 +533,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         self.check_not_paused()?;
-        self.check_not_token_address(&call.to)?;
-        self.ensure_transfer_authorized(msg_sender, &call.to)?;
+        self.check_not_token_address(call.to)?;
+        self.ensure_transfer_authorized(msg_sender, call.to)?;
 
         // Check spending limits if using access key
-        self.check_spending_limit(msg_sender, call.amount)?;
+        self.check_spending_limit(&msg_sender, call.amount)?;
 
-        self._transfer(msg_sender, &call.to, call.amount)?;
+        self._transfer(msg_sender, call.to, call.amount)?;
         Ok(true)
     }
 
@@ -623,7 +623,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         // Check spending limits if using access key (based on 'from' account)
         self.check_spending_limit(&from, amount)?;
 
-        self._transfer(&from, &to, amount)?;
+        self._transfer(from, to, amount)?;
 
         Ok(true)
     }

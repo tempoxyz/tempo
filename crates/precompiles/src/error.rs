@@ -59,6 +59,7 @@ pub enum TempoPrecompileError {
 
     /// Error from account keychain precompile
     #[error("Account keychain error: {0:?}")]
+    #[from(skip)]
     AccountKeychainError(AccountKeychainError),
 
     #[error("Gas limit exceeded")]

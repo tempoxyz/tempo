@@ -623,7 +623,7 @@ async fn authorize_access_key(
             value: U256::ZERO,
             input: Bytes::new(), // Dummy call
         }],
-        nonce_key: 0,
+        nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(root_addr).await?,
         fee_token: None,
         fee_payer_signature: None,
@@ -631,6 +631,7 @@ async fn authorize_access_key(
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_authorization),
+        aa_authorization_list: vec![],
     };
 
     let sig_hash = tx.signature_hash();
@@ -650,7 +651,7 @@ fn create_basic_aa_tx(chain_id: u64, nonce: u64, calls: Vec<Call>, gas_limit: u6
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit,
         calls,
-        nonce_key: 0,
+        nonce_key: U256::ZERO,
         nonce,
         fee_token: None,
         fee_payer_signature: None,
@@ -658,16 +659,7 @@ fn create_basic_aa_tx(chain_id: u64, nonce: u64, calls: Vec<Call>, gas_limit: u6
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
-    }
-}
-
-/// Helper to create a TIP20 transfer call
-fn create_transfer_call(to: Address, amount: U256) -> Call {
-    let transfer_calldata = transferCall { to, amount }.abi_encode();
-    Call {
-        to: DEFAULT_FEE_TOKEN.into(),
-        value: U256::ZERO,
-        input: transfer_calldata.into(),
+        aa_authorization_list: vec![],
     }
 }
 
@@ -928,7 +920,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         }],
         100_000,
     );
-    tx_parallel.nonce_key = 1; // Parallel nonce - should be rejected
+    tx_parallel.nonce_key = U256::from(1); // Parallel nonce - should be rejected
 
     // Sign and encode transaction
     let aa_signature_parallel = sign_aa_tx_secp256k1(&tx_parallel, &alice_signer)?;
@@ -2285,6 +2277,8 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_aa_access_key() -> eyre::Result<()> {
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use sha2::{Digest, Sha256};
@@ -2402,10 +2396,19 @@ async fn test_aa_access_key() -> eyre::Result<()> {
 
     // Create AA transaction with key authorization and token transfer
     let nonce = provider.get_transaction_count(root_key_addr).await?;
+    let transfer_calldata = transferCall {
+        to: recipient,
+        amount: transfer_amount,
+    }
+    .abi_encode();
     let mut tx = create_basic_aa_tx(
         chain_id,
         nonce,
-        vec![create_transfer_call(recipient, transfer_amount)],
+        vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transfer_calldata.into(),
+        }],
         300_000, // Higher gas for key authorization verification
     );
     tx.key_authorization = Some(key_authorization);
@@ -2744,7 +2747,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
             value: U256::ZERO,
             input: authorize_call.abi_encode().into(),
         }],
-        nonce_key: 0,
+        nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(root_addr).await?,
         fee_token: None,
         fee_payer_signature: None,
@@ -2752,6 +2755,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
+        aa_authorization_list: vec![],
     };
     let sig_hash = tx.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
@@ -2868,7 +2872,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: 0,
+        nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(root_addr).await?,
         fee_token: None,
         fee_payer_signature: None,
@@ -2876,6 +2880,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_2),
+        aa_authorization_list: vec![],
     };
     let signature =
         sign_aa_tx_with_p256_access_key(&tx, &access_key_1, &pub_x_1, &pub_y_1, root_addr)?;

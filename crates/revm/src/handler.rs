@@ -60,7 +60,23 @@ const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
 /// - P256: 5000 gas
 /// - WebAuthn: 5000 gas + calldata cost for webauthn_data
 #[inline]
-fn primitive_signature_verification_gas(signature: &AASignature, is_istanbul: bool) -> u64 {
+fn primitive_signature_verification_gas(signature: &PrimitiveSignature, is_istanbul: bool) -> u64 {
+    match signature {
+        PrimitiveSignature::Secp256k1(_) => 0,
+        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
+        PrimitiveSignature::WebAuthn(webauthn_sig) => {
+            let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, is_istanbul);
+            P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
+        }
+    }
+}
+
+/// Calculates the gas cost for verifying an AA signature.
+///
+/// For Keychain signatures, unwraps to the inner primitive signature for gas calculation.
+/// Returns the additional gas required beyond the base transaction cost.
+#[inline]
+fn aa_signature_verification_gas(signature: &AASignature, is_istanbul: bool) -> u64 {
     match signature {
         AASignature::Secp256k1(_) => 0,
         AASignature::P256(_) => P256_VERIFY_GAS,
@@ -68,25 +84,10 @@ fn primitive_signature_verification_gas(signature: &AASignature, is_istanbul: bo
             let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, is_istanbul);
             P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
         }
-        AASignature::Keychain(_) => {
-            unreachable!("Keychain signatures should be unwrapped to their inner signature")
-        }
-    }
-}
-
-/// Calculates the gas cost for verifying an AA signature.
-///
-/// For Keychain signatures, unwraps to the inner signature for gas calculation.
-/// Returns the additional gas required beyond the base transaction cost.
-#[inline]
-fn aa_signature_verification_gas(signature: &AASignature) -> u64 {
-    match signature {
         AASignature::Keychain(keychain_sig) => {
-            // Keychain wraps an inner signature - calculate gas for the inner signature
-            // Note: Recursive keychain signatures are prevented during deserialization
-            primitive_signature_verification_gas(&keychain_sig.signature, true)
+            // Keychain wraps a primitive signature - calculate gas for the inner signature
+            primitive_signature_verification_gas(&keychain_sig.signature, is_istanbul)
         }
-        _ => primitive_signature_verification_gas(signature, true),
     }
 }
 
@@ -1010,7 +1011,10 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_gas += aa_authorization_list.len() as u64 * eip7702::PER_EMPTY_ACCOUNT_COST;
     // Add signature verification costs for each authorization
     for aa_auth in aa_authorization_list {
-        gas.initial_gas += aa_signature_verification_gas(aa_auth.signature());
+        gas.initial_gas += aa_signature_verification_gas(
+            aa_auth.signature(),
+            spec.is_enabled_in(RevmSpecId::ISTANBUL),
+        );
     }
 
     // 4. Per-call costs
@@ -1355,6 +1359,7 @@ mod tests {
             aa_calls: vec![call],
             key_authorization: None,
             tx_hash: B256::ZERO,
+            access_key_id: None,
             ..Default::default()
         };
 
@@ -1416,6 +1421,7 @@ mod tests {
             aa_calls: calls.clone(),
             key_authorization: None,
             tx_hash: B256::ZERO,
+            access_key_id: None,
             ..Default::default()
         };
 
@@ -1470,6 +1476,7 @@ mod tests {
             aa_calls: vec![call],
             key_authorization: None,
             tx_hash: B256::ZERO,
+            access_key_id: None,
             ..Default::default()
         };
 
@@ -1513,6 +1520,7 @@ mod tests {
             aa_calls: vec![call],
             key_authorization: None,
             tx_hash: B256::ZERO,
+            access_key_id: None,
             ..Default::default()
         };
 
@@ -1554,6 +1562,7 @@ mod tests {
             aa_calls: vec![call],
             key_authorization: None,
             tx_hash: B256::ZERO,
+            access_key_id: None,
             ..Default::default()
         };
 
@@ -1591,6 +1600,7 @@ mod tests {
             aa_calls: vec![call],
             key_authorization: None,
             tx_hash: B256::ZERO,
+            access_key_id: None,
             ..Default::default()
         };
 

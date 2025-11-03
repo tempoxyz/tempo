@@ -4,7 +4,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<S: crate::storage::PrecompileStorageProvider> Precompile for AccountKeychain<'_, S> {
-    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
@@ -18,7 +18,7 @@ impl<S: crate::storage::PrecompileStorageProvider> Precompile for AccountKeychai
                 mutate_void::<IAccountKeychain::authorizeKeyCall>(
                     calldata,
                     msg_sender,
-                    |sender, call| self.authorize_key(call, sender),
+                    |sender, call| self.authorize_key(call, &sender),
                 )
             }
 
@@ -26,7 +26,7 @@ impl<S: crate::storage::PrecompileStorageProvider> Precompile for AccountKeychai
                 mutate_void::<IAccountKeychain::revokeKeyCall>(
                     calldata,
                     msg_sender,
-                    |sender, call| self.revoke_key(call, sender),
+                    |sender, call| self.revoke_key(call, &sender),
                 )
             }
 
@@ -34,7 +34,7 @@ impl<S: crate::storage::PrecompileStorageProvider> Precompile for AccountKeychai
                 mutate_void::<IAccountKeychain::updateSpendingLimitCall>(
                     calldata,
                     msg_sender,
-                    |sender, call| self.update_spending_limit(call, sender),
+                    |sender, call| self.update_spending_limit(call, &sender),
                 )
             }
 
@@ -50,7 +50,7 @@ impl<S: crate::storage::PrecompileStorageProvider> Precompile for AccountKeychai
 
             IAccountKeychain::getTransactionKeyCall::SELECTOR => {
                 view::<IAccountKeychain::getTransactionKeyCall>(calldata, |call| {
-                    self.get_transaction_key(call, msg_sender)
+                    self.get_transaction_key(call, &msg_sender)
                 })
             }
 
