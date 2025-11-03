@@ -1,9 +1,9 @@
 use crate::rpc::{
-    pagination::{PaginationParams, PaginationResponse},
+    pagination::PaginationParams,
     token::{
-        role_history::{RoleChange, RoleHistoryFilters},
-        tokens::{Token, TokensFilters},
-        tokens_by_address::{AccountToken, TokensByAddressParams},
+        role_history::{RoleHistoryFilters, RoleHistoryResponse},
+        tokens::{TokensFilters, TokensResponse},
+        tokens_by_address::{TokensByAddressParams, TokensByAddressResponse},
     },
 };
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
@@ -25,16 +25,13 @@ pub trait TempoTokenApi {
     async fn role_history(
         &self,
         params: PaginationParams<RoleHistoryFilters>,
-    ) -> RpcResult<PaginationResponse<RoleChange>>;
+    ) -> RpcResult<RoleHistoryResponse>;
 
     /// Gets paginated TIP-20 tokens on Tempo.
     ///
     /// Uses cursor-based pagination for stable iteration through tokens.
     #[method(name = "getTokens")]
-    async fn tokens(
-        &self,
-        params: PaginationParams<TokensFilters>,
-    ) -> RpcResult<PaginationResponse<Token>>;
+    async fn tokens(&self, params: PaginationParams<TokensFilters>) -> RpcResult<TokensResponse>;
 
     /// Gets paginated TIP-20 tokens associated with an account address on Tempo.
     ///
@@ -45,7 +42,7 @@ pub trait TempoTokenApi {
     async fn tokens_by_address(
         &self,
         params: TokensByAddressParams,
-    ) -> RpcResult<PaginationResponse<AccountToken>>;
+    ) -> RpcResult<TokensByAddressResponse>;
 }
 
 /// The JSON-RPC handlers for the `token_` namespace.
@@ -65,21 +62,18 @@ impl<EthApi: RpcNodeCore> TempoTokenApiServer for TempoToken<EthApi> {
     async fn role_history(
         &self,
         _params: PaginationParams<RoleHistoryFilters>,
-    ) -> RpcResult<PaginationResponse<RoleChange>> {
+    ) -> RpcResult<RoleHistoryResponse> {
         Err(internal_rpc_err("unimplemented"))
     }
 
-    async fn tokens(
-        &self,
-        _params: PaginationParams<TokensFilters>,
-    ) -> RpcResult<PaginationResponse<Token>> {
+    async fn tokens(&self, _params: PaginationParams<TokensFilters>) -> RpcResult<TokensResponse> {
         Err(internal_rpc_err("unimplemented"))
     }
 
     async fn tokens_by_address(
         &self,
         _params: TokensByAddressParams,
-    ) -> RpcResult<PaginationResponse<AccountToken>> {
+    ) -> RpcResult<TokensByAddressResponse> {
         Err(internal_rpc_err("unimplemented"))
     }
 }

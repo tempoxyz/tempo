@@ -1,7 +1,15 @@
-use crate::rpc::pagination::{FieldName, FilterRange};
+use crate::rpc::pagination::FilterRange;
 use alloy_primitives::{Address, B256, BlockNumber, TxHash};
-use jsonrpsee::core::Serialize;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleHistoryResponse {
+    /// Cursor for next page, null if no more results
+    pub next_cursor: Option<String>,
+    /// Array of items matching the input query
+    pub role_changes: Vec<RoleChange>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,10 +49,4 @@ pub struct RoleChange {
     pub token: Address,
     /// Transaction hash
     pub transaction_hash: TxHash,
-}
-
-impl FieldName for RoleChange {
-    fn field_plural_camel_case() -> &'static str {
-        "roleChanges"
-    }
 }

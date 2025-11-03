@@ -1,4 +1,4 @@
-use crate::rpc::pagination::{FieldName, FilterRange, PaginationParams};
+use crate::rpc::pagination::{FilterRange, PaginationParams};
 use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +69,13 @@ impl RemainingFilterRange {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OrdersResponse {
+    pub next_cursor: Option<String>,
+    pub orders: Vec<Order>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Order {
     /// Original order amount
     #[serde(with = "alloy_serde::quantity")]
@@ -99,12 +106,6 @@ pub struct Order {
     pub base_token: Address,
     /// Address of the quote token
     pub quote_token: Address,
-}
-
-impl FieldName for Order {
-    fn field_plural_camel_case() -> &'static str {
-        "orders"
-    }
 }
 
 #[cfg(test)]

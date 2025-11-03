@@ -1,9 +1,6 @@
 pub use transactions::TransactionsFilter;
 
-use crate::rpc::{
-    eth_ext::transactions::Transaction,
-    pagination::{PaginationParams, PaginationResponse},
-};
+use crate::rpc::{eth_ext::transactions::TransactionsResponse, pagination::PaginationParams};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::RpcNodeCore;
@@ -19,7 +16,7 @@ pub trait TempoEthExtApi {
     async fn transactions(
         &self,
         params: PaginationParams<TransactionsFilter>,
-    ) -> RpcResult<PaginationResponse<Transaction>>;
+    ) -> RpcResult<TransactionsResponse>;
 }
 
 /// The JSON-RPC handlers for the `dex_` namespace.
@@ -39,7 +36,7 @@ impl<EthApi: RpcNodeCore> TempoEthExtApiServer for TempoEthExt<EthApi> {
     async fn transactions(
         &self,
         _params: PaginationParams<TransactionsFilter>,
-    ) -> RpcResult<PaginationResponse<Transaction>> {
+    ) -> RpcResult<TransactionsResponse> {
         Err(internal_rpc_err("unimplemented"))
     }
 }

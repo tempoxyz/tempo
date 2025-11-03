@@ -1,7 +1,15 @@
-use crate::rpc::pagination::{FieldName, PaginationParams};
+use crate::rpc::{pagination::PaginationParams, token::role_history::RoleChange};
 use alloy_primitives::Address;
-use jsonrpsee::core::Serialize;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddressesResponse {
+    /// Cursor for next page, null if no more results
+    pub next_cursor: Option<String>,
+    /// Array of items matching the input query
+    pub addresses: Vec<RoleChange>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,10 +35,4 @@ pub struct PolicyAddress {
     pub address: Address,
     /// Whether address is authorized (depends on policy type)
     pub authorized: bool,
-}
-
-impl FieldName for PolicyAddress {
-    fn field_plural_camel_case() -> &'static str {
-        "addresses"
-    }
 }

@@ -1,6 +1,6 @@
 pub use pools::{Pool, PoolsFilters};
 
-use crate::rpc::pagination::{PaginationParams, PaginationResponse};
+use crate::rpc::{amm::pools::PoolsResponse, pagination::PaginationParams};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::RpcNodeCore;
@@ -14,11 +14,8 @@ pub trait TempoAmmApi {
     /// Each pool is directional (userToken → validatorToken) with fixed swap rates for fee swaps (0.997) and rebalance swaps (0.9985).
     ///
     /// Uses cursor-based pagination for stable iteration through pools.
-    #[method(name = "getPools")]
-    async fn pools(
-        &self,
-        params: PaginationParams<PoolsFilters>,
-    ) -> RpcResult<PaginationResponse<Pool>>;
+    #[method(name = "getLiquidityPools")]
+    async fn pools(&self, params: PaginationParams<PoolsFilters>) -> RpcResult<PoolsResponse>;
 }
 
 /// The JSON-RPC handlers for the `amm_` namespace.
@@ -35,10 +32,7 @@ impl<EthApi> TempoAmm<EthApi> {
 
 #[async_trait::async_trait]
 impl<EthApi: RpcNodeCore> TempoAmmApiServer for TempoAmm<EthApi> {
-    async fn pools(
-        &self,
-        _params: PaginationParams<PoolsFilters>,
-    ) -> RpcResult<PaginationResponse<Pool>> {
+    async fn pools(&self, _params: PaginationParams<PoolsFilters>) -> RpcResult<PoolsResponse> {
         Err(internal_rpc_err("unimplemented"))
     }
 }

@@ -1,10 +1,18 @@
 use crate::rpc::{
-    pagination::{FieldName, PaginationParams},
+    pagination::PaginationParams,
     token::tokens::{Token, TokensFilters},
 };
 use alloy_primitives::{Address, B256, U256};
-use jsonrpsee::core::Serialize;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokensByAddressResponse {
+    /// Cursor for next page, null if no more results
+    pub next_cursor: Option<String>,
+    /// Array of items matching the input query
+    pub tokens: Vec<AccountToken>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,10 +33,4 @@ pub struct AccountToken {
     pub roles: Vec<B256>,
     /// Token details
     pub token: Token,
-}
-
-impl FieldName for AccountToken {
-    fn field_plural_camel_case() -> &'static str {
-        "tokens"
-    }
 }

@@ -1,10 +1,15 @@
-use crate::rpc::{
-    dex::orders::Tick,
-    pagination::{FieldName, FilterRange},
-};
+use crate::rpc::{dex::orders::Tick, pagination::FilterRange};
 use alloy_primitives::{Address, B256};
-use jsonrpsee::core::Serialize;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderbooksResponse {
+    /// Cursor for next page, null if no more results
+    pub next_cursor: Option<String>,
+    /// Orderbooks that match the query
+    pub orderbooks: Vec<Orderbook>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,10 +41,4 @@ pub struct OrderbooksFilter {
     pub quote_token: Option<Address>,
     /// Spread in range (in ticks)
     pub spread: Option<FilterRange<Tick>>,
-}
-
-impl FieldName for Orderbook {
-    fn field_plural_camel_case() -> &'static str {
-        "orderbooks"
-    }
 }

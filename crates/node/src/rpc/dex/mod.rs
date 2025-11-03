@@ -1,11 +1,8 @@
-pub use books::{Orderbook, OrderbooksFilter};
+pub use books::{Orderbook, OrderbooksFilter, OrderbooksResponse};
 pub use error::DexApiError;
 pub use orders::{Order, OrdersFilters, OrdersSort, OrdersSortOrder, Tick};
 
-use crate::rpc::{
-    TempoDexApiServer,
-    pagination::{PaginationParams, PaginationResponse},
-};
+use crate::rpc::{TempoDexApiServer, dex::orders::OrdersResponse, pagination::PaginationParams};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{Address, B256, Sealable};
 use jsonrpsee::core::RpcResult;
@@ -58,7 +55,7 @@ impl<
     fn orders(
         &self,
         params: PaginationParams<OrdersFilters>,
-    ) -> Result<PaginationResponse<Order>, DexApiError> {
+    ) -> Result<OrdersResponse, DexApiError> {
         let response = self.with_storage_at_block(BlockNumberOrTag::Latest.into(), |storage| {
             let mut exchange = StablecoinExchange::new(storage);
             let exchange_address = exchange.address();
@@ -137,9 +134,9 @@ impl<
             all_orders.truncate(limit);
             let orders = all_orders;
 
-            let response = PaginationResponse {
+            let response = OrdersResponse {
                 next_cursor,
-                items: orders,
+                orders,
             };
             Ok(response)
         })?;
@@ -150,7 +147,7 @@ impl<
     fn orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
-    ) -> Result<PaginationResponse<Orderbook>, DexApiError> {
+    ) -> Result<OrderbooksResponse, DexApiError> {
         // Get paginated orderbooks
         let (items, next_cursor) = self.apply_pagination_to_orderbooks(params)?;
 
@@ -161,9 +158,9 @@ impl<
             .collect();
 
         // Create response with next cursor
-        Ok(PaginationResponse {
+        Ok(OrderbooksResponse {
             next_cursor,
-            items: orderbooks,
+            orderbooks,
         })
     }
 
@@ -388,10 +385,7 @@ impl<
     /// The cursor for this method is the **Order ID** (u128).
     /// - When provided in the request, returns orders starting after the given order ID
     /// - Returns `next_cursor` in the response containing the last order ID for the next page
-    async fn orders(
-        &self,
-        params: PaginationParams<OrdersFilters>,
-    ) -> RpcResult<PaginationResponse<Order>> {
+    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse> {
         let this = self.clone();
         self.eth_api
             .spawn_blocking_io(move |_| {
@@ -412,7 +406,7 @@ impl<
     async fn orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
-    ) -> RpcResult<PaginationResponse<Orderbook>> {
+    ) -> RpcResult<OrderbooksResponse> {
         let this = self.clone();
         self.eth_api
             .spawn_blocking_io(move |_| {

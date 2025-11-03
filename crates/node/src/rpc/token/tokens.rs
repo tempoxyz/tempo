@@ -1,7 +1,15 @@
-use crate::rpc::pagination::{FieldName, FilterRange};
+use crate::rpc::pagination::FilterRange;
 use alloy_primitives::{Address, U256};
-use jsonrpsee::core::Serialize;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokensResponse {
+    /// Cursor for next page, null if no more results
+    pub next_cursor: Option<String>,
+    /// Array of items matching the input query
+    pub tokens: Vec<Token>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,10 +63,4 @@ pub struct Token {
     pub total_supply: U256,
     /// Current transfer policy ID
     pub transfer_policy_id: u64,
-}
-
-impl FieldName for Token {
-    fn field_plural_camel_case() -> &'static str {
-        "tokens"
-    }
 }

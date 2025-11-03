@@ -1,6 +1,6 @@
 use crate::rpc::{
-    dex::{Order, Orderbook, OrderbooksFilter, OrdersFilters},
-    pagination::{PaginationParams, PaginationResponse},
+    dex::{OrderbooksFilter, OrdersFilters, books::OrderbooksResponse, orders::OrdersResponse},
+    pagination::PaginationParams,
 };
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 
@@ -11,10 +11,7 @@ pub trait TempoDexApi {
     ///
     /// Uses cursor-based pagination for stable iteration through orders as the orderbook changes.
     #[method(name = "getOrders")]
-    async fn orders(
-        &self,
-        params: PaginationParams<OrdersFilters>,
-    ) -> RpcResult<PaginationResponse<Order>>;
+    async fn orders(&self, params: PaginationParams<OrdersFilters>) -> RpcResult<OrdersResponse>;
 
     /// Gets paginated orderbooks from the Stablecoin Exchange on Tempo.
     ///
@@ -23,5 +20,5 @@ pub trait TempoDexApi {
     async fn orderbooks(
         &self,
         params: PaginationParams<OrderbooksFilter>,
-    ) -> RpcResult<PaginationResponse<Orderbook>>;
+    ) -> RpcResult<OrderbooksResponse>;
 }
