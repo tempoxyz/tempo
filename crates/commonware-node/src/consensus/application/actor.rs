@@ -505,7 +505,7 @@ impl Inner<Init> {
             }
         };
 
-        let attrs = TempoPayloadBuilderAttributes::with_extra_data(
+        let attrs = TempoPayloadBuilderAttributes::new(
             // XXX: derives the payload ID from the parent so that
             // overlong payload builds will eventually succeed on the
             // next iteration: if all other nodes take equally as long,

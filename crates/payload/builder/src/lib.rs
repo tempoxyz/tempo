@@ -500,7 +500,7 @@ mod tests {
         // Test that extra_data in attributes can be accessed correctly
         let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs = TempoPayloadBuilderAttributes::with_extra_data(
+        let attrs = TempoPayloadBuilderAttributes::new(
             PayloadId::default(),
             B256::default(),
             Address::default(),

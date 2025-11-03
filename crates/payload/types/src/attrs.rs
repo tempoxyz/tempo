@@ -40,6 +40,7 @@ impl TempoPayloadBuilderAttributes {
         parent: B256,
         suggested_fee_recipient: Address,
         timestamp_millis: u64,
+        extra_data: Bytes,
     ) -> Self {
         let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
         Self {
@@ -54,21 +55,8 @@ impl TempoPayloadBuilderAttributes {
             },
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
-            extra_data: Bytes::default(),
+            extra_data,
         }
-    }
-
-    /// Creates new `TempoPayloadBuilderAttributes` with DKG extra data.
-    pub fn with_extra_data(
-        id: PayloadId,
-        parent: B256,
-        suggested_fee_recipient: Address,
-        timestamp_millis: u64,
-        extra_data: Bytes,
-    ) -> Self {
-        let mut attrs = Self::new(id, parent, suggested_fee_recipient, timestamp_millis);
-        attrs.extra_data = extra_data;
-        attrs
     }
 
     /// Returns the extra data to be included in the block header.
@@ -167,7 +155,13 @@ mod tests {
         let recipient = Address::default();
         let timestamp_millis = 1000;
 
-        let attrs = TempoPayloadBuilderAttributes::new(id, parent, recipient, timestamp_millis);
+        let attrs = TempoPayloadBuilderAttributes::new(
+            id,
+            parent,
+            recipient,
+            timestamp_millis,
+            Bytes::default(),
+        );
 
         assert_eq!(attrs.extra_data(), &Bytes::default());
         assert_eq!(attrs.parent(), parent);
@@ -183,7 +177,7 @@ mod tests {
         let timestamp_millis = 1000;
         let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
 
-        let attrs = TempoPayloadBuilderAttributes::with_extra_data(
+        let attrs = TempoPayloadBuilderAttributes::new(
             id,
             parent,
             recipient,
@@ -203,7 +197,7 @@ mod tests {
         let recipient = Address::default();
         let timestamp_millis = 1000;
 
-        let attrs = TempoPayloadBuilderAttributes::with_extra_data(
+        let attrs = TempoPayloadBuilderAttributes::new(
             id,
             parent,
             recipient,
