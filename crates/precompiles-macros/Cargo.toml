@@ -25,3 +25,4 @@ tempo-precompiles = { path = "../precompiles" }
 tempo-contracts = { path = "../contracts" }
 alloy = { workspace = true }
 revm = { workspace = true }
+proptest = "1"

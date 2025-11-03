@@ -48,20 +48,6 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         .map(|f| (f.ident.as_ref().unwrap(), &f.ty))
         .collect();
 
-    // Validate that no fields are nested structs
-    for (field_name, field_ty) in &field_infos {
-        if is_custom_struct(field_ty) {
-            return Err(syn::Error::new_spanned(
-                field_ty,
-                format!(
-                    "Field '{field_name}' appears to be a nested struct. \
-                     The `Storable` derive macro does not support nested structs yet. \
-                     Please manually implement the `Storable` trait instead."
-                ),
-            ));
-        }
-    }
-
     // Generate unique module name based on struct name
     let mod_ident = format_ident!("__packing_{}", normalize_to_snake_case(&strukt.to_string()));
 
@@ -167,7 +153,7 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
         }
     });
 
-    let field_layouts = fields.iter().enumerate().map(|(idx, _)| {
+    let field_layouts = fields.iter().enumerate().map(|(idx, (_, ty))| {
         let slot_const = Ident::new(&format!("FIELD_{idx}_SLOT"), proc_macro2::Span::call_site());
         let offset_const = Ident::new(
             &format!("FIELD_{idx}_OFFSET"),
@@ -185,6 +171,9 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
             }
         } else {
             let prev_idx = idx - 1;
+            let (_, prev_ty) = &fields[prev_idx];
+            let prev_is_struct = is_custom_struct(prev_ty);
+
             let prev_slot = Ident::new(
                 &format!("FIELD_{prev_idx}_SLOT"),
                 proc_macro2::Span::call_site(),
@@ -197,30 +186,60 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
                 &format!("FIELD_{prev_idx}_BYTES"),
                 proc_macro2::Span::call_site(),
             );
-            quote! {
-                const PREV_SLOT: usize = #prev_slot;
-                const PREV_OFFSET: usize = #prev_offset + #prev_bytes;
+
+            if prev_is_struct {
+                // Previous field was a struct - advance by its SLOT_COUNT and reset offset
+                quote! {
+                    const PREV_SLOT: usize = #prev_slot + <#prev_ty>::SLOT_COUNT;
+                    const PREV_OFFSET: usize = 0;
+                }
+            } else {
+                // Previous field was primitive - continue from its end position
+                quote! {
+                    const PREV_SLOT: usize = #prev_slot;
+                    const PREV_OFFSET: usize = #prev_offset + #prev_bytes;
+                }
             }
         };
 
-        quote! {
-            pub const #slot_const: usize = {
-                #prev_calculations
-                if PREV_OFFSET + #bytes_const <= 32 {
-                    PREV_SLOT
-                } else {
-                    PREV_SLOT + 1
-                }
-            };
+        // Check if current field is a struct (Solidity rule: structs always start new slots)
+        let is_struct = is_custom_struct(ty);
 
-            pub const #offset_const: usize = {
-                #prev_calculations
-                if PREV_OFFSET + #bytes_const <= 32 {
-                    PREV_OFFSET
-                } else {
-                    0
-                }
-            };
+        if is_struct {
+            // Struct field: must start on a new slot if PREV_OFFSET != 0
+            quote! {
+                pub const #slot_const: usize = {
+                    #prev_calculations
+                    if PREV_OFFSET == 0 {
+                        PREV_SLOT
+                    } else {
+                        PREV_SLOT + 1
+                    }
+                };
+
+                pub const #offset_const: usize = 0;
+            }
+        } else {
+            // Primitive field: use standard packing logic
+            quote! {
+                pub const #slot_const: usize = {
+                    #prev_calculations
+                    if PREV_OFFSET + #bytes_const <= 32 {
+                        PREV_SLOT
+                    } else {
+                        PREV_SLOT + 1
+                    }
+                };
+
+                pub const #offset_const: usize = {
+                    #prev_calculations
+                    if PREV_OFFSET + #bytes_const <= 32 {
+                        PREV_OFFSET
+                    } else {
+                        0
+                    }
+                };
+            }
         }
     });
 
@@ -249,7 +268,19 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         let offset_const = Ident::new(&format!("FIELD_{idx}_OFFSET"), proc_macro2::Span::call_site());
         let bytes_const = Ident::new(&format!("FIELD_{idx}_BYTES"), proc_macro2::Span::call_site());
 
-        // Check if this field shares the slot with any other field
+        let is_struct = is_custom_struct(ty);
+
+        // Struct fields always use load() directly (never packed)
+        if is_struct {
+            return quote! {
+                let #name = <#ty>::load(
+                    storage,
+                    base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
+                )?;
+            };
+        }
+
+        // For primitives, check if this field shares the slot with any other field
         let next_idx = idx + 1;
         let prev_idx = if idx > 0 { Some(idx - 1) } else { None };
 
@@ -314,12 +345,24 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 
 /// Generate the `fn store()` implementation with packing logic.
 fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
-    let store_fields = fields.iter().enumerate().map(|(idx, (name, _ty))| {
+    let store_fields = fields.iter().enumerate().map(|(idx, (name, ty))| {
         let slot_const = Ident::new(&format!("FIELD_{idx}_SLOT"), proc_macro2::Span::call_site());
         let offset_const = Ident::new(&format!("FIELD_{idx}_OFFSET"), proc_macro2::Span::call_site());
         let bytes_const = Ident::new(&format!("FIELD_{idx}_BYTES"), proc_macro2::Span::call_site());
 
-        // Check if this field shares the slot with any other field
+        let is_struct = is_custom_struct(ty);
+
+        // Struct fields always use store() directly (never packed)
+        if is_struct {
+            return quote! {
+                self.#name.store(
+                    storage,
+                    base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
+                )?;
+            };
+        }
+
+        // For primitives, check if this field shares the slot with any other field
         let next_idx = idx + 1;
         let prev_idx = if idx > 0 { Some(idx - 1) } else { None };
 
@@ -389,7 +432,7 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 
 /// Generate the `fn to_evm_words()` implementation that packs fields into an array of words.
 fn gen_to_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
-    let pack_fields = fields.iter().enumerate().map(|(idx, (name, _ty))| {
+    let pack_fields = fields.iter().enumerate().map(|(idx, (name, ty))| {
         let slot_const = Ident::new(&format!("FIELD_{idx}_SLOT"), proc_macro2::Span::call_site());
         let offset_const = Ident::new(
             &format!("FIELD_{idx}_OFFSET"),
@@ -400,22 +443,37 @@ fn gen_to_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenSt
             proc_macro2::Span::call_site(),
         );
 
-        quote! {
-            {
-                // Encode field to its canonical right-aligned U256 representation
-                let field_value = self.#name.to_evm_words()?[0];
+        let is_struct = is_custom_struct(ty);
 
-                let shift_bits = (32 - #packing::#offset_const - #packing::#bytes_const) * 8;
-                let mask = if #packing::#bytes_const == 32 {
-                    ::alloy::primitives::U256::MAX
-                } else {
-                    (::alloy::primitives::U256::from(1) << (#packing::#bytes_const * 8))
-                        - ::alloy::primitives::U256::from(1)
-                };
+        if is_struct {
+            // Nested struct: copy all its words into consecutive slots
+            quote! {
+                {
+                    let nested_words = self.#name.to_evm_words()?;
+                    for (i, word) in nested_words.iter().enumerate() {
+                        result[#packing::#slot_const + i] = *word;
+                    }
+                }
+            }
+        } else {
+            // Primitive: pack into slot with shifting/masking
+            quote! {
+                {
+                    // Encode field to its canonical right-aligned U256 representation
+                    let field_value = self.#name.to_evm_words()?[0];
 
-                // Position the field value and accumulate into the appropriate slot
-                let positioned = (field_value & mask) << shift_bits;
-                result[#packing::#slot_const] |= positioned;
+                    let shift_bits = (32 - #packing::#offset_const - #packing::#bytes_const) * 8;
+                    let mask = if #packing::#bytes_const == 32 {
+                        ::alloy::primitives::U256::MAX
+                    } else {
+                        (::alloy::primitives::U256::from(1) << (#packing::#bytes_const * 8))
+                            - ::alloy::primitives::U256::from(1)
+                    };
+
+                    // Position the field value and accumulate into the appropriate slot
+                    let positioned = (field_value & mask) << shift_bits;
+                    result[#packing::#slot_const] |= positioned;
+                }
             }
         }
     });
@@ -440,24 +498,41 @@ fn gen_from_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> Token
             proc_macro2::Span::call_site(),
         );
 
-        quote! {
-            let #name = {
-                // Get the word for this field's slot
-                let word = words[#packing::#slot_const];
+        let is_struct = is_custom_struct(ty);
 
-                // Extract the field from the word using bit shifting and masking
-                let shift_bits = (32 - #packing::#offset_const - #packing::#bytes_const) * 8;
-                let mask = if #packing::#bytes_const == 32 {
-                    ::alloy::primitives::U256::MAX
-                } else {
-                    (::alloy::primitives::U256::from(1) << (#packing::#bytes_const * 8))
-                        - ::alloy::primitives::U256::from(1)
+        if is_struct {
+            // Nested struct: extract consecutive words and convert to array
+            quote! {
+                let #name = {
+                    // Extract slice and convert to fixed-size array using std::array::from_fn
+                    let start = #packing::#slot_const;
+                    let nested_words = ::std::array::from_fn::<_, {<#ty>::SLOT_COUNT}, _>(|i| {
+                        words[start + i]
+                    });
+                    <#ty>::from_evm_words(nested_words)?
                 };
-                let extracted = (word >> shift_bits) & mask;
+            }
+        } else {
+            // Primitive: extract from packed position
+            quote! {
+                let #name = {
+                    // Get the word for this field's slot
+                    let word = words[#packing::#slot_const];
 
-                // Decode from the extracted right-aligned value
-                <#ty>::from_evm_words([extracted])?
-            };
+                    // Extract the field from the word using bit shifting and masking
+                    let shift_bits = (32 - #packing::#offset_const - #packing::#bytes_const) * 8;
+                    let mask = if #packing::#bytes_const == 32 {
+                        ::alloy::primitives::U256::MAX
+                    } else {
+                        (::alloy::primitives::U256::from(1) << (#packing::#bytes_const * 8))
+                            - ::alloy::primitives::U256::from(1)
+                    };
+                    let extracted = (word >> shift_bits) & mask;
+
+                    // Decode from the extracted right-aligned value
+                    <#ty>::from_evm_words([extracted])?
+                };
+            }
         }
     });
 
