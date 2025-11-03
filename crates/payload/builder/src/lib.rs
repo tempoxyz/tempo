@@ -74,7 +74,7 @@ pub struct TempoPayloadBuilder<Provider> {
     /// should never be set because subblocks with invalid transactions should never make it to the payload builder.
     ///
     /// However, due to disruptive nature of subblock-related bugs (invalid subblock
-    /// we're continously failing to apply halts block building), we protect against this by tracking
+    /// we're continuously failing to apply halts block building), we protect against this by tracking
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
