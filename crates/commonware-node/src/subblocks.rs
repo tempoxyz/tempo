@@ -43,7 +43,7 @@ use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::T
 use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
-use tracing::{debug, instrument, warn};
+use tracing::{Instrument, Level, Span, debug, instrument, warn};
 
 pub(crate) struct Config<TContext> {
     pub(crate) context: TContext,
@@ -151,7 +151,7 @@ impl<TContext: Spawner> Actor<TContext> {
                 // Handle messages from the network.
                 message = network_rx.recv() => {
                     let Ok((sender, message)) = message else { continue; };
-                    self.on_network_message(sender, message);
+                    let _ = self.on_network_message(sender, message);
                 },
                 // Handle built subblocks.
                 subblock = if let Some(task) = self.subblock_builder_handle.as_mut() {
@@ -311,19 +311,22 @@ impl<TContext: Spawner> Actor<TContext> {
         });
     }
 
-    #[instrument(skip_all, fields(sender = %sender))]
-    fn on_network_message(&mut self, sender: PublicKey, message: bytes::Bytes) {
+    #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender))]
+    fn on_network_message(&mut self, sender: PublicKey, message: bytes::Bytes) -> eyre::Result<()> {
         let Ok(subblock) = SignedSubBlock::decode(&mut &*message) else {
-            return;
+            return Err(eyre::eyre!("failed to decode subblock"));
         };
 
         let Some(tip) = self.tip() else {
-            return;
+            return Err(eyre::eyre!("missing tip of the chain"));
         };
 
         // Skip subblocks that are not built on top of the tip.
         if subblock.parent_hash != tip {
-            return;
+            return Err(eyre::eyre!(
+                "invalid subblock parent, expected {tip}, got {}",
+                subblock.parent_hash
+            ));
         }
 
         // Spawn task to validate the subblock.
@@ -331,6 +334,7 @@ impl<TContext: Spawner> Actor<TContext> {
         let validated_subblocks_tx = self.actions_tx.clone();
         let scheme_provider = self.scheme_provider.clone();
         let epoch_length = self.epoch_length;
+        let span = Span::current();
         self.context
             .clone()
             .shared(true)
@@ -343,6 +347,7 @@ impl<TContext: Spawner> Actor<TContext> {
                     scheme_provider,
                     epoch_length,
                 )
+                .instrument(span)
                 .await
                 {
                     warn!(
@@ -352,6 +357,8 @@ impl<TContext: Spawner> Actor<TContext> {
                     );
                 }
             });
+
+        Ok(())
     }
 
     #[instrument(skip_all, fields(subblock.validator = %subblock.validator(), subblock.parent_hash = %subblock.parent_hash))]
@@ -562,6 +569,7 @@ async fn build_subblock(
 /// 2. Ensuring that sender is a validator for the block's epoch
 /// 3. Ensuring that all transactions have corresponding nonce key set.
 /// 4. Ensuring that all transactions are valid.
+#[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender))]
 async fn validate_subblock(
     sender: PublicKey,
     node: TempoFullNode,
