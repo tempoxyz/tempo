@@ -1,4 +1,4 @@
-use crate::rpc::{pagination::PaginationParams, token::role_history::RoleChange};
+use crate::rpc::pagination::PaginationParams;
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +8,7 @@ pub struct AddressesResponse {
     /// Cursor for next page, null if no more results
     pub next_cursor: Option<String>,
     /// Array of items matching the input query
-    pub addresses: Vec<RoleChange>,
+    pub addresses: Vec<PolicyAddress>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
