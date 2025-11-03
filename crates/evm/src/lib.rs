@@ -20,7 +20,6 @@ use alloy_evm::{
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::{Inspector, database::State},
 };
-use alloy_primitives::Bytes;
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
@@ -70,12 +69,6 @@ impl TempoEvmConfig {
     /// Returns the inner EVM config
     pub const fn inner(&self) -> &EthEvmConfig<TempoChainSpec, TempoEvmFactory> {
         &self.inner
-    }
-
-    /// Sets the extra data for the block assembler.
-    pub fn with_extra_data(mut self, extra_data: Bytes) -> Self {
-        self.block_assembler.inner.extra_data = extra_data;
-        self
     }
 }
 
@@ -171,6 +164,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
             },
             general_gas_limit: block.header().general_gas_limit,
+            extra_data: block.header().extra_data().clone(),
         })
     }
 
@@ -187,6 +181,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
             },
             general_gas_limit: attributes.general_gas_limit,
+            extra_data: attributes.extra_data,
         })
     }
 }

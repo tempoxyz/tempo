@@ -208,6 +208,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         self.inner.max_simulate_blocks()
     }
 
+    #[inline]
+    fn evm_memory_limit(&self) -> u64 {
+        self.inner.evm_memory_limit()
+    }
+
     /// Returns the max gas limit that the caller can afford given a transaction environment.
     fn caller_gas_allowance(
         &self,

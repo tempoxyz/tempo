@@ -16,9 +16,9 @@ fn transitions_with_perfect_links() {
         success_rate: 1.0,
     };
 
-    let epoch_length = 20;
+    let epoch_length = 30;
     let setup = Setup {
-        how_many: 3,
+        how_many: 4,
         seed: 0,
         linkage,
         epoch_length,
