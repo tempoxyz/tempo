@@ -627,15 +627,11 @@ impl UserRewardInfo {
             .sload(token_address, user_slot + Self::DELEGATED_RECIPIENT_OFFSET)?
             .into_address();
 
-        let reward_per_token = storage.sload(
-            token_address,
-            user_slot + Self::REWARD_PER_TOKEN_OFFSET,
-        )?;
+        let reward_per_token =
+            storage.sload(token_address, user_slot + Self::REWARD_PER_TOKEN_OFFSET)?;
 
-        let reward_balance = storage.sload(
-            token_address,
-            user_slot + Self::REWARD_BALANCE_OFFSET,
-        )?;
+        let reward_balance =
+            storage.sload(token_address, user_slot + Self::REWARD_BALANCE_OFFSET)?;
 
         Ok(Self {
             delegated_recipient,
@@ -731,10 +727,8 @@ impl RewardStream {
             .sload(token_address, stream_slot + Self::STREAM_END_TIME_OFFSET)?
             .to::<u64>();
 
-        let rate_per_second_scaled = storage.sload(
-            token_address,
-            stream_slot + Self::STREAM_RATE_OFFSET,
-        )?;
+        let rate_per_second_scaled =
+            storage.sload(token_address, stream_slot + Self::STREAM_RATE_OFFSET)?;
 
         let amount_total = storage.sload(
             token_address,
