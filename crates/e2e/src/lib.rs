@@ -7,24 +7,31 @@
 //! All definitions herein are only intended to support the the tests defined
 //! in tests/.
 
-use std::{collections::HashSet, pin::Pin, time::Duration};
+use std::{net::SocketAddr, pin::Pin, time::Duration};
 
 use commonware_cryptography::{
     PrivateKeyExt as _, Signer as _,
-    bls12381::{dkg::ops, primitives::variant::MinSig},
+    bls12381::{
+        dkg::ops,
+        primitives::{group::Share, variant::MinSig},
+    },
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{
-    Manager,
-    simulated::{self, Link, Network, Oracle},
+    // simulated::{self, Link, Network, Oracle},
+    authenticated::lookup::{self, Network, Oracle},
 };
 
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::quorum;
+use commonware_utils::{
+    NZU32, quorum,
+    set::{Ordered, OrderedAssociated},
+};
 use futures::future::join_all;
+use governor::Quota;
 use tracing::debug;
 
 pub mod execution_runtime;
@@ -57,10 +64,14 @@ pub struct Setup {
     pub how_many: u32,
     /// The seed used for setting up the deterministic runtime.
     pub seed: u64,
-    /// The linkage between individual validators.
-    pub linkage: Link,
+
+    // FIXME(janis): bring back linkage once simulated p2p works with lookup.
+    // /// The linkage between individual validators.
+    // pub linkage: Link,
     /// The number of heights in an epoch.
     pub epoch_length: u64,
+
+    pub start_port: u16,
 }
 
 pub async fn setup_validators(
@@ -69,60 +80,96 @@ pub async fn setup_validators(
     Setup {
         how_many,
         seed: _,
-        linkage,
+        // linkage,
         epoch_length,
+        start_port,
     }: Setup,
-) -> (Vec<ValidatorNode>, Oracle<PublicKey>) {
-    let threshold = quorum(how_many);
-
-    let (network, mut oracle) = Network::new(
-        context.with_label("network"),
-        simulated::Config {
-            max_size: 1024 * 1024,
-            disconnect_on_block: true,
-            tracked_peer_sets: Some(3),
-        },
-    );
-    network.start();
-
-    let mut signers = Vec::new();
-    let mut validators = Vec::new();
-    for i in 0..how_many {
-        let signer = PrivateKey::from_seed(u64::from(i));
-        let public_key = signer.public_key();
-        signers.push(signer);
-        validators.push(public_key);
+) -> Vec<ValidatorNode> {
+    struct SetupValidator {
+        index: u32,
+        signer: PrivateKey,
+        oracle: Oracle<PublicKey>,
+        addr: SocketAddr,
+        share: Share,
+        network: Network<Context, PrivateKey>,
     }
-    validators.sort();
-    signers.sort_by_key(|s| s.public_key());
-    oracle.update(0, validators.clone().into()).await;
 
+    let threshold = quorum(how_many);
     let (polynomial, shares) =
         ops::generate_shares::<_, MinSig>(&mut context, None, how_many, threshold);
 
-    let mut public_keys = HashSet::new();
-    let mut nodes = Vec::new();
-    for (i, (signer, share)) in signers.into_iter().zip(shares).enumerate() {
-        let public_key = signer.public_key();
-        public_keys.insert(public_key.clone());
+    let mut port = start_port;
 
-        let uid = format!("validator-{public_key}");
+    let mut setups = vec![];
+
+    for i in 0..how_many {
+        let signer = PrivateKey::from_seed(u64::from(i));
+        // Should be port=0, but there is no way to get the dialable addr
+        // out or set to the same as listen_addr. At least for now.
+        let listen_addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let (network, oracle) = Network::new(
+            context.with_label(&format!("network-{i}")),
+            lookup::Config::local(
+                signer.clone(),
+                b"P2P",
+                listen_addr,
+                listen_addr,
+                1024 * 1024,
+            ),
+        );
+        setups.push(SetupValidator {
+            index: i,
+            signer,
+            oracle,
+            addr: listen_addr,
+            share: shares[i as usize].clone(),
+            network,
+        });
+        port += 1;
+    }
+    setups.sort_by_key(|setup| setup.signer.public_key());
+
+    let mut nodes = Vec::new();
+
+    let unresolved_peers: OrderedAssociated<_, _> = setups
+        .iter()
+        .map(|setup| (setup.signer.public_key(), setup.addr.to_string()))
+        .collect::<Vec<_>>()
+        .into();
+
+    // TODO: Technically unnecessary, done by unresolved_peers.
+    let participants: Ordered<_> = setups
+        .iter()
+        .map(|setup| setup.signer.public_key())
+        .collect::<Vec<_>>()
+        .into();
+
+    for SetupValidator {
+        index,
+        signer,
+        oracle,
+        share,
+        mut network,
+        ..
+    } in setups
+    {
+        let uid = format!("validator-{}", signer.public_key());
 
         let node = execution_runtime
-            .spawn_node_blocking(&format!("node-{i}"))
+            .spawn_node_blocking(&format!("node-{index}"))
             .expect("must be able to spawn nodes on the runtime");
 
         let engine = tempo_commonware_node::consensus::Builder {
             context: context.with_label(&uid),
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: node.node.clone(),
-            blocker: oracle.control(public_key.clone()),
+            blocker: oracle.clone(),
             peer_manager: oracle.clone(),
             partition_prefix: uid.clone(),
             signer: signer.clone(),
             polynomial: polynomial.clone(),
             share,
-            participants: validators.clone().into(),
+            participants: participants.clone(),
             mailbox_size: 1024,
             deque_size: 10,
             time_to_propose: Duration::from_secs(2),
@@ -133,54 +180,31 @@ pub async fn setup_validators(
             views_until_leader_skip: 5,
             new_payload_wait_time: Duration::from_millis(750),
             epoch_length,
+            unresolved_peers: unresolved_peers.clone(),
         }
         .try_init()
         .await
         .expect("must be able to initialize consensus engines to run tests");
 
-        let mut oracle = oracle.clone();
-        let validators = validators.clone();
-        let link = linkage.clone();
+        let pending = network.register(0, Quota::per_second(NZU32!(128)), 16_384);
+        let recovered = network.register(1, Quota::per_second(NZU32!(128)), 16_384);
+        let resolver = network.register(2, Quota::per_second(NZU32!(128)), 16_384);
+        let broadcast = network.register(3, Quota::per_second(NZU32!(8)), 16_384);
+        let marshal = network.register(4, Quota::per_second(NZU32!(8)), 16_384);
+        let dkg = network.register(5, Quota::per_second(NZU32!(128)), 16_384);
+        let boundary_certs = network.register(6, Quota::per_second(NZU32!(1)), 16_384);
+
+        // FIXME: bind to port 0, get the bound port out of this.
+        // let mut listener_info = network.listener_info();
+        network.start();
+
+        // FIXME(janis): bring back linkage once simulated p2p works with lookup.
+        // let link = linkage.clone();
         nodes.push(ValidatorNode {
             node,
             start_engine: Some(Box::pin(async move {
-                let pending = oracle
-                    .control(signer.public_key())
-                    .register(0)
-                    .await
-                    .unwrap();
-                let recovered = oracle
-                    .control(signer.public_key())
-                    .register(1)
-                    .await
-                    .unwrap();
-                let resolver = oracle
-                    .control(signer.public_key())
-                    .register(2)
-                    .await
-                    .unwrap();
-                let broadcast = oracle
-                    .control(signer.public_key())
-                    .register(3)
-                    .await
-                    .unwrap();
-                let marshal = oracle
-                    .control(signer.public_key())
-                    .register(4)
-                    .await
-                    .unwrap();
-                let dkg = oracle
-                    .control(signer.public_key())
-                    .register(5)
-                    .await
-                    .unwrap();
-                let boundary_certs = oracle
-                    .control(signer.public_key())
-                    .register(6)
-                    .await
-                    .unwrap();
-
-                link_validators(&mut oracle, &validators, link, None).await;
+                // FIXME(janis): bring back linkage once simulated p2p works with lookup.
+                // link_validators(&mut oracle, &validators, link, None).await;
 
                 engine.start(
                     pending,
@@ -196,8 +220,7 @@ pub async fn setup_validators(
             })),
         });
     }
-
-    (nodes, oracle)
+    nodes
 }
 
 /// Runs a test configured by [`Setup`].
@@ -209,7 +232,7 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
         let execution_runtime = ExecutionRuntime::new();
 
         // Setup and run all validators.
-        let (nodes, _oracle) = setup_validators(context.clone(), &execution_runtime, setup).await;
+        let nodes = setup_validators(context.clone(), &execution_runtime, setup).await;
         join_all(nodes.into_iter().map(|mut node| node.start())).await;
 
         loop {
@@ -247,42 +270,43 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
     })
 }
 
-/// Links (or unlinks) validators using the oracle.
-///
-/// The `action` parameter determines the action (e.g. link, unlink) to take.
-/// The `restrict_to` function can be used to restrict the linking to certain connections,
-/// otherwise all validators will be linked to all other validators.
-pub async fn link_validators(
-    oracle: &mut Oracle<PublicKey>,
-    validators: &[PublicKey],
-    link: Link,
-    restrict_to: Option<fn(usize, usize, usize) -> bool>,
-) {
-    for (i1, v1) in validators.iter().enumerate() {
-        for (i2, v2) in validators.iter().enumerate() {
-            // Ignore self
-            if v2 == v1 {
-                continue;
-            }
+// FIXME(janis): bring back linkage once simulated p2p works with lookup.
+// /// Links (or unlinks) validators using the oracle.
+// ///
+// /// The `action` parameter determines the action (e.g. link, unlink) to take.
+// /// The `restrict_to` function can be used to restrict the linking to certain connections,
+// /// otherwise all validators will be linked to all other validators.
+// pub async fn link_validators(
+//     oracle: &mut Oracle<PublicKey>,
+//     validators: &[PublicKey],
+//     link: Link,
+//     restrict_to: Option<fn(usize, usize, usize) -> bool>,
+// ) {
+//     for (i1, v1) in validators.iter().enumerate() {
+//         for (i2, v2) in validators.iter().enumerate() {
+//             // Ignore self
+//             if v2 == v1 {
+//                 continue;
+//             }
 
-            // Restrict to certain connections
-            if let Some(f) = restrict_to
-                && !f(validators.len(), i1, i2)
-            {
-                continue;
-            }
+//             // Restrict to certain connections
+//             if let Some(f) = restrict_to
+//                 && !f(validators.len(), i1, i2)
+//             {
+//                 continue;
+//             }
 
-            // Add link
-            match oracle.add_link(v1.clone(), v2.clone(), link.clone()).await {
-                Ok(()) => (),
-                // TODO: it should be possible to remove the below if Commonware simulated network exposes list of registered peers.
-                //
-                // This is fine because some of the peers might be registered later
-                Err(commonware_p2p::simulated::Error::PeerMissing) => (),
-                // This is fine because we might call this multiple times as peers are joining the network.
-                Err(commonware_p2p::simulated::Error::LinkExists) => (),
-                res @ Err(_) => res.unwrap(),
-            }
-        }
-    }
-}
+//             // Add link
+//             match oracle.add_link(v1.clone(), v2.clone(), link.clone()).await {
+//                 Ok(()) => (),
+//                 // TODO: it should be possible to remove the below if Commonware simulated network exposes list of registered peers.
+//                 //
+//                 // This is fine because some of the peers might be registered later
+//                 Err(commonware_p2p::simulated::Error::PeerMissing) => (),
+//                 // This is fine because we might call this multiple times as peers are joining the network.
+//                 Err(commonware_p2p::simulated::Error::LinkExists) => (),
+//                 res @ Err(_) => res.unwrap(),
+//             }
+//         }
+//     }
+// }

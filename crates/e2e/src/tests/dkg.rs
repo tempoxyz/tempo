@@ -10,17 +10,17 @@ use crate::{Setup, run};
 #[test_traced]
 fn transitions_with_perfect_links() {
     let _ = tempo_eyre::install();
-    let linkage = Link {
-        latency: Duration::from_millis(10),
-        jitter: Duration::from_millis(1),
-        success_rate: 1.0,
-    };
+    // let linkage = Link {
+    //     latency: Duration::from_millis(10),
+    //     jitter: Duration::from_millis(1),
+    //     success_rate: 1.0,
+    // };
 
     let epoch_length = 20;
     let setup = Setup {
         how_many: 3,
         seed: 0,
-        linkage,
+        // linkage,
         epoch_length,
     };
 

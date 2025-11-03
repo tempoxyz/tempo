@@ -234,3 +234,15 @@ test-case = "3"
 # build deps
 vergen = "9"
 vergen-git2 = "1"
+
+[patch.crates-io]
+commonware-broadcast = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
+commonware-codec = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
+commonware-consensus = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
+commonware-cryptography = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
+commonware-macros = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
+commonware-p2p = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
+commonware-resolver = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
+commonware-runtime = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
+commonware-storage = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
+commonware-utils = { version = "0.0.63", git = "https://github.com/superfluffy/monorepo", rev = "76a6e0b1a05a66e109c245480c6991a8eebbe4eb" }
