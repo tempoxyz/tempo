@@ -879,514 +879,494 @@ mod tests {
         LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE,
     };
     use alloy::primitives::{Address, U256};
-    //
-    // #[test]
-    // fn test_start_reward() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let current_time = storage.timestamp().to::<u64>();
-    //     let admin = Address::random();
-    //
-    //     let mut token = TIP20Token::new(1, &mut storage);
-    //     token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
-    //
-    //     let mut roles = token.get_roles_contract();
-    //     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    //
-    //     let mint_amount = U256::from(1000e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: admin,
-    //             amount: mint_amount,
-    //         },
-    //     )?;
-    //
-    //     let reward_amount = U256::from(100e18);
-    //     let stream_id = token.start_reward(
-    //         admin,
-    //         ITIP20::startRewardCall {
-    //             amount: reward_amount,
-    //             seconds: 10,
-    //         },
-    //     )?;
-    //     assert_eq!(stream_id, 1);
-    //
-    //     let token_address = token.token_address;
-    //     let balance = token.get_balance(token_address)?;
-    //     assert_eq!(balance, reward_amount);
-    //
-    //     let stream = token.get_stream(stream_id)?;
-    //     assert_eq!(stream.funder, admin);
-    //     assert_eq!(stream.start_time, current_time);
-    //     assert_eq!(stream.end_time, current_time + 10);
-    //
-    //     let total_reward_per_second = token.get_total_reward_per_second()?;
-    //     let expected_rate = (reward_amount * ACC_PRECISION) / U256::from(10);
-    //     assert_eq!(total_reward_per_second, expected_rate);
-    //
-    //     let reward_per_token_stored = token.get_reward_per_token_stored()?;
-    //     assert_eq!(reward_per_token_stored, U256::ZERO);
-    //
-    //     Ok(())
-    // }
-    //
-    // #[test]
-    // fn test_set_reward_recipient() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let alice = Address::random();
-    //
-    //     let mut token = TIP20Token::new(1, &mut storage);
-    //     token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
-    //
-    //     let mut roles = token.get_roles_contract();
-    //     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    //
-    //     let amount = U256::from(1000e18);
-    //     token.mint(admin, ITIP20::mintCall { to: alice, amount })?;
-    //
-    //     token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
-    //
-    //     assert_eq!(token.get_reward_recipient_of(alice)?, alice);
-    //     assert_eq!(token.get_delegated_balance(alice)?, amount);
-    //     assert_eq!(token.get_opted_in_supply()?, amount);
-    //     assert_eq!(token.get_user_reward_per_token_paid(alice)?, U256::ZERO);
-    //
-    //     token.set_reward_recipient(
-    //         alice,
-    //         ITIP20::setRewardRecipientCall {
-    //             recipient: Address::ZERO,
-    //         },
-    //     )?;
-    //
-    //     assert_eq!(token.get_reward_recipient_of(alice)?, Address::ZERO);
-    //     assert_eq!(token.get_delegated_balance(alice)?, U256::ZERO);
-    //     assert_eq!(token.get_opted_in_supply()?, U256::ZERO);
-    //     assert_eq!(token.get_user_reward_per_token_paid(alice)?, U256::ZERO);
-    //
-    //     Ok(())
-    // }
-    //
-    // #[test]
-    // fn test_cancel_reward() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //
-    //     let mut token = TIP20Token::new(1, &mut storage);
-    //     token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
-    //
-    //     let mut roles = token.get_roles_contract();
-    //     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    //
-    //     let mint_amount = U256::from(1000e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: admin,
-    //             amount: mint_amount,
-    //         },
-    //     )?;
-    //
-    //     let reward_amount = U256::from(100e18);
-    //     let stream_id = token.start_reward(
-    //         admin,
-    //         ITIP20::startRewardCall {
-    //             amount: reward_amount,
-    //             seconds: 10,
-    //         },
-    //     )?;
-    //
-    //     let remaining = token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
-    //
-    //     let total_after = token.get_total_reward_per_second()?;
-    //     assert_eq!(total_after, U256::ZERO);
-    //     assert_eq!(remaining, reward_amount);
-    //
-    //     let stream = token.get_stream(stream_id)?;
-    //     assert!(stream.funder.is_zero());
-    //     assert_eq!(stream.start_time, 0);
-    //     assert_eq!(stream.end_time, 0);
-    //     assert_eq!(stream.rate_per_second_scaled, U256::ZERO);
-    //
-    //     let reward_per_token_stored = token.get_reward_per_token_stored()?;
-    //     assert_eq!(reward_per_token_stored, U256::ZERO);
-    //
-    //     let opted_in_supply = token.get_opted_in_supply()?;
-    //     assert_eq!(opted_in_supply, U256::ZERO);
-    //
-    //     Ok(())
-    // }
-    //
-    // #[test]
-    // fn test_update_rewards() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let alice = Address::random();
-    //
-    //     let mut token = TIP20Token::new(1, &mut storage);
-    //     token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
-    //
-    //     let mut roles = token.get_roles_contract();
-    //     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    //
-    //     let mint_amount = U256::from(1000e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: alice,
-    //             amount: mint_amount,
-    //         },
-    //     )?;
-    //
-    //     token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
-    //
-    //     let reward_amount = U256::from(100e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: admin,
-    //             amount: reward_amount,
-    //         },
-    //     )?;
-    //
-    //     // Distribute the reward immediately
-    //     token.start_reward(
-    //         admin,
-    //         ITIP20::startRewardCall {
-    //             amount: reward_amount,
-    //             seconds: 0,
-    //         },
-    //     )?;
-    //
-    //     let alice_balance_before = token.get_balance(alice)?;
-    //     let reward_per_token_before = token.get_reward_per_token_stored()?;
-    //     let _user_reward_per_token_paid_before = token.get_user_reward_per_token_paid(alice)?;
-    //
-    //     token.update_rewards(alice)?;
-    //
-    //     let alice_balance_after = token.get_balance(alice)?;
-    //     let reward_per_token_after = token.get_reward_per_token_stored()?;
-    //     let user_reward_per_token_paid_after = token.get_user_reward_per_token_paid(alice)?;
-    //
-    //     assert!(alice_balance_after > alice_balance_before);
-    //     assert!(reward_per_token_after >= reward_per_token_before);
-    //     assert_eq!(user_reward_per_token_paid_after, reward_per_token_after);
-    //     assert_eq!(token.get_opted_in_supply()?, mint_amount + reward_amount);
-    //     assert_eq!(
-    //         token.get_delegated_balance(alice)?,
-    //         mint_amount + reward_amount
-    //     );
-    //
-    //     Ok(())
-    // }
-    //
-    // #[test]
-    // fn test_accrue() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let alice = Address::random();
-    //
-    //     let mut token = TIP20Token::new(1, &mut storage);
-    //     token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
-    //
-    //     let mut roles = token.get_roles_contract();
-    //     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    //
-    //     let mint_amount = U256::from(1000e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: alice,
-    //             amount: mint_amount,
-    //         },
-    //     )?;
-    //
-    //     token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
-    //
-    //     let reward_amount = U256::from(100e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: admin,
-    //             amount: reward_amount,
-    //         },
-    //     )?;
-    //
-    //     token.start_reward(
-    //         admin,
-    //         ITIP20::startRewardCall {
-    //             amount: reward_amount,
-    //             seconds: 100,
-    //         },
-    //     )?;
-    //
-    //     let rpt_before = token.get_reward_per_token_stored()?;
-    //     let last_update_before = token.get_last_update_time()?;
-    //
-    //     let timestamp = token.storage.timestamp();
-    //     token.accrue(timestamp)?;
-    //
-    //     let rpt_after = token.get_reward_per_token_stored()?;
-    //     let last_update_after = token.get_last_update_time()?;
-    //
-    //     assert!(rpt_after >= rpt_before);
-    //     assert!(last_update_after >= last_update_before);
-    //
-    //     // Check total reward per second remains consistent
-    //     let total_reward_per_second = token.get_total_reward_per_second()?;
-    //     let expected_rate = (reward_amount * ACC_PRECISION) / U256::from(100);
-    //     assert_eq!(total_reward_per_second, expected_rate);
-    //
-    //     assert_eq!(token.get_opted_in_supply()?, mint_amount);
-    //     assert_eq!(token.get_delegated_balance(alice)?, mint_amount);
-    //     assert_eq!(token.get_user_reward_per_token_paid(alice)?, U256::ZERO);
-    //     Ok(())
-    // }
-    //
-    // #[test]
-    // fn test_finalize_streams() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let current_time = storage.timestamp().to::<u128>();
-    //     let admin = Address::random();
-    //     let alice = Address::random();
-    //
-    //     let mut token = TIP20Token::new(1, &mut storage);
-    //     token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
-    //
-    //     let mut roles = token.get_roles_contract();
-    //     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    //
-    //     let mint_amount = U256::from(1000e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: alice,
-    //             amount: mint_amount,
-    //         },
-    //     )?;
-    //
-    //     token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
-    //
-    //     let reward_amount = U256::from(100e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: admin,
-    //             amount: reward_amount,
-    //         },
-    //     )?;
-    //
-    //     let stream_duration = 10u128;
-    //     token.start_reward(
-    //         admin,
-    //         ITIP20::startRewardCall {
-    //             amount: reward_amount,
-    //             seconds: stream_duration,
-    //         },
-    //     )?;
-    //
-    //     let end_time = current_time + stream_duration;
-    //
-    //     // Advance the timestamp to simulate time passing
-    //     token.storage.set_timestamp(U256::from(end_time));
-    //
-    //     let total_before = token.get_total_reward_per_second()?;
-    //     token.finalize_streams(
-    //         TIP20_REWARDS_REGISTRY_ADDRESS,
-    //         token.storage.timestamp().to::<u128>(),
-    //     )?;
-    //     let total_after = token.get_total_reward_per_second()?;
-    //
-    //     assert!(total_after < total_before);
-    //
-    //     // Check reward per token stored has been updated
-    //     let reward_per_token_stored = token.get_reward_per_token_stored()?;
-    //     assert!(reward_per_token_stored > U256::ZERO);
-    //
-    //     token.update_rewards(alice)?;
-    //     assert_eq!(token.get_opted_in_supply()?, mint_amount + reward_amount);
-    //     assert_eq!(
-    //         token.get_delegated_balance(alice)?,
-    //         mint_amount + reward_amount
-    //     );
-    //     assert_eq!(
-    //         token.get_user_reward_per_token_paid(alice)?,
-    //         reward_per_token_stored
-    //     );
-    //
-    //     // TODO: assert balances
-    //
-    //     Ok(())
-    // }
-    //
-    // #[test]
-    // fn test_start_reward_duration_0() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let alice = Address::random();
-    //
-    //     let mut token = TIP20Token::new(1, &mut storage);
-    //     token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
-    //
-    //     let mut roles = token.get_roles_contract();
-    //     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    //
-    //     // Mint tokens to Alice and have her opt in as reward recipient
-    //     let mint_amount = U256::from(1000e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: alice,
-    //             amount: mint_amount,
-    //         },
-    //     )?;
-    //
-    //     token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
-    //
-    //     // Mint reward tokens to admin
-    //     let reward_amount = U256::from(100e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: admin,
-    //             amount: reward_amount,
-    //         },
-    //     )?;
-    //
-    //     let alice_balance_before = token.get_balance(alice)?;
-    //
-    //     // Start immediate reward
-    //     let id = token.start_reward(
-    //         admin,
-    //         ITIP20::startRewardCall {
-    //             amount: reward_amount,
-    //             seconds: 0,
-    //         },
-    //     )?;
-    //
-    //     assert_eq!(id, 0);
-    //
-    //     let bob = Address::random();
-    //     token.transfer(
-    //         alice,
-    //         ITIP20::transferCall {
-    //             to: bob,
-    //             amount: U256::from(1),
-    //         },
-    //     )?;
-    //
-    //     let alice_balance_after = token.get_balance(alice)?;
-    //
-    //     assert_eq!(
-    //         alice_balance_after,
-    //         alice_balance_before + reward_amount - U256::from(1)
-    //     );
-    //
-    //     let total_reward_per_second = token.get_total_reward_per_second()?;
-    //     assert_eq!(total_reward_per_second, U256::ZERO);
-    //
-    //     let opted_in_supply = token.get_opted_in_supply()?;
-    //     assert_eq!(opted_in_supply, mint_amount + reward_amount - U256::ONE);
-    //
-    //     Ok(())
-    // }
-    //
-    // #[test]
-    // fn test_reward_distribution_pro_rata() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let alice = Address::random();
-    //
-    //     let mut token = TIP20Token::new(1, &mut storage);
-    //     token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
-    //
-    //     let mut roles = token.get_roles_contract();
-    //     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    //
-    //     // Mint tokens to Alice and have her opt in as reward recipient
-    //     let mint_amount = U256::from(1000e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: alice,
-    //             amount: mint_amount,
-    //         },
-    //     )?;
-    //
-    //     token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
-    //
-    //     // Mint reward tokens to admin
-    //     let reward_amount = U256::from(100e18);
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: admin,
-    //             amount: reward_amount,
-    //         },
-    //     )?;
-    //
-    //     let alice_balance_before = token.get_balance(alice)?;
-    //
-    //     // Start streaming reward for 20 seconds
-    //     let stream_id = token.start_reward(
-    //         admin,
-    //         ITIP20::startRewardCall {
-    //             amount: reward_amount,
-    //             seconds: 20,
-    //         },
-    //     )?;
-    //
-    //     assert_eq!(stream_id, 1);
-    //
-    //     // Simulate 10 blocks
-    //     let current_timestamp = token.storage.timestamp();
-    //     token
-    //         .storage
-    //         .set_timestamp(current_timestamp + uint!(10_U256));
-    //
-    //     token.finalize_streams(
-    //         TIP20_REWARDS_REGISTRY_ADDRESS,
-    //         token.storage.timestamp().to::<u128>(),
-    //     )?;
-    //     token.transfer(
-    //         alice,
-    //         ITIP20::transferCall {
-    //             to: Address::random(),
-    //             amount: U256::ONE,
-    //         },
-    //     )?;
-    //
-    //     // Assert balances after first half elapsed
-    //     let alice_balance_mid = token.get_balance(alice)?;
-    //     let expected_balance = alice_balance_before + (reward_amount / uint!(2_U256)) - U256::ONE;
-    //     assert_eq!(alice_balance_mid, expected_balance);
-    //
-    //     token
-    //         .storage
-    //         .set_timestamp(current_timestamp + uint!(20_U256));
-    //
-    //     token.finalize_streams(
-    //         TIP20_REWARDS_REGISTRY_ADDRESS,
-    //         token.storage.timestamp().to::<u128>(),
-    //     )?;
-    //     token.transfer(
-    //         alice,
-    //         ITIP20::transferCall {
-    //             to: Address::random(),
-    //             amount: U256::ONE,
-    //         },
-    //     )?;
-    //
-    //     // Assert balances
-    //     let alice_balance_after = token.get_balance(alice)?;
-    //
-    //     // NOTE: checking balance increased, loss precision due to rounding
-    //     assert!(alice_balance_after > alice_balance_before);
-    //
-    //     // Confirm that stream is finished
-    //     let total_reward_per_second = token.get_total_reward_per_second()?;
-    //     assert_eq!(total_reward_per_second, U256::ZERO);
-    //
-    //     Ok(())
-    // }
+
+    #[test]
+    fn test_start_reward() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let current_time = storage.timestamp().to::<u64>();
+        let admin = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let reward_amount = U256::from(100e18);
+        let stream_id = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 10,
+            },
+        )?;
+        assert_eq!(stream_id, 1);
+
+        let token_address = token.token_address;
+        let balance = token.get_balance(token_address)?;
+        assert_eq!(balance, reward_amount);
+
+        let stream = token.get_stream(stream_id)?;
+        assert_eq!(stream.funder, admin);
+        assert_eq!(stream.start_time, current_time);
+        assert_eq!(stream.end_time, current_time + 10);
+
+        let total_reward_per_second = token.get_total_reward_per_second()?;
+        let expected_rate = (reward_amount * ACC_PRECISION) / U256::from(10);
+        assert_eq!(total_reward_per_second, expected_rate);
+
+        let global_reward_per_token = token.get_global_reward_per_token()?;
+        assert_eq!(global_reward_per_token, U256::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_reward_recipient() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let amount = U256::from(1000e18);
+        token.mint(admin, ITIP20::mintCall { to: alice, amount })?;
+
+        token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+        let info = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
+        assert_eq!(info.delegated_recipient, alice);
+        assert_eq!(token.get_opted_in_supply()?, amount);
+        assert_eq!(info.reward_per_token, U256::ZERO);
+
+        token.set_reward_recipient(
+            alice,
+            ITIP20::setRewardRecipientCall {
+                recipient: Address::ZERO,
+            },
+        )?;
+
+        let info = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
+        assert_eq!(info.delegated_recipient, Address::ZERO);
+        assert_eq!(token.get_opted_in_supply()?, U256::ZERO);
+        assert_eq!(info.reward_per_token, U256::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_reward() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let reward_amount = U256::from(100e18);
+        let stream_id = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 10,
+            },
+        )?;
+
+        let remaining = token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
+
+        let total_after = token.get_total_reward_per_second()?;
+        assert_eq!(total_after, U256::ZERO);
+        assert_eq!(remaining, reward_amount);
+
+        let stream = token.get_stream(stream_id)?;
+        assert!(stream.funder.is_zero());
+        assert_eq!(stream.start_time, 0);
+        assert_eq!(stream.end_time, 0);
+        assert_eq!(stream.rate_per_second_scaled, U256::ZERO);
+
+        let global_reward_per_token = token.get_global_reward_per_token()?;
+        assert_eq!(global_reward_per_token, U256::ZERO);
+
+        let opted_in_supply = token.get_opted_in_supply()?;
+        assert_eq!(opted_in_supply, U256::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_rewards() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: alice,
+                amount: mint_amount,
+            },
+        )?;
+
+        token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+        let reward_amount = U256::from(100e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: reward_amount,
+            },
+        )?;
+
+        // Distribute the reward immediately
+        token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 0,
+            },
+        )?;
+
+        let info_before = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
+        token.update_rewards(alice)?;
+        let info_after = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
+        let global_rpt_after = token.get_global_reward_per_token()?;
+
+        assert_eq!(info_after.reward_per_token, global_rpt_after);
+        assert_eq!(info_after.reward_balance, reward_amount);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_accrue() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: alice,
+                amount: mint_amount,
+            },
+        )?;
+
+        token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+        let reward_amount = U256::from(100e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: reward_amount,
+            },
+        )?;
+
+        token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 100,
+            },
+        )?;
+
+        let rpt_before = token.get_global_reward_per_token()?;
+        let last_update_before = token.get_last_update_time()?;
+
+        let timestamp = token.storage.timestamp();
+        token.accrue(timestamp)?;
+
+        let rpt_after = token.get_global_reward_per_token()?;
+        let last_update_after = token.get_last_update_time()?;
+
+        assert!(rpt_after >= rpt_before);
+        assert!(last_update_after >= last_update_before);
+
+        let total_reward_per_second = token.get_total_reward_per_second()?;
+        let expected_rate = (reward_amount * ACC_PRECISION) / U256::from(100);
+        assert_eq!(total_reward_per_second, expected_rate);
+
+        assert_eq!(token.get_opted_in_supply()?, mint_amount);
+        let info = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
+        assert_eq!(info.reward_per_token, U256::ZERO);
+        Ok(())
+    }
+
+    #[test]
+    fn test_finalize_streams() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let current_time = storage.timestamp().to::<u128>();
+        let admin = Address::random();
+        let alice = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: alice,
+                amount: mint_amount,
+            },
+        )?;
+
+        token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+        let reward_amount = U256::from(100e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: reward_amount,
+            },
+        )?;
+
+        let stream_duration = 10u128;
+        token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: stream_duration,
+            },
+        )?;
+
+        let end_time = current_time + stream_duration;
+
+        // Advance the timestamp to simulate time passing
+        token.storage.set_timestamp(U256::from(end_time));
+
+        let total_before = token.get_total_reward_per_second()?;
+        token.finalize_streams(
+            TIP20_REWARDS_REGISTRY_ADDRESS,
+            token.storage.timestamp().to::<u128>(),
+        )?;
+        let total_after = token.get_total_reward_per_second()?;
+
+        assert!(total_after < total_before);
+
+        let global_rpt = token.get_global_reward_per_token()?;
+        assert!(global_rpt > U256::ZERO);
+
+        token.update_rewards(alice)?;
+        let info = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
+        assert_eq!(info.reward_per_token, global_rpt);
+
+        token.claim_rewards(alice)?;
+        assert_eq!(token.get_opted_in_supply()?, mint_amount + reward_amount);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_start_reward_duration_0() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint tokens to Alice and have her opt in as reward recipient
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: alice,
+                amount: mint_amount,
+            },
+        )?;
+
+        token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+        // Mint reward tokens to admin
+        let reward_amount = U256::from(100e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: reward_amount,
+            },
+        )?;
+
+        let alice_balance_before = token.get_balance(alice)?;
+
+        // Start immediate reward
+        let id = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 0,
+            },
+        )?;
+
+        assert_eq!(id, 0);
+
+        let bob = Address::random();
+        token.transfer(
+            alice,
+            ITIP20::transferCall {
+                to: bob,
+                amount: U256::from(1),
+            },
+        )?;
+
+        token.claim_rewards(alice)?;
+        let alice_balance_after = token.get_balance(alice)?;
+
+        assert_eq!(
+            alice_balance_after,
+            alice_balance_before + reward_amount - U256::from(1)
+        );
+
+        let total_reward_per_second = token.get_total_reward_per_second()?;
+        assert_eq!(total_reward_per_second, U256::ZERO);
+
+        let opted_in_supply = token.get_opted_in_supply()?;
+        assert_eq!(opted_in_supply, mint_amount + reward_amount - U256::ONE);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reward_distribution_pro_rata() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint tokens to Alice and have her opt in as reward recipient
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: alice,
+                amount: mint_amount,
+            },
+        )?;
+
+        token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+        // Mint reward tokens to admin
+        let reward_amount = U256::from(100e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: reward_amount,
+            },
+        )?;
+
+        let alice_balance_before = token.get_balance(alice)?;
+
+        // Start streaming reward for 20 seconds
+        let stream_id = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                seconds: 20,
+            },
+        )?;
+
+        assert_eq!(stream_id, 1);
+
+        // Simulate 10 blocks
+        let current_timestamp = token.storage.timestamp();
+        token
+            .storage
+            .set_timestamp(current_timestamp + uint!(10_U256));
+
+        token.finalize_streams(
+            TIP20_REWARDS_REGISTRY_ADDRESS,
+            token.storage.timestamp().to::<u128>(),
+        )?;
+        token.claim_rewards(alice)?;
+        token.transfer(
+            alice,
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::ONE,
+            },
+        )?;
+
+        let alice_balance_mid = token.get_balance(alice)?;
+        let expected_balance = alice_balance_before + (reward_amount / uint!(2_U256)) - U256::ONE;
+        assert_eq!(alice_balance_mid, expected_balance);
+
+        token
+            .storage
+            .set_timestamp(current_timestamp + uint!(20_U256));
+
+        token.finalize_streams(
+            TIP20_REWARDS_REGISTRY_ADDRESS,
+            token.storage.timestamp().to::<u128>(),
+        )?;
+        token.claim_rewards(alice)?;
+        token.transfer(
+            alice,
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::ONE,
+            },
+        )?;
+
+        let alice_balance_after = token.get_balance(alice)?;
+
+        assert!(alice_balance_after > alice_balance_before);
+
+        let total_reward_per_second = token.get_total_reward_per_second()?;
+        assert_eq!(total_reward_per_second, U256::ZERO);
+
+        Ok(())
+    }
 }
