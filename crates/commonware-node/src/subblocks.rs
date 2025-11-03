@@ -45,6 +45,16 @@ use tempo_primitives::{
 };
 use tracing::{debug, instrument, warn};
 
+pub(crate) struct Config<TContext> {
+    pub(crate) context: TContext,
+    pub(crate) signer: PrivateKey,
+    pub(crate) scheme_provider: SchemeProvider,
+    pub(crate) node: TempoFullNode,
+    pub(crate) fee_recipient: Address,
+    pub(crate) time_to_build_subblock: Duration,
+    pub(crate) epoch_length: u64,
+}
+
 /// Task managing collected subblocks.
 ///
 /// This actor is responsible for tracking consensus events and determining
@@ -89,13 +99,15 @@ pub struct Actor<TContext> {
 
 impl<TContext: Spawner> Actor<TContext> {
     pub(crate) fn new(
-        context: TContext,
-        signer: PrivateKey,
-        scheme_provider: SchemeProvider,
-        node: TempoFullNode,
-        fee_recipient: Address,
-        time_to_build_subblock: Duration,
-        epoch_length: u64,
+        Config {
+            context,
+            signer,
+            scheme_provider,
+            node,
+            fee_recipient,
+            time_to_build_subblock,
+            epoch_length,
+        }: Config<TContext>,
     ) -> Self {
         let (actions_tx, actions_rx) = mpsc::unbounded();
         Self {

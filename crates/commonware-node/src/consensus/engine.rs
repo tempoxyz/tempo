@@ -175,15 +175,15 @@ where
         )
         .await;
 
-        let subblocks = subblocks::Actor::new(
-            self.context.clone(),
-            self.signer.clone(),
-            scheme_provider.clone(),
-            self.execution_node.clone(),
-            self.fee_recipient,
-            self.time_to_build_subblock,
-            self.epoch_length,
-        );
+        let subblocks = subblocks::Actor::new(subblocks::Config {
+            context: self.context.clone(),
+            signer: self.signer.clone(),
+            scheme_provider: scheme_provider.clone(),
+            node: self.execution_node.clone(),
+            fee_recipient: self.fee_recipient,
+            time_to_build_subblock: self.time_to_build_subblock,
+            epoch_length: self.epoch_length,
+        });
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: self.context.with_label("application"),
