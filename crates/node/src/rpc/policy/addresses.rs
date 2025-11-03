@@ -1,5 +1,5 @@
 use crate::rpc::pagination::{FieldName, PaginationParams};
-use alloy_primitives::{Address, B256};
+use alloy_primitives::Address;
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;
 
@@ -7,7 +7,7 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase")]
 pub struct AddressesParams {
     /// Policy ID to query addresses for
-    pub policy_id: B256,
+    pub policy_id: u64,
     /// Determines what items should be yielded in the response.
     #[serde(flatten)]
     pub params: PaginationParams<AddressesFilters>,

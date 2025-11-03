@@ -1,5 +1,5 @@
 use crate::rpc::pagination::{FieldName, FilterRange};
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, U256};
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;
 
@@ -50,11 +50,11 @@ pub struct Token {
     /// Token symbol
     pub symbol: String,
     /// Unique token ID from factory
-    pub token_id: B256,
+    pub token_id: u64,
     /// Current total supply
     pub total_supply: U256,
     /// Current transfer policy ID
-    pub transfer_policy_id: B256,
+    pub transfer_policy_id: u64,
 }
 
 impl FieldName for Token {
