@@ -20,6 +20,9 @@ pub trait PrecompileStorageProvider {
     ) -> Result<(), TempoPrecompileError>;
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError>;
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError>;
+
+    /// Deducts gas from the remaining gas and return an error if the gas is insufficient.
+    fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError>;
 }
 
 pub trait StorageOps {

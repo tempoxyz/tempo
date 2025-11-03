@@ -496,7 +496,8 @@ where
 
         if !nonce_key.is_zero() {
             let internals = EvmInternals::new(journal, block);
-            let mut storage_provider = EvmPrecompileStorageProvider::new(internals, cfg.chain_id);
+            let mut storage_provider =
+                EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id);
             let mut nonce_manager = NonceManager::new(&mut storage_provider);
 
             if !cfg.is_nonce_check_disabled() {
@@ -561,7 +562,8 @@ where
 
         // Create storage provider wrapper around journal
         let internals = EvmInternals::new(journal, &block);
-        let mut storage_provider = EvmPrecompileStorageProvider::new(internals, cfg.chain_id());
+        let mut storage_provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id());
         let mut fee_manager = TipFeeManager::new(
             TIP_FEE_MANAGER_ADDRESS,
             block.beneficiary(),
@@ -637,7 +639,7 @@ where
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let internals = EvmInternals::new(journal, block);
-        let mut storage_provider = EvmPrecompileStorageProvider::new(internals, chain_id);
+        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, chain_id);
         let mut fee_manager = TipFeeManager::new(
             TIP_FEE_MANAGER_ADDRESS,
             block.beneficiary,
