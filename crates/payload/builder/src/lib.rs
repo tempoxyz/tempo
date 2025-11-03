@@ -34,7 +34,13 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
@@ -52,7 +58,7 @@ use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use tracing::{Level, debug, info, instrument, trace, warn};
+use tracing::{Level, debug, error, info, instrument, trace, warn};
 
 use crate::metrics::TempoPayloadBuilderMetrics;
 
@@ -62,6 +68,16 @@ pub struct TempoPayloadBuilder<Provider> {
     provider: Provider,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
+    /// Height at which we've seen an invalid subblock.
+    ///
+    /// We pre-validate all of the subblock transactions when collecting subblocks, so this
+    /// should never be set because subblocks with invalid transactions should never make it to the payload builder.
+    ///
+    /// However, due to disruptive nature of subblock-related bugs (invalid subblock
+    /// we're continously failing to apply halts block building), we protect against this by tracking
+    /// last height at which we've seen an invalid subblock, and not including any subblocks
+    /// at this height for any payloads.
+    highest_invalid_subblock: Arc<AtomicU64>,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -75,6 +91,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             provider,
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
+            highest_invalid_subblock: Default::default(),
         }
     }
 }
@@ -209,9 +226,11 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        self.build_payload(args, |attributes| {
-            self.pool.best_transactions_with_attributes(attributes)
-        })
+        self.build_payload(
+            args,
+            |attributes| self.pool.best_transactions_with_attributes(attributes),
+            false,
+        )
     }
 
     fn on_missing_payload(
@@ -233,6 +252,7 @@ where
                 Default::default(),
             ),
             |_| core::iter::empty(),
+            true,
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -256,6 +276,7 @@ where
         &self,
         args: BuildArguments<TempoPayloadBuilderAttributes, EthBuiltPayload<TempoPrimitives>>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        empty: bool,
     ) -> Result<BuildOutcome<EthBuiltPayload<TempoPrimitives>>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -442,7 +463,17 @@ where
             cumulative_gas_used += gas_used;
         }
 
-        let mut subblocks = attributes.subblocks();
+        // If building an empty payload, don't include any subblocks
+        //
+        // Also don't include any subblocks if we've seen an invalid subblock
+        // at this height or above.
+        let mut subblocks = if empty
+            || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
+        {
+            vec![]
+        } else {
+            attributes.subblocks()
+        };
 
         // Edge case: remove subblocks with expired transactions
         //
@@ -474,9 +505,23 @@ where
 
         for subblock in &subblocks {
             for tx in subblock.transactions_recovered() {
-                builder
-                    .execute_transaction(tx.cloned())
-                    .map_err(PayloadBuilderError::evm)?;
+                if let Err(err) = builder.execute_transaction(tx.cloned()) {
+                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                        ..
+                    }) = &err
+                    {
+                        error!(
+                            ?err,
+                            "subblock transaction failed execution, aborting payload building"
+                        );
+                        self.highest_invalid_subblock
+                            .store(builder.evm().block().number.to(), Ordering::Relaxed);
+
+                        return Err(PayloadBuilderError::evm(err));
+                    } else {
+                        return Err(PayloadBuilderError::evm(err));
+                    }
+                }
             }
         }
 
