@@ -116,24 +116,12 @@ impl Order {
     }
 
     /// Creates a new bid order
-    pub fn new_bid(
-        order_id: u128,
-        maker: Address,
-        book_key: u64,
-        amount: u128,
-        tick: i16,
-    ) -> Self {
+    pub fn new_bid(order_id: u128, maker: Address, book_key: u64, amount: u128, tick: i16) -> Self {
         Self::new(order_id, maker, book_key, amount, tick, true, false, 0)
     }
 
     /// Creates a new ask order
-    pub fn new_ask(
-        order_id: u128,
-        maker: Address,
-        book_key: u64,
-        amount: u128,
-        tick: i16,
-    ) -> Self {
+    pub fn new_ask(order_id: u128, maker: Address, book_key: u64, amount: u128, tick: i16) -> Self {
         Self::new(order_id, maker, book_key, amount, tick, false, false, 0)
     }
 
