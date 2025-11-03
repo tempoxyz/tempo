@@ -238,6 +238,7 @@ impl<TContext: Spawner> Actor<TContext> {
         };
 
         let Ok(Some(header)) = self.node.provider.header(*tip) else {
+            debug!(?tip, "missing header for the tip block at {tip}");
             return;
         };
 
@@ -246,6 +247,7 @@ impl<TContext: Spawner> Actor<TContext> {
 
         // Can't proceed without knowing a validator set for the current epoch.
         let Some(scheme) = self.scheme_provider.scheme(epoch_of_next_block) else {
+            debug!(epoch_of_next_block, "scheme not found for epoch");
             return;
         };
 
