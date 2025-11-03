@@ -14,6 +14,13 @@ wrap_fixed_bytes! {
     pub struct PartialValidatorKey<15>;
 }
 
+impl PartialValidatorKey {
+    /// Returns whether this partial public key matches the given validator public key.
+    pub fn matches(&self, validator: impl AsRef<[u8]>) -> bool {
+        validator.as_ref().starts_with(self.as_slice())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum SubBlockVersion {

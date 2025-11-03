@@ -20,13 +20,6 @@ pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
 pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
 
-impl PartialValidatorKey {
-    /// Returns whether this partial public key matches the given validator public key.
-    pub fn matches(&self, validator: impl AsRef<[u8]>) -> bool {
-        validator.as_ref().starts_with(self.as_slice())
-    }
-}
-
 /// Signature type enumeration
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
