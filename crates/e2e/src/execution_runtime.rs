@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 use eyre::WrapErr as _;
 use reth_db::mdbx::DatabaseArguments;
 use reth_ethereum::{
-    network::api::{test_utils::PeersHandleProvider, PeersInfo},
+    network::api::{PeersInfo, test_utils::PeersHandleProvider},
     tasks::{TaskExecutor, TaskManager},
 };
 use reth_node_builder::{NodeBuilder, NodeConfig};
