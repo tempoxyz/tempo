@@ -17,7 +17,7 @@ pub struct TokensByAddressResponse {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokensByAddressParams {
-    /// Filter by account address that received/lost role.
+    /// Account address to query tokens for.
     pub address: Address,
     /// Determines what items should be yielded in the response.
     #[serde(flatten)]
