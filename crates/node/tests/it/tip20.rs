@@ -725,10 +725,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     pending.push(alice_token.setRewardRecipient(bob).send().await?);
     await_receipts(&mut pending).await?;
 
-    // Check balances before finalizing streams
-    let alice_balance_before = token.balanceOf(alice).call().await?;
-    let bob_balance_before = token.balanceOf(bob).call().await?;
-
     // Start reward stream
     let start_receipt = token
         .startReward(reward_amount, 1)
