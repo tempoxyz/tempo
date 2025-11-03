@@ -53,6 +53,28 @@ pub fn address_to_token_id_unchecked(address: Address) -> u64 {
     u64::from_be_bytes(address.as_slice()[12..20].try_into().unwrap())
 }
 
+/// Converts a u32 token ID to its corresponding contract address (TIP20 precompile address)
+/// Format: 0x20C0000000000000000000000000{tokenId as u32}
+/// This places the token ID in the last 4 bytes of the address
+pub fn token_id_u32_to_address(token_id: u32) -> Address {
+    let mut address_bytes = [0u8; 20];
+    address_bytes[..12].copy_from_slice(&TIP20_TOKEN_PREFIX);
+    // Place the u32 token ID in the last 4 bytes (big-endian)
+    address_bytes[16..20].copy_from_slice(&token_id.to_be_bytes());
+    Address::from(address_bytes)
+}
+
+/// Extracts the u32 token ID from a TIP20 address
+/// This is the inverse of token_id_u32_to_address
+/// Note: This does NOT validate that the address is a valid TIP20 address
+pub fn address_to_token_id_u32_unchecked(address: &Address) -> u32 {
+    u32::from_be_bytes(
+        address.as_slice()[16..20]
+            .try_into()
+            .expect("Address is always 20 bytes; slicing [16..20] always yields 4 bytes for u32"),
+    )
+}
+
 pub mod slots {
     use alloy::primitives::{U256, uint};
 

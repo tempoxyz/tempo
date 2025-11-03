@@ -81,7 +81,7 @@ impl SimpleArbArgs {
         for pair in pairs.iter() {
             // Get current pool state
             let pool = fee_amm
-                .getPool(pair.0, pair.1)
+                .getPool_1(pair.0, pair.1)
                 .call()
                 .await
                 .wrap_err_with(|| {
@@ -90,7 +90,7 @@ impl SimpleArbArgs {
 
             if pool.reserveUserToken > 0
                 && let Err(e) = fee_amm
-                    .rebalanceSwap(
+                    .rebalanceSwap_1(
                         pair.0,
                         pair.1,
                         U256::from(pool.reserveUserToken),
@@ -116,7 +116,7 @@ impl SimpleArbArgs {
             for pair in pairs.iter() {
                 // Get current pool state
                 let pool = fee_amm
-                    .getPool(pair.0, pair.1)
+                    .getPool_1(pair.0, pair.1)
                     .call()
                     .await
                     .wrap_err_with(|| {
@@ -127,7 +127,7 @@ impl SimpleArbArgs {
                     let mut pending_txs = vec![];
 
                     match fee_amm
-                        .rebalanceSwap(
+                        .rebalanceSwap_1(
                             pair.0,
                             pair.1,
                             U256::from(pool.reserveUserToken),

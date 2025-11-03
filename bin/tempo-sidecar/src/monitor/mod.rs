@@ -93,7 +93,7 @@ impl Monitor {
             let (&token_a, &token_b) = (pool_addresses[0], pool_addresses[1]);
             debug!(%token_a, %token_b, "fetching pool");
 
-            let pool: Result<Pool, _> = fee_amm.getPool(token_a, token_b).call().await;
+            let pool: Result<Pool, _> = fee_amm.getPool_1(token_a, token_b).call().await;
             match pool {
                 Ok(pool) => {
                     self.pools.insert((token_a, token_b), pool);

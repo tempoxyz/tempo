@@ -2,6 +2,7 @@ use crate::{
     Precompile, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
+    tip20::address_to_token_id_u32_unchecked,
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -32,11 +33,36 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                     self.get_fee_token_balance(call)
                 })
             }
-            ITIPFeeAMM::getPoolIdCall::SELECTOR => {
-                view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| Ok(self.get_pool_id(call)))
+            // getPoolId uint32 version (canonical)
+            ITIPFeeAMM::getPoolId_0Call::SELECTOR => {
+                view::<ITIPFeeAMM::getPoolId_0Call>(calldata, |call| Ok(self.get_pool_id(call)))
             }
-            ITIPFeeAMM::getPoolCall::SELECTOR => {
-                view::<ITIPFeeAMM::getPoolCall>(calldata, |call| self.get_pool(call))
+            // getPoolId address version (backward compatibility)
+            ITIPFeeAMM::getPoolId_1Call::SELECTOR => {
+                view::<ITIPFeeAMM::getPoolId_1Call>(calldata, |call| {
+                    let user_id = address_to_token_id_u32_unchecked(&call.userToken);
+                    let validator_id = address_to_token_id_u32_unchecked(&call.validatorToken);
+                    Ok(self.get_pool_id(ITIPFeeAMM::getPoolId_0Call {
+                        userToken: user_id,
+                        validatorToken: validator_id,
+                    }))
+                })
+            }
+
+            // getPool uint32 version (canonical)
+            ITIPFeeAMM::getPool_0Call::SELECTOR => {
+                view::<ITIPFeeAMM::getPool_0Call>(calldata, |call| self.get_pool(call))
+            }
+            // getPool address version (backward compatibility)
+            ITIPFeeAMM::getPool_1Call::SELECTOR => {
+                view::<ITIPFeeAMM::getPool_1Call>(calldata, |call| {
+                    let user_id = address_to_token_id_u32_unchecked(&call.userToken);
+                    let validator_id = address_to_token_id_u32_unchecked(&call.validatorToken);
+                    self.get_pool(ITIPFeeAMM::getPool_0Call {
+                        userToken: user_id,
+                        validatorToken: validator_id,
+                    })
+                })
             }
             ITIPFeeAMM::poolsCall::SELECTOR => {
                 view::<ITIPFeeAMM::poolsCall>(calldata, |call| self.pools(call))
@@ -68,15 +94,102 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                     self.execute_block(s)
                 })
             }
-            ITIPFeeAMM::mintCall::SELECTOR => {
-                mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| self.mint(s, call))
+            // mint uint32 version (canonical)
+            ITIPFeeAMM::mint_0Call::SELECTOR => {
+                mutate::<ITIPFeeAMM::mint_0Call>(calldata, msg_sender, |s, call| self.mint(s, call))
             }
-            ITIPFeeAMM::burnCall::SELECTOR => {
-                mutate::<ITIPFeeAMM::burnCall>(calldata, msg_sender, |s, call| self.burn(s, call))
+            // mint address version (backward compatibility)
+            ITIPFeeAMM::mint_1Call::SELECTOR => {
+                mutate::<ITIPFeeAMM::mint_1Call>(calldata, msg_sender, |s, call| {
+                    let user_id = address_to_token_id_u32_unchecked(&call.userToken);
+                    let validator_id = address_to_token_id_u32_unchecked(&call.validatorToken);
+                    self.mint(
+                        s,
+                        ITIPFeeAMM::mint_0Call {
+                            userToken: user_id,
+                            validatorToken: validator_id,
+                            amountUserToken: call.amountUserToken,
+                            amountValidatorToken: call.amountValidatorToken,
+                            to: call.to,
+                        },
+                    )
+                })
             }
-            ITIPFeeAMM::rebalanceSwapCall::SELECTOR => {
-                mutate::<ITIPFeeAMM::rebalanceSwapCall>(calldata, msg_sender, |s, call| {
+
+            // mintWithValidatorToken uint32 version (canonical)
+            ITIPFeeAMM::mintWithValidatorToken_0Call::SELECTOR => {
+                mutate::<ITIPFeeAMM::mintWithValidatorToken_0Call>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.mint_with_validator_token(s, call),
+                )
+            }
+            // mintWithValidatorToken address version (backward compatibility)
+            ITIPFeeAMM::mintWithValidatorToken_1Call::SELECTOR => {
+                mutate::<ITIPFeeAMM::mintWithValidatorToken_1Call>(
+                    calldata,
+                    msg_sender,
+                    |s, call| {
+                        let user_id = address_to_token_id_u32_unchecked(&call.userToken);
+                        let validator_id = address_to_token_id_u32_unchecked(&call.validatorToken);
+                        self.mint_with_validator_token(
+                            s,
+                            ITIPFeeAMM::mintWithValidatorToken_0Call {
+                                userToken: user_id,
+                                validatorToken: validator_id,
+                                amountValidatorToken: call.amountValidatorToken,
+                                to: call.to,
+                            },
+                        )
+                    },
+                )
+            }
+
+            // burn uint32 version (canonical)
+            ITIPFeeAMM::burn_0Call::SELECTOR => {
+                mutate::<ITIPFeeAMM::burn_0Call>(calldata, msg_sender, |s, call| self.burn(s, call))
+            }
+            // burn address version (backward compatibility)
+            ITIPFeeAMM::burn_1Call::SELECTOR => {
+                mutate::<ITIPFeeAMM::burn_1Call>(calldata, msg_sender, |s, call| {
+                    let user_id = address_to_token_id_u32_unchecked(&call.userToken);
+                    let validator_id = address_to_token_id_u32_unchecked(&call.validatorToken);
+                    self.burn(
+                        s,
+                        ITIPFeeAMM::burn_0Call {
+                            userToken: user_id,
+                            validatorToken: validator_id,
+                            liquidity: call.liquidity,
+                            to: call.to,
+                        },
+                    )
+                    .map(|ret| ITIPFeeAMM::burn_1Return {
+                        amountUserToken: ret.amountUserToken,
+                        amountValidatorToken: ret.amountValidatorToken,
+                    })
+                })
+            }
+
+            // rebalanceSwap uint32 version (canonical)
+            ITIPFeeAMM::rebalanceSwap_0Call::SELECTOR => {
+                mutate::<ITIPFeeAMM::rebalanceSwap_0Call>(calldata, msg_sender, |s, call| {
                     self.rebalance_swap(s, call)
+                })
+            }
+            // rebalanceSwap address version (backward compatibility)
+            ITIPFeeAMM::rebalanceSwap_1Call::SELECTOR => {
+                mutate::<ITIPFeeAMM::rebalanceSwap_1Call>(calldata, msg_sender, |s, call| {
+                    let user_id = address_to_token_id_u32_unchecked(&call.userToken);
+                    let validator_id = address_to_token_id_u32_unchecked(&call.validatorToken);
+                    self.rebalance_swap(
+                        s,
+                        ITIPFeeAMM::rebalanceSwap_0Call {
+                            userToken: user_id,
+                            validatorToken: validator_id,
+                            amountOut: call.amountOut,
+                            to: call.to,
+                        },
+                    )
                 })
             }
 
@@ -214,15 +327,22 @@ mod tests {
 
     #[test]
     fn test_get_pool_id() {
+        use crate::tip20::token_id_u32_to_address;
+
         let mut storage = HashMapStorageProvider::new(1);
         let mut fee_manager =
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
-        let token_a = Address::random();
-        let token_b = Address::random();
 
-        let calldata = ITIPFeeAMM::getPoolIdCall {
-            userToken: token_a,
-            validatorToken: token_b,
+        // Use uint32 token IDs and convert to addresses
+        let token_id_a = 1u32;
+        let token_id_b = 2u32;
+        let token_a = token_id_u32_to_address(token_id_a);
+        let token_b = token_id_u32_to_address(token_id_b);
+
+        // Test the uint32 version (canonical)
+        let calldata = ITIPFeeAMM::getPoolId_0Call {
+            userToken: token_id_a,
+            validatorToken: token_id_b,
         };
         let calldata = calldata.abi_encode();
         let result = fee_manager
@@ -244,7 +364,7 @@ mod tests {
         let token_b = Address::random();
 
         // Get pool using ITIPFeeAMM interface
-        let get_pool_call = ITIPFeeAMM::getPoolCall {
+        let get_pool_call = ITIPFeeAMM::getPool_1Call {
             userToken: token_a,
             validatorToken: token_b,
         };
@@ -269,7 +389,7 @@ mod tests {
         let token_b = Address::random();
 
         // Test that pool ID is same regardless of token order
-        let calldata1 = ITIPFeeAMM::getPoolIdCall {
+        let calldata1 = ITIPFeeAMM::getPoolId_1Call {
             userToken: token_a,
             validatorToken: token_b,
         }
@@ -279,7 +399,7 @@ mod tests {
             .unwrap();
         let id1 = B256::abi_decode(&result1.bytes).unwrap();
 
-        let calldata2 = ITIPFeeAMM::getPoolIdCall {
+        let calldata2 = ITIPFeeAMM::getPoolId_1Call {
             userToken: token_b,
             validatorToken: token_a,
         }

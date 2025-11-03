@@ -194,7 +194,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
     // Mint liquidity
     assert!(
         fee_amm
-            .mint(
+            .mint_1(
                 *user_token.address(),
                 DEFAULT_FEE_TOKEN,
                 U256::from(1e18),

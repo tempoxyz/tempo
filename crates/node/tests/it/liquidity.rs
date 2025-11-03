@@ -52,7 +52,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
 
     // Create pool by minting liquidity
     fee_amm
-        .mint(
+        .mint_1(
             payment_token_addr,
             validator_token_addr,
             liquidity_amount,
@@ -79,7 +79,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
 
     // Burn all liquidity to drain the pool
     fee_amm
-        .burn(
+        .burn_1(
             payment_token_addr,
             validator_token_addr,
             lp_balance,

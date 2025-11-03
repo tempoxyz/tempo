@@ -336,9 +336,23 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         Ok(amount)
     }
 
-    /// Generate deterministic key for token pair
+    /// Generate deterministic key for token pair (legacy B256 version)
     pub fn pair_key(&self, token_a: Address, token_b: Address) -> B256 {
         compute_book_key(token_a, token_b)
+    }
+
+    /// Generate deterministic packed uint64 key from uint32 token IDs
+    /// Format: (token_id_a << 32) | token_id_b (where IDs are sorted)
+    pub fn pair_key_u32(&self, token_id_a: u32, token_id_b: u32) -> u64 {
+        // Sort token IDs to ensure deterministic key
+        let (id_a, id_b) = if token_id_a < token_id_b {
+            (token_id_a, token_id_b)
+        } else {
+            (token_id_b, token_id_a)
+        };
+
+        // Pack into u64: (id_a << 32) | id_b
+        ((id_a as u64) << 32) | (id_b as u64)
     }
 
     /// Get price level information

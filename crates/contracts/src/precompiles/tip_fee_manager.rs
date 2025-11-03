@@ -76,13 +76,22 @@ sol! {
             address token1;
         }
 
-        // Pool Management
+        // Pool Management - uint32 versions (canonical)
+        function getPoolId(uint32 userToken, uint32 validatorToken) external pure returns (bytes32);
+        function getPool(uint32 userToken, uint32 validatorToken) external view returns (Pool memory);
+        // Pool Management - address versions (backward compatibility)
         function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
         function getPool(address userToken, address validatorToken) external view returns (Pool memory);
+
         function pools(bytes32 poolId) external view returns (Pool memory);
 
-        // Liquidity Operations
+        // Liquidity Operations - uint32 versions (canonical)
+        function mint(uint32 userToken, uint32 validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
+        function mintWithValidatorToken(uint32 userToken, uint32 validatorToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
+        function burn(uint32 userToken, uint32 validatorToken, uint256 liquidity, address to) returns (uint256 amountUserToken, uint256 amountValidatorToken);
+        // Liquidity Operations - address versions (backward compatibility)
         function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
+        function mintWithValidatorToken(address userToken, address validatorToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
         function burn(address userToken, address validatorToken, uint256 liquidity, address to) returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
         // Liquidity Balances
@@ -91,7 +100,9 @@ sol! {
 
         // TODO: has liquidity
 
-        // Swapping
+        // Swapping - uint32 version (canonical)
+        function rebalanceSwap(uint32 userToken, uint32 validatorToken, uint256 amountOut, address to) external returns (uint256 amountIn);
+        // Swapping - address version (backward compatibility)
         function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to) external returns (uint256 amountIn);
         function calculateLiquidity(uint256 x, uint256 y) external pure returns (uint256);
 

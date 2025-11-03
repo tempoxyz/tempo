@@ -14,7 +14,7 @@ use crate::{
         amm::{PoolKey, TIPFeeAMM},
         slots::{collected_fees_slot, user_token_slot, validator_token_slot},
     },
-    tip20::{ITIP20, TIP20Token, is_tip20},
+    tip20::{ITIP20, TIP20Token, is_tip20, token_id_u32_to_address},
 };
 
 // Re-export PoolKey for backward compatibility with tests
@@ -443,13 +443,17 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn mint(
         &mut self,
         msg_sender: Address,
-        call: ITIPFeeAMM::mintCall,
+        call: ITIPFeeAMM::mint_0Call,
     ) -> Result<U256, TempoPrecompileError> {
+        // Convert u32 token IDs to addresses
+        let user_token_addr = token_id_u32_to_address(call.userToken);
+        let validator_token_addr = token_id_u32_to_address(call.validatorToken);
+
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         let amount = amm.mint(
             msg_sender,
-            call.userToken,
-            call.validatorToken,
+            user_token_addr,
+            validator_token_addr,
             call.amountUserToken,
             call.amountValidatorToken,
             call.to,
@@ -458,21 +462,37 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         Ok(amount)
     }
 
+    /// Mint liquidity with only validator token
+    /// TODO: Implement this properly - for now returns NotImplemented error
+    pub fn mint_with_validator_token(
+        &mut self,
+        _msg_sender: Address,
+        _call: ITIPFeeAMM::mintWithValidatorToken_0Call,
+    ) -> Result<U256, TempoPrecompileError> {
+        Err(TempoPrecompileError::TIPFeeAMMError(
+            TIPFeeAMMError::invalid_amount(),
+        ))
+    }
+
     /// Burn liquidity tokens
     pub fn burn(
         &mut self,
         msg_sender: Address,
-        call: ITIPFeeAMM::burnCall,
-    ) -> Result<ITIPFeeAMM::burnReturn, TempoPrecompileError> {
+        call: ITIPFeeAMM::burn_0Call,
+    ) -> Result<ITIPFeeAMM::burn_0Return, TempoPrecompileError> {
+        // Convert u32 token IDs to addresses
+        let user_token_addr = token_id_u32_to_address(call.userToken);
+        let validator_token_addr = token_id_u32_to_address(call.validatorToken);
+
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.burn(
             msg_sender,
-            call.userToken,
-            call.validatorToken,
+            user_token_addr,
+            validator_token_addr,
             call.liquidity,
             call.to,
         )
-        .map(|(amount0, amount1)| ITIPFeeAMM::burnReturn {
+        .map(|(amount0, amount1)| ITIPFeeAMM::burn_0Return {
             amountUserToken: amount0,
             amountValidatorToken: amount1,
         })
@@ -496,17 +516,25 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         amm.get_balance_of(call.poolId, call.user)
     }
 
-    pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> B256 {
+    pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolId_0Call) -> B256 {
+        // Convert u32 token IDs to addresses
+        let user_token_addr = token_id_u32_to_address(call.userToken);
+        let validator_token_addr = token_id_u32_to_address(call.validatorToken);
+
         let amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.get_pool_id(call.userToken, call.validatorToken)
+        amm.get_pool_id(user_token_addr, validator_token_addr)
     }
 
     pub fn get_pool(
         &mut self,
-        call: ITIPFeeAMM::getPoolCall,
+        call: ITIPFeeAMM::getPool_0Call,
     ) -> Result<ITIPFeeAMM::Pool, TempoPrecompileError> {
+        // Convert u32 token IDs to addresses
+        let user_token_addr = token_id_u32_to_address(call.userToken);
+        let validator_token_addr = token_id_u32_to_address(call.validatorToken);
+
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        let pool_key = PoolKey::new(call.userToken, call.validatorToken);
+        let pool_key = PoolKey::new(user_token_addr, validator_token_addr);
         let pool = amm.get_pool(pool_key.get_id())?;
 
         Ok(pool.into())
@@ -516,13 +544,17 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn rebalance_swap(
         &mut self,
         msg_sender: Address,
-        call: ITIPFeeAMM::rebalanceSwapCall,
+        call: ITIPFeeAMM::rebalanceSwap_0Call,
     ) -> Result<U256, TempoPrecompileError> {
+        // Convert u32 token IDs to addresses
+        let user_token_addr = token_id_u32_to_address(call.userToken);
+        let validator_token_addr = token_id_u32_to_address(call.validatorToken);
+
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
         amm.rebalance_swap(
             msg_sender,
-            call.userToken,
-            call.validatorToken,
+            user_token_addr,
+            validator_token_addr,
             call.amountOut,
             call.to,
         )

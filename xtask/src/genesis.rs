@@ -547,12 +547,17 @@ fn mint_pairwise_liquidity(
     let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
 
     for b_token_address in b_tokens {
+        // Convert addresses to u32 token IDs for the canonical precompile method
+        let a_token_id = tempo_precompiles::tip20::address_to_token_id_u32_unchecked(&a_token);
+        let b_token_id =
+            tempo_precompiles::tip20::address_to_token_id_u32_unchecked(&b_token_address);
+
         fee_manager
             .mint(
                 admin,
-                ITIPFeeAMM::mintCall {
-                    validatorToken: a_token,
-                    userToken: b_token_address,
+                ITIPFeeAMM::mint_0Call {
+                    validatorToken: a_token_id,
+                    userToken: b_token_id,
                     amountUserToken: amount,
                     amountValidatorToken: amount,
                     to: admin,
