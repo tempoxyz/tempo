@@ -6,7 +6,7 @@
 mod metrics;
 
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::U256;
 use alloy_rlp::Encodable;
 use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
@@ -247,11 +247,11 @@ where
         let general_gas_limit = parent_header.gas_limit() / TEMPO_GENERAL_GAS_DIVISOR;
 
         // If extra data is provided in attributes, configure the EVM with it
-        let evm_config = if let Some(extra_data) = attributes.optional_extra_data() {
+        let evm_config = if !attributes.extra_data().is_empty() {
             Cow::Owned(
                 self.evm_config
                     .clone()
-                    .with_extra_data(Bytes::from(extra_data.clone())),
+                    .with_extra_data(attributes.extra_data().clone()),
             )
         } else {
             Cow::Borrowed(&self.evm_config)
@@ -492,31 +492,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256};
+    use alloy_primitives::{Address, B256, Bytes};
     use reth_payload_builder::PayloadId;
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
         // Test that extra_data in attributes can be accessed correctly
-        let extra_data = vec![42, 43, 44, 45, 46];
+        let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
 
-        let attrs = TempoPayloadBuilderAttributes::with_optional_extra_data(
+        let attrs = TempoPayloadBuilderAttributes::with_extra_data(
             PayloadId::default(),
             B256::default(),
             Address::default(),
             1000,
-            Some(extra_data.clone()),
+            extra_data.clone(),
         );
 
-        assert_eq!(attrs.optional_extra_data(), Some(&extra_data));
+        assert_eq!(attrs.extra_data(), &extra_data);
 
-        // Verify conversion to Bytes works as expected
-        let injected_data = if let Some(data) = attrs.optional_extra_data() {
-            Bytes::from(data.clone())
-        } else {
-            Bytes::default()
-        };
+        // Verify the data is as expected
+        let injected_data = attrs.extra_data().clone();
 
-        assert_eq!(injected_data.as_ref(), extra_data.as_slice());
+        assert_eq!(injected_data, extra_data);
     }
 }

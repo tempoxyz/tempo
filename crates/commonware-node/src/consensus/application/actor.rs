@@ -13,7 +13,7 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_consensus::BlockHeader;
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::{
@@ -464,7 +464,7 @@ impl Inner<Init> {
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
-        let optional_extra_data = if epoch::is_last_height_of_epoch(
+        let extra_data = if epoch::is_last_height_of_epoch(
             parent.height() + 1,
             round.epoch(),
             self.epoch_length,
@@ -479,7 +479,7 @@ impl Inner<Init> {
                 .ok_or_eyre("public dkg ceremony outcome does not exist")
                 .and_then(|this| this)
                 .wrap_err("failed getting public dkg ceremony outcome")?;
-            Some(outcome.encode().freeze().to_vec())
+            outcome.encode().freeze().into()
         } else {
             // Regular block: try to include intermediate dealing
             match self
@@ -493,19 +493,19 @@ impl Inner<Init> {
                         %error,
                         "failed getting ceremony deal for current epoch because DKG manager went away",
                     );
-                    None
+                    Bytes::default()
                 }
-                Ok(None) => None,
+                Ok(None) => Bytes::default(),
                 Ok(Some(deal_outcome)) => {
                     info!(
                         "found ceremony deal outcome; will include in payload builder attributes"
                     );
-                    Some(deal_outcome.encode().freeze().to_vec())
+                    deal_outcome.encode().freeze().into()
                 }
             }
         };
 
-        let attrs = TempoPayloadBuilderAttributes::with_optional_extra_data(
+        let attrs = TempoPayloadBuilderAttributes::with_extra_data(
             // XXX: derives the payload ID from the parent so that
             // overlong payload builds will eventually succeed on the
             // next iteration: if all other nodes take equally as long,
@@ -517,7 +517,7 @@ impl Inner<Init> {
             parent.block_hash(),
             self.fee_recipient,
             context.current().epoch_millis(),
-            optional_extra_data,
+            extra_data,
         );
 
         let interrupt_handle = attrs.interrupt_handle().clone();
