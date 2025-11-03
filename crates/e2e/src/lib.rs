@@ -102,7 +102,7 @@ pub async fn setup_validators(
 
     let mut public_keys = HashSet::new();
     let mut nodes = Vec::new();
-    let mut execution_nodes = Vec::with_capacity(how_many as usize);
+    let mut execution_nodes: Vec<ExecutionNode> = Vec::with_capacity(how_many as usize);
 
     for i in 0..how_many {
         let node = execution_runtime
@@ -111,7 +111,7 @@ pub async fn setup_validators(
 
         // ensure EL p2p connectivity for backfill syncs
         for existing_node in &execution_nodes {
-            existing_node.connect_peer(&node);
+            existing_node.connect_peer(&node).await;
         }
 
         execution_nodes.push(node);

@@ -2,9 +2,14 @@
 use std::{path::Path, sync::Arc};
 
 use eyre::WrapErr as _;
+use futures::StreamExt;
 use reth_db::mdbx::DatabaseArguments;
 use reth_ethereum::{
-    network::api::{PeersInfo, test_utils::PeersHandleProvider},
+    network::api::{
+        NetworkEventListenerProvider, PeersInfo,
+        events::{NetworkEvent, PeerEvent},
+        test_utils::PeersHandleProvider,
+    },
     tasks::{TaskExecutor, TaskManager},
 };
 use reth_node_builder::{NodeBuilder, NodeConfig};
@@ -180,7 +185,7 @@ pub struct ExecutionNode {
 
 impl ExecutionNode {
     /// Connect peers bidirectionally.
-    pub fn connect_peer(&self, other: &ExecutionNode) {
+    pub async fn connect_peer(&self, other: &Self) {
         let self_record = self.node.network.local_node_record();
         let other_record = other.node.network.local_node_record();
 
@@ -189,14 +194,13 @@ impl ExecutionNode {
             .peers_handle()
             .add_peer(other_record.id, other_record.tcp_addr());
 
-        other
-            .node
-            .network
-            .peers_handle()
-            .add_peer(self_record.id, self_record.tcp_addr());
+        match self.node.network.event_listener().next().await {
+            Some(NetworkEvent::Peer(PeerEvent::PeerAdded(_))) => (),
+            ev => panic!("Expected a peer added event, got: {ev:?}"),
+        }
 
         tracing::debug!(
-            "Connected peers: {:?} <-> {:?}",
+            "Connected peers: {:?} -> {:?}",
             self_record.id,
             other_record.id
         );
