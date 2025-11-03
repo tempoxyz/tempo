@@ -1,5 +1,5 @@
 use crate::rpc::pagination::FilterRange;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -27,11 +27,11 @@ pub struct TokensFilters {
     /// Filter by quote token address
     pub quote_token: Option<Address>,
     /// Supply cap in range
-    pub supply_cap: Option<FilterRange<U256>>,
+    pub supply_cap: Option<FilterRange<u128>>,
     /// Filter by symbol
     pub symbol: Option<String>,
     /// Total supply in range
-    pub total_supply: Option<FilterRange<U256>>,
+    pub total_supply: Option<FilterRange<u128>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -40,12 +40,14 @@ pub struct Token {
     /// Token contract address (deterministic vanity address based on tokenId)
     pub address: Address,
     /// Timestamp when token was created
+    #[serde(with = "alloy_serde::quantity")]
     pub created_at: u64,
     /// Address that created the token
     pub creator: Address,
     /// Currency code (e.g., "USD", "EUR")
     pub currency: String,
     /// Token decimals (from TIP-4217 registry based on currency)
+    #[serde(with = "alloy_serde::quantity")]
     pub decimals: u32,
     /// Token name
     pub name: String,
@@ -54,13 +56,17 @@ pub struct Token {
     /// Quote token address for trading pairs
     pub quote_token: Address,
     /// Maximum token supply
-    pub supply_cap: U256,
+    #[serde(with = "alloy_serde::quantity")]
+    pub supply_cap: u128,
     /// Token symbol
     pub symbol: String,
     /// Unique token ID from factory
+    #[serde(with = "alloy_serde::quantity")]
     pub token_id: u64,
     /// Current total supply
-    pub total_supply: U256,
+    #[serde(with = "alloy_serde::quantity")]
+    pub total_supply: u128,
     /// Current transfer policy ID
+    #[serde(with = "alloy_serde::quantity")]
     pub transfer_policy_id: u64,
 }
