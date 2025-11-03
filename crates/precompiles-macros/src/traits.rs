@@ -90,10 +90,11 @@ fn types_equal(a: &Type, b: &Type) -> bool {
     use quote::ToTokens;
 
     // For custom structs, compare base names only (allows conversion via .into())
-    if is_custom_struct(a) && is_custom_struct(b) {
-        if let (Ok(ident_a), Ok(ident_b)) = (try_extract_type_ident(a), try_extract_type_ident(b)) {
-            return ident_a == ident_b;
-        }
+    if is_custom_struct(a)
+        && is_custom_struct(b)
+        && let (Ok(ident_a), Ok(ident_b)) = (try_extract_type_ident(a), try_extract_type_ident(b))
+    {
+        return ident_a == ident_b;
     }
 
     // For primitives and known types, require exact match

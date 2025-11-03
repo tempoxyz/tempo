@@ -1,5 +1,6 @@
-use alloy::primitives::{Address, B256, FixedBytes, U256, keccak256};
+use alloy::primitives::{Address, U256, keccak256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use tempo_precompiles_macros::{storable_alloy_bytes, storable_alloy_ints, storable_rust_ints};
 
 use crate::{
     error::{Result, TempoPrecompileError},
@@ -119,87 +120,20 @@ pub trait StorageKey {
     fn as_storage_bytes(&self) -> impl AsRef<[u8]>;
 }
 
+// -- STORAGE KEY IMPLEMENTATIONS ---------------------------------------------
+
+impl StorageKey for Address {
+    #[inline]
+    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
+        self.as_slice()
+    }
+}
+
 // -- STORAGE TYPE IMPLEMENTATIONS ---------------------------------------------
 
-impl StorableType for U256 {
-    const BYTE_COUNT: usize = 32;
-}
-
-impl Storable<1> for U256 {
-    #[inline]
-    fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
-        storage.sload(base_slot)
-    }
-
-    #[inline]
-    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256) -> Result<()> {
-        storage.sstore(base_slot, *self)
-    }
-
-    #[inline]
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        Ok([*self])
-    }
-
-    #[inline]
-    fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        Ok(words[0])
-    }
-}
-
-impl StorableType for Address {
-    const BYTE_COUNT: usize = 20;
-}
-
-impl Storable<1> for Address {
-    #[inline]
-    fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
-        let value = storage.sload(base_slot)?;
-        Ok(value.into_address())
-    }
-
-    #[inline]
-    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256) -> Result<()> {
-        storage.sstore(base_slot, self.into_u256())
-    }
-
-    #[inline]
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        Ok([self.into_u256()])
-    }
-
-    #[inline]
-    fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        Ok(words[0].into_address())
-    }
-}
-
-impl StorableType for B256 {
-    const BYTE_COUNT: usize = 32;
-}
-
-impl Storable<1> for B256 {
-    #[inline]
-    fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
-        let value = storage.sload(base_slot)?;
-        Ok(Self::from(value.to_be_bytes::<32>()))
-    }
-
-    #[inline]
-    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256) -> Result<()> {
-        storage.sstore(base_slot, U256::from_be_bytes(self.0))
-    }
-
-    #[inline]
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        Ok([U256::from_be_bytes(self.0)])
-    }
-
-    #[inline]
-    fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        Ok(Self::from(words[0].to_be_bytes::<32>()))
-    }
-}
+storable_rust_ints!();
+storable_alloy_ints!();
+storable_alloy_bytes!();
 
 impl StorableType for bool {
     const BYTE_COUNT: usize = 1;
@@ -229,86 +163,30 @@ impl Storable<1> for bool {
     }
 }
 
-impl StorableType for u64 {
-    const BYTE_COUNT: usize = 8;
+impl StorableType for Address {
+    const BYTE_COUNT: usize = 20;
 }
 
-impl Storable<1> for u64 {
+impl Storable<1> for Address {
     #[inline]
     fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
         let value = storage.sload(base_slot)?;
-        Ok(value.to::<Self>())
+        Ok(value.into_address())
     }
 
     #[inline]
     fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256) -> Result<()> {
-        storage.sstore(base_slot, U256::from(*self))
+        storage.sstore(base_slot, self.into_u256())
     }
 
     #[inline]
     fn to_evm_words(&self) -> Result<[U256; 1]> {
-        Ok([U256::from(*self)])
+        Ok([self.into_u256()])
     }
 
     #[inline]
     fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        Ok(words[0].to::<Self>())
-    }
-}
-
-impl StorableType for u128 {
-    const BYTE_COUNT: usize = 16;
-}
-
-impl Storable<1> for u128 {
-    #[inline]
-    fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
-        let value = storage.sload(base_slot)?;
-        Ok(value.to::<Self>())
-    }
-
-    #[inline]
-    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256) -> Result<()> {
-        storage.sstore(base_slot, U256::from(*self))
-    }
-
-    #[inline]
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        Ok([U256::from(*self)])
-    }
-
-    #[inline]
-    fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        Ok(words[0].to::<Self>())
-    }
-}
-
-impl StorableType for i16 {
-    const BYTE_COUNT: usize = 2;
-}
-
-impl Storable<1> for i16 {
-    #[inline]
-    fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
-        let value = storage.sload(base_slot)?;
-        // Read as u16 then cast to i16 (preserves bit pattern)
-        Ok(value.to::<u16>() as Self)
-    }
-
-    #[inline]
-    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256) -> Result<()> {
-        // Cast to u16 to preserve bit pattern, then extend to U256
-        storage.sstore(base_slot, U256::from(*self as u16))
-    }
-
-    #[inline]
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        Ok([U256::from(*self as u16)])
-    }
-
-    #[inline]
-    fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        Ok(words[0].to::<u16>() as Self)
+        Ok(words[0].into_address())
     }
 }
 
@@ -481,55 +359,9 @@ impl Storable<1> for String {
     }
 }
 
-// -- STORAGE KEY IMPLEMENTATIONS ---------------------------------------------
-
-impl StorageKey for Address {
-    #[inline]
-    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
-        self.as_slice()
-    }
-}
-
-impl StorageKey for U256 {
-    #[inline]
-    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
-        self.to_be_bytes::<32>()
-    }
-}
-
-impl StorageKey for B256 {
-    #[inline]
-    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
-        self.as_slice()
-    }
-}
-
-impl StorageKey for FixedBytes<4> {
-    #[inline]
-    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
-        self.as_slice()
-    }
-}
-
-impl StorageKey for u64 {
-    #[inline]
-    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
-        self.to_be_bytes()
-    }
-}
-
-impl StorageKey for u128 {
-    #[inline]
-    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
-        self.to_be_bytes()
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider};
-    use alloy::primitives::address;
 
     // Test helper that implements StorageOps
     struct TestContract<'a, S> {
@@ -548,23 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn test_u256_round_trip() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let addr = Address::random();
-        let mut contract = TestContract {
-            address: addr,
-            storage: &mut storage,
-        };
-
-        let value = U256::from(12345u64);
-        let slot = U256::from(0);
-
-        value.store(&mut contract, slot).unwrap();
-        let loaded = U256::load(&mut contract, slot).unwrap();
-        assert_eq!(value, loaded);
-    }
-
-    #[test]
     fn test_address_round_trip() {
         let mut storage = HashMapStorageProvider::new(1);
         let contract_addr = Address::random();
@@ -573,29 +388,12 @@ mod tests {
             storage: &mut storage,
         };
 
-        let addr = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let addr = Address::random();
         let slot = U256::from(1);
 
         addr.store(&mut contract, slot).unwrap();
         let loaded = Address::load(&mut contract, slot).unwrap();
         assert_eq!(addr, loaded);
-    }
-
-    #[test]
-    fn test_b256_round_trip() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let addr = Address::random();
-        let mut contract = TestContract {
-            address: addr,
-            storage: &mut storage,
-        };
-
-        let value = B256::from([0x42u8; 32]);
-        let slot = U256::from(2);
-
-        value.store(&mut contract, slot).unwrap();
-        let loaded = B256::load(&mut contract, slot).unwrap();
-        assert_eq!(value, loaded);
     }
 
     #[test]
@@ -637,50 +435,6 @@ mod tests {
         value.store(&mut contract, slot).unwrap();
         let loaded = u64::load(&mut contract, slot).unwrap();
         assert_eq!(value, loaded);
-    }
-
-    #[test]
-    fn test_u128_round_trip() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let addr = Address::random();
-        let mut contract = TestContract {
-            address: addr,
-            storage: &mut storage,
-        };
-
-        let value = u128::MAX;
-        let slot = U256::from(5);
-
-        value.store(&mut contract, slot).unwrap();
-        let loaded = u128::load(&mut contract, slot).unwrap();
-        assert_eq!(value, loaded);
-    }
-
-    #[test]
-    fn test_i16_round_trip() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let addr = Address::random();
-        let mut contract = TestContract {
-            address: addr,
-            storage: &mut storage,
-        };
-
-        let slot = U256::from(6);
-
-        // Positive value
-        let pos = i16::MAX;
-        pos.store(&mut contract, slot).unwrap();
-        assert_eq!(i16::load(&mut contract, slot).unwrap(), pos);
-
-        // Negative value (two's complement)
-        let neg = i16::MIN;
-        neg.store(&mut contract, slot).unwrap();
-        assert_eq!(i16::load(&mut contract, slot).unwrap(), neg);
-
-        // Zero
-        let zero = 0i16;
-        zero.store(&mut contract, slot).unwrap();
-        assert_eq!(i16::load(&mut contract, slot).unwrap(), zero);
     }
 
     #[test]
@@ -1030,36 +784,5 @@ mod tests {
 
         // Note: The old long string data slots are not automatically cleared
         // when overwriting with a short string.
-    }
-
-    #[test]
-    fn test_address_as_storage_bytes() {
-        let addr = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-        let bytes = addr.as_storage_bytes();
-        assert_eq!(bytes.as_ref().len(), 20);
-        assert_eq!(bytes.as_ref(), addr.as_slice());
-    }
-
-    #[test]
-    fn test_u256_as_storage_bytes() {
-        let value = U256::from(0x123456789abcdef_u64);
-        let bytes = value.as_storage_bytes();
-        assert_eq!(bytes.as_ref().len(), 32);
-    }
-
-    #[test]
-    fn test_b256_as_storage_bytes() {
-        let value = B256::from([0x42u8; 32]);
-        let bytes = value.as_storage_bytes();
-        assert_eq!(bytes.as_ref().len(), 32);
-        assert_eq!(bytes.as_ref(), value.as_slice());
-    }
-
-    #[test]
-    fn test_u64_as_storage_bytes() {
-        let value = 0x123456789abcdef_u64;
-        let bytes = value.as_storage_bytes();
-        assert_eq!(bytes.as_ref().len(), 8);
-        assert_eq!(bytes.as_ref(), &value.to_be_bytes());
     }
 }
