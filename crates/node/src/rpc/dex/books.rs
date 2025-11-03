@@ -1,5 +1,5 @@
 use crate::rpc::dex::{FilterRange, types::Tick};
-use alloy_primitives::{Address, B256};
+use alloy_primitives::Address;
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;
 
@@ -21,8 +21,8 @@ pub struct OrderbooksResponse {
 pub struct Orderbook {
     /// Base token address
     pub base_token: Address,
-    /// Orderbook key (keccak256 of base and quote tokens)
-    pub book_key: B256,
+    /// Orderbook key (packed uint64 of token IDs)
+    pub book_key: u64,
     /// Best ask tick (lowest ask price)
     pub best_ask_tick: Tick,
     /// Best bid tick (highest bid price)

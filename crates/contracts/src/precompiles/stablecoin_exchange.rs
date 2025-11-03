@@ -23,7 +23,7 @@ sol! {
         struct Order {
             uint128 orderId;
             address maker;
-            bytes32 bookKey;
+            uint64 bookKey;
             bool isBid;
             int16 tick;
             uint128 amount;
@@ -48,7 +48,7 @@ sol! {
         }
 
         // Core Trading Functions
-        function createPair(address base) external returns (bytes32 key);
+        function createPair(address base) external returns (uint64 key);
         function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
         function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick) external returns (uint128 orderId);
         function cancel(uint128 orderId) external;
@@ -67,13 +67,16 @@ sol! {
         // View Functions
         function getOrder(uint128 orderId) external view returns (Order memory);
         function getPriceLevel(address base, int16 tick, bool isBid) external view returns (PriceLevel memory);
-        function pairKey(address tokenA, address tokenB) external view returns (bytes32);
+        // pairKey uint32 version (canonical) - returns packed uint64
+        function pairKey(uint32 tokenIdA, uint32 tokenIdB) external pure returns (uint64);
+        // pairKey address version (backward compatibility) - returns packed uint64
+        function pairKey(address tokenA, address tokenB) external pure returns (uint64);
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
-        function books(bytes32 pairKey) external view returns (Orderbook memory);
+        function books(uint64 pairKey) external view returns (Orderbook memory);
 
         // Events
-        event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
+        event PairCreated(uint64 indexed key, address indexed base, address indexed quote);
         event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
         event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
         event OrderFilled(uint128 indexed orderId, address indexed maker, uint128 amountFilled, bool partialFill);

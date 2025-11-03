@@ -1,5 +1,4 @@
 use alloy_eips::BlockId;
-use alloy_primitives::B256;
 use jsonrpsee::types::ErrorObject;
 use reth_rpc_eth_types::{EthApiError, error::ToRpcError};
 use tempo_precompiles::error::TempoPrecompileError;
@@ -34,12 +33,12 @@ pub enum DexApiError {
     ParseOrderCursor(#[from] std::num::ParseIntError),
 
     /// Invalid orderbook cursor format
-    #[error("invalid orderbook cursor: failed to parse as B256")]
+    #[error("invalid orderbook cursor: failed to parse as u64")]
     InvalidOrderbookCursor(String),
 
     /// Orderbook cursor not found in available books
     #[error("orderbook cursor {0} not found in available books")]
-    OrderbookCursorNotFound(B256),
+    OrderbookCursorNotFound(u64),
 }
 
 impl DexApiError {

@@ -8,6 +8,7 @@ use crate::{
     Precompile, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
+    tip20::address_to_token_id_u32_unchecked,
     view,
 };
 
@@ -59,9 +60,18 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
 
-            IStablecoinExchange::pairKeyCall::SELECTOR => {
-                view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {
-                    Ok(self.pair_key(call.tokenA, call.tokenB))
+            // pairKey uint32 overload (canonical) - returns packed uint64
+            IStablecoinExchange::pairKey_0Call::SELECTOR => {
+                view::<IStablecoinExchange::pairKey_0Call>(calldata, |call| {
+                    Ok(self.pair_key_u32(call.tokenIdA, call.tokenIdB))
+                })
+            }
+            // pairKey address overload (backward compatibility) - converts to uint32 and delegates
+            IStablecoinExchange::pairKey_1Call::SELECTOR => {
+                view::<IStablecoinExchange::pairKey_1Call>(calldata, |call| {
+                    let token_id_a = address_to_token_id_u32_unchecked(&call.tokenA);
+                    let token_id_b = address_to_token_id_u32_unchecked(&call.tokenB);
+                    Ok(self.pair_key_u32(token_id_a, token_id_b))
                 })
             }
 

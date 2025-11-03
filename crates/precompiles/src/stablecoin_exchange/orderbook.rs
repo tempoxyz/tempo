@@ -9,7 +9,7 @@ use crate::{
     stablecoin_exchange::IStablecoinExchange,
     storage::{PrecompileStorageProvider, slots::mapping_slot},
 };
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::{Address, U256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
 
@@ -54,7 +54,7 @@ impl PriceLevel {
     pub fn from_storage<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
-        book_key: B256,
+        book_key: u64,
         tick: i16,
         is_bid: bool,
     ) -> Result<Self, TempoPrecompileError> {
@@ -64,7 +64,7 @@ impl PriceLevel {
             ASK_TICK_LEVELS
         };
 
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let book_key_slot = mapping_slot(book_key.to_be_bytes(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         // Load each field
@@ -95,7 +95,7 @@ impl PriceLevel {
         &self,
         storage: &mut S,
         address: Address,
-        book_key: B256,
+        book_key: u64,
         tick: i16,
         is_bid: bool,
     ) -> Result<(), TempoPrecompileError> {
@@ -105,7 +105,7 @@ impl PriceLevel {
             ASK_TICK_LEVELS
         };
 
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let book_key_slot = mapping_slot(book_key.to_be_bytes(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         // Store each field
@@ -135,7 +135,7 @@ impl PriceLevel {
         &self,
         storage: &mut S,
         address: Address,
-        book_key: B256,
+        book_key: u64,
         tick: i16,
         is_bid: bool,
     ) -> Result<(), TempoPrecompileError> {
@@ -145,7 +145,7 @@ impl PriceLevel {
             ASK_TICK_LEVELS
         };
 
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let book_key_slot = mapping_slot(book_key.to_be_bytes(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         // Store each field
@@ -172,7 +172,7 @@ impl PriceLevel {
     pub fn update_head<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
-        book_key: B256,
+        book_key: u64,
         tick: i16,
         is_bid: bool,
         new_head: u128,
@@ -182,7 +182,7 @@ impl PriceLevel {
         } else {
             ASK_TICK_LEVELS
         };
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let book_key_slot = mapping_slot(book_key.to_be_bytes(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         storage.sstore(
@@ -196,7 +196,7 @@ impl PriceLevel {
     pub fn update_tail<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
-        book_key: B256,
+        book_key: u64,
         tick: i16,
         is_bid: bool,
         new_tail: u128,
@@ -206,7 +206,7 @@ impl PriceLevel {
         } else {
             ASK_TICK_LEVELS
         };
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let book_key_slot = mapping_slot(book_key.to_be_bytes(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         storage.sstore(
@@ -220,7 +220,7 @@ impl PriceLevel {
     pub fn update_total_liquidity<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
-        book_key: B256,
+        book_key: u64,
         tick: i16,
         is_bid: bool,
         new_total: u128,
@@ -230,7 +230,7 @@ impl PriceLevel {
         } else {
             ASK_TICK_LEVELS
         };
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
+        let book_key_slot = mapping_slot(book_key.to_be_bytes(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
         storage.sstore(
@@ -312,11 +312,11 @@ impl Orderbook {
 
     /// Load an Orderbook from storage
     pub fn from_storage<S: PrecompileStorageProvider>(
-        book_key: B256,
+        book_key: u64,
         storage: &mut S,
         address: Address,
     ) -> Result<Self, TempoPrecompileError> {
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+        let orderbook_slot = mapping_slot(book_key.to_be_bytes(), ORDERBOOKS);
 
         let base = storage
             .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?
@@ -358,7 +358,7 @@ impl Orderbook {
         address: Address,
     ) -> Result<(), TempoPrecompileError> {
         let book_key = compute_book_key(self.base, self.quote);
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+        let orderbook_slot = mapping_slot(book_key.to_be_bytes(), ORDERBOOKS);
 
         storage.sstore(
             address,
@@ -389,10 +389,10 @@ impl Orderbook {
     pub fn update_best_bid_tick<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
-        book_key: B256,
+        book_key: u64,
         new_best_bid: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+        let orderbook_slot = mapping_slot(book_key.to_be_bytes(), ORDERBOOKS);
         storage.sstore(
             address,
             orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
@@ -404,10 +404,10 @@ impl Orderbook {
     pub fn update_best_ask_tick<S: PrecompileStorageProvider>(
         storage: &mut S,
         address: Address,
-        book_key: B256,
+        book_key: u64,
         new_best_ask: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+        let orderbook_slot = mapping_slot(book_key.to_be_bytes(), ORDERBOOKS);
         storage.sstore(
             address,
             orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
@@ -417,11 +417,11 @@ impl Orderbook {
 
     /// Check if this orderbook exists in storage
     pub fn exists<S: PrecompileStorageProvider>(
-        book_key: B256,
+        book_key: u64,
         storage: &mut S,
         address: Address,
     ) -> Result<bool, TempoPrecompileError> {
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
+        let orderbook_slot = mapping_slot(book_key.to_be_bytes(), ORDERBOOKS);
         let base = storage.sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?;
 
         Ok(base != U256::ZERO)
@@ -444,11 +444,11 @@ impl From<Orderbook> for IStablecoinExchange::Orderbook {
 pub struct TickBitmap<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
     address: Address,
-    book_key: B256,
+    book_key: u64,
 }
 
 impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
-    pub fn new(storage: &'a mut S, address: Address, book_key: B256) -> Self {
+    pub fn new(storage: &'a mut S, address: Address, book_key: u64) -> Self {
         Self {
             storage,
             address,
@@ -552,25 +552,26 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
     fn get_bitmap_slot(&self, word_index: i16, is_bid: bool) -> U256 {
         let base_slot = if is_bid { BID_BITMAPS } else { ASK_BITMAPS };
 
-        let book_key_slot = mapping_slot(self.book_key.as_slice(), base_slot);
+        let book_key_slot = mapping_slot(self.book_key.to_be_bytes(), base_slot);
         mapping_slot(word_index.to_be_bytes(), book_key_slot)
     }
 }
 
 /// Compute deterministic book key from base, quote token pair
-pub fn compute_book_key(token_a: Address, token_b: Address) -> B256 {
-    // Sort tokens to ensure deterministic key
-    let (token_a, token_b) = if token_a < token_b {
-        (token_a, token_b)
+pub fn compute_book_key(token_a: Address, token_b: Address) -> u64 {
+    // Extract token IDs from addresses
+    let token_id_a = crate::tip20::address_to_token_id_u32_unchecked(&token_a);
+    let token_id_b = crate::tip20::address_to_token_id_u32_unchecked(&token_b);
+
+    // Sort token IDs to ensure deterministic key
+    let (id_a, id_b) = if token_id_a < token_id_b {
+        (token_id_a, token_id_b)
     } else {
-        (token_b, token_a)
+        (token_id_b, token_id_a)
     };
 
-    // Compute keccak256(abi.encodePacked(tokenA, tokenB))
-    let mut buf = [0u8; 40];
-    buf[..20].copy_from_slice(token_a.as_slice());
-    buf[20..].copy_from_slice(token_b.as_slice());
-    keccak256(buf)
+    // Pack into u64: (id_a << 32) | id_b
+    ((id_a as u64) << 32) | (id_b as u64)
 }
 
 /// Convert relative tick to scaled price
@@ -587,7 +588,7 @@ pub fn price_to_tick(price: u32) -> i16 {
 pub fn next_initialized_bid_tick<S: PrecompileStorageProvider>(
     storage: &mut S,
     address: Address,
-    book_key: B256,
+    book_key: u64,
     tick: i16,
 ) -> (i16, bool) {
     let mut bitmap = TickBitmap::new(storage, address, book_key);
@@ -598,7 +599,7 @@ pub fn next_initialized_bid_tick<S: PrecompileStorageProvider>(
 pub fn next_initialized_ask_tick<S: PrecompileStorageProvider>(
     storage: &mut S,
     address: Address,
-    book_key: B256,
+    book_key: u64,
     tick: i16,
 ) -> (i16, bool) {
     let mut bitmap = TickBitmap::new(storage, address, book_key);
@@ -672,14 +673,17 @@ mod tests {
             "Book key should be the same regardless of address order"
         );
 
-        let mut buf = [0u8; 40];
-        buf[..20].copy_from_slice(token_a.as_slice());
-        buf[20..].copy_from_slice(token_b.as_slice());
-        let expected_hash = keccak256(buf);
+        // Token IDs are the last 4 bytes of addresses (big-endian)
+        // token_a ends in 0x11111111, token_b ends in 0x22222222
+        let token_id_a = 0x11111111u32;
+        let token_id_b = 0x22222222u32;
+
+        // Packed u64: smaller ID in upper 32 bits, larger in lower 32 bits
+        let expected_key = ((token_id_a as u64) << 32) | (token_id_b as u64);
 
         assert_eq!(
-            key_ab, expected_hash,
-            "Book key should match manual keccak256 computation"
+            key_ab, expected_key,
+            "Book key should match manual packed u64 computation"
         );
     }
 
@@ -691,7 +695,7 @@ mod tests {
         fn test_tick_lifecycle() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
-            let book_key = B256::ZERO;
+            let book_key = 0u64;
 
             // Test full lifecycle (set, check, clear, check) for positive and negative ticks
             // Include boundary cases, word boundaries, and various representative values
@@ -734,7 +738,7 @@ mod tests {
         fn test_boundary_ticks() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
-            let book_key = B256::ZERO;
+            let book_key = 0u64;
 
             // Test MIN_TICK
             let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
@@ -771,7 +775,7 @@ mod tests {
         fn test_bid_and_ask_separate() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
-            let book_key = B256::ZERO;
+            let book_key = 0u64;
             let tick = 100;
 
             // Set as bid
@@ -807,7 +811,7 @@ mod tests {
         fn test_ticks_across_word_boundary() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
-            let book_key = B256::ZERO;
+            let book_key = 0u64;
 
             // Ticks that span word boundary at 256
             let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
@@ -823,7 +827,7 @@ mod tests {
         fn test_ticks_different_words() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
-            let book_key = B256::ZERO;
+            let book_key = 0u64;
 
             // Test ticks in different words (both positive and negative)
             let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
@@ -869,7 +873,7 @@ mod tests {
         fn test_set_tick_bit_out_of_bounds() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
-            let book_key = B256::ZERO;
+            let book_key = 0u64;
 
             let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
 
@@ -894,7 +898,7 @@ mod tests {
         fn test_clear_tick_bit_out_of_bounds() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
-            let book_key = B256::ZERO;
+            let book_key = 0u64;
 
             let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
 
@@ -919,7 +923,7 @@ mod tests {
         fn test_is_tick_initialized_out_of_bounds() {
             let mut storage = HashMapStorageProvider::new(1);
             let address = Address::random();
-            let book_key = B256::ZERO;
+            let book_key = 0u64;
 
             let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
 

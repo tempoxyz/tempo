@@ -10,7 +10,7 @@ pub use types::{
     PaginationParams, Tick,
 };
 
-use alloy_primitives::{Address, B256, Sealable};
+use alloy_primitives::{Address, Sealable};
 use jsonrpsee::core::RpcResult;
 use reth_node_api::{ConfigureEvm, NodePrimitives};
 use reth_rpc_eth_api::{RpcNodeCore, helpers::SpawnBlocking};
@@ -430,7 +430,7 @@ pub struct BookIterator<'a, 'b> {
     /// Whether or not to iterate over bids or asks.
     bids: bool,
     /// Book key
-    book_key: B256,
+    book_key: u64,
     /// Address of the exchange
     exchange_address: Address,
     /// Starting order ID
@@ -683,10 +683,10 @@ fn parse_order_cursor(cursor: &str) -> Result<u128, DexApiError> {
     }
 }
 
-/// Parses a cursor string into a B256 for orderbooks
-fn parse_orderbook_cursor(cursor: &str) -> Result<B256, DexApiError> {
+/// Parses a cursor string into a u64 for orderbooks
+fn parse_orderbook_cursor(cursor: &str) -> Result<u64, DexApiError> {
     cursor
-        .parse::<B256>()
+        .parse::<u64>()
         .map_err(|_| DexApiError::InvalidOrderbookCursor(cursor.to_string()))
 }
 
@@ -696,7 +696,7 @@ fn get_book_keys_for_iteration(
     exchange: &mut StablecoinExchange<'_, EvmPrecompileStorageProvider<'_>>,
     base_token: Option<Address>,
     quote_token: Option<Address>,
-) -> Result<Vec<B256>, DexApiError> {
+) -> Result<Vec<u64>, DexApiError> {
     match (base_token, quote_token) {
         (Some(base), Some(quote)) => Ok(vec![compute_book_key(base, quote)]),
         _ => exchange.get_book_keys().map_err(DexApiError::Precompile),

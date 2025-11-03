@@ -9,7 +9,7 @@ use crate::{
     stablecoin_exchange::{IStablecoinExchange, error::OrderError},
     storage::{PrecompileStorageProvider, slots::mapping_slot},
 };
-use alloy::primitives::{Address, B256, U256, uint};
+use alloy::primitives::{Address, U256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
 // Order struct field offsets (relative to order base slot)
@@ -66,7 +66,7 @@ pub struct Order {
     /// Address of the user who placed this order
     pub maker: Address,
     /// Orderbook key (identifies the trading pair)
-    pub book_key: B256,
+    pub book_key: u64,
     /// Whether this is a bid (true) or ask (false) order
     pub is_bid: bool,
     /// Price tick
@@ -93,7 +93,7 @@ impl Order {
     pub fn new(
         order_id: u128,
         maker: Address,
-        book_key: B256,
+        book_key: u64,
         amount: u128,
         tick: i16,
         is_bid: bool,
@@ -119,7 +119,7 @@ impl Order {
     pub fn new_bid(
         order_id: u128,
         maker: Address,
-        book_key: B256,
+        book_key: u64,
         amount: u128,
         tick: i16,
     ) -> Self {
@@ -130,7 +130,7 @@ impl Order {
     pub fn new_ask(
         order_id: u128,
         maker: Address,
-        book_key: B256,
+        book_key: u64,
         amount: u128,
         tick: i16,
     ) -> Self {
@@ -149,7 +149,7 @@ impl Order {
     pub fn new_flip(
         order_id: u128,
         maker: Address,
-        book_key: B256,
+        book_key: u64,
         amount: u128,
         tick: i16,
         is_bid: bool,
@@ -180,8 +180,9 @@ impl Order {
             .sload(stablecoin_exchange, order_slot + ORDER_MAKER_OFFSET)?
             .into_address();
 
-        let book_key =
-            B256::from(storage.sload(stablecoin_exchange, order_slot + ORDER_BOOK_KEY_OFFSET)?);
+        let book_key = storage
+            .sload(stablecoin_exchange, order_slot + ORDER_BOOK_KEY_OFFSET)?
+            .to::<u64>();
 
         let is_bid = storage
             .sload(stablecoin_exchange, order_slot + ORDER_IS_BID_OFFSET)?
@@ -246,7 +247,7 @@ impl Order {
         storage.sstore(
             stablecoin_exchange,
             order_slot + ORDER_BOOK_KEY_OFFSET,
-            U256::from_be_bytes(self.book_key().0),
+            U256::from(self.book_key()),
         )?;
 
         // Store is_bid boolean
@@ -422,7 +423,7 @@ impl Order {
     }
 
     /// Returns the orderbook key.
-    pub fn book_key(&self) -> B256 {
+    pub fn book_key(&self) -> u64 {
         self.book_key
     }
 
@@ -573,11 +574,10 @@ mod tests {
     use crate::storage::hashmap::HashMapStorageProvider;
 
     use super::*;
-    use alloy::primitives::{address, b256};
+    use alloy::primitives::address;
 
     const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
-    const TEST_BOOK_KEY: B256 =
-        b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
+    const TEST_BOOK_KEY: u64 = 1;
 
     #[test]
     fn test_new_bid_order() {
@@ -862,7 +862,7 @@ mod tests {
         let deleted_order = Order::from_storage(42, &mut storage, exchange_address)?;
         assert_eq!(deleted_order.order_id(), 42);
         assert_eq!(deleted_order.maker(), Address::ZERO);
-        assert_eq!(deleted_order.book_key(), B256::ZERO);
+        assert_eq!(deleted_order.book_key(), 0);
         assert_eq!(deleted_order.amount(), 0);
         assert_eq!(deleted_order.remaining(), 0);
         assert_eq!(deleted_order.tick(), 0);

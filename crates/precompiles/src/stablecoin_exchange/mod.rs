@@ -26,7 +26,7 @@ use crate::{
     storage::{PrecompileStorageProvider, StorageOps, slots::mapping_slot},
     tip20::{ITIP20, TIP20Token},
 };
-use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
+use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 
 /// Minimum order size of $10 USD
@@ -336,9 +336,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         Ok(amount)
     }
 
-    /// Generate deterministic key for token pair (legacy B256 version)
-    pub fn pair_key(&self, token_a: Address, token_b: Address) -> B256 {
-        compute_book_key(token_a, token_b)
+    /// Generate deterministic key for token pair (address-based wrapper)
+    pub fn pair_key(&self, token_a: Address, token_b: Address) -> u64 {
+        let token_id_a = crate::tip20::address_to_token_id_u32_unchecked(&token_a);
+        let token_id_b = crate::tip20::address_to_token_id_u32_unchecked(&token_b);
+        self.pair_key_u32(token_id_a, token_id_b)
     }
 
     /// Generate deterministic packed uint64 key from uint32 token IDs
@@ -384,19 +386,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Get orderbook by pair key
-    pub fn books(&mut self, pair_key: B256) -> Result<Orderbook, TempoPrecompileError> {
+    pub fn books(&mut self, pair_key: u64) -> Result<Orderbook, TempoPrecompileError> {
         Orderbook::from_storage(pair_key, self.storage, self.address)
     }
 
     /// Add book key to book keys array
     /// This function adds the specified book key to the `book_keys` array in storage
     /// and increments the length of the array
-    fn push_to_book_keys(&mut self, book_key: B256) -> Result<(), TempoPrecompileError> {
+    fn push_to_book_keys(&mut self, book_key: u64) -> Result<(), TempoPrecompileError> {
         let length = self.storage.sload(self.address, slots::BOOK_KEYS_LENGTH)?;
         self.storage.sstore(
             self.address,
             slots::BOOK_KEYS_BASE + length,
-            book_key.into(),
+            U256::from(book_key),
         )?;
         self.storage
             .sstore(self.address, slots::BOOK_KEYS_LENGTH, length + U256::ONE)?;
@@ -404,7 +406,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Get all book keys
-    pub fn get_book_keys(&mut self) -> Result<Vec<B256>, TempoPrecompileError> {
+    pub fn get_book_keys(&mut self) -> Result<Vec<u64>, TempoPrecompileError> {
         let length = self.storage.sload(self.address, slots::BOOK_KEYS_LENGTH)?;
         let mut book_keys = Vec::new();
         let mut i = U256::ZERO;
@@ -412,13 +414,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             let book_key = self
                 .storage
                 .sload(self.address, slots::BOOK_KEYS_BASE + i)?;
-            book_keys.push(B256::from(book_key));
+            book_keys.push(book_key.to::<u64>());
             i += U256::ONE;
         }
         Ok(book_keys)
     }
 
-    pub fn create_pair(&mut self, base: Address) -> Result<B256, TempoPrecompileError> {
+    pub fn create_pair(&mut self, base: Address) -> Result<u64, TempoPrecompileError> {
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
 
         let book_key = compute_book_key(base, quote);
@@ -754,7 +756,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Fill an order and delete from storage. Returns the next best order and price level.
     fn fill_order(
         &mut self,
-        book_key: B256,
+        book_key: u64,
         order: &mut Order,
         mut level: PriceLevel,
     ) -> Result<(u128, Option<(PriceLevel, Order)>), TempoPrecompileError> {
@@ -866,7 +868,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Fill orders for exact output amount
     fn fill_orders_exact_out(
         &mut self,
-        book_key: B256,
+        book_key: u64,
         bid: bool,
         mut amount_out: u128,
         max_amount_in: u128,
@@ -919,7 +921,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Fill orders with exact amount in
     fn fill_orders_exact_in(
         &mut self,
-        book_key: B256,
+        book_key: u64,
         bid: bool,
         mut amount_in: u128,
         min_amount_out: u128,
@@ -958,7 +960,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Helper function to get best tick from orderbook
     fn get_best_price_level(
         &mut self,
-        book_key: B256,
+        book_key: u64,
         bid: bool,
     ) -> Result<PriceLevel, TempoPrecompileError> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address)?;
@@ -1138,7 +1140,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Quote exact output amount without executing trades
     fn quote_exact_out(
         &mut self,
-        book_key: B256,
+        book_key: u64,
         amount_out: u128,
         is_bid: bool,
     ) -> Result<u128, TempoPrecompileError> {
@@ -1264,7 +1266,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         &mut self,
         token_in: Address,
         token_out: Address,
-    ) -> Result<Vec<(B256, bool)>, TempoPrecompileError> {
+    ) -> Result<Vec<(u64, bool)>, TempoPrecompileError> {
         // Cannot trade same token
         if token_in == token_out {
             return Err(StablecoinExchangeError::identical_tokens().into());
@@ -1321,7 +1323,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     fn validate_and_build_route(
         &mut self,
         path: &[Address],
-    ) -> Result<Vec<(B256, bool)>, TempoPrecompileError> {
+    ) -> Result<Vec<(u64, bool)>, TempoPrecompileError> {
         let mut route = Vec::new();
 
         for i in 0..path.len() - 1 {
@@ -1364,7 +1366,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Quote exact input amount without executing trades
     fn quote_exact_in(
         &mut self,
-        book_key: B256,
+        book_key: u64,
         amount_in: u128,
         is_bid: bool,
     ) -> Result<u128, TempoPrecompileError> {
@@ -2516,7 +2518,7 @@ mod tests {
     fn verify_hop(
         storage: &mut impl PrecompileStorageProvider,
         exchange_addr: Address,
-        hop: (B256, bool),
+        hop: (u64, bool),
         token_in: Address,
         token_out: Address,
     ) -> eyre::Result<()> {
