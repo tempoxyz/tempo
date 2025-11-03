@@ -35,6 +35,7 @@ struct Args {
 }
 
 #[derive(Debug, clap::Subcommand)]
+#[allow(clippy::enum_variant_names)]
 enum Action {
     GenerateConfig(GenerateConfig),
     GenerateGenesis(GenesisArgs),

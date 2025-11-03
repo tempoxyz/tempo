@@ -119,7 +119,7 @@ pub(crate) fn generate_devnet_configs(
     let mut consensus_configs = Vec::new();
 
     if nodes.len() > 1 {
-        consensus_configs = generate_consensus_configs(nodes.clone(), storage_directory.clone());
+        consensus_configs = generate_consensus_configs(nodes.clone(), storage_directory);
     } else {
         consensus_configs.push(None);
     }
@@ -149,7 +149,7 @@ pub(crate) fn generate_devnet_configs(
             toml::to_string_pretty(&config)
                 .wrap_err("failed to convert consensus config to toml")?
         } else {
-            String::from("")
+            String::new()
         };
 
         let output_config = ConfigOutput {
@@ -200,7 +200,7 @@ fn generate_consensus_configs(
     let mut these_will_be_peers = IndexMap::new();
     let mut consensus_configs = Vec::new();
 
-    for (signer, share, url) in multizip((signers, shares, nodes.clone())) {
+    for (signer, share, url) in multizip((signers, shares, nodes)) {
         // Create peer config
         these_will_be_peers.insert(signer.public_key(), url.to_string());
         let peer_config = Config {
