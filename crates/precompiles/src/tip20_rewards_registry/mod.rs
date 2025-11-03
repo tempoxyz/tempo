@@ -180,7 +180,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         }
 
         let current_timestamp = self.storage.timestamp().to::<u128>();
-        let last_updated = self.get_last_updated_timestamp()?;
+        let mut last_updated = self.get_last_updated_timestamp()?;
+
+        if last_updated == 0 {
+            last_updated = current_timestamp - 1;
+        }
 
         if current_timestamp == last_updated {
             return Ok(());
