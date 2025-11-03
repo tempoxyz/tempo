@@ -558,12 +558,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let from_delegate = self.update_rewards(from)?;
         let to_delegate = self.update_rewards(to)?;
 
-        if !from_delegate.is_zero() && to_delegate.is_zero() {
-            let opted_in_supply = self
-                .get_opted_in_supply()?
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(opted_in_supply)?;
+        if !from_delegate.is_zero() {
+            if to_delegate.is_zero() {
+                let opted_in_supply = self
+                    .get_opted_in_supply()?
+                    .checked_sub(amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(opted_in_supply)?;
+            }
         } else if !to_delegate.is_zero() {
             let opted_in_supply = self
                 .get_opted_in_supply()?
