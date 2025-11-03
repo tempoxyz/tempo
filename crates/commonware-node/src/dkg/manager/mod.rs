@@ -1,9 +1,11 @@
+use std::net::SocketAddr;
+
 use commonware_cryptography::{
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
-use commonware_utils::set::Ordered;
+use commonware_utils::set::{Ordered, OrderedAssociated};
 
 mod actor;
 mod ingress;
@@ -17,9 +19,16 @@ use rand_core::CryptoRngCore;
 
 use crate::epoch;
 
-pub(crate) async fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox)
+pub(crate) async fn init<TContext, TPeerManager>(
+    context: TContext,
+    config: Config<TPeerManager>,
+) -> (Actor<TContext, TPeerManager>, Mailbox)
 where
     TContext: Clock + CryptoRngCore + Metrics + Spawner + Storage,
+    TPeerManager: commonware_p2p::Manager<
+            PublicKey = PublicKey,
+            Peers = OrderedAssociated<PublicKey, SocketAddr>,
+        >,
 {
     let (tx, rx) = mpsc::unbounded();
 
@@ -27,7 +36,8 @@ where
     let mailbox = Mailbox { inner: tx };
     (actor, mailbox)
 }
-pub(crate) struct Config {
+
+pub(crate) struct Config<TPeerManager> {
     pub(crate) epoch_manager: epoch::manager::Mailbox,
 
     /// The namespace the dkg manager will use when sending messages during
@@ -55,4 +65,7 @@ pub(crate) struct Config {
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,
+
+    pub(crate) peer_manager: TPeerManager,
+    pub(crate) unresolved_peers: OrderedAssociated<PublicKey, String>,
 }

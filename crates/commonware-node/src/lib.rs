@@ -11,15 +11,11 @@ pub(crate) mod epoch;
 pub(crate) mod marshal_utils;
 pub mod metrics;
 
-use std::net::SocketAddr;
-
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
-use commonware_p2p::{Manager as _, authenticated::lookup};
+use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
-use commonware_utils::set::OrderedAssociated;
 use eyre::{WrapErr as _, eyre};
 use tempo_node::TempoFullNode;
-use tracing::info;
 
 use crate::config::{
     BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
@@ -33,15 +29,15 @@ pub async fn run_consensus_stack(
     config: &tempo_commonware_node_config::Config,
     execution_node: TempoFullNode,
 ) -> eyre::Result<()> {
-    let (mut network, mut oracle) = instantiate_network(context, config)
+    let (mut network, oracle) = instantiate_network(context, config)
         .await
         .wrap_err("failed to start network")?;
 
-    let all_resolved_peers = resolve_all_peers(&config.peers)
-        .await
-        .wrap_err("failed resolving peers")?;
+    // let all_resolved_peers = resolve_all_peers(&config.peers)
+    //     .await
+    //     .wrap_err("failed resolving peers")?;
 
-    oracle.update(0, all_resolved_peers).await;
+    // oracle.update(0, all_resolved_peers).await;
 
     let message_backlog = config.message_backlog;
     let pending = network.register(PENDING_CHANNEL_IDENT, PENDING_LIMIT, message_backlog);
@@ -70,6 +66,14 @@ pub async fn run_consensus_stack(
         execution_node,
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
+
+        unresolved_peers: config
+            .peers
+            .iter()
+            .map(|(key, val)| (key.clone(), val.clone()))
+            .collect::<Vec<(_, _)>>()
+            .into(),
+
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         signer: config.signer.clone(),
@@ -143,38 +147,4 @@ async fn instantiate_network(
     };
 
     Ok(lookup::Network::new(context.with_label("network"), p2p_cfg))
-}
-
-async fn resolve_all_peers(
-    peers: impl IntoIterator<Item = (&PublicKey, &String)>,
-) -> eyre::Result<OrderedAssociated<PublicKey, SocketAddr>> {
-    use futures::stream::{FuturesOrdered, TryStreamExt as _};
-    let resolve_all = peers
-        .into_iter()
-        .map(|(peer, name)| async move {
-            // XXX: collecting every single result isn't exactly efficient, but
-            // we only do it once at startup, so w/e.
-            let addrs = tokio::net::lookup_host(name)
-                .await
-                .wrap_err_with(|| {
-                    format!("failed looking up IP of peer `{peer}` for DNS name `{name}`")
-                })?
-                .collect::<Vec<_>>();
-            info!(
-                %peer,
-                name,
-                potential_addresses = ?addrs,
-                "resolved DNS name to IPs; taking the first one"
-            );
-            let addr = addrs.first().ok_or_else(|| {
-                eyre!("peer `{peer}` with DNS name `{name}` resolved to zero addresses")
-            })?;
-            Ok::<_, eyre::Report>((peer.clone(), *addr))
-        })
-        .collect::<FuturesOrdered<_>>();
-    let resolved = resolve_all
-        .try_collect::<Vec<(_, _)>>()
-        .await
-        .wrap_err("failed resolving at least one peer")?;
-    Ok(resolved.into())
 }

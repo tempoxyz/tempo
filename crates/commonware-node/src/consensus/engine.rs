@@ -3,6 +3,7 @@
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
 use std::{
+    net::SocketAddr,
     num::{NonZeroU64, NonZeroUsize},
     time::Duration,
 };
@@ -22,7 +23,7 @@ use commonware_p2p::{Blocker, Receiver, Sender};
 use commonware_runtime::{
     Clock, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
 };
-use commonware_utils::set::Ordered;
+use commonware_utils::set::{Ordered, OrderedAssociated};
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
@@ -76,6 +77,8 @@ pub struct Builder<
     pub blocker: TBlocker,
     pub peer_manager: TPeerManager,
 
+    pub unresolved_peers: OrderedAssociated<PublicKey, String>,
+
     pub partition_prefix: String,
     pub signer: PrivateKey,
     pub polynomial: Poly<<MinSig as Variant>::Public>,
@@ -107,7 +110,10 @@ where
         + Storage
         + Metrics
         + Network,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey>,
+    TPeerManager: commonware_p2p::Manager<
+            PublicKey = PublicKey,
+            Peers = OrderedAssociated<PublicKey, SocketAddr>,
+        >,
 {
     pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext, TPeerManager>> {
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
@@ -129,7 +135,7 @@ where
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            manager: self.peer_manager,
+            manager: self.peer_manager.clone(),
             mailbox_size: self.mailbox_size,
             requester_config: commonware_p2p::utils::requester::Config {
                 me: Some(self.signer.public_key()),
@@ -218,6 +224,8 @@ where
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
+                peer_manager: self.peer_manager.clone(),
+                unresolved_peers: self.unresolved_peers,
             },
         )
         .await;
@@ -266,7 +274,7 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager: dkg::manager::Actor<TContext, TPeerManager>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
@@ -295,7 +303,10 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey>,
+    TPeerManager: commonware_p2p::Manager<
+            PublicKey = PublicKey,
+            Peers = OrderedAssociated<PublicKey, SocketAddr>,
+        >,
 {
     #[expect(
         clippy::too_many_arguments,

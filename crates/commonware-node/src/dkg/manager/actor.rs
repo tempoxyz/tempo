@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    net::{SocketAddr, ToSocketAddrs},
+    sync::Arc,
+};
 
 use commonware_consensus::{Block as _, Reporter};
 use commonware_cryptography::ed25519::PublicKey;
@@ -8,8 +11,8 @@ use commonware_p2p::{
 };
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::Metadata;
-use commonware_utils::sequence::U64;
-use eyre::eyre;
+use commonware_utils::{sequence::U64, set::OrderedAssociated};
+use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
@@ -27,11 +30,12 @@ use crate::{
 
 const EPOCH_KEY: u64 = 0;
 
-pub(crate) struct Actor<TContext>
+pub(crate) struct Actor<TContext, TPeerManager>
 where
     TContext: Clock + commonware_runtime::Metrics + Storage,
+    TPeerManager: commonware_p2p::Manager,
 {
-    config: super::Config,
+    config: super::Config<TPeerManager>,
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
@@ -41,12 +45,16 @@ where
     metrics: Metrics,
 }
 
-impl<TContext> Actor<TContext>
+impl<TContext, TPeerManager> Actor<TContext, TPeerManager>
 where
     TContext: Clock + CryptoRngCore + commonware_runtime::Metrics + Spawner + Storage,
+    TPeerManager: commonware_p2p::Manager<
+            PublicKey = PublicKey,
+            Peers = OrderedAssociated<PublicKey, SocketAddr>,
+        >,
 {
     pub(super) async fn init(
-        config: super::Config,
+        config: super::Config<TPeerManager>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> Self {
@@ -141,6 +149,22 @@ where
                 public: self.config.initial_public.clone(),
                 share: self.config.initial_share.clone(),
             });
+
+        let peers = match self
+            .context
+            .with_label("resolve_peers")
+            .shared(true)
+            .spawn({
+                let unresolved_peers = self.config.unresolved_peers.clone();
+                |_| async move { resolve_all_peers(unresolved_peers) }
+            })
+            .await
+        {
+            Err(_) | Ok(Err(_)) => return,
+            Ok(Ok(peers)) => peers,
+        };
+
+        self.config.peer_manager.update(0, peers).await;
 
         self.config
             .epoch_manager
@@ -479,6 +503,36 @@ where
 
         ceremony
     }
+}
+
+#[instrument(skip_all, err)]
+fn resolve_all_peers(
+    peers: OrderedAssociated<PublicKey, String>,
+) -> eyre::Result<OrderedAssociated<PublicKey, SocketAddr>> {
+    let resolved = peers
+        .into_iter()
+        .map(|(peer, name)| {
+
+            let addrs = name
+                .to_socket_addrs()
+                .wrap_err_with(|| {
+                    format!("failed converting address `{name}` of peer `{peer}` to socket address by parsing it resolving the hostname")
+                })?
+            .collect::<Vec<_>>();
+            info!(
+                %peer,
+                name,
+                potential_addresses = ?addrs,
+                "resolved DNS name to IPs; taking the first one"
+            );
+            let addr = addrs.first().ok_or_else(|| {
+                eyre!("peer `{peer}` with DNS name `{name}` resolved to zero addresses")
+            })?;
+            Ok::<_, eyre::Report>((peer.clone(), *addr))
+        })
+        .collect::<eyre::Result<Vec<_>>>()
+        .wrap_err("failed resolving at least one peer")?;
+    Ok(resolved.into())
 }
 
 #[derive(Clone)]
