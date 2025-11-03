@@ -30,6 +30,10 @@ pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
     interrupt: InterruptHandle,
     timestamp_millis_part: u64,
+    /// DKG ceremony data to include in the block's extra_data header field.
+    ///
+    /// This is empty when no DKG data is available (e.g., when the DKG manager
+    /// hasn't produced ceremony outcomes yet, or when DKG operations fail).
     extra_data: Bytes,
 }
 
