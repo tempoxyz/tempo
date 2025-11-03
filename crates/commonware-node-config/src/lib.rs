@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use std::path::Path;
+use std::{net::SocketAddr, path::Path};
 
 use commonware_codec::Decode;
 use commonware_cryptography::{
@@ -57,7 +57,13 @@ pub struct Config {
     #[serde(serialize_with = "crate::_serde::polynomial::serialize")]
     pub polynomial: Poly<<MinSig as Variant>::Public>,
 
-    pub listen_port: u16,
+    /// Address on which the node listens. Supply `0.0.0.0:<port>` to listen
+    /// on all addresses.
+    pub listen_addr: SocketAddr,
+
+    /// Address on which other nodes can reach this node.
+    pub dialable_addr: SocketAddr,
+
     pub metrics_port: Option<u16>,
 
     pub p2p: p2p::Config,
@@ -82,9 +88,6 @@ pub struct Config {
     #[serde(with = "crate::_serde::peers")]
     pub peers: IndexMap<PublicKey, String>,
 
-    // TODO: enforce the invariant that all `bootstrappers` are part of `peers`.
-    pub bootstrappers: Bootstrappers,
-
     pub message_backlog: usize,
     pub mailbox_size: usize,
     pub deque_size: usize,
@@ -106,24 +109,6 @@ impl Config {
         let this = toml::from_str(&file_contents)?;
         Ok(this)
     }
-
-    /// Returns a iterator over the bootstrappers and their domain names.
-    ///
-    /// # Panics
-    ///
-    /// This iterator will panic if one of the bootstrappers is not a member
-    /// of `peers`. This invariant is enforced when deserialing and can only
-    /// be violated by setting the field manually.
-    pub fn bootstrappers(&self) -> impl Iterator<Item = (PublicKey, &str)> {
-        self.bootstrappers.iter().map(|key| {
-            let dns = self.peers.get(key).expect(
-                "all bootstrappers must be contained in the peers map; \
-                    this invariant is enforced when deserializing and can only \
-                    be violated by mutating manually",
-            );
-            (key.clone(), &**dns)
-        })
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -132,29 +117,8 @@ pub enum Error {
     OpenFile(#[from] std::io::Error),
     #[error("failed parsing file contents")]
     Parse(#[from] toml::de::Error),
-    #[error("bootstrapper `{key}` does not have an entry in the config's peers list")]
-    BootstrapperWithoutPeer { key: Box<PublicKey> },
     #[error("failed decoding provided hex encoded bytes as a public polynomial")]
     Polynomial(#[source] commonware_codec::Error),
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[serde(transparent)]
-pub struct Bootstrappers {
-    #[serde(with = "crate::_serde::bootstrappers")]
-    inner: Vec<PublicKey>,
-}
-
-impl Bootstrappers {
-    pub fn iter(&self) -> impl Iterator<Item = &PublicKey> {
-        self.inner.iter()
-    }
-}
-
-impl From<Vec<PublicKey>> for Bootstrappers {
-    fn from(inner: Vec<PublicKey>) -> Self {
-        Self { inner }
-    }
 }
 
 /// The deserialization target that will be turned into a [`Config`].
@@ -171,7 +135,9 @@ struct DeserConfig {
     #[serde(deserialize_with = "const_hex::serde::deserialize")]
     polynomial: Vec<u8>,
 
-    listen_port: u16,
+    listen_addr: SocketAddr,
+    dialable_addr: SocketAddr,
+
     metrics_port: Option<u16>,
 
     p2p: p2p::Config,
@@ -193,8 +159,6 @@ struct DeserConfig {
     #[serde(deserialize_with = "crate::_serde::peers::deserialize")]
     peers: IndexMap<PublicKey, String>,
 
-    bootstrappers: Bootstrappers,
-
     message_backlog: usize,
     mailbox_size: usize,
     deque_size: usize,
@@ -212,13 +176,13 @@ impl TryFrom<DeserConfig> for Config {
             signer,
             share,
             polynomial,
-            listen_port,
+            listen_addr,
+            dialable_addr,
             metrics_port,
             p2p,
             storage_directory,
             worker_threads,
             peers,
-            bootstrappers,
             message_backlog,
             mailbox_size,
             deque_size,
@@ -228,25 +192,19 @@ impl TryFrom<DeserConfig> for Config {
         } = value;
 
         let threshold = quorum(peers.len() as u32);
-        for key in &bootstrappers.inner {
-            if !peers.contains_key(key) {
-                return Err(Error::BootstrapperWithoutPeer {
-                    key: Box::new(key.clone()),
-                });
-            }
-        }
+
         Ok(Self {
             signer,
             share,
             polynomial: Poly::decode_cfg(&polynomial[..], &(threshold as usize))
                 .map_err(Error::Polynomial)?,
-            listen_port,
+            listen_addr,
+            dialable_addr,
             metrics_port,
             p2p,
             storage_directory,
             worker_threads,
             peers,
-            bootstrappers,
             message_backlog,
             mailbox_size,
             deque_size,
@@ -288,57 +246,6 @@ mod _serde {
                 ))
             })?;
             Ok(Self(key))
-        }
-    }
-
-    pub(crate) mod bootstrappers {
-
-        use serde::{Deserializer, Serializer, de::Visitor, ser::SerializeSeq}; // # codespell:ignore ser
-
-        use crate::PublicKey;
-
-        use super::PublicKeyDe;
-
-        struct BootstrappersVisitor;
-
-        impl<'de> Visitor<'de> for BootstrappersVisitor {
-            type Value = Vec<PublicKey>;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a list of hex-formarred ed25519 public keys")
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::SeqAccess<'de>,
-            {
-                let mut keys = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-                while let Some(public_key) = seq.next_element::<PublicKeyDe>()? {
-                    keys.push(public_key.0);
-                }
-                Ok(keys)
-            }
-        }
-
-        pub(crate) fn serialize<S>(
-            bootstrappers: &Vec<PublicKey>,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            let mut seq = serializer.serialize_seq(Some(bootstrappers.len()))?;
-            for key in bootstrappers {
-                seq.serialize_element(&super::PublicKeySer(key))?;
-            }
-            seq.end()
-        }
-
-        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<PublicKey>, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            deserializer.deserialize_seq(BootstrappersVisitor)
         }
     }
 

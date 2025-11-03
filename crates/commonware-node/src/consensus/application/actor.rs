@@ -13,9 +13,9 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_consensus::BlockHeader;
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
-use commonware_codec::DecodeExt as _;
+use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::{
     Block as _,
     types::{Epoch, Round, View},
@@ -300,7 +300,7 @@ impl Inner<Init> {
             round,
         } = request;
 
-        let mut proposal = select!(
+        let proposal = select!(
             () = response.cancellation() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
@@ -312,41 +312,6 @@ impl Inner<Init> {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
-
-        if proposal.digest() != parent_digest {
-            if epoch::is_last_height_of_epoch(proposal.height(), round.epoch(), self.epoch_length) {
-                let outcome = self
-                    .state
-                    .dkg_manager
-                    .get_public_ceremony_outcome(request.round.epoch())
-                    .await
-                    .transpose()
-                    .ok_or_eyre("public dkg ceremony outcome does not exist")
-                    // TODO(janis): Result::flatten once msrv is 1.89
-                    .and_then(|this| this)
-                    .wrap_err(
-                        "failed getting public dkg ceremony outcome; refusing to generate proposal",
-                    )?;
-                proposal = proposal.insert_public_ceremony_outcome(outcome);
-            } else {
-                match self
-                    .state
-                    .dkg_manager
-                    .get_intermediate_dealing(request.round.epoch())
-                    .await
-                {
-                    Err(error) => warn!(
-                        %error,
-                        "failed getting ceremony deal for current epoch because DKG manager went away",
-                    ),
-                    Ok(None) => {}
-                    Ok(Some(deal_outcome)) => {
-                        info!("found ceremony deal outcome; inserting it into the proposal header");
-                        proposal = proposal.insert_intermediate_ceremony_dealing(deal_outcome);
-                    }
-                }
-            }
-        }
 
         let proposal_digest = proposal.digest();
         let proposal_height = proposal.height();
@@ -497,6 +462,49 @@ impl Inner<Init> {
             );
         }
 
+        // Query DKG manager for ceremony data before building payload
+        // This data will be passed to the payload builder via attributes
+        let extra_data = if epoch::is_last_height_of_epoch(
+            parent.height() + 1,
+            round.epoch(),
+            self.epoch_length,
+        ) {
+            // At epoch boundary: include public ceremony outcome
+            let outcome = self
+                .state
+                .dkg_manager
+                .get_public_ceremony_outcome(round.epoch())
+                .await
+                .transpose()
+                .ok_or_eyre("public dkg ceremony outcome does not exist")
+                .and_then(|this| this)
+                .wrap_err("failed getting public dkg ceremony outcome")?;
+            outcome.encode().freeze().into()
+        } else {
+            // Regular block: try to include intermediate dealing
+            match self
+                .state
+                .dkg_manager
+                .get_intermediate_dealing(round.epoch())
+                .await
+            {
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "failed getting ceremony deal for current epoch because DKG manager went away",
+                    );
+                    Bytes::default()
+                }
+                Ok(None) => Bytes::default(),
+                Ok(Some(deal_outcome)) => {
+                    info!(
+                        "found ceremony deal outcome; will include in payload builder attributes"
+                    );
+                    deal_outcome.encode().freeze().into()
+                }
+            }
+        };
+
         let attrs = TempoPayloadBuilderAttributes::new(
             // XXX: derives the payload ID from the parent so that
             // overlong payload builds will eventually succeed on the
@@ -509,6 +517,7 @@ impl Inner<Init> {
             parent.block_hash(),
             self.fee_recipient,
             context.current().epoch_millis(),
+            extra_data,
         );
 
         let interrupt_handle = attrs.interrupt_handle().clone();

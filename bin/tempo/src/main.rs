@@ -24,11 +24,7 @@ use futures::{
 };
 use reth_ethereum::cli::{Cli, Commands};
 use reth_node_builder::NodeHandle;
-use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
-    thread,
-};
+use std::{net::SocketAddr, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
@@ -131,7 +127,7 @@ fn main() -> eyre::Result<()> {
                             tempo_commonware_node::metrics::install(
                                 ctx.with_label("metrics"),
                                 SocketAddr::new(
-                                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                                    consensus_config.listen_addr.ip(),
                                     port,
                                 ),
                             )

@@ -1,4 +1,5 @@
 use alloy_evm::eth::EthBlockExecutionCtx;
+use alloy_primitives::Bytes;
 use reth_evm::NextBlockEnvAttributes;
 #[cfg(feature = "rpc")]
 use tempo_primitives::TempoHeader;
@@ -11,6 +12,8 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub inner: EthBlockExecutionCtx<'a>,
     /// Non-payment gas limit for the block.
     pub general_gas_limit: u64,
+    /// DKG ceremony data to include in the block's extra_data header field.
+    pub extra_data: Bytes,
 }
 
 /// Context required for next block environment.
@@ -23,6 +26,8 @@ pub struct TempoNextBlockEnvAttributes {
     pub general_gas_limit: u64,
     /// Milliseconds portion of the timestamp.
     pub timestamp_millis_part: u64,
+    /// DKG ceremony data to include in the block's extra_data header field.
+    pub extra_data: Bytes,
 }
 
 #[cfg(feature = "rpc")]
@@ -36,6 +41,7 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<TempoHeader>
             inner: NextBlockEnvAttributes::build_pending_env(parent),
             general_gas_limit: parent.gas_limit() / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR,
             timestamp_millis_part: parent.timestamp_millis_part,
+            extra_data: Bytes::default(),
         }
     }
 }

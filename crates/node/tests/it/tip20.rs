@@ -709,19 +709,25 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     let mint_amount = U256::from(1000e18);
     let reward_amount = U256::from(300e18);
 
-    let bob = Address::random();
+    let bob_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(2)
+        .unwrap()
+        .build()
+        .unwrap();
+    let bob = bob_wallet.address();
+    let bob_provider = ProviderBuilder::new()
+        .wallet(bob_wallet)
+        .connect_http(http_url.clone());
+    let bob_token = ITIP20::new(*token.address(), bob_provider);
+
     pending.push(token.mint(alice, mint_amount).send().await?);
     pending.push(token.mint(admin, reward_amount).send().await?);
     pending.push(alice_token.setRewardRecipient(bob).send().await?);
     await_receipts(&mut pending).await?;
 
-    // Check balances before finalizing streams
-    let alice_balance_before = token.balanceOf(alice).call().await?;
-    let bob_balance_before = token.balanceOf(bob).call().await?;
-
     // Start reward stream
     let start_receipt = token
-        .startReward(reward_amount, 2)
+        .startReward(reward_amount, 1)
         .send()
         .await?
         .get_receipt()
@@ -746,12 +752,17 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     );
     await_receipts(&mut pending).await?;
 
-    // Check balances after finalizing streams and reward distribution
     let alice_balance_after = token.balanceOf(alice).call().await?;
     let bob_balance_after = token.balanceOf(bob).call().await?;
+    let contract_balance = token.balanceOf(*token.address()).call().await?;
 
-    assert!(alice_balance_after < alice_balance_before);
-    assert!(bob_balance_after > bob_balance_before);
+    assert_eq!(alice_balance_after, U256::from(900e18));
+    assert_eq!(bob_balance_after, U256::ZERO);
+    assert_eq!(contract_balance, reward_amount);
+
+    bob_token.claimRewards().send().await?.get_receipt().await?;
+    let bob_balance_after_claim = token.balanceOf(bob).call().await?;
+    assert_eq!(bob_balance_after_claim, reward_amount);
 
     Ok(())
 }
