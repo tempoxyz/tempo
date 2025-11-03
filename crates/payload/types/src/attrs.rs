@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::{PayloadAttributes, PayloadId};
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
@@ -30,11 +30,18 @@ impl InterruptHandle {
 /// Container type for all components required to build a payload.
 ///
 /// The `TempoPayloadBuilderAttributes` has an additional feature of interrupting payload.
+///
+/// It also carries DKG data to be included in the block's extra_data field.
 #[derive(derive_more::Debug, Clone)]
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
     interrupt: InterruptHandle,
     timestamp_millis_part: u64,
+    /// DKG ceremony data to include in the block's extra_data header field.
+    ///
+    /// This is empty when no DKG data is available (e.g., when the DKG manager
+    /// hasn't produced ceremony outcomes yet, or when DKG operations fail).
+    extra_data: Bytes,
     #[debug(skip)]
     subblocks: Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static>,
 }
@@ -46,6 +53,7 @@ impl TempoPayloadBuilderAttributes {
         parent: B256,
         suggested_fee_recipient: Address,
         timestamp_millis: u64,
+        extra_data: Bytes,
         subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
     ) -> Self {
         let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
@@ -61,8 +69,14 @@ impl TempoPayloadBuilderAttributes {
             },
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
+            extra_data,
             subblocks: Arc::new(subblocks),
         }
+    }
+
+    /// Returns the extra data to be included in the block header.
+    pub fn extra_data(&self) -> &Bytes {
+        &self.extra_data
     }
 
     /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
@@ -96,6 +110,7 @@ impl From<EthPayloadBuilderAttributes> for TempoPayloadBuilderAttributes {
             inner,
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
+            extra_data: Bytes::default(),
             subblocks: Arc::new(Vec::new),
         }
     }
@@ -117,6 +132,7 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
             inner: EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
+            extra_data: Bytes::default(),
             subblocks: Arc::new(Vec::new),
         })
     }
@@ -147,5 +163,73 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
 
     fn withdrawals(&self) -> &Withdrawals {
         self.inner.withdrawals()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_attributes_without_extra_data() {
+        let parent = B256::default();
+        let id = PayloadId::default();
+        let recipient = Address::default();
+        let timestamp_millis = 1000;
+
+        let attrs = TempoPayloadBuilderAttributes::new(
+            id,
+            parent,
+            recipient,
+            timestamp_millis,
+            Bytes::default(),
+            Vec::new,
+        );
+
+        assert_eq!(attrs.extra_data(), &Bytes::default());
+        assert_eq!(attrs.parent(), parent);
+        assert_eq!(attrs.suggested_fee_recipient(), recipient);
+        assert_eq!(attrs.timestamp(), 1); // 1000 ms / 1000 = 1 second
+    }
+
+    #[test]
+    fn test_attributes_with_extra_data() {
+        let parent = B256::default();
+        let id = PayloadId::default();
+        let recipient = Address::default();
+        let timestamp_millis = 1000;
+        let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
+
+        let attrs = TempoPayloadBuilderAttributes::new(
+            id,
+            parent,
+            recipient,
+            timestamp_millis,
+            extra_data.clone(),
+            Vec::new,
+        );
+
+        assert_eq!(attrs.extra_data(), &extra_data);
+        assert_eq!(attrs.parent(), parent);
+        assert_eq!(attrs.suggested_fee_recipient(), recipient);
+    }
+
+    #[test]
+    fn test_attributes_with_empty_extra_data() {
+        let parent = B256::default();
+        let id = PayloadId::default();
+        let recipient = Address::default();
+        let timestamp_millis = 1000;
+
+        let attrs = TempoPayloadBuilderAttributes::new(
+            id,
+            parent,
+            recipient,
+            timestamp_millis,
+            Bytes::default(),
+            Vec::new,
+        );
+
+        assert_eq!(attrs.extra_data(), &Bytes::default());
     }
 }

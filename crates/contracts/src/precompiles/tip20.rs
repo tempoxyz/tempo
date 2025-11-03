@@ -92,6 +92,7 @@ sol! {
         function startReward(uint256 amount, uint128 seconds) external returns (uint64);
         function setRewardRecipient(address recipient) external;
         function cancelReward(uint64 id) external returns (uint256);
+        function claimRewards() external returns (uint256);
         function finalizeStreams() external;
         function getStream(uint64 id) external view returns (RewardStream);
         function totalRewardPerSecond() external view returns (uint256);

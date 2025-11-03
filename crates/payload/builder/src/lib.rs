@@ -322,6 +322,7 @@ where
                     general_gas_limit,
                     shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
+                    extra_data: attributes.extra_data().clone(),
                 },
             )
             .map_err(PayloadBuilderError::other)?;
@@ -615,4 +616,33 @@ pub fn is_more_subblocks(
     };
 
     subblocks.len() > best_metadata.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, B256, Bytes};
+    use reth_payload_builder::PayloadId;
+
+    #[test]
+    fn test_extra_data_flow_in_attributes() {
+        // Test that extra_data in attributes can be accessed correctly
+        let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
+
+        let attrs = TempoPayloadBuilderAttributes::new(
+            PayloadId::default(),
+            B256::default(),
+            Address::default(),
+            1000,
+            extra_data.clone(),
+            Vec::new,
+        );
+
+        assert_eq!(attrs.extra_data(), &extra_data);
+
+        // Verify the data is as expected
+        let injected_data = attrs.extra_data().clone();
+
+        assert_eq!(injected_data, extra_data);
+    }
 }

@@ -20,9 +20,6 @@ pub(crate) struct GenerateConfig {
     /// The number of peers to generate.
     #[arg(long)]
     peers: usize,
-    /// The number of bootstrappers to generate.
-    #[arg(long)]
-    bootstrappers: usize,
     #[arg(long)]
     mailbox_size: usize,
     #[arg(long)]
@@ -46,7 +43,6 @@ pub(crate) fn generate_config(
         output,
         force,
         peers,
-        bootstrappers,
         mailbox_size,
         deque_size,
         from_port,
@@ -82,24 +78,11 @@ pub(crate) fn generate_config(
         );
     }
 
-    ensure!(
-        bootstrappers <= peers,
-        "requested `{bootstrappers}` bootstrappers but only `{peers}` peers; there must be at least as many peers as bootstrappers",
-    );
-
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
     let mut signers = (0..peers)
         .map(|_| PrivateKey::from_rng(&mut rng))
         .collect::<Vec<_>>();
     signers.sort_by_key(|signer| signer.public_key());
-
-    let all_peers: Vec<_> = signers.iter().map(|signer| signer.public_key()).collect();
-
-    let bootstrappers = all_peers
-        .iter()
-        .take(bootstrappers)
-        .cloned()
-        .collect::<Vec<_>>();
 
     // generate consensus key
     let threshold = commonware_utils::quorum(peers as u32);
@@ -131,14 +114,14 @@ pub(crate) fn generate_config(
             // 1 week worth of blocks, assuming 2s per block
             epoch_length: 302_400,
             polynomial: polynomial.clone(),
-            listen_port: port,
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            dialable_addr: SocketAddr::from(([127, 0, 0, 1], port)),
             metrics_port: Some(port + 1),
             p2p: Default::default(),
             storage_directory: output.join(&name).join("storage"),
             worker_threads: 3,
             // this will be updated after we have collected all peers
             peers: IndexMap::new(),
-            bootstrappers: bootstrappers.clone().into(),
             message_backlog,
             mailbox_size,
             deque_size,
@@ -162,10 +145,6 @@ pub(crate) fn generate_config(
     }
 
     eprintln!("Config files written");
-    eprint!("Bootstrappers:");
-    for bootstrapper in bootstrappers {
-        eprintln!("\t{bootstrapper}");
-    }
     eprintln!("To start validators, run:");
     for (instance, (name, dst, cfg)) in (1u32..).zip(&configurations) {
         let eth_dst = cfg.storage_directory.with_file_name("reth_storage");
