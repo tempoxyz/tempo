@@ -621,21 +621,20 @@ impl UserRewardInfo {
         storage: &mut S,
         token_address: Address,
     ) -> Result<Self, TempoPrecompileError> {
+        let user_slot = mapping_slot(account, slots::USER_REWARD_INFO);
+
         let delegated_recipient = storage
-            .sload(
-                token_address,
-                mapping_slot(account, slots::USER_REWARD_INFO) + Self::DELEGATED_RECIPIENT_OFFSET,
-            )?
+            .sload(token_address, user_slot + Self::DELEGATED_RECIPIENT_OFFSET)?
             .into_address();
 
         let reward_per_token = storage.sload(
             token_address,
-            mapping_slot(account, slots::USER_REWARD_INFO) + Self::REWARD_PER_TOKEN_OFFSET,
+            user_slot + Self::REWARD_PER_TOKEN_OFFSET,
         )?;
 
         let reward_balance = storage.sload(
             token_address,
-            mapping_slot(account, slots::USER_REWARD_INFO) + Self::REWARD_BALANCE_OFFSET,
+            user_slot + Self::REWARD_BALANCE_OFFSET,
         )?;
 
         Ok(Self {
@@ -652,21 +651,23 @@ impl UserRewardInfo {
         storage: &mut S,
         token_address: Address,
     ) -> Result<(), TempoPrecompileError> {
+        let user_slot = mapping_slot(account, slots::USER_REWARD_INFO);
+
         storage.sstore(
             token_address,
-            mapping_slot(account, slots::USER_REWARD_INFO) + Self::DELEGATED_RECIPIENT_OFFSET,
+            user_slot + Self::DELEGATED_RECIPIENT_OFFSET,
             self.delegated_recipient.into_u256(),
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(account, slots::USER_REWARD_INFO) + Self::REWARD_PER_TOKEN_OFFSET,
+            user_slot + Self::REWARD_PER_TOKEN_OFFSET,
             self.reward_per_token,
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(account, slots::USER_REWARD_INFO) + Self::REWARD_BALANCE_OFFSET,
+            user_slot + Self::REWARD_BALANCE_OFFSET,
             self.reward_balance,
         )?;
 
@@ -716,37 +717,28 @@ impl RewardStream {
         storage: &mut S,
         token_address: Address,
     ) -> Result<Self, TempoPrecompileError> {
-        let key = stream_id.to_be_bytes();
+        let stream_slot = mapping_slot(stream_id.to_be_bytes(), slots::STREAMS);
 
         let funder = storage
-            .sload(
-                token_address,
-                mapping_slot(key, slots::STREAMS) + Self::STREAM_FUNDER_OFFSET,
-            )?
+            .sload(token_address, stream_slot + Self::STREAM_FUNDER_OFFSET)?
             .into_address();
 
         let start_time = storage
-            .sload(
-                token_address,
-                mapping_slot(key, slots::STREAMS) + Self::STREAM_START_TIME_OFFSET,
-            )?
+            .sload(token_address, stream_slot + Self::STREAM_START_TIME_OFFSET)?
             .to::<u64>();
 
         let end_time = storage
-            .sload(
-                token_address,
-                mapping_slot(key, slots::STREAMS) + Self::STREAM_END_TIME_OFFSET,
-            )?
+            .sload(token_address, stream_slot + Self::STREAM_END_TIME_OFFSET)?
             .to::<u64>();
 
         let rate_per_second_scaled = storage.sload(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_RATE_OFFSET,
+            stream_slot + Self::STREAM_RATE_OFFSET,
         )?;
 
         let amount_total = storage.sload(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_AMOUNT_TOTAL_OFFSET,
+            stream_slot + Self::STREAM_AMOUNT_TOTAL_OFFSET,
         )?;
 
         Ok(Self {
@@ -765,35 +757,35 @@ impl RewardStream {
         storage: &mut S,
         token_address: Address,
     ) -> Result<(), TempoPrecompileError> {
-        let key = self.stream_id.to_be_bytes();
+        let stream_slot = mapping_slot(self.stream_id.to_be_bytes(), slots::STREAMS);
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_FUNDER_OFFSET,
+            stream_slot + Self::STREAM_FUNDER_OFFSET,
             self.funder.into_u256(),
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_START_TIME_OFFSET,
+            stream_slot + Self::STREAM_START_TIME_OFFSET,
             U256::from(self.start_time),
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_END_TIME_OFFSET,
+            stream_slot + Self::STREAM_END_TIME_OFFSET,
             U256::from(self.end_time),
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_RATE_OFFSET,
+            stream_slot + Self::STREAM_RATE_OFFSET,
             self.rate_per_second_scaled,
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_AMOUNT_TOTAL_OFFSET,
+            stream_slot + Self::STREAM_AMOUNT_TOTAL_OFFSET,
             self.amount_total,
         )?;
 
@@ -806,35 +798,35 @@ impl RewardStream {
         storage: &mut S,
         token_address: Address,
     ) -> Result<(), TempoPrecompileError> {
-        let key = self.stream_id.to_be_bytes();
+        let stream_slot = mapping_slot(self.stream_id.to_be_bytes(), slots::STREAMS);
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_FUNDER_OFFSET,
+            stream_slot + Self::STREAM_FUNDER_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_START_TIME_OFFSET,
+            stream_slot + Self::STREAM_START_TIME_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_END_TIME_OFFSET,
+            stream_slot + Self::STREAM_END_TIME_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_RATE_OFFSET,
+            stream_slot + Self::STREAM_RATE_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             token_address,
-            mapping_slot(key, slots::STREAMS) + Self::STREAM_AMOUNT_TOTAL_OFFSET,
+            stream_slot + Self::STREAM_AMOUNT_TOTAL_OFFSET,
             U256::ZERO,
         )?;
 
