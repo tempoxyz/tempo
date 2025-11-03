@@ -175,7 +175,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// balance and the reward per token difference since their last update.
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
-    fn update_rewards(&mut self, holder: Address) -> Result<Address, TempoPrecompileError> {
+    pub fn update_rewards(&mut self, holder: Address) -> Result<Address, TempoPrecompileError> {
         let mut info = UserRewardInfo::from_storage(holder, self.storage, self.token_address)?;
 
         let cached_delegate = info.delegated_recipient;
@@ -555,19 +555,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         to: Address,
         amount: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let from_info = UserRewardInfo::from_storage(from, self.storage, self.token_address)?;
-        let to_info = UserRewardInfo::from_storage(to, self.storage, self.token_address)?;
+        let from_delegate = self.update_rewards(from)?;
+        let to_delegate = self.update_rewards(to)?;
 
-        let from_opted_in = from_info.delegated_recipient != Address::ZERO;
-        let to_opted_in = to_info.delegated_recipient != Address::ZERO;
-
-        if from_opted_in && !to_opted_in {
+        if !from_delegate.is_zero() && to_delegate.is_zero() {
             let opted_in_supply = self
                 .get_opted_in_supply()?
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(opted_in_supply)?;
-        } else if !from_opted_in && to_opted_in {
+        } else if !to_delegate.is_zero() {
             let opted_in_supply = self
                 .get_opted_in_supply()?
                 .checked_add(amount)
@@ -584,8 +581,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         to: Address,
         amount: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let to_info = UserRewardInfo::from_storage(to, self.storage, self.token_address)?;
-        if to_info.delegated_recipient != Address::ZERO {
+        let to_delegate = self.update_rewards(to)?;
+
+        if !to_delegate.is_zero() {
             let opted_in_supply = self
                 .get_opted_in_supply()?
                 .checked_add(amount)
