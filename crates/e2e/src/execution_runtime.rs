@@ -3,7 +3,10 @@ use std::{path::Path, sync::Arc};
 
 use eyre::WrapErr as _;
 use reth_db::mdbx::DatabaseArguments;
-use reth_ethereum::tasks::{TaskExecutor, TaskManager};
+use reth_ethereum::{
+    network::api::{test_utils::PeersHandleProvider, PeersInfo},
+    tasks::{TaskExecutor, TaskManager},
+};
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
     args::{DatadirArgs, RpcServerArgs},
@@ -173,6 +176,31 @@ impl ExecutionRuntimeHandle {
 pub struct ExecutionNode {
     pub node: TempoFullNode,
     pub _exit_fut: NodeExitFuture,
+}
+
+impl ExecutionNode {
+    /// Connect peers bidirectionally.
+    pub fn connect_peer(&self, other: &ExecutionNode) {
+        let self_record = self.node.network.local_node_record();
+        let other_record = other.node.network.local_node_record();
+
+        self.node
+            .network
+            .peers_handle()
+            .add_peer(other_record.id, other_record.tcp_addr());
+
+        other
+            .node
+            .network
+            .peers_handle()
+            .add_peer(self_record.id, self_record.tcp_addr());
+
+        tracing::debug!(
+            "Connected peers: {:?} <-> {:?}",
+            self_record.id,
+            other_record.id
+        );
+    }
 }
 
 // TODO(janis): allow configuring this.

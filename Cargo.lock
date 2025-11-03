@@ -11573,6 +11573,7 @@ dependencies = [
  "futures",
  "reth-db",
  "reth-ethereum",
+ "reth-network-peers",
  "reth-node-builder",
  "reth-node-core",
  "reth-rpc-builder",

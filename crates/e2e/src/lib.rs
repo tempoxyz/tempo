@@ -102,15 +102,26 @@ pub async fn setup_validators(
 
     let mut public_keys = HashSet::new();
     let mut nodes = Vec::new();
-    for (i, (signer, share)) in signers.into_iter().zip(shares).enumerate() {
-        let public_key = signer.public_key();
-        public_keys.insert(public_key.clone());
+    let mut execution_nodes = Vec::with_capacity(how_many as usize);
 
-        let uid = format!("validator-{public_key}");
-
+    for i in 0..how_many {
         let node = execution_runtime
             .spawn_node_blocking(&format!("node-{i}"))
             .expect("must be able to spawn nodes on the runtime");
+
+        // ensure EL p2p connectivity for backfill syncs
+        for existing_node in &execution_nodes {
+            existing_node.connect_peer(&node);
+        }
+
+        execution_nodes.push(node);
+    }
+
+    for (signer, share) in signers.into_iter().zip(shares) {
+        let public_key = signer.public_key();
+        public_keys.insert(public_key.clone());
+        let uid = format!("validator-{public_key}");
+        let node = execution_nodes.remove(0);
 
         let engine = tempo_commonware_node::consensus::Builder {
             context: context.with_label(&uid),

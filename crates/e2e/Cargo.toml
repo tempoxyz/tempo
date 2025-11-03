@@ -17,6 +17,7 @@ commonware-utils.workspace = true
 eyre.workspace = true
 reth-db.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
+reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-rpc-builder.workspace = true
