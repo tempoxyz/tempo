@@ -6,7 +6,7 @@ use tempo_contracts::precompiles::ITIP20RewardsRegistry;
 use crate::{storage::PrecompileStorageProvider, tip20_rewards_registry::TIP20RewardsRegistry};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP20RewardsRegistry<'a, S> {
-    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {

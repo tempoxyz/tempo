@@ -16,6 +16,7 @@ pub mod tip403_registry;
 pub mod tip4217_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
+pub mod validator_config;
 
 use crate::{
     error::IntoPrecompileResult,
@@ -30,12 +31,13 @@ use crate::{
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     tip4217_registry::TIP4217Registry,
+    validator_config::ValidatorConfig,
 };
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{
-    primitives::{Address, Bytes, address},
+    primitives::{Address, Bytes},
     sol,
     sol_types::{SolCall, SolError},
 };
@@ -45,37 +47,29 @@ use revm::{
     precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
-pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
-pub const LINKING_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
-pub const DEFAULT_FEE_TOKEN: Address = address!("0x20C0000000000000000000000000000000000001");
-pub const TIP403_REGISTRY_ADDRESS: Address = address!("0x403C000000000000000000000000000000000000");
-pub const TIP20_FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");
-pub const TIP20_REWARDS_REGISTRY_ADDRESS: Address =
-    address!("0x2100000000000000000000000000000000000000");
-pub const TIP4217_REGISTRY_ADDRESS: Address =
-    address!("0x4217C00000000000000000000000000000000000");
-pub const TIP_ACCOUNT_REGISTRAR: Address = address!("0x7702ac0000000000000000000000000000000000");
-pub const STABLECOIN_EXCHANGE_ADDRESS: Address =
-    address!("0xdec0000000000000000000000000000000000000");
-pub const NONCE_PRECOMPILE_ADDRESS: Address =
-    address!("0x4E4F4E4345000000000000000000000000000000");
+pub use tempo_contracts::precompiles::{
+    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS,
+};
 
 const METADATA_GAS: u64 = 50;
 const VIEW_FUNC_GAS: u64 = 100;
 const MUTATE_FUNC_GAS: u64 = 1000;
 
 pub trait Precompile {
-    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult;
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64) {
     precompiles.set_precompile_lookup(move |address: &Address| {
-        if is_tip20(address) {
-            let token_id = address_to_token_id_unchecked(address);
+        if is_tip20(*address) {
+            let token_id = address_to_token_id_unchecked(*address);
             if token_id == 0 {
                 Some(LinkingUSDPrecompile::create(chain_id))
             } else {
-                Some(TIP20Precompile::create(address, chain_id))
+                Some(TIP20Precompile::create(*address, chain_id))
             }
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id))
@@ -93,6 +87,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             Some(StablecoinExchangePrecompile::create(chain_id))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
             Some(NoncePrecompile::create(chain_id))
+        } else if *address == VALIDATOR_CONFIG_ADDRESS {
+            Some(ValidatorConfigPrecompile::create(chain_id))
         } else {
             None
         }
@@ -112,7 +108,7 @@ macro_rules! tempo_precompile {
                     DelegateCallNotAllowed {}.abi_encode().into(),
                 ));
             }
-            $impl.call($input.data, &$input.caller)
+            $impl.call($input.data, $input.caller)
         })
     };
 }
@@ -173,7 +169,7 @@ impl TIP20FactoryPrecompile {
 
 pub struct TIP20Precompile;
 impl TIP20Precompile {
-    pub fn create(address: &Address, chain_id: u64) -> DynPrecompile {
+    pub fn create(address: Address, chain_id: u64) -> DynPrecompile {
         let token_id = address_to_token_id_unchecked(address);
         tempo_precompile!("TIP20Token", |input| TIP20Token::new(
             token_id,
@@ -209,6 +205,16 @@ impl LinkingUSDPrecompile {
     }
 }
 
+pub struct ValidatorConfigPrecompile;
+impl ValidatorConfigPrecompile {
+    pub fn create(chain_id: u64) -> DynPrecompile {
+        tempo_precompile!("ValidatorConfig", |input| ValidatorConfig::new(
+            VALIDATOR_CONFIG_ADDRESS,
+            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+        ))
+    }
+}
+
 #[inline]
 fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
     f().into_precompile_result(METADATA_GAS, |ret| T::abi_encode_returns(&ret).into())
@@ -225,8 +231,8 @@ fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> 
 #[inline]
 pub fn mutate<T: SolCall>(
     calldata: &[u8],
-    sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<T::Return>,
+    sender: Address,
+    f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(
@@ -241,8 +247,8 @@ pub fn mutate<T: SolCall>(
 #[inline]
 fn mutate_void<T: SolCall>(
     calldata: &[u8],
-    sender: &Address,
-    f: impl FnOnce(&Address, T) -> Result<()>,
+    sender: Address,
+    f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(

@@ -18,7 +18,6 @@ use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Block as _,
-    marshal::ingress::mailbox::Identifier,
     types::{Epoch, Round, View},
 };
 use commonware_macros::select;
@@ -38,9 +37,9 @@ use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
-use reth_provider::{BlockNumReader as _, BlockReader as _};
+use reth_provider::BlockReader as _;
 use tokio::sync::RwLock;
-use tracing::{Level, debug, error, error_span, info, instrument, warn};
+use tracing::{Level, debug, error, error_span, field, info, instrument, warn};
 
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
@@ -53,6 +52,7 @@ use crate::{
     consensus::{Digest, block::Block},
     dkg::PublicOutcome,
     epoch,
+    marshal_utils::UpdateExt as _,
 };
 
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
@@ -232,9 +232,9 @@ impl Inner<Init> {
     #[instrument(
         skip_all,
         fields(
-            block.digest = %finalized.block.digest(),
-            block.height = %finalized.block.height(),
-            derived_epoch = epoch::of_height(finalized.block.height(), self.epoch_length),
+            block.digest = finalized.update.as_block().map(|b| field::display(b.digest())),
+            block.height = finalized.update.as_block().map(|b| b.height()),
+            derived_epoch = finalized.update.as_block().and_then(|b| epoch::of_height(b.height(), self.epoch_length)),
         ),
     )]
     /// Pushes a `finalized` request to the back of the finalization queue.
@@ -259,8 +259,8 @@ impl Inner<Init> {
                 // XXX: the None case here should not be hit:
                 // 1. an epoch transition is triggered by the application
                 // finalizing the last block of the outgoing epoch.
-                // 2. the finalized block is received from the marshaller (here
-                // called syncer), so we know it must be available and indexed
+                // 2. the finalized block is received from the marshal actor,
+                // so we know it must be available and indexed
                 // by the marshaller.
                 // 3. this means this call should always succeed.
                 //
@@ -349,12 +349,14 @@ impl Inner<Init> {
         }
 
         let proposal_digest = proposal.digest();
+        let proposal_height = proposal.height();
 
         info!(
             proposal.digest = %proposal_digest,
-            proposal.height = %proposal.height(),
+            proposal.height = %proposal_height,
             "constructed proposal",
         );
+
         response.send(proposal_digest).map_err(|_| {
             eyre!(
                 "failed returning proposal to consensus engine: response channel was already closed"
@@ -375,7 +377,7 @@ impl Inner<Init> {
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize(None, proposal_digest)
+            .canonicalize_head(proposal_height, proposal_digest)
         {
             warn!(
                 %error,
@@ -430,13 +432,17 @@ impl Inner<Init> {
         // the event reporting the result of the verification.
         let _ = report_verification_result(response, &result);
 
+        // 2. make the forkchoice state available && cache the block
         if let Ok((block, true)) = result {
             // Only make the verified block canonical when not doing a
             // re-propose at the end of an epoch.
             if parent.1 != payload
-                && let Err(error) = self.state.executor_mailbox.canonicalize(None, payload)
+                && let Err(error) = self
+                    .state
+                    .executor_mailbox
+                    .canonicalize_head(block.height(), block.digest())
             {
-                warn!(
+                tracing::warn!(
                     %error,
                     "failed making the verified proposal the head of the canonical chain",
                 );
@@ -481,13 +487,16 @@ impl Inner<Init> {
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+            .canonicalize_head(parent.height(), parent.digest())
         {
-            warn!(
+            tracing::warn!(
                 %error,
-                "failed making the proposal's parent the head of the canonical chain",
+                parent.height = parent.height(),
+                parent.digest = %parent.digest(),
+                "failed updating canonical head to parent",
             );
         }
+
         let attrs = TempoPayloadBuilderAttributes::new(
             // XXX: derives the payload ID from the parent so that
             // overlong payload builds will eventually succeed on the
@@ -618,11 +627,13 @@ impl Inner<Init> {
         if let Err(error) = self
             .state
             .executor_mailbox
-            .canonicalize(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+            .canonicalize_head(parent.height(), parent.digest())
         {
-            warn!(
+            tracing::warn!(
                 %error,
-                "failed setting the proposal's parent as the head of the canonical chain",
+                parent.height = parent.height(),
+                parent.digest = %parent.digest(),
+                "failed updating canonical head to parent",
             );
         }
 
@@ -653,45 +664,13 @@ impl Inner<Uninit> {
     /// 2. starting the canonical chain engine and storing its handle.
     #[instrument(skip_all, err)]
     async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
-        mut self,
+        self,
         context: TContext,
         dkg_manager: crate::dkg::manager::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
-        // TODO(janis): does this have the potential to stall indefinitely?
-        // If so, we should have some kind of heartbeat to inform telemetry.
-        let (finalized_consensus_height, finalized_consensus_digest) = self
-            .marshal
-            .get_info(Identifier::Latest)
-            .await
-            .unwrap_or_else(|| {
-                info!(
-                    "marshal actor returned nothing for the latest block; \
-                    cannot distinguish between the actor failing or us still \
-                    being at genesis; using height 0 and genesis digest; \
-                    consider looking at logs"
-                );
-                (0, self.genesis_block.digest())
-            });
-
-        let latest_execution_block_number =
-            self.execution_node.provider.last_block_number().wrap_err(
-                "failed getting last block number from execution layer; cannot \
-                continue without it",
-            )?;
-
-        info!(
-            finalized_consensus_height,
-            %finalized_consensus_digest,
-            latest_execution_block_number,
-            "consensus and execution layers reported their latest local state; \
-            setting forkchoice-state and catching up execution layer, if \
-            necessary",
-        );
-
         let executor = executor::Builder {
             execution_node: self.execution_node.clone(),
             genesis_block: self.genesis_block.clone(),
-            latest_finalized_digest: finalized_consensus_digest,
             marshal: self.marshal.clone(),
         }
         .build(context.with_label("executor"));

@@ -1,12 +1,13 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, Bytes, U256, address},
+    primitives::{Address, B256, Bytes, U256, address},
     signers::{
         local::{MnemonicBuilder, coins_bip39::English},
         utils::secret_key_to_address,
     },
 };
 use clap::Parser;
+use eyre::WrapErr as _;
 use rayon::prelude::*;
 use reth::revm::{
     context::ContextTr,
@@ -14,6 +15,7 @@ use reth::revm::{
     inspector::JournalExt,
 };
 use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals};
+use serde::{Deserialize, Serialize};
 use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
@@ -24,8 +26,9 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
     linking_usd::{LinkingUSD, TRANSFER_ROLE},
+    nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
     storage::evm::EvmPrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
@@ -33,7 +36,23 @@ use tempo_precompiles::{
     tip20_factory::{ITIP20Factory, TIP20Factory},
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
+    validator_config::{IValidatorConfig, ValidatorConfig},
 };
+
+/// Initial validator configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InitialValidator {
+    /// Validator address
+    address: Address,
+    /// Communication key (32 bytes)
+    pub key: B256,
+    /// IP address or DNS name
+    inbound_address: String,
+    /// Outbound address
+    outbound_address: String,
+    /// Whether validator starts active
+    active: bool,
+}
 
 /// Generate genesis allocation file for testing
 #[derive(Parser, Debug)]
@@ -69,6 +88,14 @@ pub(crate) struct GenesisArgs {
     /// Genesis block gas limit
     #[arg(long, default_value_t = 17000000000000)]
     pub gas_limit: u64,
+
+    /// Adagio hardfork activation timestamp (defaults to 0 = active at genesis)
+    #[arg(long, default_value_t = 0)]
+    pub adagio_time: u64,
+
+    /// Path to validators config file (JSON)
+    #[arg(long)]
+    pub validators_config: Option<PathBuf>,
 }
 
 impl GenesisArgs {
@@ -78,6 +105,7 @@ impl GenesisArgs {
     /// And creates accounts for system contracts.
     pub(crate) async fn run(self) -> eyre::Result<()> {
         println!("Generating {:?} accounts", self.accounts);
+
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
             .tqdm()
@@ -143,6 +171,12 @@ impl GenesisArgs {
 
         println!("Initializing stablecoin exchange");
         initialize_stablecoin_exchange(&mut evm)?;
+
+        println!("Initializing nonce manager");
+        initialize_nonce_manager(&mut evm)?;
+
+        println!("Initializing validator config");
+        initialize_validator_config(admin, self.validators_config, &mut evm)?;
 
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
@@ -235,7 +269,7 @@ impl GenesisArgs {
             },
         );
 
-        let chain_config = ChainConfig {
+        let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
             homestead_block: Some(0),
             eip150_block: Some(0),
@@ -251,11 +285,18 @@ impl GenesisArgs {
             shanghai_time: Some(0),
             cancun_time: Some(0),
             prague_time: Some(0),
+            osaka_time: Some(0),
             terminal_total_difficulty: Some(U256::from(0)),
             terminal_total_difficulty_passed: true,
             deposit_contract_address: Some(address!("0x00000000219ab540356cBB839Cbe05303d7705Fa")),
             ..Default::default()
         };
+
+        // Add Tempo hardfork times to extra_fields
+        chain_config.extra_fields.insert(
+            "adagioTime".to_string(),
+            serde_json::json!(self.adagio_time),
+        );
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
@@ -303,7 +344,7 @@ fn create_and_mint_token(
             .expect("Could not initialize tip20 factory");
         factory
             .create_token(
-                &admin,
+                admin,
                 ITIP20Factory::createTokenCall {
                     name: name.into(),
                     symbol: symbol.into(),
@@ -319,10 +360,10 @@ fn create_and_mint_token(
     let mut token = TIP20Token::new(token_id, &mut provider);
     token
         .get_roles_contract()
-        .grant_role_internal(&admin, *ISSUER_ROLE)?;
+        .grant_role_internal(admin, *ISSUER_ROLE)?;
 
     let result = token.set_supply_cap(
-        &admin,
+        admin,
         ITIP20::setSupplyCapCall {
             newSupplyCap: U256::MAX,
         },
@@ -331,7 +372,7 @@ fn create_and_mint_token(
 
     token
         .mint(
-            &admin,
+            admin,
             ITIP20::mintCall {
                 to: admin,
                 amount: mint_amount,
@@ -342,7 +383,7 @@ fn create_and_mint_token(
     for address in recipients.iter().tqdm() {
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: *address,
                     amount: U256::from(u64::MAX),
@@ -364,11 +405,11 @@ fn initialize_linking_usd(
 
     let mut linking_usd = LinkingUSD::new(&mut provider);
     linking_usd
-        .initialize(&admin)
+        .initialize(admin)
         .expect("LinkingUSD initialization should succeed");
     let mut roles = linking_usd.get_roles_contract();
-    roles.grant_role_internal(&admin, *ISSUER_ROLE)?;
-    roles.grant_role_internal(&admin, *TRANSFER_ROLE)?;
+    roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+    roles.grant_role_internal(admin, *TRANSFER_ROLE)?;
 
     Ok(())
 }
@@ -401,7 +442,7 @@ fn initialize_fee_manager(
     for address in initial_accounts.iter().tqdm() {
         fee_manager
             .set_user_token(
-                address,
+                *address,
                 IFeeManager::setUserTokenCall {
                     token: default_fee_address,
                 },
@@ -411,7 +452,7 @@ fn initialize_fee_manager(
 
     fee_manager
         .set_validator_token(
-            &Address::ZERO,
+            Address::ZERO,
             IFeeManager::setValidatorTokenCall {
                 token: default_fee_address,
             },
@@ -435,6 +476,59 @@ fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre:
 
     let mut exchange = StablecoinExchange::new(&mut provider);
     exchange.initialize()?;
+
+    Ok(())
+}
+
+fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    NonceManager::new(&mut provider).initialize()?;
+
+    Ok(())
+}
+
+fn initialize_validator_config(
+    owner: Address,
+    validators_config: Option<PathBuf>,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+) -> eyre::Result<()> {
+    let block = evm.block.clone();
+    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+
+    let mut validator_config = ValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, &mut provider);
+    validator_config
+        .initialize(owner)
+        .wrap_err("Failed to initialize validator config")?;
+
+    // Load initial validators if config file provided
+    let initial_validators = if let Some(config_path) = validators_config {
+        println!("Loading validators from {config_path:?}");
+        let config_content = fs::read_to_string(config_path)?;
+        let validators: Vec<InitialValidator> = serde_json::from_str(&config_content)?;
+        println!("Loaded {} initial validators", validators.len());
+        validators
+    } else {
+        Vec::new()
+    };
+
+    // Add initial validators
+    for validator in initial_validators.iter().tqdm() {
+        validator_config
+            .add_validator(
+                &owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator.address,
+                    publicKey: validator.key,
+                    active: validator.active,
+                    inboundAddress: validator.inbound_address.to_string(),
+                    outboundAddress: validator.outbound_address.to_string(),
+                },
+            )
+            .wrap_err("Failed to add validator")?;
+    }
 
     Ok(())
 }

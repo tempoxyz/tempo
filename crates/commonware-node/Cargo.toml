@@ -30,7 +30,6 @@ commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-macros.workspace = true
 commonware-p2p.workspace = true
-commonware-resolver.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-storage.workspace = true
 commonware-utils.workspace = true

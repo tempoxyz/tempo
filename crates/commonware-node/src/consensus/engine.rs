@@ -32,7 +32,7 @@ use crate::{
     config::{BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, MARSHAL_LIMIT},
     consensus::application,
     dkg,
-    epoch::{self, Coordinator, SchemeProvider},
+    epoch::{self, SchemeProvider},
 };
 
 use super::block::Block;
@@ -62,6 +62,7 @@ const MAX_REPAIR: u64 = 20;
 pub struct Builder<
     TBlocker,
     TContext,
+    TPeerManager,
     // TODO: add the indexer. It's part of alto and we have skipped it, for now.
     // TIndexer,
 > {
@@ -73,6 +74,8 @@ pub struct Builder<
     pub execution_node: TempoFullNode,
 
     pub blocker: TBlocker,
+    pub peer_manager: TPeerManager,
+
     pub partition_prefix: String,
     pub signer: PrivateKey,
     pub polynomial: Poly<<MinSig as Variant>::Public>,
@@ -92,7 +95,7 @@ pub struct Builder<
     pub new_payload_wait_time: Duration,
 }
 
-impl<TBlocker, TContext> Builder<TBlocker, TContext>
+impl<TBlocker, TContext, TPeerManager> Builder<TBlocker, TContext, TPeerManager>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock
@@ -104,8 +107,9 @@ where
         + Storage
         + Metrics
         + Network,
+    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey>,
 {
-    pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext>> {
+    pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext, TPeerManager>> {
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             self.context.with_label("broadcast"),
             buffered::Config {
@@ -117,8 +121,6 @@ where
             },
         );
 
-        let coordinator = Coordinator::new(self.participants.clone());
-
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
@@ -127,10 +129,7 @@ where
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            // FIXME(janis): this information should probably be flow from the DKG manager, since
-            // the players in epoch E are the peers in epoch E+1. But `Coordinator::peers -> &[PubKey]`,
-            // and so we can't pass it a mailbox.
-            coordinator,
+            manager: self.peer_manager,
             mailbox_size: self.mailbox_size,
             requester_config: commonware_p2p::utils::requester::Config {
                 me: Some(self.signer.public_key()),
@@ -243,7 +242,7 @@ where
     }
 }
 
-pub struct Engine<TBlocker, TContext>
+pub struct Engine<TBlocker, TContext, TPeerManager>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock
@@ -255,6 +254,7 @@ where
         + Pacer
         + Spawner
         + Storage,
+    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey>,
     // XXX: alto also defines an Indexer trait (not part of commonwarexyz itself); we will
     // not define it for now.
     // TIndexer,
@@ -274,7 +274,7 @@ where
     application_mailbox: application::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
-    resolver_config: marshal::resolver::p2p::Config<PublicKey, Coordinator>,
+    resolver_config: marshal::resolver::p2p::Config<PublicKey, TPeerManager>,
 
     /// Listens to consensus events and syncs blocks from the network to the
     /// local node.
@@ -283,7 +283,7 @@ where
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
 }
 
-impl<TBlocker, TContext> Engine<TBlocker, TContext>
+impl<TBlocker, TContext, TPeerManager> Engine<TBlocker, TContext, TPeerManager>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock
@@ -295,6 +295,7 @@ where
         + Pacer
         + Spawner
         + Storage,
+    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey>,
 {
     #[expect(
         clippy::too_many_arguments,

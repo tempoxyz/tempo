@@ -549,7 +549,7 @@ where
 
             // Always increment nonce for AA transactions with non-zero nonce keys.
             nonce_manager
-                .increment_nonce(&tx.caller(), nonce_key)
+                .increment_nonce(tx.caller(), nonce_key)
                 .map_err(|err| match err {
                     TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                     err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),

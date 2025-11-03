@@ -5,7 +5,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 use super::INonce;
 
 impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
-    fn call(&mut self, calldata: &[u8], _msg_sender: &Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {

@@ -74,7 +74,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
     fn get_stream_registered(
         &mut self,
-        token: &Address,
+        token: Address,
         end_time: u128,
     ) -> Result<bool, TempoPrecompileError> {
         let key = keccak256((token, end_time).abi_encode());
@@ -84,7 +84,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
     fn set_stream_registered(
         &mut self,
-        token: &Address,
+        token: Address,
         end_time: u128,
     ) -> Result<(), TempoPrecompileError> {
         let key = keccak256((token, end_time).abi_encode());
@@ -95,7 +95,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Add a token to the registry for a given stream end time
     pub fn add_stream(
         &mut self,
-        token: &Address,
+        token: Address,
         end_time: u128,
     ) -> Result<(), TempoPrecompileError> {
         // Check if already registered
@@ -112,7 +112,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Appends a TIP20 token address to the array corresponding with `timestamp` in storage.
     pub fn push_stream_ending_at_timestamp(
         &mut self,
-        address: &Address,
+        address: Address,
         timestamp: u128,
     ) -> Result<(), TempoPrecompileError> {
         let array_slot = mapping_slot(timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
@@ -148,8 +148,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     }
 
     /// Finalize streams for all tokens ending at the current timestamp
-    pub fn finalize_streams(&mut self, sender: &Address) -> Result<(), TempoPrecompileError> {
-        if *sender != Address::ZERO {
+    pub fn finalize_streams(&mut self, sender: Address) -> Result<(), TempoPrecompileError> {
+        if sender != Address::ZERO {
             return Err(TIP20RewardsRegistryError::unauthorized().into());
         }
 
@@ -168,7 +168,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         while current_timestamp >= next_timestamp {
             let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
             for addr in tokens {
-                let token_id = address_to_token_id_unchecked(&addr);
+                let token_id = address_to_token_id_unchecked(addr);
                 let mut token = TIP20Token::new(token_id, self.storage);
                 token.finalize_streams(self.address, next_timestamp)?;
             }

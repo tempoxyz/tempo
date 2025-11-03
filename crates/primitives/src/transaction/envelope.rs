@@ -166,12 +166,34 @@ impl TempoTxEnvelope {
     ///
     /// Currently uses classifier v1: transaction is a payment if the `to` address has the TIP20 prefix.
     pub fn is_payment(&self) -> bool {
-        use alloy_consensus::Transaction;
-
-        if let Some(to) = self.to() {
-            return to.as_slice().starts_with(&TIP20_PAYMENT_PREFIX);
+        match self {
+            Self::Legacy(tx) => tx
+                .tx()
+                .to
+                .to()
+                .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
+            Self::Eip2930(tx) => tx
+                .tx()
+                .to
+                .to()
+                .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
+            Self::Eip1559(tx) => tx
+                .tx()
+                .to
+                .to()
+                .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
+            Self::Eip7702(tx) => tx.tx().to.starts_with(&TIP20_PAYMENT_PREFIX),
+            Self::FeeToken(tx) => tx
+                .tx()
+                .to
+                .to()
+                .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
+            Self::AA(tx) => tx.tx().calls.iter().all(|call| {
+                call.to
+                    .to()
+                    .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
+            }),
         }
-        false
     }
 }
 

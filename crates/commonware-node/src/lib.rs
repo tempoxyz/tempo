@@ -8,18 +8,16 @@ pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
+pub(crate) mod marshal_utils;
 pub mod metrics;
 
 use std::net::SocketAddr;
 
-use commonware_cryptography::{
-    Signer,
-    ed25519::{PrivateKey, PublicKey},
-};
-use commonware_p2p::authenticated::discovery;
+use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
+use commonware_p2p::{Manager as _, authenticated::lookup};
 use commonware_runtime::Metrics as _;
-use eyre::{WrapErr as _, bail, eyre};
-use indexmap::IndexMap;
+use commonware_utils::set::OrderedAssociated;
+use eyre::{WrapErr as _, eyre};
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -39,9 +37,12 @@ pub async fn run_consensus_stack(
         .await
         .wrap_err("failed to start network")?;
 
-    oracle
-        .register(0, config.peers.keys().cloned().collect())
-        .await;
+    let all_resolved_peers = resolve_all_peers(&config.peers)
+        .await
+        .wrap_err("failed resolving peers")?;
+
+    oracle.update(0, all_resolved_peers).await;
+
     let message_backlog = config.message_backlog;
     let pending = network.register(PENDING_CHANNEL_IDENT, PENDING_LIMIT, message_backlog);
     let recovered = network.register(RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, message_backlog);
@@ -67,7 +68,8 @@ pub async fn run_consensus_stack(
         fee_recipient: config.fee_recipient,
 
         execution_node,
-        blocker: oracle,
+        blocker: oracle.clone(),
+        peer_manager: oracle.clone(),
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         signer: config.signer.clone(),
@@ -123,61 +125,29 @@ async fn instantiate_network(
     context: &commonware_runtime::tokio::Context,
     config: &tempo_commonware_node_config::Config,
 ) -> eyre::Result<(
-    discovery::Network<commonware_runtime::tokio::Context, PrivateKey>,
-    discovery::Oracle<PublicKey>,
+    lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
+    lookup::Oracle<PublicKey>,
 )> {
-    use commonware_p2p::authenticated::discovery;
-    use std::net::Ipv4Addr;
-
-    let my_public_key = config.signer.public_key();
-    let all_resolved_peers = resolve_all_peers(&config.peers)
-        .await
-        .wrap_err("failed resolving peers")?;
-
-    let Some((_, my_addr)) = all_resolved_peers.get(&config.signer.public_key()) else {
-        bail!(
-            "peers entry does not contain an entry for this node's public key (generated from the signer key): `{my_public_key}`"
-        )
-    };
-
-    // TODO: rework this entire peer and bootstrapper resolution so that it
-    // becomes clear that bootstrappers fall out of the peers && get their
-    // addresses that way.
-    let bootstrappers = config
-        .bootstrappers()
-        .map(|(key, _dns_name)| {
-            let addr = all_resolved_peers
-            .get(&key)
-            .expect("all bootstrappers must have a resolved IP; if that's not the case an invariant of the function was violated")
-            .1;
-            (key, addr)
-        }).collect();
-
     // TODO: Find out why `union_unique` should be used at all. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
-    let p2p_cfg = discovery::Config {
+    let p2p_cfg = lookup::Config {
         mailbox_size: config.mailbox_size,
-        ..discovery::Config::local(
+        ..lookup::Config::local(
             config.signer.clone(),
             &p2p_namespace,
-            // TODO: should the listen addr be restricted to ipv4?
-            SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), config.listen_port),
-            SocketAddr::new(my_addr.ip(), config.listen_port),
-            bootstrappers,
+            config.listen_addr,
+            config.dialable_addr,
             config.p2p.max_message_size_bytes,
         )
     };
 
-    Ok(discovery::Network::new(
-        context.with_label("network"),
-        p2p_cfg,
-    ))
+    Ok(lookup::Network::new(context.with_label("network"), p2p_cfg))
 }
 
 async fn resolve_all_peers(
     peers: impl IntoIterator<Item = (&PublicKey, &String)>,
-) -> eyre::Result<IndexMap<PublicKey, (String, SocketAddr)>> {
+) -> eyre::Result<OrderedAssociated<PublicKey, SocketAddr>> {
     use futures::stream::{FuturesOrdered, TryStreamExt as _};
     let resolve_all = peers
         .into_iter()
@@ -199,11 +169,12 @@ async fn resolve_all_peers(
             let addr = addrs.first().ok_or_else(|| {
                 eyre!("peer `{peer}` with DNS name `{name}` resolved to zero addresses")
             })?;
-            Ok::<_, eyre::Report>((peer.clone(), (name.clone(), *addr)))
+            Ok::<_, eyre::Report>((peer.clone(), *addr))
         })
         .collect::<FuturesOrdered<_>>();
-    resolve_all
-        .try_collect::<IndexMap<_, _>>()
+    let resolved = resolve_all
+        .try_collect::<Vec<(_, _)>>()
         .await
-        .wrap_err("failed resolving at least one peer")
+        .wrap_err("failed resolving at least one peer")?;
+    Ok(resolved.into())
 }

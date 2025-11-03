@@ -9,18 +9,23 @@
 
 use std::{sync::Arc, time::Duration};
 
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
-use commonware_consensus::{Block as _, types::Round};
+use alloy_primitives::B256;
+use alloy_rpc_types_engine::ForkchoiceState;
+use commonware_consensus::{
+    Block as _,
+    marshal::{Update, ingress::mailbox::Identifier},
+};
+
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
-use eyre::{WrapErr as _, ensure};
+use eyre::{WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
 };
 use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, info, instrument, warn};
+use tracing::{Level, Span, debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -33,10 +38,6 @@ pub(super) struct Builder {
     /// backfilling: since marshal does not know about genesis, subscribing to
     /// it with a round and the genesis digest will cause it to never resolve.
     pub(super) genesis_block: Arc<Block>,
-
-    /// The last digest that the consensus layer has finalized. The agent
-    /// will send this as the first finalized head to the execution layer.
-    pub(super) latest_finalized_digest: Digest,
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
     pub(super) marshal: crate::alias::marshal::Mailbox,
@@ -51,7 +52,6 @@ impl Builder {
         let Self {
             execution_node,
             genesis_block,
-            latest_finalized_digest,
             marshal,
         } = self;
 
@@ -59,27 +59,71 @@ impl Builder {
 
         let my_mailbox = ExecutorMailbox { inner: to_me };
 
-        // XXX: canonicalizing the latest finalized digest && starting a backfill
-        // ensures that a) executor sends head = safe = finalized = latest_finalized
-        // as its first operation, and b) that it immediately triggers a backfill
-        // from the last finalized block to the latest execution layer block.
-        my_mailbox
-            .canonicalize(None, latest_finalized_digest)
-            .expect("our mailbox must work right after construction");
-
-        my_mailbox
-            .backfill(None, latest_finalized_digest)
-            .expect("our mailbox must work right after construction");
-
+        let genesis_hash = genesis_block.block_hash();
         Executor {
             context: ContextCell::new(context),
             execution_node,
             genesis_block,
             mailbox: from_app,
-            latest_finalized_digest,
             marshal,
             my_mailbox,
+            last_canonicalized: LastCanonicalized {
+                forkchoice: ForkchoiceState {
+                    head_block_hash: genesis_hash,
+                    safe_block_hash: genesis_hash,
+                    finalized_block_hash: genesis_hash,
+                },
+                head_height: 0,
+                finalized_height: 0,
+            },
         }
+    }
+}
+
+/// Tracks the last forkchoice state that the executor sent to the execution layer.
+///
+/// Also tracks the corresponding heights corresponding to
+/// `forkchoice_state.head_block_hash` and
+/// `forkchoice_state.finalized_block_hash`, respectively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LastCanonicalized {
+    forkchoice: ForkchoiceState,
+    head_height: u64,
+    finalized_height: u64,
+}
+
+impl LastCanonicalized {
+    /// Updates the finalized height and finalized block hash to `height` and `hash`.
+    ///
+    /// `height` must be ahead of the latest canonicalized finalized height. If
+    /// it is not, then this is a no-op.
+    ///
+    /// Similarly, if `height` is ahead or the same as the latest canonicalized
+    /// head height, it also updates the head height.
+    ///
+    /// This is to ensure that the finalized block hash is never ahead of the
+    /// head hash.
+    fn update_finalized(self, height: u64, hash: B256) -> Self {
+        let mut this = self;
+        if height > this.finalized_height {
+            this.finalized_height = height;
+            this.forkchoice.safe_block_hash = hash;
+            this.forkchoice.finalized_block_hash = hash;
+        }
+        this.update_head(height, hash)
+    }
+
+    /// Updates the head height and head block hash to `height` and `hash`.
+    ///
+    /// `head` must be ahead of the latest canonicalized head height. If it is
+    /// not, then this is a no-op.
+    fn update_head(self, height: u64, hash: B256) -> Self {
+        let mut this = self;
+        if height >= this.head_height {
+            this.head_height = height;
+            this.forkchoice.head_block_hash = hash;
+        }
+        this
     }
 }
 
@@ -102,15 +146,11 @@ pub(super) struct Executor<TContext> {
     /// The mailbox of the marshal actor. Used to backfill blocks.
     marshal: crate::alias::marshal::Mailbox,
 
-    /// The latest finalized digest of the block that the agent has sent to the
-    /// execution layer. When advancing the canonical chain by sending a
-    /// forkchoice update, it will set
-    /// finalized_block_hash = latest_finalized_digest.
-    latest_finalized_digest: Digest,
-
     /// The mailbox passed to other parts of the system to forward messages to
     /// the agent.
     my_mailbox: ExecutorMailbox,
+
+    last_canonicalized: LastCanonicalized,
 }
 
 impl<TContext> Executor<TContext>
@@ -126,6 +166,11 @@ where
     }
 
     async fn run(mut self) {
+        // XXX: `run_pre_event_loop_init` is emitting an error event on failure.
+        if self.run_pre_event_loop_init().await.is_err() {
+            return;
+        };
+
         loop {
             select! {
                 msg = self.mailbox.next() => {
@@ -142,121 +187,122 @@ where
         }
     }
 
+    #[instrument(skip_all, err)]
+    async fn run_pre_event_loop_init(&mut self) -> eyre::Result<()> {
+        let (finalized_consensus_height, finalized_consensus_digest) = self
+            .marshal
+            .get_info(Identifier::Latest)
+            .await
+            .unwrap_or_else(|| {
+                info!(
+                    "marshal actor returned nothing for the latest block; \
+                    cannot distinguish between the actor failing or us still \
+                    being at genesis; using height 0 and genesis digest; \
+                    consider looking at logs"
+                );
+                (0, self.genesis_block.digest())
+            });
+
+        self.canonicalize(
+            Span::current(),
+            HeadOrFinalized::Finalized,
+            finalized_consensus_height,
+            finalized_consensus_digest,
+        )
+        .await
+        .wrap_err("failed setting initial canonical state; can't go on like this")?;
+
+        let latest_execution_block_number =
+            self.execution_node.provider.last_block_number().wrap_err(
+                "failed getting last block number from execution layer; cannot \
+                continue without it",
+            )?;
+
+        if latest_execution_block_number == finalized_consensus_height {
+            info!(
+                finalized_consensus_height,
+                %finalized_consensus_digest,
+                "consensus and execution layers are at the same height; can \
+                enter event loop now",
+            );
+        } else if finalized_consensus_height > latest_execution_block_number {
+            info!(
+                latest_execution_block_number,
+                finalized_consensus_height,
+                %finalized_consensus_digest,
+                "consensus and execution layers reported different heights; \
+                catching up the execution layer",
+            );
+            self.backfill(
+                latest_execution_block_number.saturating_add(1),
+                latest_execution_block_number,
+            )
+            .await
+            .wrap_err(
+                "backfilling from consensus layer to execution layer \
+                failed; cannot recover from that",
+            )?;
+        } else {
+            bail!(
+                "execution layer is ahead of consensus layer; cannot deal \
+                with that; \
+                execution_height: `{latest_execution_block_number}`, \
+                consensus_height: `{finalized_consensus_height}`"
+            );
+        }
+        Ok(())
+    }
+
     async fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
-            Command::Backfill { round, digest } => self.backfill(cause, round, digest),
-            Command::Canonicalize { round, digest } => {
-                let _ = self.canonicalize(cause, round, digest).await;
+            Command::CanonicalizeHead { height, digest } => {
+                let _ = self
+                    .canonicalize(cause, HeadOrFinalized::Head, height, digest)
+                    .await;
             }
-            Command::ForwardBlock { block, response } => {
-                let _ = self.forward_block(*block, response, cause).await;
+            Command::Finalize { update, response } => {
+                // let _ = self.forward_finalized(*update, response, cause).await;
+                let _ = self.finalize(cause, *update, response).await;
             }
         }
     }
 
-    /// Backfills a block identified by `digest` by reading it from the
-    /// consensus layer.
-    ///
-    /// Must only be called if `digest` belongs to a notarized block. If `digest`
-    /// does not identify a notarized block the triggered backfill will never
-    /// complete. `round` is used for blocks which are not yet available in the
-    /// consensus layer to help the marshal agent request it from the consensus
-    /// p2p network.
-    ///
-    /// Note that this function is not async. Backfills are run in an async
-    /// queue and are allowed to finish anytime.
-    ///
-    /// # How backfills are triggered
-    ///
-    /// Backfills are done by requesting a block identified by `digest` and
-    /// `round` from the consensus `marshal` agent. Backfills are started in
-    /// two ways:
-    ///
-    /// 1. In the executor's constructor [`Builder::build`] with arguments
-    /// `round = None`, `digest = latest_finalized_digest`.
-    /// `latest_finalized_digest` is expected to be read from the `marshal`
-    /// agent, and as such the corresponding block and all its ancestors must
-    /// exist in the marshaler.
-    /// 2. As part of [`Executor::canonicalize`]. After sending a
-    /// fork-choice-update for `digest`, if the execution level responds with
-    /// `syncing` (meaning it does not yet have the block available), a backfill
-    /// is started if and only if `round` was set. The reasoning is that
-    /// `canonicalize` is called on the parent block of a consensus proposal or
-    /// verification. For both, the parent is guaranteed to be notarized (by
-    /// the simplex protocol), and hence its round known. For this reason, it is
-    /// guaranteed that the marshal agent will request (and eventually receive)
-    /// the block from the network. If a wrong `round` was supplied the block
-    /// subscription to the marshal would stall indefinitely.
-    ///
-    /// # Walking the chain of ancestors
-    ///
-    /// An initial backfill will trigger an avalanche of backfills walking the
-    /// chain of block ancestors until an ancestor's height is found to be at or
-    /// below the latest height available to the execution layer. Each new
-    /// backfill is a message to the actor with `round` unset (because `round`
-    /// can not be discerned from the block itself). But since all of these
-    /// ancestor blocks are finalized (indirectly or directly since they are
-    /// ancestors of a notarized block), it is also guaranteed that the marshal
-    /// agent will eventually supply the block.
-    #[instrument(
-        skip_all,
-        parent = &cause,
-        fields(
-            epoch = round.as_ref().map(Round::epoch),
-            view = round.as_ref().map(Round::view),
-            %digest,
-        ),
-    )]
-    fn backfill(&mut self, cause: Span, round: Option<Round>, digest: Digest) {
-        self.context.with_label("backfill").spawn({
-            let fut = backfill_from_consensus(
-                Span::current(),
-                digest,
-                self.execution_node.clone(),
-                self.my_mailbox.clone(),
-                self.genesis_block.clone(),
-                self.marshal.clone(),
-                round,
-            );
-            move |_| fut
-        });
-    }
-
-    /// Canonicalizes `digest` by setting it as the head of the execution layer.
-    ///
-    /// This function sends a forkchoice-update to the execution layer, setting
-    /// `head_block_hash = digest` and
-    /// `finalized_block_hash = self.latest_finalized_digest`.
-    ///
-    /// If `digest` is not found in the execution layer, the agent attempts to
-    /// backfill it and its ancestors from the consensus layer.
+    /// Canonicalizes `digest` by sending a forkchoice update to the execution layer.
     #[instrument(
         skip_all,
         follows_from = [cause],
         fields(
-            epoch = round.as_ref().map(Round::epoch),
-            view = round.as_ref().map(Round::view),
-            %digest,
+            head.height = height,
+            head.digest = %digest,
+            %head_or_finalized,
         ),
-        ret,
-        err(Display),
+        err,
     )]
     async fn canonicalize(
-        &self,
+        &mut self,
         cause: Span,
-        round: Option<Round>,
+        head_or_finalized: HeadOrFinalized,
+        height: u64,
         digest: Digest,
-    ) -> eyre::Result<PayloadStatus> {
-        let finalized_block_hash = self.latest_finalized_digest.0;
-        let forkchoice_state = ForkchoiceState {
-            head_block_hash: digest.0,
-            safe_block_hash: finalized_block_hash,
-            finalized_block_hash,
+    ) -> eyre::Result<()> {
+        let new_canonicalized = match head_or_finalized {
+            HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest.0),
+            HeadOrFinalized::Finalized => {
+                self.last_canonicalized.update_finalized(height, digest.0)
+            }
         };
+
+        if new_canonicalized == self.last_canonicalized {
+            info!("would not change forkchoice state; not sending it to the execution layer");
+            return Ok(());
+        }
+
         info!(
-            head_block_hash = %forkchoice_state.head_block_hash,
-            finalized_block_hash = %forkchoice_state.finalized_block_hash,
+            head_block_hash = %new_canonicalized.forkchoice.head_block_hash,
+            head_block_height = new_canonicalized.head_height,
+            finalized_block_hash = %new_canonicalized.forkchoice.finalized_block_hash,
+            finalized_block_height = new_canonicalized.finalized_height,
             "sending forkchoice-update",
         );
         let fcu_response = self
@@ -264,7 +310,7 @@ where
             .add_ons_handle
             .beacon_engine_handle
             .fork_choice_updated(
-                forkchoice_state,
+                new_canonicalized.forkchoice,
                 None,
                 reth_node_builder::EngineApiMessageVersion::V3,
             )
@@ -272,27 +318,46 @@ where
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")?;
 
+        debug!(
+            payload_status = %fcu_response.payload_status,
+            "execution layer reported FCU status",
+        );
+
         if fcu_response.is_invalid() {
             return Err(eyre::Report::msg(fcu_response.payload_status)
                 .wrap_err("execution layer responded with error for forkchoice-update"));
         }
 
-        // XXX: taking `round` being set as a trigger to check the ancestry. The
-        // reasoning is such: if `round` is provided, this means that
-        // canonicalize was called with explicit information about a parent
-        // being available at a given view. This means that parent must have
-        // been notarized and will eventually be (indirectly) finalized.
-        //
-        // If on the other hand `digest` was requested to be canonicalized
-        // without round information, then it is not (yet) notarized.
-        if round.is_some() && fcu_response.is_syncing() {
-            info!("execution layer reported digest to be syncing; attempting backfill");
-            self.my_mailbox
-                .backfill(round, digest)
-                .expect("mailbox must be open because this was called from inside the actor");
-        }
+        self.last_canonicalized = new_canonicalized;
 
-        Ok(fcu_response.payload_status)
+        Ok(())
+    }
+
+    #[instrument(parent = &cause, skip_all)]
+    /// Handles finalization events.
+    async fn finalize(
+        &mut self,
+        cause: Span,
+        update: Update<Block>,
+        response: oneshot::Sender<()>,
+    ) {
+        match update {
+            Update::Tip(height, digest) => {
+                let _: Result<_, _> = self
+                    .canonicalize(Span::current(), HeadOrFinalized::Finalized, height, digest)
+                    .await;
+                if response.send(()).is_err() {
+                    info!(
+                        "attempted to acknowledge canonicalizing finalized tip, but sender already went way"
+                    );
+                }
+            }
+            Update::Block(block) => {
+                let _: Result<_, _> = self
+                    .forward_finalized(Span::current(), block, response)
+                    .await;
+            }
+        }
     }
 
     /// Finalizes `block` by sending it to the execution layer.
@@ -316,21 +381,36 @@ where
     /// marshal agent.
     #[instrument(
         skip_all,
-        follows_from = [cause],
+        parent = &cause,
         fields(
             block.digest = %block.digest(),
-            is_backfill = response.is_none(),
+            block.height = block.height(),
         ),
         err(level = Level::WARN),
         ret,
     )]
-    async fn forward_block(
+    async fn forward_finalized(
         &mut self,
-        block: Block,
-        response: Option<oneshot::Sender<()>>,
         cause: Span,
+        block: Block,
+        response: oneshot::Sender<()>,
     ) -> eyre::Result<()> {
-        let digest = block.digest();
+        if let Err(error) = self
+            .canonicalize(
+                Span::current(),
+                HeadOrFinalized::Finalized,
+                block.height(),
+                block.digest(),
+            )
+            .await
+        {
+            warn!(
+                %error,
+                "failed canonicalizing finalized block; will still attempt \
+                forwarding it to the execution layer",
+            );
+        }
+
         let block = block.into_inner();
         let payload_status = self
             .execution_node
@@ -350,21 +430,70 @@ where
             neither valid nor syncing: `{payload_status}`"
         );
 
-        if let Some(response) = response {
-            self.latest_finalized_digest = digest;
-
-            // TODO(janis): this acknowledges to the marshaller that the finalized
-            // block was successfully delivered to the state machine, but we don't
-            // actually set the finalized head. That will only happen once the next
-            // update request is sent. We can postpone sending a response here and
-            // instead store the channel internally, sending an ack once the
-            // canonical (including finalized) is actually updated.
-            if let Err(()) = response.send(()) {
-                warn!("tried acknowledging finalization but channel was already closed");
-            }
+        if let Err(()) = response.send(()) {
+            warn!("tried acknowledging finalization but channel was already closed");
         }
 
         Ok(())
+    }
+
+    /// Reads all blocks heights `from..=to` and forwards them to the execution layer.
+    #[instrument(
+        skip_all,
+        fields(from, to),
+        err(level = Level::WARN),
+    )]
+    async fn backfill(&mut self, from: u64, to: u64) -> eyre::Result<()> {
+        ensure!(from <= to, "backfill range is negative");
+
+        for height in from..=to {
+            let block = self.marshal.get_block(height).await.ok_or_else(|| {
+                eyre!(
+                    "marshal actor does not know about block `{height}`, but \
+                    this function expects that it has all blocks in the provided \
+                    range",
+                )
+            })?;
+
+            let digest = block.digest();
+
+            let payload_status = self
+                .execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .new_payload(TempoExecutionData(block.into_inner()))
+                .pace(&self.context, Duration::from_millis(20))
+                .await
+                .wrap_err(
+                    "failed sending new-payload request to execution engine to \
+                    query payload status of finalized block",
+                )?;
+
+            ensure!(
+                payload_status.is_valid() || payload_status.is_syncing(),
+                "this is a problem: payload status of block `{digest}` we are \
+                trying to backfill is neither valid nor syncing: \
+                `{payload_status}`"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Marker to indicate whether the head hash or finalized hash should be updated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadOrFinalized {
+    Head,
+    Finalized,
+}
+
+impl std::fmt::Display for HeadOrFinalized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg = match self {
+            Self::Head => "head",
+            Self::Finalized => "finalized",
+        };
+        f.write_str(msg)
     }
 }
 
@@ -374,43 +503,14 @@ pub(super) struct ExecutorMailbox {
 }
 
 impl ExecutorMailbox {
-    /// Requests the agent to backfill a block identified by its `digest`.
-    ///
-    /// If `round` is set the agent will use this to subscribe to a block from
-    /// the commonware marshal agent.
-    fn backfill(&self, round: Option<Round>, digest: Digest) -> eyre::Result<()> {
+    /// Requests the agent to update the head of the canonical chain to `digest`.
+    pub(super) fn canonicalize_head(&self, height: u64, digest: Digest) -> eyre::Result<()> {
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),
-                command: Command::Backfill { round, digest },
-            })
-            .wrap_err("failed sending backfill request to finalizer, this means it exited")
-    }
-
-    /// Requests the agent to update the canonical chain to `digest`.
-    ///
-    /// Of `round` is set, the agent will also attempt to backfill the ancestors
-    /// of `digest`.
-    pub(super) fn canonicalize(&self, round: Option<Round>, digest: Digest) -> eyre::Result<()> {
-        self.inner
-            .unbounded_send(Message {
-                cause: Span::current(),
-                command: Command::Canonicalize { round, digest },
+                command: Command::CanonicalizeHead { height, digest },
             })
             .wrap_err("failed sending canonicalize request to agent, this means it exited")
-    }
-
-    /// Request the agent to forward a finalized block to the execution layer.
-    pub(super) fn forward_block(&self, block: Block) -> eyre::Result<()> {
-        self.inner
-            .unbounded_send(Message {
-                cause: Span::current(),
-                command: Command::ForwardBlock {
-                    block: Box::new(block),
-                    response: None,
-                },
-            })
-            .wrap_err("failed sending finalization request to agent, this means it exited")
     }
 
     /// Requests the agent to forward a `finalized` block to the execution layer.
@@ -421,9 +521,9 @@ impl ExecutorMailbox {
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),
-                command: Command::ForwardBlock {
-                    block: Box::new(finalized.block),
-                    response: Some(finalized.response),
+                command: Command::Finalize {
+                    update: Box::new(finalized.update),
+                    response: finalized.response,
                 },
             })
             .wrap_err("failed sending finalization request to agent, this means it exited")
@@ -438,23 +538,8 @@ struct Message {
 
 #[derive(Debug)]
 enum Command {
-    /// Requests the agent to backfill a block identified by its `digest`.
-    ///
-    /// If `round` is set the agent will use this to subscribe to a block from
-    /// the commonware marshal agent.
-    Backfill {
-        round: Option<Round>,
-        digest: Digest,
-    },
-    /// Requests the agent to canonicalize `digest`.
-    ///
-    /// This variant is used by the `ExecutorMailbox::canonicalize` method.
-    /// If `round` information is set the agent will attempt to backfill
-    /// `digest` and ancestors to the execution layer.
-    Canonicalize {
-        round: Option<Round>,
-        digest: Digest,
-    },
+    /// Requests the agent to set the head of the canonical chain to `digest`.
+    CanonicalizeHead { height: u64, digest: Digest },
     /// Requests the agent to forward a block to the execution layer.
     ///
     /// This variant is used for both ExecutorMailbox::forward_block and
@@ -464,68 +549,8 @@ enum Command {
     /// sent, i.e. a block tip of the finalized chain. This is the case when a
     /// finalized block is received from the commonware marshaller, which
     /// expects an acknowledgmenet of finalization.
-    ForwardBlock {
-        block: Box<Block>,
-        response: Option<oneshot::Sender<()>>,
+    Finalize {
+        update: Box<Update<Block>>,
+        response: oneshot::Sender<()>,
     },
-}
-
-/// Reads a block from consensus and forwards it to the execution layer.
-///
-/// Triggers a new backfill if its parent's height is below the latest
-/// block number available in the execution layer.
-#[instrument(
-    skip_all,
-    follows_from = [cause],
-    fields(
-        epoch = round.as_ref().map(Round::epoch),
-        view = round.as_ref().map(Round::view),
-        %digest,
-    ),
-    err(level = Level::WARN),
-)]
-async fn backfill_from_consensus(
-    cause: Span,
-    digest: Digest,
-    execution_node: TempoFullNode,
-    executor_mailbox: ExecutorMailbox,
-    genesis_block: Arc<Block>,
-    mut marshal: crate::alias::marshal::Mailbox,
-    round: Option<Round>,
-) -> eyre::Result<()> {
-    if digest == genesis_block.digest() {
-        info!("genesis digest supplied; stopping backfill");
-        return Ok(());
-    }
-
-    let block = marshal
-        .subscribe(round, digest)
-        .await
-        .await
-        .wrap_err("consensus layer did not have block")?;
-
-    let height = block.height();
-    let parent = block.parent();
-
-    // XXX: last_block_number returns that block number that is guaranteed
-    // to exist in the execution layer's database.
-    let last_execution_height = execution_node
-        .provider
-        .last_block_number()
-        .wrap_err("failed querying execution layer for its last block number")?;
-
-    executor_mailbox
-        .forward_block(block)
-        .wrap_err("executor mailbox was already closed")?;
-
-    if height.saturating_sub(1) > last_execution_height {
-        info!(
-            last_execution_height,
-            "reached the last block number of the execution layer; aborting backfill"
-        );
-        executor_mailbox
-            .backfill(None, parent)
-            .wrap_err("executor mailbox was already closed")?;
-    }
-    Ok(())
 }

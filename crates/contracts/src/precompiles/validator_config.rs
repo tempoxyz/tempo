@@ -1,0 +1,100 @@
+use alloy::sol;
+
+pub use IValidatorConfig::IValidatorConfigErrors as ValidatorConfigError;
+
+sol! {
+    /// Validator config interface for managing consensus validators.
+    ///
+    /// This precompile manages the set of validators that participate in consensus.
+    /// Validators can update their own information, rotate their identity to a new address,
+    /// and the owner can manage validator status.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc)]
+    interface IValidatorConfig {
+        /// Validator information
+        struct Validator {
+            bytes32 publicKey;
+            bool active;
+            uint64 index;
+            address validatorAddress;
+            /// Address where other validators can connect to this validator.
+            /// Format: `<hostname|ip>:<port>`
+            string inboundAddress;
+            /// IP address for firewall whitelisting by other validators.
+            /// Format: `<ip>:<port>` - must be an IP address, not a hostname.
+            string outboundAddress;
+        }
+
+        /// Get the complete set of validators
+        /// @return validators Array of all validators with their information
+        function getValidators() external view returns (Validator[] memory validators);
+
+        /// Add a new validator (owner only)
+        /// @param newValidatorAddress The address of the new validator
+        /// @param publicKey The validator's communication public publicKey
+        /// @param inboundAddress The validator's inbound address `<hostname|ip>:<port>` for incoming connections
+        /// @param outboundAddress The validator's outbound IP address `<ip>:<port>` for firewall whitelisting (IP only, no hostnames)
+        function addValidator(address newValidatorAddress, bytes32 publicKey, bool active, string calldata inboundAddress, string calldata outboundAddress) external;
+
+        /// Update validator information (only validator)
+        /// @param newValidatorAddress The new address for this validator
+        /// @param publicKey The validator's new communication public publicKey
+        /// @param inboundAddress The validator's inbound address `<hostname|ip>:<port>` for incoming connections
+        /// @param outboundAddress The validator's outbound IP address `<ip>:<port>` for firewall whitelisting (IP only, no hostnames)
+        function updateValidator(address newValidatorAddress, bytes32 publicKey, string calldata inboundAddress, string calldata outboundAddress) external;
+
+        /// Change validator active status (owner only)
+        /// @param validator The validator address
+        /// @param active Whether the validator should be active
+        function changeValidatorStatus(address validator, bool active) external;
+
+        /// Get the owner of the precompile
+        /// @return owner The owner address
+        function owner() external view returns (address);
+
+        /// Change owner
+        /// @param newOwner The new owner address
+        function changeOwner(address newOwner) external;
+
+        // Errors
+        error Unauthorized();
+        error ValidatorAlreadyExists();
+        error ValidatorNotFound();
+
+        error NotHostPort(string field, string input, string backtrace);
+        error NotIpPort(string field, string input, string backtrace);
+    }
+}
+
+impl ValidatorConfigError {
+    /// Creates an error for unauthorized access.
+    pub const fn unauthorized() -> Self {
+        Self::Unauthorized(IValidatorConfig::Unauthorized {})
+    }
+
+    /// Creates an error when validator already exists.
+    pub const fn validator_already_exists() -> Self {
+        Self::ValidatorAlreadyExists(IValidatorConfig::ValidatorAlreadyExists {})
+    }
+
+    /// Creates an error when validator is not found.
+    pub const fn validator_not_found() -> Self {
+        Self::ValidatorNotFound(IValidatorConfig::ValidatorNotFound {})
+    }
+
+    pub fn not_host_port(field: String, input: String, backtrace: String) -> Self {
+        Self::NotHostPort(IValidatorConfig::NotHostPort {
+            field,
+            input,
+            backtrace,
+        })
+    }
+
+    pub fn not_ip_port(field: String, input: String, backtrace: String) -> Self {
+        Self::NotIpPort(IValidatorConfig::NotIpPort {
+            field,
+            input,
+            backtrace,
+        })
+    }
+}

@@ -1,4 +1,7 @@
-use alloy::{primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder};
+use alloy::{
+    primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder,
+    sol_types::SolError,
+};
 use rand::Rng;
 use std::env;
 use tempo_contracts::precompiles::{
@@ -7,7 +10,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS,
-    stablecoin_exchange::{MAX_TICK, MIN_TICK},
+    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
     tip20::token_id_to_address,
 };
 
@@ -484,7 +487,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
         .unwrap();
     let bob = bob_signer.address();
 
-    let mint_amount = U256::from(10_000_000u128);
+    let mint_amount = U256::from(10_000_000_000u128);
     let mut pending = vec![];
 
     // Mint tokens to Alice (liquidity provider)
@@ -535,7 +538,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
 
     // Alice places liquidity orders at tick 0 (1:1 price)
     let alice_exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, alice_provider);
-    let liquidity_amount = 5_000_000u128;
+    let liquidity_amount = 5_000_000_000u128;
 
     // For USDC -> LinkingUSD: need bid on USDC (buying USDC with LinkingUSD)
     let tx = alice_exchange
@@ -575,7 +578,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
         .await?;
 
     // Execute multi-hop swap: USDC -> LinkingUSD -> EURC
-    let amount_in = 1_000_000u128;
+    let amount_in = 1_000_000_000u128;
     let amount_out = bob_exchange
         .quoteSwapExactAmountIn(*usdc.address(), *eurc.address(), amount_in)
         .call()
@@ -627,6 +630,202 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
         bob_linking_usd_exchange_after, 0,
         "Bob should have ZERO LinkingUSD on exchange (transitory)"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Setup node
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let base = setup_test_token(provider.clone(), caller).await?;
+    let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+
+    // Create pair
+    let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
+    let tx = exchange.createPair(*base.address()).send().await?;
+    tx.get_receipt().await?;
+
+    // Mint and approve tokens
+    let mint_amount = U256::from(1000000000u128);
+    let mut pending = vec![];
+    pending.push(base.mint(caller, mint_amount).send().await?);
+    pending.push(quote.mint(caller, mint_amount).send().await?);
+    await_receipts(&mut pending).await?;
+
+    let mut pending = vec![];
+    pending.push(
+        base.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    pending.push(
+        quote
+            .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    let expected_selector = format!(
+        "0x{}",
+        alloy::hex::encode(IStablecoinExchange::BelowMinimumOrderSize::SELECTOR)
+    );
+
+    // Try to place a bid order below dust limit (should fail)
+    let min_order_amount = MIN_ORDER_AMOUNT;
+    let below_dust_amount = min_order_amount - 1;
+    let result = exchange
+        .place(*base.address(), below_dust_amount, true, 0)
+        .call()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Expected bid order below dust limit to fail"
+    );
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains(&expected_selector));
+
+    // Try to place an ask order below dust limit (should also fail)
+    let result = exchange
+        .place(*base.address(), below_dust_amount, false, 0)
+        .call()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Expected ask order below dust limit to fail"
+    );
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains(&expected_selector));
+
+    // Place an order at exactly the dust limit (should succeed)
+    let tx = exchange
+        .place(*base.address(), min_order_amount, true, 0)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
+
+    // Place an order above the dust limit (should succeed)
+    let above_dust_amount = min_order_amount + 1;
+    let tx = exchange
+        .place(*base.address(), above_dust_amount, false, 0)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Setup node
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let base = setup_test_token(provider.clone(), caller).await?;
+    let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+
+    // Create pair
+    let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
+    let tx = exchange.createPair(*base.address()).send().await?;
+    tx.get_receipt().await?;
+
+    // Mint and approve tokens
+    let mint_amount = U256::from(1000000000u128);
+    let mut pending = vec![];
+    pending.push(base.mint(caller, mint_amount).send().await?);
+    pending.push(quote.mint(caller, mint_amount).send().await?);
+    await_receipts(&mut pending).await?;
+
+    let mut pending = vec![];
+    pending.push(
+        base.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    pending.push(
+        quote
+            .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    let expected_selector = format!(
+        "0x{}",
+        alloy::hex::encode(IStablecoinExchange::BelowMinimumOrderSize::SELECTOR)
+    );
+
+    // Try to place a flip bid order below dust limit (should fail)
+    let min_order_amount = MIN_ORDER_AMOUNT;
+    let below_dust_amount = min_order_amount - 1;
+    let result = exchange
+        .placeFlip(*base.address(), below_dust_amount, true, 0, 10)
+        .call()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Expected flip bid order below dust limit to fail"
+    );
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains(&expected_selector));
+
+    // Try to place a flip ask order below dust limit (should also fail)
+    let result = exchange
+        .placeFlip(*base.address(), below_dust_amount, false, 10, 0)
+        .call()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Expected flip ask order below dust limit to fail"
+    );
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains(&expected_selector));
+
+    // Place a flip order at exactly the dust limit (should succeed)
+    let tx = exchange
+        .placeFlip(*base.address(), min_order_amount, true, 0, 10)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
+
+    // Place a flip order above the dust limit (should succeed)
+    let above_dust_amount = min_order_amount + 1;
+    let tx = exchange
+        .placeFlip(*base.address(), above_dust_amount, false, 10, 0)
+        .send()
+        .await?;
+    tx.get_receipt().await?;
 
     Ok(())
 }

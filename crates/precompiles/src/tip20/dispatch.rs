@@ -9,7 +9,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
-    fn call(&mut self, calldata: &[u8], msg_sender: &Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
@@ -210,11 +210,11 @@ mod tests {
         let sender = Address::from([1u8; 20]);
 
         // Test invalid selector
-        let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), &sender);
+        let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
 
         // Test insufficient calldata
-        let result = token.call(&Bytes::from([0x12, 0x34]), &sender);
+        let result = token.call(&Bytes::from([0x12, 0x34]), sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
     }
     #[test]
@@ -227,7 +227,7 @@ mod tests {
 
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -236,7 +236,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: admin,
@@ -248,7 +248,7 @@ mod tests {
         let test_balance = U256::from(1000);
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: account,
                     amount: test_balance,
@@ -260,7 +260,7 @@ mod tests {
         let balance_of_call = ITIP20::balanceOfCall { account };
         let calldata = balance_of_call.abi_encode();
 
-        let result = token.call(&Bytes::from(calldata), &sender).unwrap();
+        let result = token.call(&Bytes::from(calldata), sender).unwrap();
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
 
         // Verify we get the correct balance
@@ -279,7 +279,7 @@ mod tests {
 
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Grant ISSUER_ROLE to sender
@@ -288,7 +288,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: sender,
@@ -308,7 +308,7 @@ mod tests {
         let calldata = mint_call.abi_encode();
 
         // Execute mint
-        let result = token.call(&Bytes::from(calldata), &sender).unwrap();
+        let result = token.call(&Bytes::from(calldata), sender).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify balance was updated in storage
@@ -330,7 +330,7 @@ mod tests {
 
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -339,7 +339,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: admin,
@@ -350,7 +350,7 @@ mod tests {
         // Set up initial balance for sender by minting
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: sender,
                     amount: initial_sender_balance,
@@ -376,7 +376,7 @@ mod tests {
         let calldata = transfer_call.abi_encode();
 
         // Execute transfer
-        let result = token.call(&Bytes::from(calldata), &sender).unwrap();
+        let result = token.call(&Bytes::from(calldata), sender).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Decode the return value (should be true)
@@ -411,7 +411,7 @@ mod tests {
 
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -419,7 +419,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: admin,
@@ -430,7 +430,7 @@ mod tests {
         // Mint initial balance to owner
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: owner,
                     amount: initial_owner_balance,
@@ -444,7 +444,7 @@ mod tests {
             amount: approve_amount,
         };
         let calldata = approve_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &owner).unwrap();
+        let result = token.call(&Bytes::from(calldata), owner).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
         let success = bool::abi_decode(&result.bytes).unwrap();
         assert!(success);
@@ -460,7 +460,7 @@ mod tests {
             amount: transfer_amount,
         };
         let calldata = transfer_from_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &spender).unwrap();
+        let result = token.call(&Bytes::from(calldata), spender).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
         let success = bool::abi_decode(&result.bytes).unwrap();
         assert!(success);
@@ -492,7 +492,7 @@ mod tests {
 
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Grant PAUSE_ROLE to pauser and UNPAUSE_ROLE to unpauser
@@ -503,7 +503,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: pause_role,
                     account: pauser,
@@ -514,7 +514,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: unpause_role,
                     account: unpauser,
@@ -528,7 +528,7 @@ mod tests {
         // Pause the token
         let pause_call = ITIP20::pauseCall {};
         let calldata = pause_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &pauser).unwrap();
+        let result = token.call(&Bytes::from(calldata), pauser).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify token is paused
@@ -537,7 +537,7 @@ mod tests {
         // Unpause the token
         let unpause_call = ITIP20::unpauseCall {};
         let calldata = unpause_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &unpauser).unwrap();
+        let result = token.call(&Bytes::from(calldata), unpauser).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify token is unpaused
@@ -557,7 +557,7 @@ mod tests {
 
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin and burner
@@ -567,7 +567,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: admin,
@@ -578,7 +578,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: burner,
@@ -589,7 +589,7 @@ mod tests {
         // Mint initial balance to burner
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: burner,
                     amount: initial_balance,
@@ -609,7 +609,7 @@ mod tests {
             amount: burn_amount,
         };
         let calldata = burn_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &burner).unwrap();
+        let result = token.call(&Bytes::from(calldata), burner).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify balances and total supply after burn
@@ -631,13 +631,13 @@ mod tests {
 
         // Initialize token
         token
-            .initialize("Test Token", "TEST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test Token", "TEST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Test name()
         let name_call = ITIP20::nameCall {};
         let calldata = name_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &caller).unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         assert_eq!(result.gas_used, METADATA_GAS);
         let name = String::abi_decode(&result.bytes).unwrap();
         assert_eq!(name, "Test Token");
@@ -645,7 +645,7 @@ mod tests {
         // Test symbol()
         let symbol_call = ITIP20::symbolCall {};
         let calldata = symbol_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &caller).unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         assert_eq!(result.gas_used, METADATA_GAS);
         let symbol = String::abi_decode(&result.bytes).unwrap();
         assert_eq!(symbol, "TEST");
@@ -653,7 +653,7 @@ mod tests {
         // Test decimals()
         let decimals_call = ITIP20::decimalsCall {};
         let calldata = decimals_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &caller).unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         assert_eq!(result.gas_used, METADATA_GAS);
         let decimals = ITIP20::decimalsCall::abi_decode_returns(&result.bytes).unwrap();
         assert_eq!(decimals, 6);
@@ -661,7 +661,7 @@ mod tests {
         // Test currency()
         let currency_call = ITIP20::currencyCall {};
         let calldata = currency_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &caller).unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         assert_eq!(result.gas_used, METADATA_GAS);
         let currency = String::abi_decode(&result.bytes).unwrap();
         assert_eq!(currency, "USD");
@@ -669,7 +669,7 @@ mod tests {
         // Test totalSupply()
         let total_supply_call = ITIP20::totalSupplyCall {};
         let calldata = total_supply_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &caller).unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         assert_eq!(result.gas_used, METADATA_GAS);
         let total_supply = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(total_supply, U256::ZERO);
@@ -686,7 +686,7 @@ mod tests {
 
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -695,7 +695,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: admin,
@@ -708,7 +708,7 @@ mod tests {
             newSupplyCap: supply_cap,
         };
         let calldata = set_cap_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin).unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Try to mint more than supply cap
@@ -717,7 +717,7 @@ mod tests {
             amount: mint_amount,
         };
         let calldata = mint_call.abi_encode();
-        let output = token.call(&Bytes::from(calldata), &admin)?;
+        let output = token.call(&Bytes::from(calldata), admin)?;
         assert!(output.reverted);
 
         let expected: Bytes = TIP20Error::supply_cap_exceeded().selector().into();
@@ -737,7 +737,7 @@ mod tests {
 
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Grant a role to user1
@@ -749,7 +749,7 @@ mod tests {
             account: user1,
         };
         let calldata = grant_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin).unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Check that user1 has the role
@@ -758,7 +758,7 @@ mod tests {
             account: user1,
         };
         let calldata = has_role_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin).unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
         assert_eq!(result.gas_used, VIEW_FUNC_GAS);
         let has_role = bool::abi_decode(&result.bytes).unwrap();
         assert!(has_role);
@@ -769,7 +769,7 @@ mod tests {
             account: user2,
         };
         let calldata = has_role_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin).unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
         let has_role = bool::abi_decode(&result.bytes).unwrap();
         assert!(!has_role);
 
@@ -779,13 +779,13 @@ mod tests {
             amount: U256::from(100),
         };
         let calldata = mint_call.abi_encode();
-        let output = token.call(&Bytes::from(calldata.clone()), &unauthorized)?;
+        let output = token.call(&Bytes::from(calldata.clone()), unauthorized)?;
         assert!(output.reverted);
         let expected: Bytes = RolesAuthError::unauthorized().selector().into();
         assert_eq!(output.bytes, expected);
 
         // Test authorized mint (should succeed)
-        let result = token.call(&Bytes::from(calldata), &user1).unwrap();
+        let result = token.call(&Bytes::from(calldata), user1).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         Ok(())
@@ -803,7 +803,7 @@ mod tests {
 
         // Initialize and setup
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         use alloy::primitives::keccak256;
@@ -811,7 +811,7 @@ mod tests {
         token
             .get_roles_contract()
             .grant_role(
-                &admin,
+                admin,
                 IRolesAuth::grantRoleCall {
                     role: issuer_role,
                     account: admin,
@@ -822,7 +822,7 @@ mod tests {
         // Mint initial balance
         token
             .mint(
-                &admin,
+                admin,
                 ITIP20::mintCall {
                     to: sender,
                     amount: initial_balance,
@@ -838,7 +838,7 @@ mod tests {
             memo,
         };
         let calldata = transfer_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &sender).unwrap();
+        let result = token.call(&Bytes::from(calldata), sender).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify balances
@@ -864,7 +864,7 @@ mod tests {
 
         // Initialize token
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, &admin)
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
 
         // Admin can change transfer policy ID
@@ -872,7 +872,7 @@ mod tests {
             newPolicyId: new_policy_id,
         };
         let calldata = change_policy_call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), &admin).unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
         assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
 
         // Verify policy ID was changed
@@ -881,7 +881,7 @@ mod tests {
         // Non-admin cannot change transfer policy ID
         let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
-        let output = token.call(&Bytes::from(calldata), &non_admin)?;
+        let output = token.call(&Bytes::from(calldata), non_admin)?;
         assert!(output.reverted);
         let expected: Bytes = RolesAuthError::unauthorized().selector().into();
         assert_eq!(output.bytes, expected);

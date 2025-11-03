@@ -47,7 +47,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
     pub fn create_token(
         &mut self,
-        sender: &Address,
+        sender: Address,
         call: ITIP20Factory::createTokenCall,
     ) -> Result<U256, TempoPrecompileError> {
         let token_id = self.token_id_counter()?.to::<u64>();
@@ -56,8 +56,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment which ensures that the quote
         // token id must always be <= the current token_id
-        if !is_tip20(&call.quoteToken) || address_to_token_id_unchecked(&call.quoteToken) > token_id
-        {
+        if !is_tip20(call.quoteToken) || address_to_token_id_unchecked(call.quoteToken) > token_id {
             return Err(TIP20Error::invalid_quote_token().into());
         }
 
@@ -66,7 +65,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             &call.symbol,
             &call.currency,
             call.quoteToken,
-            &call.admin,
+            call.admin,
         )?;
 
         let token_id = U256::from(token_id);
@@ -130,11 +129,11 @@ mod tests {
         };
 
         let token_id_0 = factory
-            .create_token(&sender, call.clone())
+            .create_token(sender, call.clone())
             .expect("Token creation should succeed");
 
         let token_id_1 = factory
-            .create_token(&sender, call)
+            .create_token(sender, call)
             .expect("Token creation should succeed");
 
         let factory_events = storage.events.get(&TIP20_FACTORY_ADDRESS).unwrap();
@@ -183,7 +182,7 @@ mod tests {
             admin: sender,
         };
 
-        let result = factory.create_token(&sender, invalid_call);
+        let result = factory.create_token(sender, invalid_call);
         assert_eq!(
             result.unwrap_err(),
             TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -209,7 +208,7 @@ mod tests {
             admin: sender,
         };
 
-        let result = factory.create_token(&sender, invalid_call);
+        let result = factory.create_token(sender, invalid_call);
         assert_eq!(
             result.unwrap_err(),
             TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
