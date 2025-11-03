@@ -4,6 +4,7 @@ pub mod eth_ext;
 pub mod policy;
 pub mod token;
 
+mod logs;
 mod pagination;
 
 pub use amm::{TempoAmm, TempoAmmApiServer};
