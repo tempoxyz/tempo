@@ -34,7 +34,7 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
-use std::{borrow::Cow, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
@@ -246,18 +246,8 @@ where
 
         let general_gas_limit = parent_header.gas_limit() / TEMPO_GENERAL_GAS_DIVISOR;
 
-        // If extra data is provided in attributes, configure the EVM with it
-        let evm_config = if !attributes.extra_data().is_empty() {
-            Cow::Owned(
-                self.evm_config
-                    .clone()
-                    .with_extra_data(attributes.extra_data().clone()),
-            )
-        } else {
-            Cow::Borrowed(&self.evm_config)
-        };
-
-        let mut builder = evm_config
+        let mut builder = self
+            .evm_config
             .builder_for_next_block(
                 &mut db,
                 &parent_header,
@@ -272,6 +262,7 @@ where
                     },
                     general_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
+                    extra_data: attributes.extra_data().clone(),
                 },
             )
             .map_err(PayloadBuilderError::other)?;
