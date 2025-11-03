@@ -64,8 +64,8 @@ sol! {
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
-        function updateQuoteToken(address newQuoteToken) external;
-        function finalizeQuoteTokenUpdate() external;
+        function setNextQuoteToken(address newQuoteToken) external;
+        function completeQuoteTokenUpdate() external;
 
         // EIP-712 Permit
         struct Permit {
@@ -106,8 +106,8 @@ sol! {
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
-        event UpdateQuoteToken(address indexed updater, address indexed newQuoteToken);
-        event QuoteTokenUpdateFinalized(address indexed updater, address indexed newQuoteToken);
+        event NextQuoteTokenSet(address indexed updater, address indexed nextQuoteToken);
+        event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
         event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
         event RewardRecipientSet(address indexed holder, address indexed recipient);

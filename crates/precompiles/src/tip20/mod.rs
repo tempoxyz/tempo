@@ -257,10 +257,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         )
     }
 
-    pub fn update_quote_token(
+    pub fn set_next_quote_token(
         &mut self,
         msg_sender: Address,
-        call: ITIP20::updateQuoteTokenCall,
+        call: ITIP20::setNextQuoteTokenCall,
     ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
@@ -287,18 +287,18 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         self.storage.emit_event(
             self.token_address,
-            TIP20Event::UpdateQuoteToken(ITIP20::UpdateQuoteToken {
+            TIP20Event::NextQuoteTokenSet(ITIP20::NextQuoteTokenSet {
                 updater: msg_sender,
-                newQuoteToken: call.newQuoteToken,
+                nextQuoteToken: call.newQuoteToken,
             })
             .into_log_data(),
         )
     }
 
-    pub fn finalize_quote_token_update(
+    pub fn complete_quote_token_update(
         &mut self,
         msg_sender: Address,
-        _call: ITIP20::finalizeQuoteTokenUpdateCall,
+        _call: ITIP20::completeQuoteTokenUpdateCall,
     ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
@@ -324,7 +324,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         self.storage.emit_event(
             self.token_address,
-            TIP20Event::QuoteTokenUpdateFinalized(ITIP20::QuoteTokenUpdateFinalized {
+            TIP20Event::QuoteTokenUpdate(ITIP20::QuoteTokenUpdate {
                 updater: msg_sender,
                 newQuoteToken: next_quote_token,
             })
@@ -1473,9 +1473,9 @@ mod tests {
 
         // Set next quote token
         token
-            .update_quote_token(
+            .set_next_quote_token(
                 admin,
-                ITIP20::updateQuoteTokenCall {
+                ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: quote_token_address,
                 },
             )
@@ -1488,9 +1488,9 @@ mod tests {
         let events = &storage.events[&token_id_to_address(token_id)];
         assert_eq!(
             events.last().unwrap(),
-            &TIP20Event::UpdateQuoteToken(ITIP20::UpdateQuoteToken {
+            &TIP20Event::NextQuoteTokenSet(ITIP20::NextQuoteTokenSet {
                 updater: admin,
-                newQuoteToken: quote_token_address,
+                nextQuoteToken: quote_token_address,
             })
             .into_log_data()
         );
@@ -1512,9 +1512,9 @@ mod tests {
         let quote_token_address = token_id_to_address(2);
 
         // Try to set next quote token as non-admin
-        let result = token.update_quote_token(
+        let result = token.set_next_quote_token(
             non_admin,
-            ITIP20::updateQuoteTokenCall {
+            ITIP20::setNextQuoteTokenCall {
                 newQuoteToken: quote_token_address,
             },
         );
@@ -1539,9 +1539,9 @@ mod tests {
 
         // Try to set a non-TIP20 address (random address that doesn't match TIP20 pattern)
         let non_tip20_address = Address::random();
-        let result = token.update_quote_token(
+        let result = token.set_next_quote_token(
             admin,
-            ITIP20::updateQuoteTokenCall {
+            ITIP20::setNextQuoteTokenCall {
                 newQuoteToken: non_tip20_address,
             },
         );
@@ -1567,9 +1567,9 @@ mod tests {
         // Try to set a TIP20 address that hasn't been deployed yet (token_id = 999)
         // This has the correct TIP20 address pattern but hasn't been created
         let undeployed_token_address = token_id_to_address(999);
-        let result = token.update_quote_token(
+        let result = token.set_next_quote_token(
             admin,
-            ITIP20::updateQuoteTokenCall {
+            ITIP20::setNextQuoteTokenCall {
                 newQuoteToken: undeployed_token_address,
             },
         );
@@ -1585,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_quote_token_update() -> eyre::Result<()> {
+    fn test_complete_quote_token_update() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1596,9 +1596,9 @@ mod tests {
 
         // Set next quote token
         token
-            .update_quote_token(
+            .set_next_quote_token(
                 admin,
-                ITIP20::updateQuoteTokenCall {
+                ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: quote_token_address,
                 },
             )
@@ -1606,7 +1606,7 @@ mod tests {
 
         // Complete the update
         token
-            .finalize_quote_token_update(admin, ITIP20::finalizeQuoteTokenUpdateCall {})
+            .complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})
             .unwrap();
 
         // Verify quote token was updated
@@ -1616,7 +1616,7 @@ mod tests {
         let events = &storage.events[&token_id_to_address(token_id)];
         assert_eq!(
             events.last().unwrap(),
-            &TIP20Event::QuoteTokenUpdateFinalized(ITIP20::QuoteTokenUpdateFinalized {
+            &TIP20Event::QuoteTokenUpdate(ITIP20::QuoteTokenUpdate {
                 updater: admin,
                 newQuoteToken: quote_token_address,
             })
@@ -1627,7 +1627,7 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_quote_token_update_detects_loop() -> eyre::Result<()> {
+    fn test_complete_quote_token_update_detects_loop() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1647,9 +1647,9 @@ mod tests {
         // Now try to set token_a as the next quote token for token_b (would create A -> B -> A loop)
         let mut token_b = TIP20Token::new(token_b_id, &mut storage);
         token_b
-            .update_quote_token(
+            .set_next_quote_token(
                 admin,
-                ITIP20::updateQuoteTokenCall {
+                ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: token_a_address,
                 },
             )
@@ -1657,7 +1657,7 @@ mod tests {
 
         // Try to complete the update - should fail due to loop detection
         let result =
-            token_b.finalize_quote_token_update(admin, ITIP20::finalizeQuoteTokenUpdateCall {});
+            token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
 
         assert!(matches!(
             result,
@@ -1670,7 +1670,7 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_quote_token_update_requires_admin() -> eyre::Result<()> {
+    fn test_complete_quote_token_update_requires_admin() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let non_admin = Address::random();
@@ -1681,16 +1681,16 @@ mod tests {
         let mut token = TIP20Token::new(token_id, &mut storage);
 
         // Set next quote token as admin
-        token.update_quote_token(
+        token.set_next_quote_token(
             admin,
-            ITIP20::updateQuoteTokenCall {
+            ITIP20::setNextQuoteTokenCall {
                 newQuoteToken: quote_token_address,
             },
         )?;
 
         // Try to complete update as non-admin
         let result =
-            token.finalize_quote_token_update(non_admin, ITIP20::finalizeQuoteTokenUpdateCall {});
+            token.complete_quote_token_update(non_admin, ITIP20::completeQuoteTokenUpdateCall {});
 
         assert!(matches!(
             result,
