@@ -118,7 +118,7 @@ async fn test_bids() -> eyre::Result<()> {
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
 
     let amount_in = exchange
-        .quoteSwapExactAmountIn(*base.address(), *quote.address(), fill_amount)
+        .quoteSwapExactAmountIn_1(*base.address(), *quote.address(), fill_amount)
         .call()
         .await?;
 
@@ -128,7 +128,7 @@ async fn test_bids() -> eyre::Result<()> {
 
     //  Execute swap and assert orders are filled
     let tx = exchange
-        .swapExactAmountIn(*base.address(), *quote.address(), amount_in, 0)
+        .swapExactAmountIn_1(*base.address(), *quote.address(), amount_in, 0)
         .send()
         .await?;
     tx.get_receipt().await?;
@@ -268,7 +268,7 @@ async fn test_asks() -> eyre::Result<()> {
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
 
     let amount_in = exchange
-        .quoteSwapExactAmountOut(*quote.address(), *base.address(), fill_amount)
+        .quoteSwapExactAmountOut_1(*quote.address(), *base.address(), fill_amount)
         .call()
         .await?;
 
@@ -285,7 +285,7 @@ async fn test_asks() -> eyre::Result<()> {
 
     //  Execute swap and assert orders are filled
     let tx = exchange
-        .swapExactAmountOut(*quote.address(), *base.address(), fill_amount, u128::MAX)
+        .swapExactAmountOut_1(*quote.address(), *base.address(), fill_amount, u128::MAX)
         .send()
         .await?;
     tx.get_receipt().await?;
@@ -580,12 +580,12 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     // Execute multi-hop swap: USDC -> LinkingUSD -> EURC
     let amount_in = 1_000_000_000u128;
     let amount_out = bob_exchange
-        .quoteSwapExactAmountIn(*usdc.address(), *eurc.address(), amount_in)
+        .quoteSwapExactAmountIn_1(*usdc.address(), *eurc.address(), amount_in)
         .call()
         .await?;
 
     let tx = bob_exchange
-        .swapExactAmountIn(*usdc.address(), *eurc.address(), amount_in, 0)
+        .swapExactAmountIn_1(*usdc.address(), *eurc.address(), amount_in, 0)
         .send()
         .await?;
     tx.get_receipt().await?;

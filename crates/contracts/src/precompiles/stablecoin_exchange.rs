@@ -55,6 +55,12 @@ sol! {
         function executeBlock() external;
 
         // Swap Functions
+        // uint32 versions (canonical)
+        function swapExactAmountIn(uint32 tokenIdIn, uint32 tokenIdOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
+        function swapExactAmountOut(uint32 tokenIdIn, uint32 tokenIdOut, uint128 amountOut, uint128 maxAmountIn) external returns (uint128 amountIn);
+        function quoteSwapExactAmountIn(uint32 tokenIdIn, uint32 tokenIdOut, uint128 amountIn) external view returns (uint128 amountOut);
+        function quoteSwapExactAmountOut(uint32 tokenIdIn, uint32 tokenIdOut, uint128 amountOut) external view returns (uint128 amountIn);
+        // address versions (backward compatibility)
         function swapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
         function swapExactAmountOut(address tokenIn, address tokenOut, uint128 amountOut, uint128 maxAmountIn) external returns (uint128 amountIn);
         function quoteSwapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn) external view returns (uint128 amountOut);

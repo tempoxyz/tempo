@@ -96,8 +96,27 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                     self.cancel(s, call.orderId)
                 })
             }
-            IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
-                mutate::<IStablecoinExchange::swapExactAmountInCall>(
+            // swapExactAmountIn uint32 version (canonical)
+            IStablecoinExchange::swapExactAmountIn_0Call::SELECTOR => {
+                mutate::<IStablecoinExchange::swapExactAmountIn_0Call>(
+                    calldata,
+                    msg_sender,
+                    |s, call| {
+                        let token_in = crate::tip20::token_id_u32_to_address(call.tokenIdIn);
+                        let token_out = crate::tip20::token_id_u32_to_address(call.tokenIdOut);
+                        self.swap_exact_amount_in(
+                            s,
+                            token_in,
+                            token_out,
+                            call.amountIn,
+                            call.minAmountOut,
+                        )
+                    },
+                )
+            }
+            // swapExactAmountIn address version (backward compatibility)
+            IStablecoinExchange::swapExactAmountIn_1Call::SELECTOR => {
+                mutate::<IStablecoinExchange::swapExactAmountIn_1Call>(
                     calldata,
                     msg_sender,
                     |s, call| {
@@ -111,8 +130,27 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                     },
                 )
             }
-            IStablecoinExchange::swapExactAmountOutCall::SELECTOR => {
-                mutate::<IStablecoinExchange::swapExactAmountOutCall>(
+            // swapExactAmountOut uint32 version (canonical)
+            IStablecoinExchange::swapExactAmountOut_0Call::SELECTOR => {
+                mutate::<IStablecoinExchange::swapExactAmountOut_0Call>(
+                    calldata,
+                    msg_sender,
+                    |s, call| {
+                        let token_in = crate::tip20::token_id_u32_to_address(call.tokenIdIn);
+                        let token_out = crate::tip20::token_id_u32_to_address(call.tokenIdOut);
+                        self.swap_exact_amount_out(
+                            s,
+                            token_in,
+                            token_out,
+                            call.amountOut,
+                            call.maxAmountIn,
+                        )
+                    },
+                )
+            }
+            // swapExactAmountOut address version (backward compatibility)
+            IStablecoinExchange::swapExactAmountOut_1Call::SELECTOR => {
+                mutate::<IStablecoinExchange::swapExactAmountOut_1Call>(
                     calldata,
                     msg_sender,
                     |s, call| {
@@ -126,13 +164,31 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                     },
                 )
             }
-            IStablecoinExchange::quoteSwapExactAmountInCall::SELECTOR => {
-                view::<IStablecoinExchange::quoteSwapExactAmountInCall>(calldata, |call| {
+            // quoteSwapExactAmountIn uint32 version (canonical)
+            IStablecoinExchange::quoteSwapExactAmountIn_0Call::SELECTOR => {
+                view::<IStablecoinExchange::quoteSwapExactAmountIn_0Call>(calldata, |call| {
+                    let token_in = crate::tip20::token_id_u32_to_address(call.tokenIdIn);
+                    let token_out = crate::tip20::token_id_u32_to_address(call.tokenIdOut);
+                    self.quote_swap_exact_amount_in(token_in, token_out, call.amountIn)
+                })
+            }
+            // quoteSwapExactAmountIn address version (backward compatibility)
+            IStablecoinExchange::quoteSwapExactAmountIn_1Call::SELECTOR => {
+                view::<IStablecoinExchange::quoteSwapExactAmountIn_1Call>(calldata, |call| {
                     self.quote_swap_exact_amount_in(call.tokenIn, call.tokenOut, call.amountIn)
                 })
             }
-            IStablecoinExchange::quoteSwapExactAmountOutCall::SELECTOR => {
-                view::<IStablecoinExchange::quoteSwapExactAmountOutCall>(calldata, |call| {
+            // quoteSwapExactAmountOut uint32 version (canonical)
+            IStablecoinExchange::quoteSwapExactAmountOut_0Call::SELECTOR => {
+                view::<IStablecoinExchange::quoteSwapExactAmountOut_0Call>(calldata, |call| {
+                    let token_in = crate::tip20::token_id_u32_to_address(call.tokenIdIn);
+                    let token_out = crate::tip20::token_id_u32_to_address(call.tokenIdOut);
+                    self.quote_swap_exact_amount_out(token_in, token_out, call.amountOut)
+                })
+            }
+            // quoteSwapExactAmountOut address version (backward compatibility)
+            IStablecoinExchange::quoteSwapExactAmountOut_1Call::SELECTOR => {
+                view::<IStablecoinExchange::quoteSwapExactAmountOut_1Call>(calldata, |call| {
                     self.quote_swap_exact_amount_out(call.tokenIn, call.tokenOut, call.amountOut)
                 })
             }
