@@ -16,7 +16,7 @@ use reth_ethereum::{
 };
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
-    args::{DatadirArgs, RpcServerArgs},
+    args::{DatadirArgs, DiscoveryArgs, NetworkArgs, RpcServerArgs},
     exit::NodeExitFuture,
 };
 use reth_rpc_builder::RpcModuleSelection;
@@ -236,13 +236,20 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     datadir: P,
 ) -> eyre::Result<ExecutionNode> {
     let node_config = NodeConfig::new(chainspec())
-        .with_unused_ports()
+        .with_network(NetworkArgs {
+            discovery: DiscoveryArgs {
+                disable_discovery: true,
+                ..DiscoveryArgs::default()
+            },
+            ..NetworkArgs::default()
+        })
         .with_rpc(
             RpcServerArgs::default()
                 .with_unused_ports()
                 .with_http()
                 .with_http_api(RpcModuleSelection::All),
         )
+        .with_unused_ports()
         .with_datadir_args(DatadirArgs {
             datadir: datadir.as_ref().to_path_buf().into(),
             ..DatadirArgs::default()
