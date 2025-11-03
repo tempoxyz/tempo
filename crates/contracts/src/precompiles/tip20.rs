@@ -34,8 +34,8 @@ sol! {
     #[allow(clippy::too_many_arguments)]
     interface ITIP20 {
         // Standard token functions
-        function name() external view returns (string);
-        function symbol() external view returns (string);
+        function name() external view returns (string memory);
+        function symbol() external view returns (string memory);
         function decimals() external view returns (uint8);
         function totalSupply() external view returns (uint256);
         function quoteToken() external view returns (address);
@@ -49,7 +49,7 @@ sol! {
         function burn(uint256 amount) external;
 
         // TIP20 Extension
-        function currency() external view returns (string);
+        function currency() external view returns (string memory);
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
@@ -89,11 +89,11 @@ sol! {
         }
 
         // Reward Functions
-        function startReward(uint256 amount, uint128 seconds) external returns (uint64);
+        function startReward(uint256 amount, uint128 secs) external returns (uint64);
         function setRewardRecipient(address recipient) external;
         function cancelReward(uint64 id) external returns (uint256);
         function finalizeStreams() external;
-        function getStream(uint64 id) external view returns (RewardStream);
+        function getStream(uint64 id) external view returns (RewardStream memory);
         function totalRewardPerSecond() external view returns (uint256);
 
         // Events
