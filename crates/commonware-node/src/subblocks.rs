@@ -292,6 +292,7 @@ impl<TContext: Spawner> Actor<TContext> {
         let signer = self.signer.clone();
         let fee_recipient = self.fee_recipient;
         let timeout = self.time_to_build_subblock;
+        let span = Span::current();
         let handle = self.context.clone().shared(true).spawn(move |_| {
             build_subblock(
                 transactions,
@@ -302,6 +303,7 @@ impl<TContext: Spawner> Actor<TContext> {
                 fee_recipient,
                 timeout,
             )
+            .instrument(span)
         });
 
         self.subblock_builder_handle = Some(BuildSubblockTask {
@@ -335,28 +337,17 @@ impl<TContext: Spawner> Actor<TContext> {
         let scheme_provider = self.scheme_provider.clone();
         let epoch_length = self.epoch_length;
         let span = Span::current();
-        self.context
-            .clone()
-            .shared(true)
-            .spawn(move |_| async move {
-                if let Err(err) = validate_subblock(
-                    sender.clone(),
-                    node,
-                    subblock,
-                    validated_subblocks_tx,
-                    scheme_provider,
-                    epoch_length,
-                )
-                .instrument(span)
-                .await
-                {
-                    warn!(
-                        %sender,
-                        %err,
-                        "received invalid subblock"
-                    );
-                }
-            });
+        self.context.clone().shared(true).spawn(move |_| {
+            validate_subblock(
+                sender.clone(),
+                node,
+                subblock,
+                validated_subblocks_tx,
+                scheme_provider,
+                epoch_length,
+            )
+            .instrument(span)
+        });
 
         Ok(())
     }
@@ -496,6 +487,7 @@ fn evm_at_block(
 /// Builds a subblock from candidate transactions we've collected so far.
 ///
 /// This will include as many valid transactions as possible within the given timeout.
+#[instrument(skip_all, fields(parent_hash = %parent_hash))]
 async fn build_subblock(
     transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
     node: TempoFullNode,
