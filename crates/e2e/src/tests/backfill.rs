@@ -20,17 +20,17 @@ fn validator_can_join_later() {
         let setup = Setup {
             how_many: num_nodes,
             seed: 0,
-            linkage: Link {
-                latency: Duration::from_millis(10),
-                jitter: Duration::from_millis(1),
-                success_rate: 1.0,
-            },
+            // linkage: Link {
+            //     latency: Duration::from_millis(10),
+            //     jitter: Duration::from_millis(1),
+            //     success_rate: 1.0,
+            // },
+            start_port: 1044,
             epoch_length: 100,
         };
 
         let execution_runtime = ExecutionRuntime::new();
-        let (mut nodes, _network_handle) =
-            setup_validators(context.clone(), &execution_runtime, setup).await;
+        let mut nodes = setup_validators(context.clone(), &execution_runtime, setup).await;
 
         // Start all nodes except the last one
         let mut last = nodes.pop().unwrap();

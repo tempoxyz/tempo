@@ -86,12 +86,11 @@ pub async fn setup_validators(
     }: Setup,
 ) -> Vec<ValidatorNode> {
     struct SetupValidator {
-        index: u32,
         signer: PrivateKey,
         oracle: Oracle<PublicKey>,
         addr: SocketAddr,
-        share: Share,
         network: Network<Context, PrivateKey>,
+        share: Share,
     }
 
     let threshold = quorum(how_many);
@@ -102,8 +101,13 @@ pub async fn setup_validators(
 
     let mut setups = vec![];
 
-    for i in 0..how_many {
-        let signer = PrivateKey::from_seed(u64::from(i));
+    let mut signers = (0..how_many)
+        .map(|i| PrivateKey::from_seed(i as u64))
+        .collect::<Vec<_>>();
+
+    signers.sort_by_key(|s| s.public_key());
+
+    for (i, signer) in signers.into_iter().enumerate() {
         // Should be port=0, but there is no way to get the dialable addr
         // out or set to the same as listen_addr. At least for now.
         let listen_addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -118,16 +122,14 @@ pub async fn setup_validators(
             ),
         );
         setups.push(SetupValidator {
-            index: i,
             signer,
             oracle,
             addr: listen_addr,
-            share: shares[i as usize].clone(),
             network,
+            share: shares[i].clone(),
         });
         port += 1;
     }
-    setups.sort_by_key(|setup| setup.signer.public_key());
 
     let mut nodes = Vec::new();
 
@@ -144,19 +146,21 @@ pub async fn setup_validators(
         .collect::<Vec<_>>()
         .into();
 
-    for SetupValidator {
-        index,
-        signer,
-        oracle,
-        share,
-        mut network,
-        ..
-    } in setups
+    for (
+        i,
+        SetupValidator {
+            signer,
+            oracle,
+            share,
+            mut network,
+            ..
+        },
+    ) in setups.into_iter().enumerate()
     {
         let uid = format!("validator-{}", signer.public_key());
 
         let node = execution_runtime
-            .spawn_node_blocking(&format!("node-{index}"))
+            .spawn_node_blocking(&format!("node-{i}"))
             .expect("must be able to spawn nodes on the runtime");
 
         let engine = tempo_commonware_node::consensus::Builder {

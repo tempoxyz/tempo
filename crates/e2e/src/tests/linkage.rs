@@ -26,7 +26,7 @@ fn only_good_links() {
     // for seed in 0..5 {
     for seed in 0..1 {
         let setup = Setup {
-            how_many: 2,
+            how_many: 5,
             seed,
             start_port: 1024,
             // linkage: link.clone(),
