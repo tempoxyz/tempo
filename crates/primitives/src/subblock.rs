@@ -115,6 +115,11 @@ impl SubBlock {
             transactions: Decodable::decode(buf)?,
         })
     }
+
+    /// Returns the total length of the transactions in the subblock.
+    pub fn total_tx_size(&self) -> usize {
+        self.transactions.iter().map(|tx| tx.length()).sum()
+    }
 }
 
 impl Encodable for SubBlock {

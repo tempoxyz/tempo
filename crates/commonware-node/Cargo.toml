@@ -16,6 +16,7 @@ tempo-node.workspace = true
 tempo-primitives.workspace = true
 tempo-payload-types.workspace = true
 
+reth-consensus-common.workspace = true
 reth-evm.workspace = true
 reth-revm.workspace = true
 

@@ -110,7 +110,7 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     fn build_seal_block_txs(
         &self,
         block_env: &BlockEnv,
-        subblocks: Vec<RecoveredSubBlock>,
+        subblocks: &[RecoveredSubBlock],
     ) -> Vec<Recovered<TempoTxEnvelope>> {
         let chain_id = Some(self.provider.chain_spec().chain().id());
 
@@ -304,9 +304,24 @@ where
             .with_bundle_update()
             .build();
 
-        let shared_gas_limit = parent_header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR;
+        let chain_spec = self.provider.chain_spec();
+        let is_osaka = self
+            .provider
+            .chain_spec()
+            .is_osaka_active_at_timestamp(attributes.timestamp());
+
+        let block_gas_limit: u64 = parent_header.gas_limit();
+        let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+        let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
         let general_gas_limit =
             (parent_header.gas_limit() - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
+
+        let mut cumulative_gas_used = 0;
+        let mut non_payment_gas_used = 0;
+        // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
+        let mut block_size_used = attributes.withdrawals().length() + 1024;
+        let mut payment_transactions = 0;
+        let mut total_fees = U256::ZERO;
 
         let mut builder = self
             .evm_config
@@ -318,7 +333,7 @@ where
                         timestamp: attributes.timestamp(),
                         suggested_fee_recipient: attributes.suggested_fee_recipient(),
                         prev_randao: attributes.prev_randao(),
-                        gas_limit: parent_header.gas_limit(),
+                        gas_limit: block_gas_limit,
                         parent_beacon_block_root: attributes.parent_beacon_block_root(),
                         withdrawals: Some(attributes.withdrawals().clone()),
                     },
@@ -330,15 +345,54 @@ where
             )
             .map_err(PayloadBuilderError::other)?;
 
-        let chain_spec = self.provider.chain_spec();
+        builder.apply_pre_execution_changes().map_err(|err| {
+            warn!(%err, "failed to apply pre-execution changes");
+            PayloadBuilderError::Internal(err.into())
+        })?;
 
         debug!("building new payload");
-        let mut cumulative_gas_used = 0;
-        let mut non_payment_gas_used = 0;
-        let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
-        let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
-        let base_fee = builder.evm_mut().block().basefee;
 
+        // If building an empty payload, don't include any subblocks
+        //
+        // Also don't include any subblocks if we've seen an invalid subblock
+        // at this height or above.
+        let mut subblocks = if empty
+            || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
+        {
+            vec![]
+        } else {
+            attributes.subblocks()
+        };
+
+        subblocks.retain(|subblock| {
+            // Edge case: remove subblocks with expired transactions
+            //
+            // We pre-validate all of the subblocks on top of parent state in subblocks service
+            // which leaves the only reason for transactions to get invalidated by expiry of
+            // `valid_before` field.
+            if subblock.transactions.iter().any(|tx| {
+                tx.as_aa().is_some_and(|tx| {
+                    tx.tx()
+                        .valid_before
+                        .is_some_and(|valid| valid < attributes.timestamp())
+                })
+            }) {
+                return false;
+            }
+
+            // Account for the subblock's size
+            block_size_used += subblock.total_tx_size();
+
+            true
+        });
+
+        // Prepare system transactions before actual block building and account for their size.
+        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
+        for tx in &system_txs {
+            block_size_used += tx.inner().length();
+        }
+
+        let base_fee = builder.evm_mut().block().basefee;
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
             builder
@@ -347,18 +401,8 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
-        let mut total_fees = U256::ZERO;
-
-        builder.apply_pre_execution_changes().map_err(|err| {
-            warn!(%err, "failed to apply pre-execution changes");
-            PayloadBuilderError::Internal(err.into())
-        })?;
-
-        let mut block_transactions_rlp_length = 0;
-        let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp());
 
         let execution_start = Instant::now();
-        let mut payment_transactions = 0;
         while let Some(pool_tx) = best_txs.next() {
             // ensure we still have capacity for this transaction
             if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
@@ -406,10 +450,8 @@ where
                 payment_transactions += 1;
             }
 
-            let estimated_block_size_with_tx = block_transactions_rlp_length
-                + tx.inner().length()
-                + attributes.withdrawals().length()
-                + 1024; // 1Kb of overhead for the block header
+            let tx_rlp_length = tx.inner().length();
+            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
@@ -461,42 +503,14 @@ where
                 .record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
-            block_transactions_rlp_length += tx_rlp_length;
-
             // update and add to total fees
             total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
             cumulative_gas_used += gas_used;
             if !is_payment {
                 non_payment_gas_used += gas_used;
             }
+            block_size_used += tx_rlp_length;
         }
-
-        // If building an empty payload, don't include any subblocks
-        //
-        // Also don't include any subblocks if we've seen an invalid subblock
-        // at this height or above.
-        let mut subblocks = if empty
-            || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
-        {
-            vec![]
-        } else {
-            attributes.subblocks()
-        };
-
-        // Edge case: remove subblocks with expired transactions
-        //
-        // We pre-validate all of the subblocks on top of parent state in subblocks service
-        // which leaves the only reason for transactions to get invalidated by expiry of
-        // `valid_before` field.
-        subblocks.retain(|subblock| {
-            !subblock.transactions.iter().any(|tx| {
-                tx.as_aa().is_some_and(|tx| {
-                    tx.tx()
-                        .valid_before
-                        .is_some_and(|valid| valid < attributes.timestamp())
-                })
-            })
-        });
 
         // check if we have a better block or received more subblocks
         if !is_better_payload(best_payload.as_ref(), total_fees)
@@ -511,6 +525,7 @@ where
             });
         }
 
+        // Apply subblock transactions
         for subblock in &subblocks {
             for tx in subblock.transactions_recovered() {
                 if let Err(err) = builder.execute_transaction(tx.cloned()) {
@@ -541,8 +556,8 @@ where
             .payment_transactions
             .record(payment_transactions);
 
-        // Include system transactions in the block
-        for system_tx in self.build_seal_block_txs(builder.evm().block(), subblocks) {
+        // Apply system transactions
+        for system_tx in system_txs {
             builder
                 .execute_transaction(system_tx)
                 .map_err(PayloadBuilderError::evm)?;
