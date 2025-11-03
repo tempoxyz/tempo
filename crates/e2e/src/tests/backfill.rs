@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use commonware_macros::test_traced;
-use commonware_p2p::simulated::Link;
 use commonware_runtime::{
     Clock, Runner as _,
     deterministic::{self, Runner},
@@ -25,7 +24,6 @@ fn validator_can_join_later() {
             //     jitter: Duration::from_millis(1),
             //     success_rate: 1.0,
             // },
-            start_port: 1044,
             epoch_length: 100,
         };
 

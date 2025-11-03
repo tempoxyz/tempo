@@ -2337,7 +2337,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2355,7 +2355,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "bytes",
  "paste",
@@ -2365,7 +2365,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2390,7 +2390,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "blake3",
  "blst",
@@ -2415,7 +2415,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "futures",
  "proc-macro-crate",
@@ -2429,7 +2429,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2455,7 +2455,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "bimap",
  "bytes",
@@ -2477,7 +2477,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "async-lock",
  "axum",
@@ -2509,7 +2509,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2531,7 +2531,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -2551,7 +2551,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "0.0.63"
-source = "git+https://github.com/superfluffy/monorepo?rev=76a6e0b1a05a66e109c245480c6991a8eebbe4eb#76a6e0b1a05a66e109c245480c6991a8eebbe4eb"
+source = "git+https://github.com/superfluffy/monorepo?rev=5e455d83de519432a304e655615c28d19c7ed0d7#5e455d83de519432a304e655615c28d19c7ed0d7"
 dependencies = [
  "bytes",
  "cfg-if",

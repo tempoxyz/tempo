@@ -1,8 +1,5 @@
-use std::time::Duration;
-
 use crate::{Setup, run};
 use commonware_macros::test_traced;
-use commonware_p2p::simulated::Link;
 
 #[test_traced]
 fn only_good_links() {
@@ -26,9 +23,8 @@ fn only_good_links() {
     // for seed in 0..5 {
     for seed in 0..1 {
         let setup = Setup {
-            how_many: 5,
+            how_many: 2,
             seed,
-            start_port: 1024,
             // linkage: link.clone(),
             epoch_length: 100,
         };

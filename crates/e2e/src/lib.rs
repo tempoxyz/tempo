@@ -70,8 +70,6 @@ pub struct Setup {
     // pub linkage: Link,
     /// The number of heights in an epoch.
     pub epoch_length: u64,
-
-    pub start_port: u16,
 }
 
 pub async fn setup_validators(
@@ -82,22 +80,25 @@ pub async fn setup_validators(
         seed: _,
         // linkage,
         epoch_length,
-        start_port,
     }: Setup,
 ) -> Vec<ValidatorNode> {
-    struct SetupValidator {
+    struct SetupValidator<S, R> {
         signer: PrivateKey,
         oracle: Oracle<PublicKey>,
         addr: SocketAddr,
-        network: Network<Context, PrivateKey>,
         share: Share,
+        pending: (S, R),
+        recovered: (S, R),
+        resolver: (S, R),
+        broadcast: (S, R),
+        marshal: (S, R),
+        dkg: (S, R),
+        boundary_certs: (S, R),
     }
 
     let threshold = quorum(how_many);
     let (polynomial, shares) =
         ops::generate_shares::<_, MinSig>(&mut context, None, how_many, threshold);
-
-    let mut port = start_port;
 
     let mut setups = vec![];
 
@@ -110,25 +111,44 @@ pub async fn setup_validators(
     for (i, signer) in signers.into_iter().enumerate() {
         // Should be port=0, but there is no way to get the dialable addr
         // out or set to the same as listen_addr. At least for now.
-        let listen_addr = SocketAddr::from(([127, 0, 0, 1], port));
-        let (network, oracle) = Network::new(
+        let (mut network, oracle) = Network::new(
             context.with_label(&format!("network-{i}")),
             lookup::Config::local(
                 signer.clone(),
                 b"P2P",
-                listen_addr,
-                listen_addr,
+                SocketAddr::from(([127, 0, 0, 1], 0)),
+                // FIXME: dialable address seems to be completely unused, commonware is removing it entirely.
+                SocketAddr::from(([127, 0, 0, 1], 0)),
                 1024 * 1024,
             ),
         );
+
+        let pending = network.register(0, Quota::per_second(NZU32!(128)), 16_384);
+        let recovered = network.register(1, Quota::per_second(NZU32!(128)), 16_384);
+        let resolver = network.register(2, Quota::per_second(NZU32!(128)), 16_384);
+        let broadcast = network.register(3, Quota::per_second(NZU32!(8)), 16_384);
+        let marshal = network.register(4, Quota::per_second(NZU32!(8)), 16_384);
+        let dkg = network.register(5, Quota::per_second(NZU32!(128)), 16_384);
+        let boundary_certs = network.register(6, Quota::per_second(NZU32!(1)), 16_384);
+
+        let mut listener_info = network.listener_info();
+        network.start();
+
+        let addr = listener_info.get_local_addr().await.unwrap();
+
         setups.push(SetupValidator {
             signer,
             oracle,
-            addr: listen_addr,
-            network,
+            addr,
             share: shares[i].clone(),
+            pending,
+            recovered,
+            resolver,
+            broadcast,
+            marshal,
+            dkg,
+            boundary_certs,
         });
-        port += 1;
     }
 
     let mut nodes = Vec::new();
@@ -152,7 +172,13 @@ pub async fn setup_validators(
             signer,
             oracle,
             share,
-            mut network,
+            pending,
+            recovered,
+            resolver,
+            broadcast,
+            marshal,
+            dkg,
+            boundary_certs,
             ..
         },
     ) in setups.into_iter().enumerate()
@@ -189,18 +215,6 @@ pub async fn setup_validators(
         .try_init()
         .await
         .expect("must be able to initialize consensus engines to run tests");
-
-        let pending = network.register(0, Quota::per_second(NZU32!(128)), 16_384);
-        let recovered = network.register(1, Quota::per_second(NZU32!(128)), 16_384);
-        let resolver = network.register(2, Quota::per_second(NZU32!(128)), 16_384);
-        let broadcast = network.register(3, Quota::per_second(NZU32!(8)), 16_384);
-        let marshal = network.register(4, Quota::per_second(NZU32!(8)), 16_384);
-        let dkg = network.register(5, Quota::per_second(NZU32!(128)), 16_384);
-        let boundary_certs = network.register(6, Quota::per_second(NZU32!(1)), 16_384);
-
-        // FIXME: bind to port 0, get the bound port out of this.
-        // let mut listener_info = network.listener_info();
-        network.start();
 
         // FIXME(janis): bring back linkage once simulated p2p works with lookup.
         // let link = linkage.clone();
