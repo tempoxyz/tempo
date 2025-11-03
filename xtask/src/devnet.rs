@@ -1,4 +1,4 @@
-use std::{fmt::Display, str::FromStr};
+use std::{fmt::Display, net::SocketAddr, str::FromStr};
 
 use alloy_primitives::address;
 use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
@@ -187,8 +187,6 @@ fn generate_consensus_configs(
         .collect::<Vec<_>>();
     signers.sort_by_key(|signer| signer.public_key());
 
-    let all_peers: Vec<_> = signers.iter().map(|signer| signer.public_key()).collect();
-
     // generate consensus key
     let threshold = commonware_utils::quorum(nodes.len() as u32);
     let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
@@ -208,14 +206,14 @@ fn generate_consensus_configs(
             share,
             polynomial: polynomial.clone(),
             epoch_length: 302_400,
-            listen_port: 8000,
             metrics_port: Some(8002),
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], url.port)),
+            dialable_addr: SocketAddr::from(([127, 0, 0, 1], url.port)),
             p2p: Default::default(),
             storage_directory: storage_directory.clone(),
             worker_threads: 3,
             // this will be updated after we have collected all peers
             peers: IndexMap::new(),
-            bootstrappers: all_peers.clone().into(),
             message_backlog: 16384,
             mailbox_size: 16384,
             deque_size: 10,
