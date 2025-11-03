@@ -4,11 +4,13 @@ use std::{path::Path, sync::Arc};
 use eyre::WrapErr as _;
 use futures::StreamExt;
 use reth_db::mdbx::DatabaseArguments;
-use reth_ethereum::network::Peers;
 use reth_ethereum::{
-    network::api::{
-        NetworkEventListenerProvider, PeersInfo,
-        events::{NetworkEvent, PeerEvent},
+    network::{
+        Peers,
+        api::{
+            NetworkEventListenerProvider, PeersInfo,
+            events::{NetworkEvent, PeerEvent},
+        },
     },
     tasks::{TaskExecutor, TaskManager},
 };
