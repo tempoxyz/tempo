@@ -42,6 +42,7 @@ reth-chainspec.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
 reth-engine-local.workspace = true
+reth-errors.workspace = true
 
 alloy-serde.workspace = true
 alloy-eips.workspace = true
@@ -55,6 +56,8 @@ eyre.workspace = true
 tokio.workspace = true
 serde.workspace = true
 jsonrpsee.workspace = true
+futures.workspace = true
+itertools.workspace = true
 
 [dev-dependencies]
 alloy-network.workspace = true
@@ -74,7 +77,6 @@ alloy = { workspace = true, features = [
 ] }
 alloy-rlp.workspace = true
 rand = "0.9.2"
-futures = "0.3"
 test-case.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2 = { workspace = true }

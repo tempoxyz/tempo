@@ -7,28 +7,28 @@ publish = false
 
 [workspace]
 members = [
-  "bin/tempo",
-  "bin/tempo-bench",
-  "bin/tempo-sidecar",
-  "crates/alloy",
+    "bin/tempo",
+    "bin/tempo-bench",
+    "bin/tempo-sidecar",
+    "crates/alloy",
   "crates/chainspec",
-  "crates/commonware-node",
-  "crates/commonware-node-config",
-  "crates/consensus",
-  "crates/eyre",
-  "crates/evm",
-  "crates/e2e",
-  "crates/faucet",
-  "crates/node",
-  "crates/payload/builder",
-  "crates/payload/types",
-  "crates/precompiles",
-  "crates/primitives",
-  "crates/contracts",
-  "crates/telemetry-util",
-  "crates/transaction-pool",
-  "crates/revm",
-  "xtask",
+    "crates/commonware-node",
+    "crates/commonware-node-config",
+    "crates/consensus",
+    "crates/eyre",
+    "crates/evm",
+    "crates/e2e",
+    "crates/faucet",
+    "crates/node",
+    "crates/payload/builder",
+    "crates/payload/types",
+    "crates/precompiles",
+    "crates/primitives",
+    "crates/contracts",
+    "crates/telemetry-util",
+    "crates/transaction-pool",
+    "crates/revm",
+    "xtask",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -165,8 +165,8 @@ reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "bb69
 alloy-network = { version = "1.0.41" }
 alloy-rpc-types-eth = { version = "1.0.41" }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "bb694fb", features = [
-  "std",
-  "optional-checks",
+    "std",
+    "optional-checks",
 ] }
 revm = "31.0"
 
@@ -214,6 +214,7 @@ governor = "0.6.3"
 humantime-serde = "1.1.1"
 indexmap = { version = "2.11.0" }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
+itertools = "0.14"
 metrics = "0.24.0"
 p256 = "0.13"
 prometheus-client = "0.22.3"

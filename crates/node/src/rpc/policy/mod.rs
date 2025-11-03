@@ -2,10 +2,15 @@ pub use addresses::{AddressesFilters, PolicyAddress};
 
 use crate::rpc::policy::addresses::{AddressesParams, AddressesResponse};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use reth_node_core::rpc::result::internal_rpc_err;
-use reth_rpc_eth_api::RpcNodeCore;
+use reth_ethereum::provider::BlockIdReader;
+use reth_primitives_traits::NodePrimitives;
+use reth_rpc_eth_api::{EthApiTypes, RpcNodeCore, RpcNodeCoreExt, helpers::SpawnBlocking};
+use reth_transaction_pool::TransactionPool;
+use tempo_evm::TempoEvmConfig;
+use tempo_primitives::TempoHeader;
 
 pub mod addresses;
+mod logs;
 
 #[rpc(server, namespace = "policy")]
 pub trait TempoPolicyApi {
@@ -31,9 +36,16 @@ impl<EthApi> TempoPolicy<EthApi> {
 }
 
 #[async_trait::async_trait]
-impl<EthApi: RpcNodeCore> TempoPolicyApiServer for TempoPolicy<EthApi> {
-    async fn addresses(&self, _params: AddressesParams) -> RpcResult<AddressesResponse> {
-        Err(internal_rpc_err("unimplemented"))
+impl<EthApi> TempoPolicyApiServer for TempoPolicy<EthApi>
+where
+    EthApi: RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>
+        + SpawnBlocking
+        + RpcNodeCoreExt<Provider: BlockIdReader, Pool: TransactionPool>
+        + EthApiTypes
+        + 'static,
+{
+    async fn addresses(&self, params: AddressesParams) -> RpcResult<AddressesResponse> {
+        self.addresses_using_logs(params).await
     }
 }
 
