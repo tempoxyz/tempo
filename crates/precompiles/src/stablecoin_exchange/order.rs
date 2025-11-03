@@ -12,7 +12,6 @@ use crate::{
 use alloy::primitives::{Address, B256, U256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
-
 /// Represents an order in the stablecoin DEX orderbook.
 ///
 /// This struct matches the Solidity reference implementation in StablecoinExchange.sol.
@@ -66,7 +65,7 @@ pub struct Order {
 }
 
 impl Order {
-    // Order struct field offsets (relative to order base slot)
+    // Order struct field offsets
     // Matches Solidity Order struct layout
     /// Maker address field offset
     pub const MAKER_OFFSET: U256 = uint!(0_U256);
@@ -181,10 +180,8 @@ impl Order {
             .sload(stablecoin_exchange, order_slot + Self::MAKER_OFFSET)?
             .into_address();
 
-        let book_key = B256::from(storage.sload(
-            stablecoin_exchange,
-            order_slot + Self::BOOK_KEY_OFFSET,
-        )?);
+        let book_key =
+            B256::from(storage.sload(stablecoin_exchange, order_slot + Self::BOOK_KEY_OFFSET)?);
 
         let is_bid = storage
             .sload(stablecoin_exchange, order_slot + Self::IS_BID_OFFSET)?
@@ -239,7 +236,7 @@ impl Order {
         stablecoin_exchange: Address,
     ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-        
+
         storage.sstore(
             stablecoin_exchange,
             order_slot + Self::MAKER_OFFSET,

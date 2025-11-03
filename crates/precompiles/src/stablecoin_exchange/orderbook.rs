@@ -1,15 +1,12 @@
 //! Orderbook and tick level management for the stablecoin DEX.
 
-use super::{
-    offsets,
-    slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS},
-};
+use super::slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS};
 use crate::{
     error::TempoPrecompileError,
     stablecoin_exchange::IStablecoinExchange,
     storage::{PrecompileStorageProvider, slots::mapping_slot},
 };
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::{Address, B256, U256, keccak256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
 
@@ -31,7 +28,7 @@ pub struct PriceLevel {
 }
 
 impl PriceLevel {
-    // PriceLevel struct field offsets (relative to tick level base slot)
+    // PriceLevel struct field offsets
     // Matches Solidity PriceLevel struct layout
     /// Head order ID field offset
     pub const HEAD_OFFSET: U256 = uint!(0_U256);
@@ -270,7 +267,7 @@ pub struct Orderbook {
 }
 
 impl Orderbook {
-    // Orderbook struct field offsets (relative to orderbook base slot)
+    // Orderbook struct field offsets
     /// Base token address field offset
     pub const BASE_OFFSET: U256 = uint!(0_U256);
     /// Quote token address field offset
