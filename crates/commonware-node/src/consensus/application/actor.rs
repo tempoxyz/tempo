@@ -53,7 +53,7 @@ use crate::{
     consensus::{Digest, block::Block},
     dkg::PublicOutcome,
     epoch::{self, SchemeProvider},
-    marshal_utils::UpdateExt,
+    marshal_utils::UpdateExt as _,
     subblocks,
 };
 
@@ -296,7 +296,7 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_propose<TContext: Pacer + Spawner>(
+    async fn handle_propose<TContext: Pacer>(
         self,
         request: Propose,
         context: TContext,
@@ -381,6 +381,7 @@ impl Inner<Init> {
             *lock = Some(proposal.clone());
         }
 
+        // Make sure reth sees the new payload so that in the next round we can verify blocks on top of it.
         let is_good = verify_block(
             context,
             round.epoch(),
@@ -390,14 +391,14 @@ impl Inner<Init> {
                 .beacon_engine_handle
                 .clone(),
             &proposal,
-            parent_digest.0,
+            parent_digest,
             &self.scheme_provider,
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
 
         if !is_good {
-            eyre::bail!("proposal failed validation");
+            eyre::bail!("validation reported that that just-proposed block is invalid");
         }
 
         if let Err(error) = self
@@ -477,7 +478,7 @@ impl Inner<Init> {
         }
     }
 
-    async fn propose<TContext: Pacer + Spawner>(
+    async fn propose<TContext: Pacer>(
         mut self,
         context: TContext,
         parent_view: View,
@@ -547,7 +548,7 @@ impl Inner<Init> {
         let payload_id = self
             .execution_node
             .payload_builder_handle
-            .send_new_payload(attrs.clone())
+            .send_new_payload(attrs)
             .pace(&context, Duration::from_millis(20))
             .await
             .map_err(|_| eyre!("channel was closed before a response was returned"))
@@ -677,7 +678,7 @@ impl Inner<Init> {
                 .beacon_engine_handle
                 .clone(),
             &block,
-            parent.hash(),
+            parent_digest,
             &self.scheme_provider,
         )
         .await
@@ -759,7 +760,7 @@ struct Init {
         block.digest = %block.digest(),
         block.height = block.height(),
         block.timestamp = block.timestamp(),
-        parent.digest = %parent_hash,
+        parent.digest = %parent_digest,
     )
 )]
 async fn verify_block<TContext: Pacer>(
@@ -768,7 +769,7 @@ async fn verify_block<TContext: Pacer>(
     epoch_length: u64,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
-    parent_hash: B256,
+    parent_digest: Digest,
     scheme_provider: &SchemeProvider,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
@@ -776,7 +777,7 @@ async fn verify_block<TContext: Pacer>(
         info!("block does not belong to this epoch");
         return Ok(false);
     }
-    if block.parent_hash() != parent_hash {
+    if block.parent_hash() != *parent_digest {
         info!(
             "parent digest stored in block must match the digest of the parent \
             argument but doesn't"

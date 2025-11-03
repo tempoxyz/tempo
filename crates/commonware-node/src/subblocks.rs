@@ -3,7 +3,7 @@ use crate::{
     epoch::{self, SchemeProvider},
 };
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
-use alloy_primitives::{Address, B256, BlockHash, Bytes, TxHash, map::HashMap};
+use alloy_primitives::{Address, B256, BlockHash, Bytes, TxHash};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_consensus::{
@@ -27,7 +27,8 @@ use commonware_cryptography::{
 use commonware_p2p::{Receiver, Recipients, Sender};
 use commonware_runtime::{Handle, Spawner};
 use eyre::OptionExt;
-use futures::future::OptionFuture;
+use futures::{StreamExt, channel::mpsc};
+use indexmap::IndexMap;
 use parking_lot::Mutex;
 use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
@@ -42,7 +43,6 @@ use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::T
 use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
-use tokio::sync::mpsc;
 use tracing::{debug, instrument, warn};
 
 /// Task managing collected subblocks.
@@ -55,7 +55,7 @@ use tracing::{debug, instrument, warn};
 ///
 /// Upon receiving a subblock from the network, we ensure that we are
 /// the proposer and verify the block on top of latest state.
-pub struct Actor<Ctx> {
+pub struct Actor<TContext> {
     /// Sender of messages to the service.
     actions_tx: mpsc::UnboundedSender<Message>,
     /// Receiver of events to the service.
@@ -66,7 +66,7 @@ pub struct Actor<Ctx> {
     /// Scheme provider to track participants of each epoch.
     scheme_provider: SchemeProvider,
     /// Commonware runtime context.
-    context: Ctx,
+    context: TContext,
     /// ed25519 private key used for consensus.
     signer: PrivateKey,
     /// Execution layer node.
@@ -82,14 +82,14 @@ pub struct Actor<Ctx> {
     consensus_tip: Option<(Round, BlockHash, bls12381_threshold::Signature<MinSig>)>,
 
     /// Collected subblocks keyed by validator public key.
-    subblocks: HashMap<B256, RecoveredSubBlock>,
+    subblocks: IndexMap<B256, RecoveredSubBlock>,
     /// Subblock candidate transactions.
-    subblock_transactions: Arc<Mutex<HashMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
+    subblock_transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
 }
 
-impl<Ctx: Spawner> Actor<Ctx> {
+impl<TContext: Spawner> Actor<TContext> {
     pub(crate) fn new(
-        context: Ctx,
+        context: TContext,
         signer: PrivateKey,
         scheme_provider: SchemeProvider,
         node: TempoFullNode,
@@ -97,7 +97,7 @@ impl<Ctx: Spawner> Actor<Ctx> {
         time_to_build_subblock: Duration,
         epoch_length: u64,
     ) -> Self {
-        let (actions_tx, actions_rx) = mpsc::unbounded_channel();
+        let (actions_tx, actions_rx) = mpsc::unbounded();
         Self {
             subblock_builder_handle: None,
             scheme_provider,
@@ -130,19 +130,23 @@ impl<Ctx: Spawner> Actor<Ctx> {
         ),
     ) {
         loop {
-            tokio::select! {
-                biased;
-
+            commonware_macros::select! {
                 // Handle messages from consensus engine and service handle.
-                Some(action) = self.actions_rx.recv() => {
+                action = self.actions_rx.next() => {
+                    let Some(action) = action else { break; };
                     self.on_new_message(action);
-                }
+                },
                 // Handle messages from the network.
-                Ok((sender, message)) = network_rx.recv() => {
+                message = network_rx.recv() => {
+                    let Ok((sender, message)) = message else { continue; };
                     self.on_network_message(sender, message);
-                }
+                },
                 // Handle built subblocks.
-                Some(subblock) = OptionFuture::from(self.subblock_builder_handle.as_mut().map(|t| &mut t.handle)) => {
+                subblock = if let Some(task) = self.subblock_builder_handle.as_mut() {
+                    (&mut task.handle).fuse()
+                } else {
+                    futures::future::Fuse::terminated()
+                } => {
                     let task = self.subblock_builder_handle.take().unwrap();
                     self.on_built_subblock(subblock, task.proposer, &mut network_tx).await;
                 }
@@ -225,21 +229,18 @@ impl<Ctx: Spawner> Actor<Ctx> {
             return;
         };
 
-        let next_epoch = if epoch::is_last_height(header.number(), self.epoch_length) {
-            epoch::of_height(header.number(), self.epoch_length).unwrap() + 1
-        } else {
-            round.epoch()
-        };
+        let epoch_of_next_block = epoch::of_height(header.number() + 1, self.epoch_length)
+            .expect("non-zero heights are guaranteed to have an epoch");
 
         // Can't proceed without knowing a validator set for the current epoch.
-        let Some(scheme) = self.scheme_provider.scheme(next_epoch) else {
+        let Some(scheme) = self.scheme_provider.scheme(epoch_of_next_block) else {
             return;
         };
 
-        let next_round = if round.epoch() == next_epoch {
+        let next_round = if round.epoch() == epoch_of_next_block {
             Round::new(round.epoch(), round.view() + 1)
         } else {
-            Round::new(next_epoch, 1)
+            Round::new(epoch_of_next_block, 1)
         };
 
         let seed = if next_round.view() == 1 {
@@ -432,7 +433,7 @@ pub struct Mailbox {
 impl Mailbox {
     pub fn get_subblocks(&self, parent: BlockHash) -> Result<Vec<RecoveredSubBlock>, RecvError> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let _ = self.tx.send(Message::GetSubBlocks {
+        let _ = self.tx.unbounded_send(Message::GetSubBlocks {
             parent,
             response: tx,
         });
@@ -440,7 +441,7 @@ impl Mailbox {
     }
 
     pub fn add_transaction(&self, tx: Recovered<TempoTxEnvelope>) {
-        let _ = self.tx.send(Message::AddTransaction(tx.into()));
+        let _ = self.tx.unbounded_send(Message::AddTransaction(tx.into()));
     }
 }
 
@@ -448,7 +449,9 @@ impl Reporter for Mailbox {
     type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
     async fn report(&mut self, activity: Self::Activity) -> () {
-        let _ = self.tx.send(Message::Consensus(Box::new(activity)));
+        let _ = self
+            .tx
+            .unbounded_send(Message::Consensus(Box::new(activity)));
     }
 }
 
@@ -473,7 +476,7 @@ fn evm_at_block(
 ///
 /// This will include as many valid transactions as possible within the given timeout.
 async fn build_subblock(
-    transactions: Arc<Mutex<HashMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
+    transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
     node: TempoFullNode,
     parent_hash: BlockHash,
     num_validators: usize,
@@ -497,7 +500,7 @@ async fn build_subblock(
                 }
                 if evm.transact_commit(&*tx).is_err() {
                     // Remove invalid transactions from the set.
-                    transactions.lock().remove(&tx_hash);
+                    transactions.lock().swap_remove(&tx_hash);
                     continue;
                 }
                 gas_left -= tx.gas_limit();
@@ -591,7 +594,7 @@ async fn validate_subblock(
         }
     }
 
-    let _ = actions_tx.send(Message::ValidatedSubblock(subblock));
+    let _ = actions_tx.unbounded_send(Message::ValidatedSubblock(subblock));
 
     Ok(())
 }
