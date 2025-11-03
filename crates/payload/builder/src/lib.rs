@@ -330,7 +330,9 @@ where
 
         debug!("building new payload");
         let mut cumulative_gas_used = 0;
+        let mut non_payment_gas_used = 0;
         let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
+        let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
         let base_fee = builder.evm_mut().block().basefee;
 
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
@@ -355,14 +357,14 @@ where
         let mut payment_transactions = 0;
         while let Some(pool_tx) = best_txs.next() {
             // ensure we still have capacity for this transaction
-            if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
+            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
-                        block_gas_limit - cumulative_gas_used,
+                        non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
                 continue;
@@ -371,7 +373,7 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !pool_tx.transaction.is_payment()
-                && cumulative_gas_used + pool_tx.gas_limit() > general_gas_limit
+                && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
             {
                 best_txs.mark_invalid(
                     &pool_tx,
@@ -394,8 +396,9 @@ where
 
             // convert tx to a signed transaction
             let tx = pool_tx.to_consensus();
+            let is_payment = tx.is_payment();
 
-            if tx.is_payment() {
+            if is_payment {
                 payment_transactions += 1;
             }
 
@@ -461,6 +464,9 @@ where
                 effective_tip_per_gas.expect("fee is always valid; execution succeeded");
             total_fees += U256::from(miner_fee) * U256::from(gas_used);
             cumulative_gas_used += gas_used;
+            if !is_payment {
+                non_payment_gas_used += gas_used;
+            }
         }
 
         // If building an empty payload, don't include any subblocks
