@@ -115,10 +115,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_scheduled_rate_decrease_at(end_time, new_decrease)?;
 
-            // Add stream to registry
-            let mut registry = TIP20RewardsRegistry::new(self.storage);
-            registry.add_stream(self.token_address, end_time)?;
-
+            // If the stream has not been added before, add it to the registry
+            if current_decrease.is_zero() {
+                let mut registry = TIP20RewardsRegistry::new(self.storage);
+                registry.add_stream(self.token_address, end_time)?;
+            }
             // Emit reward scheduled event for streaming reward
             self.storage.emit_event(
                 self.token_address,
