@@ -4,11 +4,11 @@ use std::{path::Path, sync::Arc};
 use eyre::WrapErr as _;
 use futures::StreamExt;
 use reth_db::mdbx::DatabaseArguments;
+use reth_ethereum::network::Peers;
 use reth_ethereum::{
     network::api::{
         NetworkEventListenerProvider, PeersInfo,
         events::{NetworkEvent, PeerEvent},
-        test_utils::PeersHandleProvider,
     },
     tasks::{TaskExecutor, TaskManager},
 };
@@ -191,8 +191,7 @@ impl ExecutionNode {
 
         self.node
             .network
-            .peers_handle()
-            .add_peer(other_record.id, other_record.tcp_addr());
+            .add_trusted_peer(other_record.id, other_record.tcp_addr());
 
         match self.node.network.event_listener().next().await {
             Some(NetworkEvent::Peer(PeerEvent::PeerAdded(_))) => (),
