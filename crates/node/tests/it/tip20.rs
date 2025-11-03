@@ -87,7 +87,8 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
             Some(TIP20Error::InsufficientBalance(
                 ITIP20::InsufficientBalance {
                     available: *balance,
-                    required: balance + U256::ONE
+                    required: balance + U256::ONE,
+                    token: *token.address()
                 }
             ))
         );

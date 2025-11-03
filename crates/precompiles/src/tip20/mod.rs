@@ -438,9 +438,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self._transfer(&call.from, &Address::ZERO, call.amount)?;
 
         let total_supply = self.total_supply()?;
-        let new_supply = total_supply
-            .checked_sub(call.amount)
-            .ok_or(TIP20Error::insufficient_balance(total_supply, call.amount))?;
+        let new_supply =
+            total_supply
+                .checked_sub(call.amount)
+                .ok_or(TIP20Error::insufficient_balance(
+                    total_supply,
+                    call.amount,
+                    self.token_address,
+                ))?;
         self.set_total_supply(new_supply)?;
 
         self.storage.emit_event(
@@ -459,9 +464,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self._transfer(msg_sender, &Address::ZERO, amount)?;
 
         let total_supply = self.total_supply()?;
-        let new_supply = total_supply
-            .checked_sub(amount)
-            .ok_or(TIP20Error::insufficient_balance(total_supply, amount))?;
+        let new_supply =
+            total_supply
+                .checked_sub(amount)
+                .ok_or(TIP20Error::insufficient_balance(
+                    total_supply,
+                    amount,
+                    self.token_address,
+                ))?;
         self.set_total_supply(new_supply)?;
 
         self.storage.emit_event(
@@ -801,7 +811,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
-            return Err(TIP20Error::insufficient_balance(from_balance, amount).into());
+            return Err(
+                TIP20Error::insufficient_balance(from_balance, amount, self.token_address).into(),
+            );
         }
 
         // Adjust balances
@@ -840,12 +852,19 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TempoPrecompileError> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
-            return Err(TIP20Error::insufficient_balance(from_balance, amount).into());
+            return Err(
+                TIP20Error::insufficient_balance(from_balance, amount, self.token_address).into(),
+            );
         }
 
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TIP20Error::insufficient_balance(from_balance, amount))?;
+        let new_from_balance =
+            from_balance
+                .checked_sub(amount)
+                .ok_or(TIP20Error::insufficient_balance(
+                    from_balance,
+                    amount,
+                    self.token_address,
+                ))?;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -867,12 +886,19 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TempoPrecompileError> {
         let from_balance = self.get_balance(&TIP_FEE_MANAGER_ADDRESS)?;
         if refund > from_balance {
-            return Err(TIP20Error::insufficient_balance(from_balance, refund).into());
+            return Err(
+                TIP20Error::insufficient_balance(from_balance, refund, self.token_address).into(),
+            );
         }
 
-        let new_from_balance = from_balance
-            .checked_sub(refund)
-            .ok_or(TIP20Error::insufficient_balance(from_balance, refund))?;
+        let new_from_balance =
+            from_balance
+                .checked_sub(refund)
+                .ok_or(TIP20Error::insufficient_balance(
+                    from_balance,
+                    refund,
+                    self.token_address,
+                ))?;
 
         self.set_balance(&TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
 
@@ -1332,7 +1358,7 @@ mod tests {
         assert_eq!(
             result,
             Err(TempoPrecompileError::TIP20(
-                TIP20Error::insufficient_balance(U256::ZERO, fee_amount)
+                TIP20Error::insufficient_balance(U256::ZERO, fee_amount, token.token_address)
             ))
         );
     }

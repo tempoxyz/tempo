@@ -1,6 +1,9 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy::{primitives::U256, sol};
+use alloy::{
+    primitives::{Address, U256},
+    sol,
+};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -113,7 +116,7 @@ sol! {
         event RewardRecipientSet(address indexed holder, address indexed recipient);
 
         // Errors
-        error InsufficientBalance(uint256 available, uint256 required);
+        error InsufficientBalance(uint256 available, uint256 required, address token);
         error InsufficientAllowance();
         error SupplyCapExceeded();
         error InvalidPayload();
@@ -141,10 +144,11 @@ impl RolesAuthError {
 
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
-    pub const fn insufficient_balance(available: U256, required: U256) -> Self {
+    pub const fn insufficient_balance(available: U256, required: U256, token: Address) -> Self {
         Self::InsufficientBalance(ITIP20::InsufficientBalance {
             available,
             required,
+            token,
         })
     }
 
