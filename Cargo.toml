@@ -99,6 +99,7 @@ tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-commonware-node = { path = "crates/commonware-node", default-features = false }
 tempo-commonware-node-config = { path = "crates/commonware-node-config", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
+tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
@@ -216,6 +217,8 @@ indexmap = { version = "2.11.0" }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.0"
 p256 = "0.13"
+parking_lot = "0.12.4"
+pin-project-lite = "0.2.16"
 prometheus-client = "0.22.3"
 proptest = "1.7"
 proptest-arbitrary-interop = "0.1.0"

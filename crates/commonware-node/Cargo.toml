@@ -16,6 +16,9 @@ tempo-node.workspace = true
 tempo-primitives.workspace = true
 tempo-payload-types.workspace = true
 
+reth-evm.workspace = true
+reth-revm.workspace = true
+
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
@@ -38,6 +41,7 @@ eyre.workspace = true
 futures.workspace = true
 governor.workspace = true
 indexmap.workspace = true
+parking_lot.workspace = true
 
 prometheus-client.workspace = true
 rand.workspace = true

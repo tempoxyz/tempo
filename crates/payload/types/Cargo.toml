@@ -21,4 +21,5 @@ alloy-primitives.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-engine.workspace = true
 
+derive_more.workspace = true
 serde.workspace = true

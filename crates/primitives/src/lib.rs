@@ -18,6 +18,11 @@ pub use transaction::{
 mod header;
 pub use header::TempoHeader;
 
+pub mod subblock;
+pub use subblock::{
+    RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockMetadata, SubBlockVersion,
+};
+
 /// Tempo block.
 pub type Block = alloy_consensus::Block<TempoTxEnvelope, TempoHeader>;
 

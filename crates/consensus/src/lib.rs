@@ -24,11 +24,12 @@ use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
 
-const TEMPO_SYSTEM_TX_COUNT: usize = 3;
+const TEMPO_SYSTEM_TX_COUNT: usize = 4;
 const TEMPO_SYSTEM_TX_ADDRESSES: [Address; TEMPO_SYSTEM_TX_COUNT] = [
     TIP_FEE_MANAGER_ADDRESS,
     STABLECOIN_EXCHANGE_ADDRESS,
     TIP20_REWARDS_REGISTRY_ADDRESS,
+    Address::ZERO,
 ];
 
 /// Tempo consensus implementation.
@@ -136,8 +137,12 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
     fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
         self.eth_beacon_validate_header(header)?;
 
+        let shared_gas_limit = header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR;
+
         // Validate the non-payment gas limit
-        if header.general_gas_limit != header.gas_limit() / TEMPO_GENERAL_GAS_DIVISOR {
+        if header.general_gas_limit
+            != (header.gas_limit() - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+        {
             return Err(ConsensusError::Other(
                 "Non-payment gas limit does not match header gas limit".to_string(),
             ));
@@ -241,6 +246,9 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
 
 /// Divisor for calculating non-payment gas limit.
 pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;
+
+/// Divisor for calculating shared gas limit.
+pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
 
 const MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 
