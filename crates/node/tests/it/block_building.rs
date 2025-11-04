@@ -1,16 +1,16 @@
 use alloy::{
-    consensus::Transaction,
+    consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope},
     network::{EthereumWallet, TransactionBuilder},
-    primitives::U256,
+    primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
 use alloy_eips::eip2718::Encodable2718;
-use alloy_network::Ethereum;
+use alloy_network::{Ethereum, TxSignerSync};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
-use reth_e2e_test_utils::transaction::TransactionTestContext;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
@@ -113,8 +113,23 @@ async fn inject_non_payment_txs(
         let wallet_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
             .index(start_index + i as u32)?
             .build()?;
-        let raw_tx = TransactionTestContext::transfer_tx_bytes(chain_id, wallet_signer).await;
-        node.rpc.inject_tx(raw_tx).await?;
+        let mut tx = TxEip1559 {
+            chain_id,
+            gas_limit: 21000,
+            to: Address::ZERO.into(),
+            max_fee_per_gas: TEMPO_BASE_FEE as u128,
+            max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+            ..Default::default()
+        };
+        let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
+
+        node.rpc
+            .inject_tx(
+                TxEnvelope::Eip1559(tx.into_signed(signature))
+                    .encoded_2718()
+                    .into(),
+            )
+            .await?;
     }
     Ok(())
 }
@@ -336,7 +351,20 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
         .with_chain_id(chain_id)
         .wallet_gen();
     for wallet_signer in wallets {
-        let raw_tx = TransactionTestContext::transfer_tx_bytes(chain_id, wallet_signer).await;
+        let raw_tx = {
+            let mut tx = TxEip1559 {
+                chain_id,
+                gas_limit: 21000,
+                to: Address::ZERO.into(),
+                max_fee_per_gas: TEMPO_BASE_FEE as u128,
+                max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+                ..Default::default()
+            };
+            let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
+            TxEnvelope::Eip1559(tx.into_signed(signature))
+                .encoded_2718()
+                .into()
+        };
         setup.node.rpc.inject_tx(raw_tx).await?;
     }
 
