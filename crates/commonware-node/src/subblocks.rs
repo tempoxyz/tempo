@@ -354,7 +354,7 @@ impl<TContext: Spawner> Actor<TContext> {
 
     #[instrument(skip_all, fields(subblock.validator = %subblock.validator(), subblock.parent_hash = %subblock.parent_hash))]
     fn on_validated_subblock(&mut self, subblock: RecoveredSubBlock) {
-        // SKip subblock if we are already past its parent
+        // Skip subblock if we are already past its parent
         if Some(subblock.parent_hash) != self.tip() {
             return;
         }
