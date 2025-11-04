@@ -680,8 +680,14 @@ where
         let tx = evm.ctx_ref().tx();
 
         if let Some(aa_env) = tx.aa_tx_env.as_ref() {
+            if aa_env.subblock_transaction && tx.max_fee_per_gas() > 0 {
+                return Err(TempoInvalidTransaction::SubblockTransactionMustHaveZeroFee.into());
+            }
+
             // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
-            let base_fee = if cfg.is_base_fee_check_disabled() {
+            //
+            // Skip basefee check for subblock transactions.
+            let base_fee = if cfg.is_base_fee_check_disabled() || aa_env.subblock_transaction {
                 None
             } else {
                 Some(evm.ctx_ref().block().basefee() as u128)

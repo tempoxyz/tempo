@@ -216,6 +216,8 @@ indexmap = { version = "2.11.0" }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.0"
 p256 = "0.13"
+parking_lot = "0.12.4"
+pin-project-lite = "0.2.16"
 prometheus-client = "0.22.3"
 proptest = "1.7"
 proptest-arbitrary-interop = "0.1.0"

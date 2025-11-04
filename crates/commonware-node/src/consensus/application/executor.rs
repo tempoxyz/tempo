@@ -416,7 +416,11 @@ where
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .new_payload(TempoExecutionData(block))
+            .new_payload(TempoExecutionData {
+                block,
+                // can be omitted for finalized blocks
+                validator_set: None,
+            })
             .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err(
@@ -461,7 +465,11 @@ where
                 .execution_node
                 .add_ons_handle
                 .beacon_engine_handle
-                .new_payload(TempoExecutionData(block.into_inner()))
+                .new_payload(TempoExecutionData {
+                    block: block.into_inner(),
+                    // can be omitted for finalized blocks
+                    validator_set: None,
+                })
                 .pace(&self.context, Duration::from_millis(20))
                 .await
                 .wrap_err(

@@ -429,13 +429,9 @@ mod serde_impl {
                     value: U256::from(1000),
                     input: Bytes::from(vec![1, 2, 3, 4]),
                 }],
-                access_list: Default::default(),
                 nonce_key: U256::ZERO,
                 nonce: 5,
-                fee_payer_signature: None,
-                valid_before: None,
-                valid_after: None,
-                aa_authorization_list: vec![],
+                ..Default::default()
             };
 
             // Create a secp256k1 signature

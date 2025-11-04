@@ -15,6 +15,9 @@ pub mod args;
 pub mod engine;
 pub mod node;
 pub mod rpc;
+pub use tempo_consensus as consensus;
+pub use tempo_evm as evm;
+pub use tempo_primitives as primitives;
 
 mod version;
 

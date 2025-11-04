@@ -86,7 +86,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
         DB: Database<Error: Into<EthApiError>>,
     {
         db.get_fee_token_balance(
-            env.fee_payer().map_err(EVMError::<DB::Error>::from)?,
+            env.fee_payer().map_err(EVMError::<DB::Error, _>::from)?,
             validator,
             env.fee_token,
         )

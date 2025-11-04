@@ -7,6 +7,7 @@ use std::{
     convert::Infallible,
     sync::{Arc, atomic, atomic::Ordering},
 };
+use tempo_primitives::RecoveredSubBlock;
 
 /// A handle for a payload interrupt flag.
 ///
@@ -19,13 +20,19 @@ impl InterruptHandle {
     pub fn interrupt(&self) {
         self.0.store(true, Ordering::Relaxed);
     }
+
+    /// Returns whether the interrupt flag is set.
+    pub fn is_interrupted(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 /// Container type for all components required to build a payload.
 ///
 /// The `TempoPayloadBuilderAttributes` has an additional feature of interrupting payload.
+///
 /// It also carries DKG data to be included in the block's extra_data field.
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
     interrupt: InterruptHandle,
@@ -35,6 +42,8 @@ pub struct TempoPayloadBuilderAttributes {
     /// This is empty when no DKG data is available (e.g., when the DKG manager
     /// hasn't produced ceremony outcomes yet, or when DKG operations fail).
     extra_data: Bytes,
+    #[debug(skip)]
+    subblocks: Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static>,
 }
 
 impl TempoPayloadBuilderAttributes {
@@ -45,6 +54,7 @@ impl TempoPayloadBuilderAttributes {
         suggested_fee_recipient: Address,
         timestamp_millis: u64,
         extra_data: Bytes,
+        subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
     ) -> Self {
         let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
         Self {
@@ -60,6 +70,7 @@ impl TempoPayloadBuilderAttributes {
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
             extra_data,
+            subblocks: Arc::new(subblocks),
         }
     }
 
@@ -83,6 +94,11 @@ impl TempoPayloadBuilderAttributes {
     pub fn timestamp_millis_part(&self) -> u64 {
         self.timestamp_millis_part
     }
+
+    /// Returns the subblocks.
+    pub fn subblocks(&self) -> Vec<RecoveredSubBlock> {
+        (self.subblocks)()
+    }
 }
 
 // Required by reth's e2e-test-utils for integration tests.
@@ -95,6 +111,7 @@ impl From<EthPayloadBuilderAttributes> for TempoPayloadBuilderAttributes {
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
+            subblocks: Arc::new(Vec::new),
         }
     }
 }
@@ -116,6 +133,7 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
             interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
+            subblocks: Arc::new(Vec::new),
         })
     }
 
@@ -165,6 +183,7 @@ mod tests {
             recipient,
             timestamp_millis,
             Bytes::default(),
+            Vec::new,
         );
 
         assert_eq!(attrs.extra_data(), &Bytes::default());
@@ -187,6 +206,7 @@ mod tests {
             recipient,
             timestamp_millis,
             extra_data.clone(),
+            Vec::new,
         );
 
         assert_eq!(attrs.extra_data(), &extra_data);
@@ -207,6 +227,7 @@ mod tests {
             recipient,
             timestamp_millis,
             Bytes::default(),
+            Vec::new,
         );
 
         assert_eq!(attrs.extra_data(), &Bytes::default());

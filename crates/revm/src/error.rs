@@ -115,6 +115,10 @@ pub enum TempoInvalidTransaction {
     /// Nonce manager error.
     #[error("nonce manager error: {0}")]
     NonceManagerError(String),
+
+    /// Subblock transaction must have zero fee.
+    #[error("subblock transaction must have zero fee")]
+    SubblockTransactionMustHaveZeroFee,
 }
 
 impl InvalidTxError for TempoInvalidTransaction {

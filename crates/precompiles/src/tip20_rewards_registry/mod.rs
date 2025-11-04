@@ -186,7 +186,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let mut last_updated = self.get_last_updated_timestamp()?;
 
         if last_updated == 0 {
-            last_updated = current_timestamp - 1;
+            last_updated = current_timestamp.saturating_sub(1);
         }
 
         if current_timestamp == last_updated {
