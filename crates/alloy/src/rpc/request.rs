@@ -1,14 +1,11 @@
-use alloy::{
-    consensus::{
-        EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip4844, TxEip7702, TxLegacy,
-        error::ValueError,
-    },
-    rpc::types::TransactionTrait,
+use alloy_consensus::{
+    EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip4844, TxEip7702, TxLegacy,
+    error::ValueError,
 };
 use alloy_eips::Typed2718;
 use alloy_network::TxSigner;
 use alloy_primitives::{Address, Bytes, Signature};
-use alloy_rpc_types_eth::TransactionRequest;
+use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use reth_evm::revm::context::CfgEnv;
 use reth_rpc_convert::{
     EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv,
@@ -384,7 +381,7 @@ impl From<TempoTxEnvelope> for TempoTransactionRequest {
     }
 }
 
-trait FeeToken {
+pub trait FeeToken {
     fn fee_token(&self) -> Option<Address>;
 }
 

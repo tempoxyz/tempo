@@ -1,11 +1,9 @@
 pub mod dex;
 
-mod request;
-
 pub use dex::TempoDexApiServer;
-pub use request::TempoTransactionRequest;
+pub use tempo_alloy::rpc::TempoTransactionRequest;
 
-use crate::{TempoNetwork, node::TempoNode};
+use crate::node::TempoNode;
 use alloy::{consensus::TxReceipt, primitives::U256};
 use alloy_primitives::Address;
 use reth_ethereum::tasks::{
@@ -35,6 +33,7 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
+use tempo_alloy::TempoNetwork;
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::provider::TIPFeeDatabaseExt;
 use tempo_primitives::TempoReceipt;

@@ -1,13 +1,12 @@
 use crate::rpc::TempoTransactionRequest;
-use alloy::{
-    consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType},
-    rpc::types::AccessList,
-};
+use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
+
 use alloy_network::{
     BuildResult, Network, NetworkWallet, TransactionBuilder, TransactionBuilderError,
     UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
+use alloy_rpc_types_eth::AccessList;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
@@ -279,13 +278,10 @@ impl TempoTransactionRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::{
-        consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy},
-        rpc::types::{AccessListItem, Authorization},
-    };
+    use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
     use alloy_eips::eip7702::SignedAuthorization;
     use alloy_primitives::B256;
-    use alloy_rpc_types_eth::TransactionRequest;
+    use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
     use tempo_primitives::TxFeeToken;
 
     #[test_case::test_case(

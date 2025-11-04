@@ -10,6 +10,7 @@ members = [
   "bin/tempo",
   "bin/tempo-bench",
   "bin/tempo-sidecar",
+  "crates/alloy",
   "crates/chainspec",
   "crates/commonware-node",
   "crates/commonware-node-config",
@@ -90,6 +91,8 @@ lto = "fat"
 codegen-units = 1
 
 [workspace.dependencies]
+tempo-alloy = { path = "crates/alloy" }
+
 tempo-node = { path = "crates/node" }
 
 tempo-chainspec = { path = "crates/chainspec" }

@@ -11421,6 +11421,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-alloy"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-network",
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "reth-evm",
+ "reth-rpc-convert",
+ "serde",
+ "tempo-evm",
+ "tempo-primitives",
+ "tempo-revm",
+ "test-case",
+]
+
+[[package]]
 name = "tempo-bench"
 version = "0.1.0"
 dependencies = [
@@ -11666,7 +11684,6 @@ dependencies = [
  "reth-provider",
  "reth-rpc",
  "reth-rpc-builder",
- "reth-rpc-convert",
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
  "reth-tracing",
@@ -11674,6 +11691,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempo-alloy",
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-contracts",
