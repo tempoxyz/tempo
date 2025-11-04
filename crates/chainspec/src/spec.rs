@@ -88,6 +88,7 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         inner: spec.map_header(|inner| TempoHeader {
             general_gas_limit: 0,
             timestamp_millis_part: 0,
+            shared_gas_limit: 0,
             inner,
         }),
     }
@@ -122,8 +123,9 @@ impl TempoChainSpec {
 
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
-                general_gas_limit: inner.gas_limit,
+                general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp * 1000,
+                shared_gas_limit: 0,
                 inner,
             }),
         }
@@ -136,9 +138,10 @@ impl From<ChainSpec> for TempoChainSpec {
     fn from(spec: ChainSpec) -> Self {
         Self {
             inner: spec.map_header(|inner| TempoHeader {
-                general_gas_limit: inner.gas_limit,
+                general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp * 1000,
                 inner,
+                shared_gas_limit: 0,
             }),
         }
     }

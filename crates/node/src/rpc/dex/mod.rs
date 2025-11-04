@@ -1,20 +1,18 @@
-use alloy_eips::{BlockId, BlockNumberOrTag};
-pub use books::{Orderbook, OrderbooksFilter, OrderbooksParam, OrderbooksResponse};
-use reth_ethereum::evm::revm::database::StateProviderDatabase;
-use reth_evm::{EvmInternals, revm::database::CacheDB};
-use reth_provider::{BlockReaderIdExt, StateProviderFactory};
-use tempo_evm::TempoEvmConfig;
-use tempo_primitives::TempoHeader;
-pub use types::{
-    FilterRange, Order, OrdersFilters, OrdersResponse, OrdersSort, OrdersSortOrder,
-    PaginationParams, Tick,
-};
+pub use books::{Orderbook, OrderbooksFilter, OrderbooksResponse};
+pub use error::DexApiError;
+pub use orders::{Order, OrdersFilters, OrdersSort, OrdersSortOrder, Tick};
 
+use crate::rpc::{TempoDexApiServer, dex::orders::OrdersResponse, pagination::PaginationParams};
+use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{Address, B256, Sealable};
 use jsonrpsee::core::RpcResult;
+use reth_ethereum::evm::revm::database::StateProviderDatabase;
+use reth_evm::{EvmInternals, revm::database::CacheDB};
 use reth_node_api::{ConfigureEvm, NodePrimitives};
+use reth_provider::{BlockReaderIdExt, StateProviderFactory};
 use reth_rpc_eth_api::{RpcNodeCore, helpers::SpawnBlocking};
 use reth_rpc_eth_types::{EthApiError, error::FromEthApiError};
+use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     stablecoin_exchange::{
         Order as PrecompileOrder, Orderbook as PrecompileOrderbook, PriceLevel, StablecoinExchange,
@@ -22,15 +20,13 @@ use tempo_precompiles::{
     },
     storage::evm::EvmPrecompileStorageProvider,
 };
+use tempo_primitives::TempoHeader;
 
 pub mod api;
-pub use crate::rpc::dex::api::TempoDexApiServer;
+pub mod orders;
 
 mod books;
 mod error;
-pub mod types;
-
-pub use error::DexApiError;
 
 /// Default limit for pagination
 const DEFAULT_LIMIT: usize = 10;

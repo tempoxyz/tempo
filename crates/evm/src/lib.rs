@@ -165,6 +165,10 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: block.header().general_gas_limit,
             extra_data: block.header().extra_data().clone(),
+            shared_gas_limit: block.header().gas_limit()
+                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            // Not available when we only have a block body.
+            validator_set: None,
         })
     }
 
@@ -182,6 +186,10 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: attributes.general_gas_limit,
             extra_data: attributes.extra_data,
+            shared_gas_limit: attributes.inner.gas_limit
+                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            // Fine to not validate during block building.
+            validator_set: None,
         })
     }
 }
@@ -191,14 +199,22 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &TempoExecutionData,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.evm_env(&payload.0)
+        self.evm_env(&payload.block)
     }
 
     fn context_for_payload<'a>(
         &self,
         payload: &'a TempoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        self.context_for_block(&payload.0)
+        let TempoExecutionData {
+            block,
+            validator_set,
+        } = payload;
+        let mut context = self.context_for_block(block)?;
+
+        context.validator_set = validator_set.clone();
+
+        Ok(context)
     }
 
     fn tx_iterator_for_payload(
@@ -206,7 +222,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         Ok(payload
-            .0
+            .block
             .body()
             .transactions
             .clone()

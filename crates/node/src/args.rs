@@ -4,7 +4,11 @@ use tempo_faucet::args::FaucetArgs;
 pub struct TempoArgs {
     /// Start the node without consensus
     #[arg(long)]
-    pub no_consensus: bool,
+    pub follow: bool,
+
+    /// URL to follow
+    #[arg(long)]
+    pub follow_url: String,
 
     #[command(flatten)]
     pub faucet_args: FaucetArgs,

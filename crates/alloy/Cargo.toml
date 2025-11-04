@@ -1,0 +1,43 @@
+[package]
+name = "tempo-alloy"
+
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tempo-primitives.workspace = true
+tempo-evm = { workspace = true, optional = true }
+tempo-revm = { workspace = true, optional = true }
+
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-network.workspace = true
+alloy-primitives.workspace = true
+alloy-provider.workspace = true
+alloy-rpc-types-eth.workspace = true
+
+reth-evm = { workspace = true, optional = true }
+reth-rpc-convert = { workspace = true, optional = true }
+
+serde.workspace = true
+
+[dev-dependencies]
+test-case.workspace = true
+
+[features]
+default = []
+asm-keccak = [
+    "alloy-primitives/asm-keccak",
+]
+tempo-compat = [
+    "dep:reth-evm",
+    "dep:reth-rpc-convert",
+    "dep:tempo-evm",
+    "dep:tempo-revm"
+]

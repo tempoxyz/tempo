@@ -4,7 +4,10 @@ use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, k
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 
-use crate::transaction::{AASignature, AASigned, AASignedAuthorization};
+use crate::{
+    subblock::{PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
+    transaction::{AASignature, AASigned, AASignedAuthorization},
+};
 
 /// Account abstraction transaction type byte (0x76)
 pub const AA_TX_TYPE_ID: u8 = 0x76;
@@ -111,7 +114,7 @@ impl Decodable for Call {
 /// - Gas sponsorship via fee payer
 /// - Scheduled transactions (validBefore/validAfter)
 /// - EIP-7702 authorization lists
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
@@ -281,14 +284,10 @@ impl TxAA {
             self.max_priority_fee_per_gas.length() +
             self.max_fee_per_gas.length() +
             self.gas_limit.length() +
-            // calls (vector of Call structs)
             self.calls.length() +
             self.access_list.length() +
-            // nonce_key
             self.nonce_key.length() +
-            // nonce
             self.nonce.length() +
-            // valid_before
             if let Some(valid_before) = self.valid_before {
                 valid_before.length()
             } else {
@@ -321,39 +320,25 @@ impl TxAA {
         self.max_priority_fee_per_gas.encode(out);
         self.max_fee_per_gas.encode(out);
         self.gas_limit.encode(out);
-
-        // Encode calls vector
         self.calls.encode(out);
-
         self.access_list.encode(out);
-
-        // Encode nonce_key
         self.nonce_key.encode(out);
-
-        // Encode nonce
         self.nonce.encode(out);
 
-        // Encode valid_before
         if let Some(valid_before) = self.valid_before {
             valid_before.encode(out);
         } else {
             out.put_u8(EMPTY_STRING_CODE);
         }
 
-        // Encode valid_after
         if let Some(valid_after) = self.valid_after {
             valid_after.encode(out);
         } else {
             out.put_u8(EMPTY_STRING_CODE);
         }
 
-        // Encode fee_token (skip if requested)
-        if !skip_fee_token {
-            if let Some(addr) = self.fee_token {
-                addr.encode(out);
-            } else {
-                out.put_u8(EMPTY_STRING_CODE);
-            }
+        if !skip_fee_token && let Some(addr) = self.fee_token {
+            addr.encode(out);
         } else {
             out.put_u8(EMPTY_STRING_CODE);
         }
@@ -477,6 +462,17 @@ impl TxAA {
         tx.validate().map_err(alloy_rlp::Error::Custom)?;
 
         Ok(tx)
+    }
+
+    /// Returns the proposer of the subblock if this is a subblock transaction.
+    pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
+        if self.nonce_key.byte(31) == TEMPO_SUBBLOCK_NONCE_KEY_PREFIX {
+            Some(PartialValidatorKey::from_slice(
+                &self.nonce_key.to_be_bytes::<32>()[1..16],
+            ))
+        } else {
+            None
+        }
     }
 }
 
@@ -1082,8 +1078,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
             valid_after: None,
-            aa_authorization_list: vec![],
-            access_list: Default::default(),
+            ..Default::default()
         };
 
         // Transaction with fee_token = token1
@@ -1159,9 +1154,7 @@ mod tests {
             nonce: 1,
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
-            valid_after: None,
-            aa_authorization_list: vec![],
-            access_list: Default::default(),
+            ..Default::default()
         };
 
         // The fee_payer_signature_hash should start with the magic byte

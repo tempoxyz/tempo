@@ -23,7 +23,7 @@ pub mod slots {
     /// Maps validator address -> Validator struct (base slot)
     pub const VALIDATORS: U256 = uint!(3_U256);
 
-    // Validator struct field offsets (relative to validator base slot)
+    // Validator struct field offsets
     /// Communication key field offset (bytes32)
     pub const VALIDATOR_KEY_OFFSET: U256 = uint!(0_U256);
     /// Packed: active (bool, lowest byte) + index (u64, next 8 bytes)

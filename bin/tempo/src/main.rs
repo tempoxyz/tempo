@@ -15,6 +15,8 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
+mod download;
+
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
@@ -23,7 +25,7 @@ use futures::{
     future::{FusedFuture, pending},
 };
 use reth_ethereum::cli::{Cli, Commands};
-use reth_node_builder::NodeHandle;
+use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{net::SocketAddr, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::run_consensus_stack;
@@ -40,11 +42,19 @@ use tokio_util::either::Either;
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 struct TempoArgs {
-    /// Start the node without consensus
+    /// Start the node without consensus and follow an RPC node
     #[arg(long)]
-    pub no_consensus: bool,
+    pub follow: bool,
 
-    #[clap(long, value_name = "FILE", required_unless_present_any = ["no_consensus", "dev"])]
+    /// Follow this specific RPC node for block hashes
+    #[arg(
+        long,
+        value_name = "URL",
+        default_value = "http://rpc-andante.tempoxyz.dev"
+    )]
+    pub follow_url: String,
+
+    #[clap(long, value_name = "FILE", required_unless_present_any = ["follow", "dev"])]
     pub consensus_config: Option<camino::Utf8PathBuf>,
 
     #[command(flatten)]
@@ -70,6 +80,7 @@ fn main() -> eyre::Result<()> {
     }
 
     tempo_node::init_version_metadata();
+    download::init_download_urls();
 
     let cli = Cli::<TempoChainSpecParser, TempoArgs>::parse();
     let is_node = matches!(cli.command, Commands::Node(_));
@@ -89,7 +100,7 @@ fn main() -> eyre::Result<()> {
 
         let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err("channel closed before consensus-relevant command line args and a handle to the execution node could be received")?;
 
-        let ret = if node.config.dev.dev || args.no_consensus {
+        let ret = if node.config.dev.dev || args.follow {
             futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 Ok(())
@@ -181,9 +192,17 @@ fn main() -> eyre::Result<()> {
         } = builder
             // TODO: simplify this
             .node(TempoNode::new(tempo_node::args::TempoArgs {
-                no_consensus: args.no_consensus,
+                follow: args.follow,
+                follow_url: args.follow_url.clone(),
                 faucet_args: args.faucet_args.clone(),
             }))
+            .apply(|mut builder: WithLaunchContext<_>| {
+                if args.follow {
+                    builder.config_mut().debug.rpc_consensus_url = Some(args.follow_url.clone())
+                }
+
+                builder
+            })
             .extend_rpc_modules(move |ctx| {
                 if faucet_args.enabled {
                     let txpool = ctx.pool().clone();

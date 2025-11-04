@@ -10,6 +10,7 @@ members = [
   "bin/tempo",
   "bin/tempo-bench",
   "bin/tempo-sidecar",
+  "crates/alloy",
   "crates/chainspec",
   "crates/commonware-node",
   "crates/commonware-node-config",
@@ -90,6 +91,8 @@ lto = "fat"
 codegen-units = 1
 
 [workspace.dependencies]
+tempo-alloy = { path = "crates/alloy" }
+
 tempo-node = { path = "crates/node" }
 
 tempo-chainspec = { path = "crates/chainspec" }
@@ -175,6 +178,7 @@ alloy-eips = "1.0.41"
 alloy-genesis = "1.0.41"
 alloy-hardforks = "0.4.3"
 alloy-primitives = "1.4.1"
+alloy-provider = { version = "1.0.41", default-features = false }
 alloy-sol-types = "1.4.1"
 alloy-rlp = "0.3.12"
 alloy-rpc-types-engine = "1.0.41"
@@ -213,6 +217,8 @@ indexmap = { version = "2.11.0" }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.0"
 p256 = "0.13"
+parking_lot = "0.12.4"
+pin-project-lite = "0.2.16"
 prometheus-client = "0.22.3"
 proptest = "1.7"
 proptest-arbitrary-interop = "0.1.0"

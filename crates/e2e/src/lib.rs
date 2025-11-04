@@ -26,6 +26,7 @@ use commonware_runtime::{
 use commonware_utils::quorum;
 use futures::future::join_all;
 use reth_node_metrics::recorder::PrometheusRecorder;
+use tempo_commonware_node::subblocks;
 use tracing::debug;
 
 pub mod execution_runtime;
@@ -40,6 +41,12 @@ mod tests;
 pub struct ValidatorNode {
     /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
     pub node: ExecutionNode,
+
+    /// Handle to the subblocks service.
+    pub subblocks: subblocks::Mailbox,
+
+    /// Public key of the validator.
+    pub public_key: PublicKey,
 
     /// Future that should be awaited to start the consensus engine.
     start_engine: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
@@ -144,6 +151,7 @@ pub async fn setup_validators(
             views_to_track: 10,
             views_until_leader_skip: 5,
             new_payload_wait_time: Duration::from_millis(100),
+            time_to_build_subblock: Duration::from_millis(100),
             epoch_length,
         }
         .try_init()
@@ -155,6 +163,8 @@ pub async fn setup_validators(
         let link = linkage.clone();
         nodes.push(ValidatorNode {
             node,
+            subblocks: engine.subblocks_mailbox(),
+            public_key: signer.public_key(),
             start_engine: Some(Box::pin(async move {
                 let pending = oracle
                     .control(signer.public_key())
@@ -191,6 +201,11 @@ pub async fn setup_validators(
                     .register(6)
                     .await
                     .unwrap();
+                let subblocks = oracle
+                    .control(signer.public_key())
+                    .register(7)
+                    .await
+                    .unwrap();
 
                 link_validators(&mut oracle, &validators, link, None).await;
 
@@ -202,6 +217,7 @@ pub async fn setup_validators(
                     marshal,
                     dkg,
                     boundary_certs,
+                    subblocks,
                 );
 
                 debug!(%uid, "started validator");

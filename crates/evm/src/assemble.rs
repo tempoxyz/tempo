@@ -37,6 +37,8 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                     inner,
                     general_gas_limit,
                     extra_data,
+                    shared_gas_limit,
+                    validator_set: _,
                 },
             parent,
             transactions,
@@ -73,6 +75,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             inner,
             general_gas_limit,
             timestamp_millis_part,
+            shared_gas_limit,
         }))
     }
 }

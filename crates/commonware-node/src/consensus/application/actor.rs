@@ -18,6 +18,7 @@ use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::{
     Block as _,
+    marshal::SchemeProvider as _,
     types::{Epoch, Round, View},
 };
 use commonware_macros::select;
@@ -51,8 +52,9 @@ use super::{
 use crate::{
     consensus::{Digest, block::Block},
     dkg::PublicOutcome,
-    epoch,
+    epoch::{self, SchemeProvider},
     marshal_utils::UpdateExt as _,
+    subblocks,
 };
 
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
@@ -99,6 +101,9 @@ where
                 genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
 
                 execution_node: config.execution_node,
+                subblocks: config.subblocks,
+
+                scheme_provider: config.scheme_provider,
 
                 state: Uninit(()),
             },
@@ -204,6 +209,8 @@ struct Inner<TState> {
 
     genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
+    subblocks: subblocks::Mailbox,
+    scheme_provider: SchemeProvider,
 
     state: TState,
 }
@@ -308,7 +315,7 @@ impl Inner<Init> {
                 ))
            },
 
-            res = self.clone().propose(context, parent_view, parent_digest, round) => {
+            res = self.clone().propose(context.clone(), parent_view, parent_digest, round) => {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
@@ -336,7 +343,27 @@ impl Inner<Init> {
 
         {
             let mut lock = self.state.latest_proposed_block.write().await;
-            *lock = Some(proposal);
+            *lock = Some(proposal.clone());
+        }
+
+        // Make sure reth sees the new payload so that in the next round we can verify blocks on top of it.
+        let is_good = verify_block(
+            context,
+            round.epoch(),
+            self.epoch_length,
+            self.execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .clone(),
+            &proposal,
+            parent_digest,
+            &self.scheme_provider,
+        )
+        .await
+        .wrap_err("failed verifying block against execution layer")?;
+
+        if !is_good {
+            eyre::bail!("validation reported that that just-proposed block is invalid");
         }
 
         if let Err(error) = self
@@ -518,6 +545,11 @@ impl Inner<Init> {
             self.fee_recipient,
             context.current().epoch_millis(),
             extra_data,
+            move || {
+                self.subblocks
+                    .get_subblocks(parent.block_hash())
+                    .unwrap_or_default()
+            },
         );
 
         let interrupt_handle = attrs.interrupt_handle().clone();
@@ -655,7 +687,8 @@ impl Inner<Init> {
                 .beacon_engine_handle
                 .clone(),
             &block,
-            &parent,
+            parent_digest,
+            &self.scheme_provider,
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
@@ -697,6 +730,8 @@ impl Inner<Uninit> {
                 dkg_manager,
                 executor_mailbox: executor.mailbox().clone(),
             },
+            subblocks: self.subblocks,
+            scheme_provider: self.scheme_provider,
         };
 
         executor.start();
@@ -734,9 +769,7 @@ struct Init {
         block.digest = %block.digest(),
         block.height = block.height(),
         block.timestamp = block.timestamp(),
-        parent.digest = %parent.digest(),
-        parent.height = parent.height(),
-        parent.timestamp = parent.timestamp(),
+        parent.digest = %parent_digest,
     )
 )]
 async fn verify_block<TContext: Pacer>(
@@ -745,27 +778,37 @@ async fn verify_block<TContext: Pacer>(
     epoch_length: u64,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
     block: &Block,
-    parent: &Block,
+    parent_digest: Digest,
+    scheme_provider: &SchemeProvider,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
     if !epoch::contains_height(block.height(), epoch, epoch_length) {
         info!("block does not belong to this epoch");
         return Ok(false);
     }
-    if block.parent_digest() != parent.digest() {
+    if block.parent_hash() != *parent_digest {
         info!(
             "parent digest stored in block must match the digest of the parent \
             argument but doesn't"
         );
         return Ok(false);
     }
-    if block.height() != parent.height().saturating_add(1) {
-        info!("block's height must be +1 that of the parent but isn't");
-        return Ok(false);
-    }
+    let scheme = scheme_provider
+        .scheme(epoch)
+        .ok_or_eyre("cannot determine participants in the current epoch")?;
     let block = block.clone().into_inner();
+    let execution_data = TempoExecutionData {
+        block,
+        validator_set: Some(
+            scheme
+                .participants()
+                .into_iter()
+                .map(|p| B256::from_slice(p))
+                .collect(),
+        ),
+    };
     let payload_status = engine
-        .new_payload(TempoExecutionData(block))
+        .new_payload(execution_data)
         .pace(&context, Duration::from_millis(50))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;

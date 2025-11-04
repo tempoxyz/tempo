@@ -15,8 +15,15 @@ use reth_primitives_traits::InMemorySize;
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
-    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "alloy_serde::quantity", rename = "mainBlockGeneralGasLimit")
+    )]
     pub general_gas_limit: u64,
+
+    /// Shared gas limit allocated for the subblocks section of the block.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub shared_gas_limit: u64,
 
     /// Sub-second (milliseconds) portion of the timestamp.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
@@ -138,8 +145,12 @@ impl InMemorySize for TempoHeader {
             inner,
             general_gas_limit,
             timestamp_millis_part,
+            shared_gas_limit,
         } = self;
-        inner.size() + general_gas_limit.size() + timestamp_millis_part.size()
+        inner.size()
+            + general_gas_limit.size()
+            + timestamp_millis_part.size()
+            + shared_gas_limit.size()
     }
 }
 

@@ -12,29 +12,6 @@ use crate::{
 use alloy::primitives::{Address, B256, U256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 
-// Order struct field offsets (relative to order base slot)
-// Matches Solidity Order struct layout
-/// Maker address field offset
-pub const ORDER_MAKER_OFFSET: U256 = uint!(0_U256);
-/// Orderbook key field offset
-pub const ORDER_BOOK_KEY_OFFSET: U256 = uint!(1_U256);
-/// Is bid boolean field offset
-pub const ORDER_IS_BID_OFFSET: U256 = uint!(2_U256);
-/// Tick field offset
-pub const ORDER_TICK_OFFSET: U256 = uint!(3_U256);
-/// Original amount field offset
-pub const ORDER_AMOUNT_OFFSET: U256 = uint!(4_U256);
-/// Remaining amount field offset
-pub const ORDER_REMAINING_OFFSET: U256 = uint!(5_U256);
-/// Previous order ID field offset
-pub const ORDER_PREV_OFFSET: U256 = uint!(6_U256);
-/// Next order ID field offset
-pub const ORDER_NEXT_OFFSET: U256 = uint!(7_U256);
-/// Is flip order boolean field offset
-pub const ORDER_IS_FLIP_OFFSET: U256 = uint!(8_U256);
-/// Flip tick field offset
-pub const ORDER_FLIP_TICK_OFFSET: U256 = uint!(9_U256);
-
 /// Represents an order in the stablecoin DEX orderbook.
 ///
 /// This struct matches the Solidity reference implementation in StablecoinExchange.sol.
@@ -88,6 +65,29 @@ pub struct Order {
 }
 
 impl Order {
+    // Order struct field offsets
+    // Matches Solidity Order struct layout
+    /// Maker address field offset
+    pub const MAKER_OFFSET: U256 = uint!(0_U256);
+    /// Orderbook key field offset
+    pub const BOOK_KEY_OFFSET: U256 = uint!(1_U256);
+    /// Is bid boolean field offset
+    pub const IS_BID_OFFSET: U256 = uint!(2_U256);
+    /// Tick field offset
+    pub const TICK_OFFSET: U256 = uint!(3_U256);
+    /// Original amount field offset
+    pub const AMOUNT_OFFSET: U256 = uint!(4_U256);
+    /// Remaining amount field offset
+    pub const REMAINING_OFFSET: U256 = uint!(5_U256);
+    /// Previous order ID field offset
+    pub const PREV_OFFSET: U256 = uint!(6_U256);
+    /// Next order ID field offset
+    pub const NEXT_OFFSET: U256 = uint!(7_U256);
+    /// Is flip order boolean field offset
+    pub const IS_FLIP_OFFSET: U256 = uint!(8_U256);
+    /// Flip tick field offset
+    pub const FLIP_TICK_OFFSET: U256 = uint!(9_U256);
+
     /// Creates a new order with `prev` and `next` initialized to 0.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -177,42 +177,42 @@ impl Order {
         let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
 
         let maker = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_MAKER_OFFSET)?
+            .sload(stablecoin_exchange, order_slot + Self::MAKER_OFFSET)?
             .into_address();
 
         let book_key =
-            B256::from(storage.sload(stablecoin_exchange, order_slot + ORDER_BOOK_KEY_OFFSET)?);
+            B256::from(storage.sload(stablecoin_exchange, order_slot + Self::BOOK_KEY_OFFSET)?);
 
         let is_bid = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_IS_BID_OFFSET)?
+            .sload(stablecoin_exchange, order_slot + Self::IS_BID_OFFSET)?
             .to::<bool>();
 
         let tick = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_TICK_OFFSET)?
+            .sload(stablecoin_exchange, order_slot + Self::TICK_OFFSET)?
             .to::<u16>() as i16;
 
         let amount = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_AMOUNT_OFFSET)?
+            .sload(stablecoin_exchange, order_slot + Self::AMOUNT_OFFSET)?
             .to::<u128>();
 
         let remaining = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_REMAINING_OFFSET)?
+            .sload(stablecoin_exchange, order_slot + Self::REMAINING_OFFSET)?
             .to::<u128>();
 
         let prev = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_PREV_OFFSET)?
+            .sload(stablecoin_exchange, order_slot + Self::PREV_OFFSET)?
             .to::<u128>();
 
         let next = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_NEXT_OFFSET)?
+            .sload(stablecoin_exchange, order_slot + Self::NEXT_OFFSET)?
             .to::<u128>();
 
         let is_flip = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_IS_FLIP_OFFSET)?
+            .sload(stablecoin_exchange, order_slot + Self::IS_FLIP_OFFSET)?
             .to::<bool>();
 
         let flip_tick = storage
-            .sload(stablecoin_exchange, order_slot + ORDER_FLIP_TICK_OFFSET)?
+            .sload(stablecoin_exchange, order_slot + Self::FLIP_TICK_OFFSET)?
             .to::<u16>() as i16;
 
         Ok(Self {
@@ -236,58 +236,59 @@ impl Order {
         stablecoin_exchange: Address,
     ) -> Result<(), TempoPrecompileError> {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
+
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_MAKER_OFFSET,
+            order_slot + Self::MAKER_OFFSET,
             self.maker().into_u256(),
         )?;
 
         // Store book_key
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_BOOK_KEY_OFFSET,
+            order_slot + Self::BOOK_KEY_OFFSET,
             U256::from_be_bytes(self.book_key().0),
         )?;
 
         // Store is_bid boolean
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_IS_BID_OFFSET,
+            order_slot + Self::IS_BID_OFFSET,
             U256::from(self.is_bid() as u8),
         )?;
 
         // Store tick
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_TICK_OFFSET,
+            order_slot + Self::TICK_OFFSET,
             U256::from(self.tick() as u16),
         )?;
 
         // Store original amount
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_AMOUNT_OFFSET,
+            order_slot + Self::AMOUNT_OFFSET,
             U256::from(self.amount()),
         )?;
 
         // Store remaining amount
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_REMAINING_OFFSET,
+            order_slot + Self::REMAINING_OFFSET,
             U256::from(self.remaining()),
         )?;
 
         // Store is_flip boolean
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_IS_FLIP_OFFSET,
+            order_slot + Self::IS_FLIP_OFFSET,
             U256::from(self.is_flip() as u8),
         )?;
 
         // Store flip_tick
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_FLIP_TICK_OFFSET,
+            order_slot + Self::FLIP_TICK_OFFSET,
             U256::from(self.flip_tick() as u16),
         )?;
 
@@ -303,61 +304,61 @@ impl Order {
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_MAKER_OFFSET,
+            order_slot + Self::MAKER_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_BOOK_KEY_OFFSET,
+            order_slot + Self::BOOK_KEY_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_IS_BID_OFFSET,
+            order_slot + Self::IS_BID_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_TICK_OFFSET,
+            order_slot + Self::TICK_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_AMOUNT_OFFSET,
+            order_slot + Self::AMOUNT_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_REMAINING_OFFSET,
+            order_slot + Self::REMAINING_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_PREV_OFFSET,
+            order_slot + Self::PREV_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_NEXT_OFFSET,
+            order_slot + Self::NEXT_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_IS_FLIP_OFFSET,
+            order_slot + Self::IS_FLIP_OFFSET,
             U256::ZERO,
         )?;
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_FLIP_TICK_OFFSET,
+            order_slot + Self::FLIP_TICK_OFFSET,
             U256::ZERO,
         )?;
 
@@ -376,7 +377,7 @@ impl Order {
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_REMAINING_OFFSET,
+            order_slot + Self::REMAINING_OFFSET,
             U256::from(new_remaining),
         )
     }
@@ -391,7 +392,7 @@ impl Order {
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_NEXT_OFFSET,
+            order_slot + Self::NEXT_OFFSET,
             U256::from(new_next),
         )
     }
@@ -406,7 +407,7 @@ impl Order {
 
         storage.sstore(
             stablecoin_exchange,
-            order_slot + ORDER_PREV_OFFSET,
+            order_slot + Self::PREV_OFFSET,
             U256::from(new_prev),
         )
     }
