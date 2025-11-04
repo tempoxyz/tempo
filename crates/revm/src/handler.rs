@@ -632,7 +632,8 @@ where
         let refund_amount = tx.effective_balance_spending(
             context.block.basefee.into(),
             context.block.blob_gasprice().unwrap_or_default(),
-        )? - actual_spending;
+        )? - tx.value
+            - actual_spending;
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
