@@ -348,11 +348,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 
     // Estimate gas when user fee token differs from validator fee token
     let gas = provider.estimate_gas(tx.clone()).await?;
-    assert!(
-        gas > 0 && gas < 300_000,
-        "Gas estimate is out of range: {}",
-        gas
-    );
+    assert!(gas > 0 && gas < 300_000, "Gas estimate {gas}");
 
     // Verify we can execute the transaction with the estimated gas
     let receipt = provider

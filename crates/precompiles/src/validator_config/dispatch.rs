@@ -67,10 +67,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert,
-        storage::hashmap::HashMapStorageProvider,
-    };
+    use crate::{expect_precompile_revert, storage::hashmap::HashMapStorageProvider};
     use alloy::{
         primitives::{Bytes, FixedBytes},
         sol_types::SolValue,
@@ -115,7 +112,8 @@ mod tests {
         let result = validator_config
             .call(&Bytes::from(calldata), sender)
             .unwrap();
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
 
         // Verify we get the correct owner
         let decoded = Address::abi_decode(&result.bytes).unwrap();
@@ -147,7 +145,9 @@ mod tests {
         let result = validator_config
             .call(&Bytes::from(calldata), owner)
             .unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify validator was added by calling getValidators
         let get_call = IValidatorConfig::getValidatorsCall {};
