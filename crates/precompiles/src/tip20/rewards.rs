@@ -96,7 +96,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
             let current_time = self.storage.timestamp().to::<u128>();
             let end_time = current_time
-                .checked_add(call.secs)
+                .checked_add(call.secs as u128)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
             RewardStream::new(
@@ -127,7 +127,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                     funder: msg_sender,
                     id: stream_id,
                     amount: call.amount,
-                    durationSeconds: call.secs as u32,
+                    durationSeconds: call.secs,
                 })
                 .into_log_data(),
             )?;
@@ -1144,7 +1144,7 @@ mod tests {
             },
         )?;
 
-        let stream_duration = 10u128;
+        let stream_duration = 10u32;
         token.start_reward(
             admin,
             ITIP20::startRewardCall {
@@ -1153,7 +1153,7 @@ mod tests {
             },
         )?;
 
-        let end_time = current_time + stream_duration;
+        let end_time = current_time + stream_duration as u128;
 
         // Advance the timestamp to simulate time passing
         token.storage.set_timestamp(U256::from(end_time));
