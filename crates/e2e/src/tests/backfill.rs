@@ -4,18 +4,18 @@ use commonware_macros::test_traced;
 use commonware_p2p::simulated::Link;
 use commonware_runtime::{
     Clock, Runner as _,
-    deterministic::{self, Runner},
+    deterministic::{self, Context, Runner},
 };
 use reth_ethereum::storage::BlockNumReader;
-use reth_node_metrics::recorder::{PrometheusRecorder, install_prometheus_recorder};
+use reth_node_metrics::recorder::install_prometheus_recorder;
 
 use crate::{ExecutionRuntime, Setup, get_pipeline_runs, setup_validators};
 
-async fn run_validator_late_join_test<Ctx: Clock>(
-    context: &Ctx,
+async fn run_validator_late_join_test(
+    context: &Context,
     blocks_before_join: u64,
     blocks_after_join: u64,
-    expected_backfill_runs: usize,
+    expected_backfill_runs: u64,
 ) {
     let num_nodes = 5;
 
@@ -61,9 +61,7 @@ async fn run_validator_late_join_test<Ctx: Clock>(
     let actual_runs = get_pipeline_runs(metrics_recorder);
     assert!(
         actual_runs == expected_backfill_runs,
-        "Expected {} backfill runs, got {}",
-        expected_backfill_runs,
-        actual_runs
+        "Expected {expected_backfill_runs} backfill runs, got {actual_runs}"
     );
 
     // Verify that the node is still progressing after sync
