@@ -30,7 +30,7 @@ use revm::{
 };
 use tempo_contracts::{
     DEFAULT_7702_DELEGATE_ADDRESS,
-    precompiles::{FeeManagerError, SignatureType as PrecompileSignatureType, TIPFeeAMMError},
+    precompiles::{FeeManagerError, IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError},
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,

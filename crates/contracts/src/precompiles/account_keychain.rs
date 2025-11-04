@@ -3,28 +3,6 @@ pub use IAccountKeychain::IAccountKeychainErrors as AccountKeychainError;
 use alloy::sol;
 
 sol! {
-    #[derive(Debug, PartialEq, Eq)]
-    enum SignatureType {
-        Secp256k1,
-        P256,
-        WebAuthn,
-    }
-
-    /// Token spending limit structure
-    #[derive(Debug, PartialEq, Eq)]
-    struct TokenLimit {
-        address token;
-        uint256 amount;
-    }
-
-    /// Key information structure
-    #[derive(Debug, PartialEq, Eq)]
-    struct KeyInfo {
-        SignatureType signatureType;
-        address keyId;
-        uint64 expiry;
-    }
-
     /// Account Keychain interface for managing authorized keys
     ///
     /// This precompile allows accounts to authorize secondary keys with:
@@ -37,6 +15,24 @@ sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc)]
     interface IAccountKeychain {
+        enum SignatureType {
+            Secp256k1,
+            P256,
+            WebAuthn,
+        }
+
+        /// Token spending limit structure
+        struct TokenLimit {
+            address token;
+            uint256 amount;
+        }
+
+        /// Key information structure
+        struct KeyInfo {
+            SignatureType signatureType;
+            address keyId;
+            uint64 expiry;
+        }
         /// Emitted when a new key is authorized
         event KeyAuthorized(address indexed account, bytes32 indexed publicKey, uint8 signatureType, uint64 expiry);
 

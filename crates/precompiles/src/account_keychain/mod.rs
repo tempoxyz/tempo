@@ -4,10 +4,9 @@ use tempo_contracts::precompiles::AccountKeychainError;
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
     IAccountKeychain::{
-        authorizeKeyCall, getKeyCall, getRemainingLimitCall, getTransactionKeyCall, revokeKeyCall,
-        updateSpendingLimitCall,
+        KeyInfo, SignatureType, TokenLimit, authorizeKeyCall, getKeyCall, getRemainingLimitCall,
+        getTransactionKeyCall, revokeKeyCall, updateSpendingLimitCall,
     },
-    KeyInfo, SignatureType, TokenLimit,
 };
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
