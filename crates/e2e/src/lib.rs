@@ -25,6 +25,7 @@ use commonware_runtime::{
 };
 use commonware_utils::quorum;
 use futures::future::join_all;
+use reth_node_metrics::recorder::PrometheusRecorder;
 use tracing::debug;
 
 pub mod execution_runtime;
@@ -299,7 +300,7 @@ pub async fn link_validators(
 }
 
 /// Get the number of pipeline runs from the Prometheus metrics recorder
-pub fn get_pipeline_runs(recorder: &reth_node_metrics::recorder::PrometheusRecorder) -> u64 {
+pub fn get_pipeline_runs(recorder: &PrometheusRecorder) -> u64 {
     recorder
         .handle()
         .render()

@@ -214,7 +214,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     );
 
     assert!(
-        tempo_e2e::get_pipeline_runs(&metrics_recorder) == 1,
+        tempo_e2e::get_pipeline_runs(metrics_recorder) == 1,
         "Backfill was never triggered"
     );
 
