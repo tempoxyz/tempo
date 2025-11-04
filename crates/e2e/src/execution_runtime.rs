@@ -190,14 +190,20 @@ impl ExecutionNode {
     pub async fn connect_peer(&self, other: &Self) {
         let self_record = self.node.network.local_node_record();
         let other_record = other.node.network.local_node_record();
+        let mut events = self.node.network.event_listener();
 
         self.node
             .network
             .add_trusted_peer(other_record.id, other_record.tcp_addr());
 
-        match self.node.network.event_listener().next().await {
+        match events.next().await {
             Some(NetworkEvent::Peer(PeerEvent::PeerAdded(_))) => (),
             ev => panic!("Expected a peer added event, got: {ev:?}"),
+        }
+
+        match events.next().await {
+            Some(NetworkEvent::ActivePeerSession { .. }) => (),
+            ev => panic!("Expected an active peer session event, got: {ev:?}"),
         }
 
         tracing::debug!(
