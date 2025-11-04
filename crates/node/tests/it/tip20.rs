@@ -69,9 +69,13 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     }
 
     // Attempt to transfer more than the balance
-    for (account, _, _) in &account_data {
-        let balance = token.balanceOf(*account).call().await?;
-        let Err(result) = token
+    for (_, wallet, balance) in &account_data {
+        let account_provider = ProviderBuilder::new()
+            .wallet(wallet.clone())
+            .connect_http(http_url.clone());
+        let account_token = ITIP20::new(*token.address(), account_provider);
+
+        let Err(result) = account_token
             .transfer(Address::random(), balance + U256::ONE)
             .call()
             .await
@@ -81,7 +85,11 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         assert_eq!(
             result.as_decoded_interface_error::<TIP20Error>(),
             Some(TIP20Error::InsufficientBalance(
-                ITIP20::InsufficientBalance {}
+                ITIP20::InsufficientBalance {
+                    available: *balance,
+                    required: balance + U256::ONE,
+                    token: *token.address()
+                }
             ))
         );
     }

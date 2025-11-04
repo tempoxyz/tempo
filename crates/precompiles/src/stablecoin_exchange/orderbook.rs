@@ -1,15 +1,12 @@
 //! Orderbook and tick level management for the stablecoin DEX.
 
-use super::{
-    offsets,
-    slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS},
-};
+use super::slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS};
 use crate::{
     error::TempoPrecompileError,
     stablecoin_exchange::IStablecoinExchange,
     storage::{PrecompileStorageProvider, slots::mapping_slot},
 };
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::{Address, B256, U256, keccak256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
 
@@ -31,6 +28,15 @@ pub struct PriceLevel {
 }
 
 impl PriceLevel {
+    // PriceLevel struct field offsets
+    // Matches Solidity PriceLevel struct layout
+    /// Head order ID field offset
+    pub const HEAD_OFFSET: U256 = uint!(0_U256);
+    /// Tail order ID field offset
+    pub const TAIL_OFFSET: U256 = uint!(1_U256);
+    /// Total liquidity field offset
+    pub const TOTAL_LIQUIDITY_OFFSET: U256 = uint!(2_U256);
+
     /// Creates a new empty tick level
     pub fn new() -> Self {
         Self {
@@ -69,18 +75,15 @@ impl PriceLevel {
 
         // Load each field
         let head = storage
-            .sload(address, tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET)?
+            .sload(address, tick_level_slot + Self::HEAD_OFFSET)?
             .to::<u128>();
 
         let tail = storage
-            .sload(address, tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET)?
+            .sload(address, tick_level_slot + Self::TAIL_OFFSET)?
             .to::<u128>();
 
         let total_liquidity = storage
-            .sload(
-                address,
-                tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
-            )?
+            .sload(address, tick_level_slot + Self::TOTAL_LIQUIDITY_OFFSET)?
             .to::<u128>();
 
         Ok(Self {
@@ -108,23 +111,15 @@ impl PriceLevel {
         let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
         let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
 
-        // Store each field
-        storage.sstore(
-            address,
-            tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
-            U256::ZERO,
-        )?;
+        // Clear each field
+        storage.sstore(address, tick_level_slot + Self::HEAD_OFFSET, U256::ZERO)?;
+
+        storage.sstore(address, tick_level_slot + Self::TAIL_OFFSET, U256::ZERO)?;
 
         storage.sstore(
             address,
-            tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+            tick_level_slot + Self::TOTAL_LIQUIDITY_OFFSET,
             U256::ZERO,
-        )?;
-
-        storage.sstore(
-            address,
-            tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
-            U256::from(self.tail),
         )?;
 
         Ok(())
@@ -151,19 +146,19 @@ impl PriceLevel {
         // Store each field
         storage.sstore(
             address,
-            tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+            tick_level_slot + Self::HEAD_OFFSET,
             U256::from(self.head),
         )?;
 
         storage.sstore(
             address,
-            tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+            tick_level_slot + Self::TAIL_OFFSET,
             U256::from(self.tail),
         )?;
 
         storage.sstore(
             address,
-            tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+            tick_level_slot + Self::TOTAL_LIQUIDITY_OFFSET,
             U256::from(self.total_liquidity),
         )
     }
@@ -187,7 +182,7 @@ impl PriceLevel {
 
         storage.sstore(
             address,
-            tick_level_slot + offsets::TICK_LEVEL_HEAD_OFFSET,
+            tick_level_slot + Self::HEAD_OFFSET,
             U256::from(new_head),
         )
     }
@@ -211,7 +206,7 @@ impl PriceLevel {
 
         storage.sstore(
             address,
-            tick_level_slot + offsets::TICK_LEVEL_TAIL_OFFSET,
+            tick_level_slot + Self::TAIL_OFFSET,
             U256::from(new_tail),
         )
     }
@@ -235,7 +230,7 @@ impl PriceLevel {
 
         storage.sstore(
             address,
-            tick_level_slot + offsets::TICK_LEVEL_TOTAL_LIQUIDITY_OFFSET,
+            tick_level_slot + Self::TOTAL_LIQUIDITY_OFFSET,
             U256::from(new_total),
         )
     }
@@ -272,6 +267,16 @@ pub struct Orderbook {
 }
 
 impl Orderbook {
+    // Orderbook struct field offsets
+    /// Base token address field offset
+    pub const BASE_OFFSET: U256 = uint!(0_U256);
+    /// Quote token address field offset
+    pub const QUOTE_OFFSET: U256 = uint!(1_U256);
+    /// Best bid tick field offset
+    pub const BEST_BID_TICK_OFFSET: U256 = uint!(4_U256);
+    /// Best ask tick field offset
+    pub const BEST_ASK_TICK_OFFSET: U256 = uint!(5_U256);
+
     /// Creates a new orderbook for a token pair
     pub fn new(base: Address, quote: Address) -> Self {
         Self {
@@ -319,28 +324,22 @@ impl Orderbook {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
 
         let base = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?
+            .sload(address, orderbook_slot + Self::BASE_OFFSET)?
             .into_address();
 
         let quote = storage
-            .sload(address, orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET)?
+            .sload(address, orderbook_slot + Self::QUOTE_OFFSET)?
             .into_address();
 
         let best_bid_tick = storage
-            .sload(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
-            )?
+            .sload(address, orderbook_slot + Self::BEST_BID_TICK_OFFSET)?
             .to::<u16>() as i16;
 
         // `tick` is stored into the least significant 16 bits of U256.
         // When loading from storage, we first load as u16
         // and then cast to i16 to reinterpret those bits as a signed value.
         let best_ask_tick = storage
-            .sload(
-                address,
-                orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
-            )?
+            .sload(address, orderbook_slot + Self::BEST_ASK_TICK_OFFSET)?
             .to::<u16>() as i16;
 
         Ok(Self {
@@ -362,25 +361,25 @@ impl Orderbook {
 
         storage.sstore(
             address,
-            orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET,
+            orderbook_slot + Self::BASE_OFFSET,
             self.base.into_u256(),
         )?;
 
         storage.sstore(
             address,
-            orderbook_slot + offsets::ORDERBOOK_QUOTE_OFFSET,
+            orderbook_slot + Self::QUOTE_OFFSET,
             self.quote.into_u256(),
         )?;
 
         storage.sstore(
             address,
-            orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+            orderbook_slot + Self::BEST_BID_TICK_OFFSET,
             U256::from(self.best_bid_tick as u16),
         )?;
 
         storage.sstore(
             address,
-            orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+            orderbook_slot + Self::BEST_ASK_TICK_OFFSET,
             U256::from(self.best_ask_tick as u16),
         )
     }
@@ -395,7 +394,7 @@ impl Orderbook {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
         storage.sstore(
             address,
-            orderbook_slot + offsets::ORDERBOOK_BEST_BID_TICK_OFFSET,
+            orderbook_slot + Self::BEST_BID_TICK_OFFSET,
             U256::from(new_best_bid as u16),
         )
     }
@@ -410,7 +409,7 @@ impl Orderbook {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
         storage.sstore(
             address,
-            orderbook_slot + offsets::ORDERBOOK_BEST_ASK_TICK_OFFSET,
+            orderbook_slot + Self::BEST_ASK_TICK_OFFSET,
             U256::from(new_best_ask as u16),
         )
     }
@@ -422,7 +421,7 @@ impl Orderbook {
         address: Address,
     ) -> Result<bool, TempoPrecompileError> {
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        let base = storage.sload(address, orderbook_slot + offsets::ORDERBOOK_BASE_OFFSET)?;
+        let base = storage.sload(address, orderbook_slot + Self::BASE_OFFSET)?;
 
         Ok(base != U256::ZERO)
     }
