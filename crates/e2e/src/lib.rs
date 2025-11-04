@@ -25,6 +25,7 @@ use commonware_runtime::{
 };
 use commonware_utils::quorum;
 use futures::future::join_all;
+use reth_node_metrics::recorder::PrometheusRecorder;
 use tracing::debug;
 
 pub mod execution_runtime;
@@ -142,7 +143,7 @@ pub async fn setup_validators(
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
             views_until_leader_skip: 5,
-            new_payload_wait_time: Duration::from_millis(750),
+            new_payload_wait_time: Duration::from_millis(100),
             epoch_length,
         }
         .try_init()
@@ -296,4 +297,15 @@ pub async fn link_validators(
             }
         }
     }
+}
+
+/// Get the number of pipeline runs from the Prometheus metrics recorder
+pub fn get_pipeline_runs(recorder: &PrometheusRecorder) -> u64 {
+    recorder
+        .handle()
+        .render()
+        .lines()
+        .find(|line| line.starts_with("reth_consensus_engine_beacon_pipeline_runs"))
+        .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
+        .unwrap_or(0)
 }

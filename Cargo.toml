@@ -96,6 +96,7 @@ tempo-chainspec = { path = "crates/chainspec" }
 tempo-commonware-node = { path = "crates/commonware-node" }
 tempo-commonware-node-config = { path = "crates/commonware-node-config" }
 tempo-consensus = { path = "crates/consensus" }
+tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet" }
 tempo-evm = { path = "crates/evm" }
 tempo-eyre = { path = "crates/eyre" }

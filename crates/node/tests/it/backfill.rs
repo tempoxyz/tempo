@@ -7,6 +7,7 @@ use alloy_eips::BlockNumberOrTag;
 use alloy_rpc_types_engine::ForkchoiceState;
 use reth_e2e_test_utils::{transaction::TransactionTestContext, wallet::Wallet};
 use reth_node_api::EngineApiMessageVersion;
+use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_primitives_traits::AlloyBlockHeader as _;
 
 /// Test that verifies backfill sync works correctly.
@@ -127,6 +128,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         finalized_block_hash: final_block_hash.0.into(),
     };
 
+    let metrics_recorder = install_prometheus_recorder();
     let result = node2
         .inner
         .add_ons_handle
@@ -209,6 +211,11 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     assert_eq!(
         mid_block1.header.hash, mid_block2.header.hash,
         "Intermediate block hashes don't match"
+    );
+
+    assert!(
+        tempo_e2e::get_pipeline_runs(metrics_recorder) == 1,
+        "Backfill was never triggered"
     );
 
     Ok(())
