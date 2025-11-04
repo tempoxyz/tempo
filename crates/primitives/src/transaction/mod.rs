@@ -22,7 +22,7 @@ use alloy_primitives::{U256, uint};
 /// Factor by which we scale the gas price for gas spending calculations.
 pub const TEMPO_GAS_PRICE_SCALING_FACTOR: U256 = uint!(1_000_000_000_000_U256);
 
-/// Calculates `gas_limit * gas_price / [`TEMPO_GAS_PRICE_SCALING_FACTOR`]``
+/// Calculates gas balance spending with gas price scaled by [`TEMPO_GAS_PRICE_SCALING_FACTOR`].
 pub fn calc_gas_balance_spending(gas_limit: u64, gas_price: u128) -> U256 {
     U256::from(gas_limit as u128 * gas_price).div_ceil(TEMPO_GAS_PRICE_SCALING_FACTOR)
 }
