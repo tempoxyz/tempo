@@ -115,11 +115,15 @@ impl LastCanonicalized {
 
     /// Updates the head height and head block hash to `height` and `hash`.
     ///
-    /// `head` must be ahead of the latest canonicalized head height. If it is
-    /// not, then this is a no-op.
+    /// If `height > self.finalized_height`, this method will return a new
+    /// canonical state with `self.head_height = height` and
+    /// `self.forkchoice.head = hash`.
+    ///
+    /// If `height <= self.finalized_height`, then this method will return
+    /// `self` unchanged.
     fn update_head(self, height: u64, hash: B256) -> Self {
         let mut this = self;
-        if height >= this.head_height {
+        if height > this.finalized_height {
             this.head_height = height;
             this.forkchoice.head_block_hash = hash;
         }
