@@ -65,8 +65,8 @@ async fn run_validator_late_join_test(
             "at least one backfill must have been triggered"
         );
     } else {
-        assert!(
-            actual_runs == 0,
+        assert_eq!(
+            0, actual_runs,
             "Expected no backfill, got {actual_runs} runs"
         );
     }
