@@ -75,6 +75,8 @@ fn gen_storable_impl(
         StorableConversionStrategy::Unsigned => {
             quote! {
                 impl Storable<1> for #type_path {
+                    const SLOT_COUNT: usize = 1;
+
                     #[inline]
                     fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
                         let value = storage.sload(base_slot)?;
@@ -101,6 +103,8 @@ fn gen_storable_impl(
         StorableConversionStrategy::U256 => {
             quote! {
                 impl Storable<1> for #type_path {
+                    const SLOT_COUNT: usize = 1;
+
                     #[inline]
                     fn load<S: StorageOps>(storage: &mut S, base_slot: #type_path) -> Result<Self> {
                         storage.sload(base_slot)
@@ -126,6 +130,8 @@ fn gen_storable_impl(
         StorableConversionStrategy::SignedRust(unsigned_type) => {
             quote! {
                 impl Storable<1> for #type_path {
+                    const SLOT_COUNT: usize = 1;
+
                     #[inline]
                     fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
                         let value = storage.sload(base_slot)?;
@@ -154,6 +160,8 @@ fn gen_storable_impl(
         StorableConversionStrategy::SignedAlloy(unsigned_type) => {
             quote! {
                 impl Storable<1> for #type_path {
+                    const SLOT_COUNT: usize = 1;
+
                     #[inline]
                     fn load<S: StorageOps>(storage: &mut S, base_slot: ::alloy::primitives::U256) -> Result<Self> {
                         let value = storage.sload(base_slot)?;
@@ -186,6 +194,8 @@ fn gen_storable_impl(
         StorableConversionStrategy::FixedBytes(size) => {
             quote! {
                 impl Storable<1> for #type_path {
+                    const SLOT_COUNT: usize = 1;
+
                     #[inline]
                     fn load<S: StorageOps>(storage: &mut S, base_slot: ::alloy::primitives::U256) -> Result<Self> {
                         let value = storage.sload(base_slot)?;

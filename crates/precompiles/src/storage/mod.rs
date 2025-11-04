@@ -5,6 +5,8 @@ pub mod slots;
 mod types;
 pub use types::*;
 
+pub mod packing;
+
 use alloy::primitives::{Address, LogData, U256};
 use revm::state::{AccountInfo, Bytecode};
 

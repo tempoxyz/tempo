@@ -11,11 +11,13 @@ use crate::{
 ///
 /// This trait exists to allow the derive macro to query the byte size of field types
 /// during layout computation, before the slot count is known.
+///
+/// Primitives may have `BYTE_COUNT < 32`.
+/// Non-primitives (arrays, Vec, structs) must satisfy `BYTE_COUNT = SLOT_COUNT * 32` as they are not packable.
 pub trait StorableType {
-    /// Number of bytes that the type requires.
+    /// Number of bytes that the type occupies (even if partially-empty).
     ///
-    /// Only accurate for those types with a size known at compile-time (fixed-size).
-    /// Otherwise, set to a full 32-byte slot.
+    /// For dynamic types, set to a full 32-byte slot.
     const BYTE_COUNT: usize;
 }
 
@@ -48,6 +50,11 @@ pub trait StorableType {
 /// - `store` and `load` access exactly `N` consecutive slots
 /// - `to_evm_words` and `from_evm_words` produce/consume exactly `N` words
 pub trait Storable<const N: usize>: Sized + StorableType {
+    /// The number of consecutive storage slots this type occupies.
+    ///
+    /// Must be equal to `N`, and is provided as a convenient type-level access constant.
+    const SLOT_COUNT: usize;
+
     /// Load this type from storage starting at the given base slot.
     ///
     /// Reads `N` consecutive slots starting from `base_slot`.
@@ -144,6 +151,8 @@ impl StorableType for bool {
 }
 
 impl Storable<1> for bool {
+    const SLOT_COUNT: usize = 1;
+
     #[inline]
     fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
         let value = storage.sload(base_slot)?;
@@ -172,6 +181,8 @@ impl StorableType for Address {
 }
 
 impl Storable<1> for Address {
+    const SLOT_COUNT: usize = 1;
+
     #[inline]
     fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
         let value = storage.sload(base_slot)?;
@@ -199,6 +210,8 @@ impl StorableType for Bytes {
 }
 
 impl Storable<1> for Bytes {
+    const SLOT_COUNT: usize = 1;
+
     #[inline]
     fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
         load_bytes_like(storage, base_slot, |data| Ok(Self::from(data)))
@@ -230,6 +243,8 @@ impl StorableType for String {
 }
 
 impl Storable<1> for String {
+    const SLOT_COUNT: usize = 1;
+
     #[inline]
     fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
         load_bytes_like(storage, base_slot, |data| {
@@ -484,7 +499,11 @@ fn encode_long_string_length(byte_length: usize) -> U256 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider};
+    use crate::storage::{
+        PrecompileStorageProvider, StorageOps,
+        hashmap::HashMapStorageProvider,
+        packing::{extract_field, insert_packed_value, verify_packed_field},
+    };
     use proptest::prelude::*;
 
     // -- TEST HELPERS -------------------------------------------------------------
@@ -785,5 +804,258 @@ mod tests {
                 assert_eq!(b, recovered, "Bytes < 32 bytes EVM words roundtrip failed");
             }
         }
+    }
+
+    // -- PRIMITIVE SLOT CONTENT VALIDATION TESTS ----------------------------------
+    // These tests verify primitives store correctly at various byte offsets
+
+    #[test]
+    fn test_u8_at_various_offsets() {
+        let mut contract = setup_test_contract();
+        let base_slot = U256::from(100);
+
+        // Test u8 at offset 0
+        let val0: u8 = 0x42;
+        let mut slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val0, 0, 1).unwrap();
+        contract.sstore(base_slot, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot).unwrap();
+        verify_packed_field(loaded_slot, &val0, 0, 1, "u8_offset_0").unwrap();
+
+        // Test u8 at offset 15 (middle)
+        let val15: u8 = 0xAB;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val15, 15, 1).unwrap();
+        contract.sstore(base_slot + U256::ONE, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::ONE).unwrap();
+        verify_packed_field(loaded_slot, &val15, 15, 1, "u8_offset_15").unwrap();
+
+        // Test u8 at offset 31 (last byte)
+        let val31: u8 = 0xFF;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val31, 31, 1).unwrap();
+        contract.sstore(base_slot + U256::from(2), slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::from(2)).unwrap();
+        verify_packed_field(loaded_slot, &val31, 31, 1, "u8_offset_31").unwrap();
+    }
+
+    #[test]
+    fn test_u16_at_various_offsets() {
+        let mut contract = setup_test_contract();
+        let base_slot = U256::from(200);
+
+        // Test u16 at offset 0
+        let val0: u16 = 0x1234;
+        let mut slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val0, 0, 2).unwrap();
+        contract.sstore(base_slot, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot).unwrap();
+        verify_packed_field(loaded_slot, &val0, 0, 2, "u16_offset_0").unwrap();
+
+        // Test u16 at offset 15 (middle)
+        let val15: u16 = 0xABCD;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val15, 15, 2).unwrap();
+        contract.sstore(base_slot + U256::ONE, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::ONE).unwrap();
+        verify_packed_field(loaded_slot, &val15, 15, 2, "u16_offset_15").unwrap();
+
+        // Test u16 at offset 30 (last 2 bytes)
+        let val30: u16 = 0xFFEE;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val30, 30, 2).unwrap();
+        contract.sstore(base_slot + U256::from(2), slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::from(2)).unwrap();
+        verify_packed_field(loaded_slot, &val30, 30, 2, "u16_offset_30").unwrap();
+    }
+
+    #[test]
+    fn test_u32_at_various_offsets() {
+        let mut contract = setup_test_contract();
+        let base_slot = U256::from(300);
+
+        // Test u32 at offset 0
+        let val0: u32 = 0x12345678;
+        let mut slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val0, 0, 4).unwrap();
+        contract.sstore(base_slot, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot).unwrap();
+        verify_packed_field(loaded_slot, &val0, 0, 4, "u32_offset_0").unwrap();
+
+        // Test u32 at offset 14
+        let val14: u32 = 0xABCDEF01;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val14, 14, 4).unwrap();
+        contract.sstore(base_slot + U256::ONE, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::ONE).unwrap();
+        verify_packed_field(loaded_slot, &val14, 14, 4, "u32_offset_14").unwrap();
+
+        // Test u32 at offset 28 (last 4 bytes)
+        let val28: u32 = 0xFFEEDDCC;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val28, 28, 4).unwrap();
+        contract.sstore(base_slot + U256::from(2), slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::from(2)).unwrap();
+        verify_packed_field(loaded_slot, &val28, 28, 4, "u32_offset_28").unwrap();
+    }
+
+    #[test]
+    fn test_u64_at_various_offsets() {
+        let mut contract = setup_test_contract();
+        let base_slot = U256::from(400);
+
+        // Test u64 at offset 0
+        let val0: u64 = 0x123456789ABCDEF0;
+        let mut slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val0, 0, 8).unwrap();
+        contract.sstore(base_slot, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot).unwrap();
+        verify_packed_field(loaded_slot, &val0, 0, 8, "u64_offset_0").unwrap();
+
+        // Test u64 at offset 12 (middle)
+        let val12: u64 = 0xFEDCBA9876543210;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val12, 12, 8).unwrap();
+        contract.sstore(base_slot + U256::ONE, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::ONE).unwrap();
+        verify_packed_field(loaded_slot, &val12, 12, 8, "u64_offset_12").unwrap();
+
+        // Test u64 at offset 24 (last 8 bytes)
+        let val24: u64 = 0xAAAABBBBCCCCDDDD;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val24, 24, 8).unwrap();
+        contract.sstore(base_slot + U256::from(2), slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::from(2)).unwrap();
+        verify_packed_field(loaded_slot, &val24, 24, 8, "u64_offset_24").unwrap();
+    }
+
+    #[test]
+    fn test_u128_at_various_offsets() {
+        let mut contract = setup_test_contract();
+        let base_slot = U256::from(500);
+
+        // Test u128 at offset 0
+        let val0: u128 = 0x123456789ABCDEF0_FEDCBA9876543210;
+        let mut slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val0, 0, 16).unwrap();
+        contract.sstore(base_slot, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot).unwrap();
+        verify_packed_field(loaded_slot, &val0, 0, 16, "u128_offset_0").unwrap();
+
+        // Test u128 at offset 16 (second half of slot)
+        let val16: u128 = 0xAAAABBBBCCCCDDDD_1111222233334444;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val16, 16, 16).unwrap();
+        contract.sstore(base_slot + U256::ONE, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::ONE).unwrap();
+        verify_packed_field(loaded_slot, &val16, 16, 16, "u128_offset_16").unwrap();
+    }
+
+    #[test]
+    fn test_address_at_various_offsets() {
+        let mut contract = setup_test_contract();
+        let base_slot = U256::from(600);
+
+        // Test Address at offset 0
+        let addr0 = Address::from([0x12; 20]);
+        let mut slot = U256::ZERO;
+        slot = insert_packed_value(slot, &addr0, 0, 20).unwrap();
+        contract.sstore(base_slot, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot).unwrap();
+        verify_packed_field(loaded_slot, &addr0, 0, 20, "address_offset_0").unwrap();
+
+        // Test Address at offset 12 (fits in one slot: 12 + 20 = 32)
+        let addr12 = Address::from([0xAB; 20]);
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &addr12, 12, 20).unwrap();
+        contract.sstore(base_slot + U256::ONE, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::ONE).unwrap();
+        verify_packed_field(loaded_slot, &addr12, 12, 20, "address_offset_12").unwrap();
+    }
+
+    #[test]
+    fn test_bool_at_various_offsets() {
+        let mut contract = setup_test_contract();
+        let base_slot = U256::from(700);
+
+        // Test bool at offset 0
+        let val0 = true;
+        let mut slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val0, 0, 1).unwrap();
+        contract.sstore(base_slot, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot).unwrap();
+        verify_packed_field(loaded_slot, &val0, 0, 1, "bool_offset_0").unwrap();
+
+        // Test bool at offset 31
+        let val31 = false;
+        slot = U256::ZERO;
+        slot = insert_packed_value(slot, &val31, 31, 1).unwrap();
+        contract.sstore(base_slot + U256::ONE, slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot + U256::ONE).unwrap();
+        verify_packed_field(loaded_slot, &val31, 31, 1, "bool_offset_31").unwrap();
+    }
+
+    #[test]
+    fn test_u256_fills_entire_slot() {
+        let mut contract = setup_test_contract();
+        let base_slot = U256::from(800);
+
+        // U256 should always fill entire slot (offset must be 0)
+        let val = U256::from(0x123456789ABCDEFu64);
+        val.store(&mut contract, base_slot).unwrap();
+
+        let loaded_slot = contract.sload(base_slot).unwrap();
+        assert_eq!(loaded_slot, val, "U256 should match slot contents exactly");
+
+        // Verify it's stored as-is (no packing)
+        let recovered = U256::load(&mut contract, base_slot).unwrap();
+        assert_eq!(recovered, val, "U256 load failed");
+    }
+
+    #[test]
+    fn test_primitive_delete_clears_slot() {
+        let mut contract = setup_test_contract();
+        let base_slot = U256::from(900);
+
+        // Store a u64 value
+        let val: u64 = 0x123456789ABCDEF0;
+        val.store(&mut contract, base_slot).unwrap();
+
+        // Verify slot is non-zero
+        let slot_before = contract.sload(base_slot).unwrap();
+        assert_ne!(
+            slot_before,
+            U256::ZERO,
+            "Slot should be non-zero before delete"
+        );
+
+        // Delete the value
+        u64::delete(&mut contract, base_slot).unwrap();
+
+        // Verify slot is now zero
+        let slot_after = contract.sload(base_slot).unwrap();
+        assert_eq!(slot_after, U256::ZERO, "Slot should be zero after delete");
+
+        // Verify loading returns zero
+        let loaded = u64::load(&mut contract, base_slot).unwrap();
+        assert_eq!(loaded, 0u64, "Loaded value should be 0 after delete");
     }
 }

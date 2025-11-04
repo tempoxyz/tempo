@@ -239,7 +239,7 @@ pub(crate) fn is_custom_struct(ty: &Type) -> bool {
 
 /// Checks if a type is a dynamic type that forces slot boundaries.
 ///
-/// Dynamic types (like `String` and `Bytes`) always:
+/// Dynamic types (like `String`, `Bytes`, and `Vec`) always:
 /// - Start at offset 0 of a new slot
 /// - Force the next field to start at a new slot
 /// - Cannot be packed with other fields
@@ -254,7 +254,42 @@ pub(crate) fn is_dynamic_type(ty: &Type) -> bool {
         return false;
     };
 
-    matches!(segment.ident.to_string().as_str(), "String" | "Bytes")
+    matches!(
+        segment.ident.to_string().as_str(),
+        "String" | "Bytes" | "Vec"
+    )
+}
+
+/// Checks if a type is a fixed-size array type `[T; N]`.
+///
+/// Arrays, like structs and dynamic types, force slot boundaries:
+/// - Start at offset 0 of a new slot
+/// - Force the next field to start at a new slot
+/// - Cannot be packed with other fields
+///
+/// This ensures arrays maintain contiguous storage layout.
+pub(crate) fn is_array_type(ty: &Type) -> bool {
+    matches!(ty, Type::Array(_))
+}
+
+/// Checks if a type is a `Vec<T>` type.
+///
+/// Vec types, like arrays and other dynamic types, force slot boundaries:
+/// - Start at offset 0 of a new slot
+/// - Force the next field to start at a new slot
+/// - Cannot be packed with other fields
+///
+/// This ensures Vec maintains Solidity-compatible dynamic array storage layout.
+pub(crate) fn is_vec_type(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+
+    segment.ident == "Vec"
 }
 
 /// Extracts the identifier (last segment) from a type path.
@@ -377,6 +412,8 @@ mod tests {
         // Dynamic types
         assert!(is_dynamic_type(&parse_quote!(String)));
         assert!(is_dynamic_type(&parse_quote!(Bytes)));
+        assert!(is_dynamic_type(&parse_quote!(Vec<u8>)));
+        assert!(is_dynamic_type(&parse_quote!(Vec<U256>)));
 
         // Non-dynamic types
         assert!(!is_dynamic_type(&parse_quote!(bool)));
@@ -385,5 +422,22 @@ mod tests {
         assert!(!is_dynamic_type(&parse_quote!(U256)));
         assert!(!is_dynamic_type(&parse_quote!(Address)));
         assert!(!is_dynamic_type(&parse_quote!(MyCustomStruct)));
+    }
+
+    #[test]
+    fn test_is_vec_type() {
+        // Vec types
+        assert!(is_vec_type(&parse_quote!(Vec<u8>)));
+        assert!(is_vec_type(&parse_quote!(Vec<U256>)));
+        assert!(is_vec_type(&parse_quote!(Vec<Address>)));
+        assert!(is_vec_type(&parse_quote!(Vec<Vec<u8>>)));
+
+        // Non-Vec types
+        assert!(!is_vec_type(&parse_quote!(String)));
+        assert!(!is_vec_type(&parse_quote!(Bytes)));
+        assert!(!is_vec_type(&parse_quote!(bool)));
+        assert!(!is_vec_type(&parse_quote!(u8)));
+        assert!(!is_vec_type(&parse_quote!([u8; 10])));
+        assert!(!is_vec_type(&parse_quote!(MyCustomStruct)));
     }
 }

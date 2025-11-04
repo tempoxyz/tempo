@@ -6,3 +6,5 @@ pub use slot::*;
 
 mod mapping;
 pub use mapping::*;
+
+mod vec;
