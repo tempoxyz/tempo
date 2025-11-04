@@ -11404,6 +11404,7 @@ dependencies = [
  "commonware-runtime",
  "eyre",
  "futures",
+ "reth-cli-commands",
  "reth-cli-util",
  "reth-ethereum",
  "reth-node-builder",
