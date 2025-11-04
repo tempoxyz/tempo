@@ -1,6 +1,8 @@
 use crate::rpc::{
     TempoPolicy,
     logs::filter_logs,
+    paginate,
+    pagination::SortOrder,
     policy::{
         PolicyAddress,
         addresses::{AddressesParams, AddressesResponse},
@@ -87,14 +89,53 @@ where
             .map(|v| v.authorized)
             .unwrap_or(None);
 
+        // Collect deduplicated addresses with authorization filter applied
+        let mut addresses = whitelist
+            .into_iter()
+            .map(PolicyAddress::allowed)
+            .chain(blacklist.into_iter().map(PolicyAddress::blocked))
+            .filter(|v| !matches!(authorized, Some(authorized) if v.authorized != authorized))
+            .collect::<Vec<_>>();
+
+        // Apply sorting
+        if let Some(sort) = &params.params.sort {
+            match sort.on.as_str() {
+                "address" => match sort.order {
+                    SortOrder::Asc => addresses.sort_by(|a, b| a.address.cmp(&b.address)),
+                    SortOrder::Desc => addresses.sort_by(|a, b| b.address.cmp(&a.address)),
+                },
+                _ => {
+                    return Err(EthApiError::InvalidParams(format!(
+                        "Unsupported sort field: {}. Only 'address' is supported",
+                        sort.on
+                    ))
+                    .into());
+                }
+            }
+        } else {
+            // Default sort: ascending by address for stable pagination
+            addresses.sort_by(|a, b| a.address.cmp(&b.address));
+        }
+
+        // Apply pagination using generic helper
+        let paginated = paginate(
+            addresses,
+            params.params.cursor.as_ref(),
+            params.params.limit,
+            |addr| addr.address,
+        )
+        .map_err(|e| {
+            debug!(
+                target: "rpc::policy::addresses",
+                error = ?e,
+                "pagination error"
+            );
+            EthApiError::InvalidParams(e)
+        })?;
+
         Ok(AddressesResponse {
-            next_cursor: None,
-            addresses: whitelist
-                .into_iter()
-                .map(PolicyAddress::allowed)
-                .chain(blacklist.into_iter().map(PolicyAddress::blocked))
-                .filter(|v| !matches!(authorized, Some(authorized) if v.authorized != authorized))
-                .collect::<Vec<_>>(),
+            next_cursor: paginated.next_cursor,
+            addresses: paginated.items,
         })
     }
 }

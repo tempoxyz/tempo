@@ -1,4 +1,4 @@
-use crate::rpc::pagination::PaginationParams;
+use crate::rpc::pagination::{PaginationParams, Sort};
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,7 @@ pub struct AddressesParams {
     pub policy_id: u64,
     /// Determines what items should be yielded in the response.
     #[serde(flatten)]
-    pub params: PaginationParams<AddressesFilters>,
+    pub params: PaginationParams<AddressesFilters, Sort>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

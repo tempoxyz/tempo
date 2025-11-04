@@ -10,7 +10,7 @@ mod pagination;
 pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
-pub use pagination::{FilterRange, PaginationParams};
+pub use pagination::{FilterRange, PaginatedResult, PaginationParams, Sort, SortOrder, paginate};
 pub use policy::{TempoPolicy, TempoPolicyApiServer};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 pub use token::{TempoToken, TempoTokenApiServer};

@@ -6,6 +6,7 @@ mod eip7702_delegation;
 mod eth_call;
 mod liquidity;
 mod payment_lane;
+mod policy;
 mod pool;
 mod stablecoin_exchange;
 mod tip20;
