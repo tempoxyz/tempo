@@ -69,7 +69,6 @@ where
 
         // Get the tx cost and adjust for fee token decimals
         let cost = transaction.fee_token_cost();
-        println!("{balance:?}, {cost:?}, {transaction:?}");
         if balance < cost {
             return TransactionValidationOutcome::Invalid(
                 transaction,
