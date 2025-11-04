@@ -27,6 +27,9 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
     ) -> Result<Address, TempoPrecompileError> {
         let ITipAccountRegistrar::delegateToDefaultCall { hash, signature } = call;
 
+        // taken from precompile gas cost
+        // https://github.com/bluealloy/revm/blob/a1fdb9d9e98f9dd14b7577edbad49c139ab53b16/crates/precompile/src/secp256k1.rs#L34
+        self.storage.deduct_gas(3_000)?;
         let (sig, v) = validate_signature(&signature)?;
 
         let signer = match ecrecover(&sig, v, &hash) {
@@ -45,6 +48,15 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
         if !account_info.is_empty_code_hash() {
             return Err(TIPAccountRegistrarError::code_not_empty().into());
         }
+
+        // EIP-7702 gas cost
+        // can be discussed to lower this down as this cost i think encompases the bytes of authorization in EIP-7702 tx.
+        let cost = if account_info.is_empty() {
+            revm::primitives::eip7702::PER_EMPTY_ACCOUNT_COST
+        } else {
+            revm::primitives::eip7702::PER_AUTH_BASE_COST
+        };
+        self.storage.deduct_gas(cost)?;
 
         // Delegate the account to the default 7702 implementation
         self.storage

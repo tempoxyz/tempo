@@ -50,6 +50,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         self.ensure_loaded_account(address)?;
+        self.deduct_gas(code.len() as u64 * revm::interpreter::gas::CODEDEPOSIT)?;
+
         self.internals.set_code(address, code);
 
         Ok(())
@@ -58,8 +60,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, TempoPrecompileError> {
         self.ensure_loaded_account(address)?;
         let account = self.internals.load_account_code(address)?;
+        let info = account.info.clone();
+        let is_cold = account.is_cold;
+        self.deduct_gas(revm::interpreter::gas::warm_cold_cost(is_cold))?;
 
-        Ok(account.data.info.clone())
+        Ok(info)
     }
 
     fn sstore(

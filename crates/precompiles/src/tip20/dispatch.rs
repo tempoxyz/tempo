@@ -1,6 +1,6 @@
 use super::ITIP20;
 use crate::{
-    Precompile, metadata, mutate, mutate_void,
+    Precompile, input_cost, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip20::{IRolesAuth, TIP20Token},
     view,
@@ -10,6 +10,10 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        self.storage
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {

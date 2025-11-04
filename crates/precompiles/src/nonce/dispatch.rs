@@ -1,4 +1,6 @@
-use crate::{Precompile, nonce::NonceManager, storage::PrecompileStorageProvider, view};
+use crate::{
+    Precompile, input_cost, nonce::NonceManager, storage::PrecompileStorageProvider, view,
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -6,6 +8,10 @@ use super::INonce;
 
 impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
+        self.storage
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {

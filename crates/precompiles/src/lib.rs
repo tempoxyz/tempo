@@ -54,9 +54,15 @@ pub use tempo_contracts::precompiles::{
     VALIDATOR_CONFIG_ADDRESS,
 };
 
-const METADATA_GAS: u64 = 50;
-const VIEW_FUNC_GAS: u64 = 100;
-const MUTATE_FUNC_GAS: u64 = 1000;
+/// Input per word cost. It covers abi decoding and cloning of input into call data.
+///
+/// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.
+pub const INPUT_PER_WORD_COST: u64 = 6;
+
+#[inline]
+pub fn input_cost(calldata_len: usize) -> u64 {
+    revm::interpreter::gas::cost_per_word(calldata_len, INPUT_PER_WORD_COST).unwrap_or(u64::MAX)
+}
 
 pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
@@ -225,15 +231,16 @@ impl ValidatorConfigPrecompile {
 
 #[inline]
 fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    f().into_precompile_result(METADATA_GAS, |ret| T::abi_encode_returns(&ret).into())
+    f().into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
 fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
+        // TODO refactor
+        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
-    f(call).into_precompile_result(VIEW_FUNC_GAS, |ret| T::abi_encode_returns(&ret).into())
+    f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
@@ -243,13 +250,9 @@ pub fn mutate<T: SolCall>(
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            Bytes::new(),
-        ));
+        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
-    f(sender, call)
-        .into_precompile_result(MUTATE_FUNC_GAS, |ret| T::abi_encode_returns(&ret).into())
+    f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
@@ -259,12 +262,9 @@ fn mutate_void<T: SolCall>(
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            Bytes::new(),
-        ));
+        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
-    f(sender, call).into_precompile_result(MUTATE_FUNC_GAS, |()| Bytes::new())
+    f(sender, call).into_precompile_result(0, |()| Bytes::new())
 }
 
 #[cfg(test)]

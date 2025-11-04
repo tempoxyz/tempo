@@ -1,4 +1,4 @@
-use crate::{Precompile, mutate, view};
+use crate::{Precompile, input_cost, mutate, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -9,6 +9,10 @@ use crate::{
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        self.storage
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
