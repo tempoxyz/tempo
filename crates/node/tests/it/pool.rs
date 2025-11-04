@@ -10,7 +10,7 @@ use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_transaction_pool::{TransactionOrigin, pool::AddedTransactionState};
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_node::{args::TempoArgs, node::TempoNode};
+use tempo_node::node::TempoNode;
 use tempo_precompiles::{storage::slots, tip_fee_manager};
 use tempo_primitives::TempoTxEnvelope;
 
@@ -33,7 +33,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
         .testing_node(executor.clone())
-        .node(TempoNode::new(TempoArgs::default()))
+        .node(TempoNode::new())
         .launch()
         .await?;
 

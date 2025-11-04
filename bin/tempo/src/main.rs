@@ -42,17 +42,14 @@ use tokio_util::either::Either;
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 struct TempoArgs {
-    /// Start the node without consensus and follow an RPC node
-    #[arg(long)]
-    pub follow: bool,
-
     /// Follow this specific RPC node for block hashes
     #[arg(
         long,
         value_name = "URL",
-        default_value = "http://rpc-andante.tempoxyz.dev"
+        default_missing_value = "http://rpc-andante.tempoxyz.dev",
+        num_args(0..=1)
     )]
-    pub follow_url: String,
+    pub follow: Option<String>,
 
     #[clap(long, value_name = "FILE", required_unless_present_any = ["follow", "dev"])]
     pub consensus_config: Option<camino::Utf8PathBuf>,
@@ -100,7 +97,7 @@ fn main() -> eyre::Result<()> {
 
         let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err("channel closed before consensus-relevant command line args and a handle to the execution node could be received")?;
 
-        let ret = if node.config.dev.dev || args.follow {
+        let ret = if node.config.dev.dev || args.follow.is_some() {
             futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 Ok(())
@@ -190,15 +187,10 @@ fn main() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            // TODO: simplify this
-            .node(TempoNode::new(tempo_node::args::TempoArgs {
-                follow: args.follow,
-                follow_url: args.follow_url.clone(),
-                faucet_args: args.faucet_args.clone(),
-            }))
+            .node(TempoNode::new())
             .apply(|mut builder: WithLaunchContext<_>| {
-                if args.follow {
-                    builder.config_mut().debug.rpc_consensus_url = Some(args.follow_url.clone())
+                if let Some(follow_url) = &args.follow {
+                    builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());
                 }
 
                 builder

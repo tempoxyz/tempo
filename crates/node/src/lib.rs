@@ -11,7 +11,6 @@ use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
 use std::sync::Arc;
 
-pub mod args;
 pub mod engine;
 pub mod node;
 pub mod rpc;

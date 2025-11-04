@@ -1,6 +1,5 @@
 use crate::{
     TempoPayloadTypes,
-    args::TempoArgs,
     engine::TempoEngineValidator,
     rpc::{
         TempoAmm, TempoAmmApiServer, TempoDex, TempoDexApiServer, TempoEthApiBuilder, TempoEthExt,
@@ -44,14 +43,12 @@ use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionVa
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoNode {
-    pub args: TempoArgs,
-}
+pub struct TempoNode;
 
 impl TempoNode {
     /// Create new instance of a Tempo node
-    pub fn new(args: TempoArgs) -> Self {
-        Self { args }
+    pub const fn new() -> Self {
+        Self
     }
 
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
