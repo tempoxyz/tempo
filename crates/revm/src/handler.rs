@@ -38,7 +38,7 @@ use tempo_precompiles::{
     tip_fee_manager::{self, TipFeeManager},
     tip20,
 };
-use tempo_primitives::transaction::AASignature;
+use tempo_primitives::transaction::{AASignature, calc_gas_balance_spending};
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
 
@@ -628,11 +628,8 @@ where
         let chain_id = context.cfg().chain_id;
 
         // Calculate actual used and refund amounts
-        let gas_used = gas.used();
-        let actual_used = U256::from(gas_used).saturating_mul(U256::from(effective_gas_price));
-        let refund_amount = U256::from(
-            effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128),
-        );
+        let actual_spending = calc_gas_balance_spending(gas.used(), effective_gas_price);
+        let refund_amount = tx.max_balance_spending()? - actual_spending;
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
@@ -644,10 +641,15 @@ where
             &mut storage_provider,
         );
 
-        if !actual_used.is_zero() || !refund_amount.is_zero() {
+        if !actual_spending.is_zero() || !refund_amount.is_zero() {
             // Call collectFeePostTx (handles both refund and fee queuing)
             fee_manager
-                .collect_fee_post_tx(self.fee_payer, actual_used, refund_amount, self.fee_token)
+                .collect_fee_post_tx(
+                    self.fee_payer,
+                    actual_spending,
+                    refund_amount,
+                    self.fee_token,
+                )
                 .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }
         Ok(())

@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 tempo-alloy = { workspace = true, features = ["tempo-compat"] }
 tempo-evm = { workspace = true, features = ["rpc"] }
-tempo-revm.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-faucet.workspace = true
 tempo-chainspec.workspace = true

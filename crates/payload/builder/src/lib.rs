@@ -52,7 +52,10 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
-    transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+    transaction::{
+        calc_gas_balance_spending,
+        envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+    },
 };
 use tempo_transaction_pool::{
     TempoTransactionPool,
@@ -463,7 +466,7 @@ where
             // update and add to total fees
             let miner_fee =
                 effective_tip_per_gas.expect("fee is always valid; execution succeeded");
-            total_fees += U256::from(miner_fee) * U256::from(gas_used);
+            total_fees += calc_gas_balance_spending(gas_used, miner_fee);
             cumulative_gas_used += gas_used;
             if !is_payment {
                 non_payment_gas_used += gas_used;

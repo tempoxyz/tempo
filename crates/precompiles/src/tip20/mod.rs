@@ -870,7 +870,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         to: Address,
         refund: U256,
-        actual_used: U256,
+        actual_spending: U256,
     ) -> Result<(), TempoPrecompileError> {
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
         if refund > from_balance {
@@ -901,7 +901,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             TIP20Event::Transfer(ITIP20::Transfer {
                 from: to,
                 to: TIP_FEE_MANAGER_ADDRESS,
-                amount: actual_used,
+                amount: actual_spending,
             })
             .into_log_data(),
         )

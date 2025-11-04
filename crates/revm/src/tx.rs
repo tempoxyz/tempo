@@ -6,13 +6,14 @@ use reth_evm::TransactionEnv;
 use revm::context::{
     Transaction, TxEnv,
     either::Either,
+    result::InvalidTransaction,
     transaction::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
 use tempo_primitives::{
     AASignature, AASigned, TempoTxEnvelope, TxAA, TxFeeToken,
-    transaction::{AASignedAuthorization, Call},
+    transaction::{AASignedAuthorization, Call, calc_gas_balance_spending},
 };
 
 /// Account Abstraction transaction environment.
@@ -150,6 +151,24 @@ impl Transaction for TempoTxEnv {
 
     fn max_priority_fee_per_gas(&self) -> Option<u128> {
         self.inner.max_priority_fee_per_gas()
+    }
+
+    fn max_balance_spending(&self) -> Result<U256, InvalidTransaction> {
+        Ok(calc_gas_balance_spending(
+            self.gas_limit(),
+            self.max_fee_per_gas(),
+        ))
+    }
+
+    fn effective_balance_spending(
+        &self,
+        base_fee: u128,
+        _blob_price: u128,
+    ) -> Result<U256, InvalidTransaction> {
+        Ok(calc_gas_balance_spending(
+            self.gas_limit(),
+            self.effective_gas_price(base_fee),
+        ))
     }
 }
 

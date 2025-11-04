@@ -229,30 +229,30 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn collect_fee_post_tx(
         &mut self,
         fee_payer: Address,
-        actual_used: U256,
+        actual_spending: U256,
         refund_amount: U256,
-        user_token: Address,
+        fee_token: Address,
     ) -> Result<(), TempoPrecompileError> {
         // Refund unused tokens to user
         if !refund_amount.is_zero() {
-            let mut tip20_token = TIP20Token::from_address(user_token, self.storage);
-            tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_used)?;
+            let mut tip20_token = TIP20Token::from_address(fee_token, self.storage);
+            tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
         }
 
         // Execute fee swap and track collected fees
-        if !actual_used.is_zero() {
+        if !actual_spending.is_zero() {
             let validator_token = self.get_validator_token()?;
 
-            if user_token == validator_token {
-                self.increment_collected_fees(actual_used)?;
+            if fee_token == validator_token {
+                self.increment_collected_fees(actual_spending)?;
             } else {
                 let mut fee_amm = TIPFeeAMM::new(self.contract_address, self.storage);
-                fee_amm.fee_swap(user_token, validator_token, actual_used)?;
+                fee_amm.fee_swap(fee_token, validator_token, actual_spending)?;
 
                 // Track the token to be swapped
-                let slot = slots::token_in_fees_array_slot(user_token);
+                let slot = slots::token_in_fees_array_slot(fee_token);
                 if self.sload(slot)?.is_zero() {
-                    self.add_token_to_fees_array(user_token);
+                    self.add_token_to_fees_array(fee_token);
                     self.sstore(slot, U256::from(true))?;
                 }
             }

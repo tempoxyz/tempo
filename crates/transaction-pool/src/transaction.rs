@@ -13,7 +13,7 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{convert::Infallible, fmt::Debug, sync::Arc};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -31,7 +31,15 @@ impl TempoPooledTransaction {
     pub fn new(transaction: Recovered<TempoTxEnvelope>, encoded_length: usize) -> Self {
         let is_payment = transaction.is_payment();
         Self {
-            inner: EthPooledTransaction::new(transaction, encoded_length),
+            inner: EthPooledTransaction {
+                cost: calc_gas_balance_spending(
+                    transaction.gas_limit(),
+                    transaction.max_fee_per_gas(),
+                ),
+                encoded_length,
+                blob_sidecar: EthBlobTransactionSidecar::None,
+                transaction,
+            },
             is_payment,
         }
     }
