@@ -151,7 +151,7 @@ pub async fn setup_validators(
         let link = linkage.clone();
         nodes.push(ValidatorNode {
             node,
-            subblocks: engine.subblocks_handle(),
+            subblocks: engine.subblocks_mailbox(),
             public_key: signer.public_key(),
             start_engine: Some(Box::pin(async move {
                 let pending = oracle

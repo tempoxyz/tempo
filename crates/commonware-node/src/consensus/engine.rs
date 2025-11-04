@@ -369,9 +369,6 @@ where
         })
     }
 
-    /// Start the `simplex` consensus engine.
-    ///
-    /// This will also rebuild the state of the engine from provided `Journal`.
     #[expect(
         clippy::too_many_arguments,
         reason = "following commonware's style of writing"
@@ -452,7 +449,7 @@ where
     }
 
     /// Returns a handle to the subblocks service.
-    pub fn subblocks_handle(&self) -> subblocks::Mailbox {
+    pub fn subblocks_mailbox(&self) -> subblocks::Mailbox {
         self.subblocks.mailbox()
     }
 }

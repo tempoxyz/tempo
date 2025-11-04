@@ -795,7 +795,7 @@ async fn verify_block<TContext: Pacer>(
     }
     let scheme = scheme_provider
         .scheme(epoch)
-        .ok_or_eyre("epoch's scheme not found")?;
+        .ok_or_eyre("cannot determine participants in the current epoch")?;
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
         block,

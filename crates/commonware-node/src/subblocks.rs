@@ -25,8 +25,8 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey, Signature},
 };
 use commonware_p2p::{Receiver, Recipients, Sender};
-use commonware_runtime::{Handle, Spawner};
-use eyre::OptionExt;
+use commonware_runtime::{Handle, Metrics, Spawner};
+use eyre::{Context, OptionExt};
 use futures::{StreamExt, channel::mpsc};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
@@ -97,7 +97,7 @@ pub struct Actor<TContext> {
     subblock_transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
 }
 
-impl<TContext: Spawner> Actor<TContext> {
+impl<TContext: Spawner + Metrics> Actor<TContext> {
     pub(crate) fn new(
         Config {
             context,
@@ -270,6 +270,8 @@ impl<TContext: Spawner> Actor<TContext> {
             seed,
         );
 
+        debug!(?next_proposer, ?next_round, "determined next proposer");
+
         // Spawn new subblock building task if the current one is assuming different proposer or parent hash.
         if self
             .subblock_builder_handle
@@ -293,18 +295,22 @@ impl<TContext: Spawner> Actor<TContext> {
         let fee_recipient = self.fee_recipient;
         let timeout = self.time_to_build_subblock;
         let span = Span::current();
-        let handle = self.context.clone().shared(true).spawn(move |_| {
-            build_subblock(
-                transactions,
-                node,
-                parent_hash,
-                num_validators,
-                signer,
-                fee_recipient,
-                timeout,
-            )
-            .instrument(span)
-        });
+        let handle = self
+            .context
+            .with_label("validate_subblock")
+            .shared(true)
+            .spawn(move |_| {
+                build_subblock(
+                    transactions,
+                    node,
+                    parent_hash,
+                    num_validators,
+                    signer,
+                    fee_recipient,
+                    timeout,
+                )
+                .instrument(span)
+            });
 
         self.subblock_builder_handle = Some(BuildSubblockTask {
             handle,
@@ -313,7 +319,7 @@ impl<TContext: Spawner> Actor<TContext> {
         });
     }
 
-    #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender))]
+    #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender, msg_bytes = message.len()))]
     fn on_network_message(&mut self, sender: PublicKey, message: bytes::Bytes) -> eyre::Result<()> {
         let Ok(subblock) = SignedSubBlock::decode(&mut &*message) else {
             return Err(eyre::eyre!("failed to decode subblock"));
@@ -324,12 +330,11 @@ impl<TContext: Spawner> Actor<TContext> {
         };
 
         // Skip subblocks that are not built on top of the tip.
-        if subblock.parent_hash != tip {
-            return Err(eyre::eyre!(
-                "invalid subblock parent, expected {tip}, got {}",
-                subblock.parent_hash
-            ));
-        }
+        eyre::ensure!(
+            subblock.parent_hash == tip,
+            "invalid subblock parent, expected {tip}, got {}",
+            subblock.parent_hash
+        );
 
         // Spawn task to validate the subblock.
         let node = self.node.clone();
@@ -570,7 +575,9 @@ async fn validate_subblock(
     scheme_provider: SchemeProvider,
     epoch_length: u64,
 ) -> eyre::Result<()> {
-    let Ok(signature) = Signature::decode(&mut subblock.signature.as_ref()) else {
+    let Ok(signature) =
+        Signature::decode(&mut subblock.signature.as_ref()).wrap_err("invalid signature")
+    else {
         return Err(eyre::eyre!("invalid signature"));
     };
 
@@ -587,6 +594,7 @@ async fn validate_subblock(
         ));
     }
 
+    // Recover subblock transactions and convert it into a `RecoveredSubBlock`.
     let subblock = subblock.try_into_recovered(B256::from_slice(&sender))?;
 
     let mut evm = evm_at_block(&node, subblock.parent_hash)?;
@@ -598,9 +606,10 @@ async fn validate_subblock(
         .scheme(epoch)
         .ok_or_eyre("scheme not found")?;
 
-    if !scheme.participants().iter().any(|p| p == &sender) {
-        return Err(eyre::eyre!("sender is not a validator"));
-    }
+    eyre::ensure!(
+        scheme.participants().iter().any(|p| p == &sender),
+        "sender is not a validator"
+    );
 
     for tx in subblock.transactions_recovered() {
         if let Err(err) = evm.transact_commit(tx) {
