@@ -270,6 +270,7 @@ fn gen_contract_storage(
 ) -> syn::Result<proc_macro2::TokenStream> {
     // Generate the complete output
     let allocated_fields = layout::allocate_slots(fields)?;
+    let slot_id_types = layout::gen_slot_id_types(&allocated_fields);
     let slots_module = layout::gen_slots_module(&allocated_fields);
     let transformed_struct = layout::gen_struct(ident, vis);
     let storage_trait = layout::gen_contract_storage_impl(ident);
@@ -280,6 +281,7 @@ fn gen_contract_storage(
         .collect();
 
     let output = quote! {
+        #slot_id_types
         #transformed_struct
         #constructor
         #storage_trait

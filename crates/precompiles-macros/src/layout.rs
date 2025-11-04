@@ -201,23 +201,23 @@ pub(crate) fn gen_getters_and_setters(
 
     match &allocated.kind {
         FieldKind::Direct => {
-            let slot_limbs = slot_to_limbs(allocated.assigned_slot);
+            let slot_id = slot_to_marker_type(allocated.assigned_slot);
 
             quote! {
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
                     fn #getter_name(&mut self) -> crate::error::Result<#field_ty> {
-                        crate::storage::Slot::<#field_ty, {#slot_limbs}>::read(self)
+                        crate::storage::Slot::<#field_ty, #slot_id>::read(self)
                     }
 
                     #[inline]
                     fn #cleaner_name(&mut self) -> crate::error::Result<()> {
-                        crate::storage::Slot::<#field_ty, {#slot_limbs}>::delete(self)
+                        crate::storage::Slot::<#field_ty, #slot_id>::delete(self)
                     }
 
                     #[inline]
                     fn #setter_name(&mut self, value: #field_ty) -> crate::error::Result<()> {
-                        crate::storage::Slot::<#field_ty, {#slot_limbs}>::write(self, value)
+                        crate::storage::Slot::<#field_ty, #slot_id>::write(self, value)
                     }
                 }
             }
@@ -226,13 +226,13 @@ pub(crate) fn gen_getters_and_setters(
             key: key_ty,
             value: value_ty,
         } => {
-            let slot_limbs = slot_to_limbs(allocated.assigned_slot);
+            let slot_id = slot_to_marker_type(allocated.assigned_slot);
 
             quote! {
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
                     fn #getter_name(&mut self, key: #key_ty) -> crate::error::Result<#value_ty> {
-                        crate::storage::Mapping::<#key_ty, #value_ty, {#slot_limbs}>::read(
+                        crate::storage::Mapping::<#key_ty, #value_ty, #slot_id>::read(
                             self,
                             key,
                         )
@@ -240,7 +240,7 @@ pub(crate) fn gen_getters_and_setters(
 
                     #[inline]
                     fn #cleaner_name(&mut self, key: #key_ty) -> crate::error::Result<()> {
-                        crate::storage::Mapping::<#key_ty, #value_ty, {#slot_limbs}>::delete(
+                        crate::storage::Mapping::<#key_ty, #value_ty, #slot_id>::delete(
                             self,
                             key,
                         )
@@ -248,7 +248,7 @@ pub(crate) fn gen_getters_and_setters(
 
                     #[inline]
                     fn #setter_name(&mut self, key: #key_ty, value: #value_ty) -> crate::error::Result<()> {
-                        crate::storage::Mapping::<#key_ty, #value_ty, {#slot_limbs}>::write(
+                        crate::storage::Mapping::<#key_ty, #value_ty, #slot_id>::write(
                             self,
                             key,
                             value,
@@ -262,9 +262,9 @@ pub(crate) fn gen_getters_and_setters(
             key2: key2_ty,
             value: value_ty,
         } => {
-            let slot_limbs = slot_to_limbs(allocated.assigned_slot);
+            let slot_id = slot_to_marker_type(allocated.assigned_slot);
             // For nested mappings, we need to use the full Mapping type with dummy inner slot
-            let dummy_slot = quote! { [0, 0, 0, 0] };
+            let dummy_slot = quote! { SlotDummy };
 
             quote! {
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
@@ -274,7 +274,7 @@ pub(crate) fn gen_getters_and_setters(
                         key1: #key1_ty,
                         key2: #key2_ty,
                     ) -> crate::error::Result<#value_ty> {
-                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, {#dummy_slot}>, {#slot_limbs}>::read_nested(
+                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, #dummy_slot>, #slot_id>::read_nested(
                             self,
                             key1,
                             key2,
@@ -287,7 +287,7 @@ pub(crate) fn gen_getters_and_setters(
                         key1: #key1_ty,
                         key2: #key2_ty,
                     ) -> crate::error::Result<()> {
-                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, {#dummy_slot}>, {#slot_limbs}>::delete_nested(
+                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, #dummy_slot>, #slot_id>::delete_nested(
                             self,
                             key1,
                             key2,
@@ -301,7 +301,7 @@ pub(crate) fn gen_getters_and_setters(
                         key2: #key2_ty,
                         value: #value_ty,
                     ) -> crate::error::Result<()> {
-                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, {#dummy_slot}>, {#slot_limbs}>::write_nested(
+                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, #dummy_slot>, #slot_id>::write_nested(
                             self,
                             key1,
                             key2,
@@ -312,7 +312,7 @@ pub(crate) fn gen_getters_and_setters(
             }
         }
         FieldKind::StorageBlock(ty) => {
-            let slot_limbs = slot_to_limbs(allocated.assigned_slot);
+            let slot_id = slot_to_marker_type(allocated.assigned_slot);
             // Get the slot_count from the attribute (guaranteed to exist by allocate_slots)
             let expected_slot_count = allocated
                 .info
@@ -353,7 +353,7 @@ pub(crate) fn gen_getters_and_setters(
 
                         <#ty as crate::storage::Storable<{ <#ty>::SLOT_COUNT }>>::load(
                             self,
-                            ::alloy::primitives::U256::from_limbs(#slot_limbs),
+                            <#slot_id as crate::storage::SlotId>::SLOT,
                         )
                     }
 
@@ -364,7 +364,7 @@ pub(crate) fn gen_getters_and_setters(
 
                         <#ty as crate::storage::Storable<{ <#ty>::SLOT_COUNT }>>::delete(
                             self,
-                            ::alloy::primitives::U256::from_limbs(#slot_limbs),
+                            <#slot_id as crate::storage::SlotId>::SLOT,
                         )
                     }
 
@@ -375,7 +375,7 @@ pub(crate) fn gen_getters_and_setters(
 
                         value.store(
                             self,
-                            ::alloy::primitives::U256::from_limbs(#slot_limbs),
+                            <#slot_id as crate::storage::SlotId>::SLOT,
                         )
                     }
                 }
@@ -384,11 +384,9 @@ pub(crate) fn gen_getters_and_setters(
     }
 }
 
-/// Convert a slot number to [u64; 4] limbs representation
-fn slot_to_limbs(slot: U256) -> proc_macro2::TokenStream {
-    let limbs = slot.as_limbs();
-    let [l0, l1, l2, l3] = limbs;
-    quote! { [#l0, #l1, #l2, #l3] }
+/// Convert a slot number to a marker type identifier
+fn slot_to_marker_type(slot: U256) -> Ident {
+    format_ident!("Slot{}", slot.to_string())
 }
 
 /// Convert a field name (snake_case) to a constant name (SCREAMING_SNAKE_CASE)
@@ -425,4 +423,54 @@ pub(crate) fn gen_slots_module(
             #(#slot_constants)*
         }
     }
+}
+
+/// Generate `SlotId` marker types for each unique storage slot
+pub(crate) fn gen_slot_id_types(
+    allocated_fields: &[AllocatedField<'_>],
+) -> proc_macro2::TokenStream {
+    let mut generated = proc_macro2::TokenStream::new();
+    let mut seen_slots = std::collections::HashSet::new();
+
+    // Generate a `SlotN` type for each unique slot number
+    for allocated in allocated_fields {
+        let slot_number = allocated.assigned_slot;
+
+        // Only generate once per unique slot number (multiple fields may share a slot)
+        if seen_slots.insert(slot_number) {
+            let slot_id_name = slot_to_marker_type(slot_number);
+            let field_name = &allocated.info.name;
+            let slot_number_str = slot_number.to_string();
+
+            // Create a literal token for the slot value with _U256 suffix
+            let slot_literal = syn::LitInt::new(
+                &format!("{slot_number}_U256"),
+                proc_macro2::Span::call_site(),
+            );
+
+            generated.extend(quote! {
+                #[doc = concat!(
+                    "Storage slot ", #slot_number_str,
+                    " (used by `", stringify!(#field_name), "` field)"
+                )]
+                pub struct #slot_id_name;
+
+                impl crate::storage::SlotId for #slot_id_name {
+                    const SLOT: ::alloy::primitives::U256 = ::alloy::primitives::uint!(#slot_literal);
+                }
+            });
+        }
+    }
+
+    // Always generate `SlotDummy` for nested mappings
+    generated.extend(quote! {
+        #[doc = "Dummy slot ID for nested mapping inner types (never accessed at runtime)"]
+        pub struct SlotDummy;
+
+        impl crate::storage::SlotId for SlotDummy {
+            const SLOT: ::alloy::primitives::U256 = ::alloy::primitives::U256::ZERO;
+        }
+    });
+
+    generated
 }
