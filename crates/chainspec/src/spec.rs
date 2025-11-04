@@ -11,9 +11,9 @@ use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
-use tempo_primitives::{TEMPO_GAS_PRICE_SCALING_FACTOR, TempoHeader};
+use tempo_primitives::TempoHeader;
 
-pub const TEMPO_BASE_FEE: u64 = (44 * TEMPO_GAS_PRICE_SCALING_FACTOR) as u64;
+pub const TEMPO_BASE_FEE: u64 = 44_000_000_000_000;
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
