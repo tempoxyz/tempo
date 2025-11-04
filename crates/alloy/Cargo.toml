@@ -12,8 +12,8 @@ workspace = true
 
 [dependencies]
 tempo-primitives.workspace = true
-tempo-evm.workspace = true # todo: make this optional
-tempo-revm.workspace = true # todo: make this optional
+tempo-evm = { workspace = true, optional = true }
+tempo-revm = { workspace = true, optional = true }
 
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
@@ -21,9 +21,8 @@ alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-eth.workspace = true
 
-# todo: make these optional
-reth-evm.workspace = true
-reth-rpc-convert.workspace = true
+reth-evm = { workspace = true, optional = true }
+reth-rpc-convert = { workspace = true, optional = true }
 
 serde.workspace = true
 
@@ -34,4 +33,10 @@ test-case.workspace = true
 default = []
 asm-keccak = [
     "alloy-primitives/asm-keccak",
+]
+tempo-compat = [
+    "dep:reth-evm",
+    "dep:reth-rpc-convert",
+    "dep:tempo-evm",
+    "dep:tempo-revm"
 ]

@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-alloy.workspace = true
+tempo-alloy = { workspace = true, features = ["tempo-compat"] }
 tempo-evm = { workspace = true, features = ["rpc"] }
 tempo-revm.workspace = true
 tempo-transaction-pool.workspace = true
