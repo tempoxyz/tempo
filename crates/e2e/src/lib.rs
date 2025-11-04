@@ -297,3 +297,14 @@ pub async fn link_validators(
         }
     }
 }
+
+/// Get the number of pipeline runs from the Prometheus metrics recorder
+pub fn get_pipeline_runs(recorder: &reth_node_metrics::recorder::PrometheusRecorder) -> u64 {
+    recorder
+        .handle()
+        .render()
+        .lines()
+        .find(|line| line.starts_with("reth_consensus_engine_beacon_pipeline_runs"))
+        .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
+        .unwrap_or(0)
+}

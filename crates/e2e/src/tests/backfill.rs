@@ -7,8 +7,9 @@ use commonware_runtime::{
     deterministic::{self, Runner},
 };
 use reth_ethereum::storage::BlockNumReader;
+use reth_node_metrics::recorder::install_prometheus_recorder;
 
-use crate::{ExecutionRuntime, Setup, setup_validators};
+use crate::{ExecutionRuntime, Setup, get_pipeline_runs, setup_validators};
 
 #[test_traced]
 fn validator_can_join_later() {
@@ -38,19 +39,35 @@ fn validator_can_join_later() {
             node.start().await;
         }
 
-        // Wait for chain to advance a bit.
-        while nodes[0].node.node.provider.last_block_number().unwrap() < 5 {
+        // Wait for chain to advance to 65 blocks to trigger backfill.
+        while nodes[0].node.node.provider.last_block_number().unwrap() < 65 {
             context.sleep(Duration::from_secs(1)).await;
         }
 
         assert_eq!(last.node.node.provider.last_block_number().unwrap(), 0);
 
+        let metrics_recorder = install_prometheus_recorder();
+
         // Start the last node.
         last.start().await;
 
         // Assert that last node is able to catch up and progress.
-        while last.node.node.provider.last_block_number().unwrap() < 10 {
+        while last.node.node.provider.last_block_number().unwrap() < 70 {
             context.sleep(Duration::from_secs(1)).await;
         }
+
+        // Verify that backfill was triggered
+        assert!(
+            get_pipeline_runs(&metrics_recorder) >= 1,
+            "Backfill should have been triggered at least once"
+        );
+
+        // Verify that the node is still progressing after backfill
+        let last_block = last.node.node.provider.last_block_number().unwrap();
+        context.sleep(Duration::from_secs(2)).await;
+        assert!(
+            last.node.node.provider.last_block_number().unwrap() > last_block,
+            "Node should still be progressing after backfill"
+        );
     });
 }
