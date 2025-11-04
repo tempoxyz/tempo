@@ -222,7 +222,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
 
         Ok(fee_token_balance
             // multiply by the scaling factor
-            .saturating_mul(TEMPO_GAS_PRICE_SCALING_FACTOR)
+            .saturating_mul(U256::from(TEMPO_GAS_PRICE_SCALING_FACTOR))
             // Calculate the amount of gas the caller can afford with the specified gas price.
             .checked_div(U256::from(tx_env.inner.gas_price))
             // This will be 0 if gas price is 0. It is fine, because we check it before.

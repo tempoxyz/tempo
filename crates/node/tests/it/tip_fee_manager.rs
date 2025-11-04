@@ -14,7 +14,7 @@ use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use std::env;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIPFeeAMM};
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS};
-use tempo_primitives::TxFeeToken;
+use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_set_user_token() -> eyre::Result<()> {
@@ -60,7 +60,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let expected_usage = U256::from(receipt.effective_gas_price * receipt.gas_used as u128);
+    let expected_cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
 
     let validator_balance_after = ITIP20::new(initial_token, &provider)
         .balanceOf(validator)
@@ -68,7 +68,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .await?;
     assert_eq!(
         validator_balance_after,
-        validator_balance_before + expected_usage
+        validator_balance_before + expected_cost
     );
 
     let set_receipt = fee_manager
@@ -299,7 +299,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
 
     assert_eq!(
         balance_after,
-        balance_before - U256::from(fees.max_fee_per_gas * tx.gas_limit() as u128)
+        balance_before - calc_gas_balance_spending(tx.gas_limit(), fees.max_fee_per_gas)
     );
 
     Ok(())
