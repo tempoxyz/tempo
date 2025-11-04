@@ -20,7 +20,7 @@ use crate::{
 };
 use alloy::{
     hex,
-    primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256},
+    primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256, uint},
 };
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
@@ -28,6 +28,9 @@ use revm::{
 };
 use std::sync::LazyLock;
 use tracing::trace;
+
+/// u128::MAX as U256
+const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 
 /// TIP20 token address prefix (12 bytes for token ID encoding)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
@@ -181,7 +184,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         call: ITIP20::setSupplyCapCall,
     ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-        if call.newSupplyCap < self.total_supply()? {
+        if call.newSupplyCap < self.total_supply()? || call.newSupplyCap > U128_MAX {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
         self.storage
