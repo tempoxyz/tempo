@@ -16,6 +16,7 @@ use crate::{
     tip20_migrated::rewards::RewardStream,
     tip403_registry::{ITIP403Registry, TIP403Registry},
     tip4217_registry::{ITIP4217Registry, TIP4217Registry},
+    utils::MathUtils,
 };
 use alloy::{
     hex,
@@ -186,9 +187,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20 for TIP20Token<'a, S> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
-        let new_supply = total_supply
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_supply = total_supply.add_checked(amount)?;
 
         let supply_cap = self.supply_cap()?;
         if new_supply > supply_cap {
@@ -202,9 +201,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20 for TIP20Token<'a, S> {
 
         self.sstore_total_supply(new_supply)?;
         let to_balance = self.sload_balances(to)?;
-        let new_to_balance: U256 = to_balance
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_to_balance: U256 = to_balance.add_checked(amount)?;
         self.sstore_balances(to, new_to_balance)?;
 
         self.emit_transfer(Address::ZERO, to, amount)?;
@@ -230,9 +227,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20 for TIP20Token<'a, S> {
         self._transfer(msg_sender, Address::ZERO, amount)?;
 
         let total_supply = self.total_supply()?;
-        let new_supply = total_supply
-            .checked_sub(amount)
-            .ok_or(TIP20Error::insufficient_balance())?;
+        let new_supply = total_supply.sub_checked(amount)?;
         self.sstore_total_supply(new_supply)?;
 
         self.emit_burn(msg_sender, amount)
@@ -263,9 +258,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20 for TIP20Token<'a, S> {
         self._transfer(from, Address::ZERO, amount)?;
 
         let total_supply = self.total_supply()?;
-        let new_supply = total_supply
-            .checked_sub(amount)
-            .ok_or(TIP20Error::insufficient_balance())?;
+        let new_supply = total_supply.sub_checked(amount)?;
         self.sstore_total_supply(new_supply)?;
 
         self.emit_burn_blocked(from, amount)
@@ -483,17 +476,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         // Adjust balances
         let from_balance = self.sload_balances(from)?;
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_from_balance = from_balance.sub_checked(amount)?;
 
         self.sstore_balances(from, new_from_balance)?;
 
         if to != Address::ZERO {
             let to_balance = self.sload_balances(to)?;
-            let new_to_balance = to_balance
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let new_to_balance = to_balance.add_checked(amount)?;
 
             self.sstore_balances(to, new_to_balance)?;
         }
@@ -515,9 +504,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.sstore_balances(from, new_from_balance)?;
 
         let to_balance = self.sload_balances(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_to_balance = to_balance
-            .checked_add(amount)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        let new_to_balance = to_balance.add_checked(amount)?;
         self.sstore_balances(TIP_FEE_MANAGER_ADDRESS, new_to_balance)?;
 
         Ok(())
@@ -535,16 +522,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::insufficient_balance().into());
         }
 
-        let new_from_balance = from_balance
-            .checked_sub(refund)
-            .ok_or(TIP20Error::insufficient_balance())?;
-
+        let new_from_balance = from_balance.sub_checked(refund)?;
         self.sstore_balances(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
 
         let to_balance = self.sload_balances(to)?;
-        let new_to_balance = to_balance
-            .checked_add(refund)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        let new_to_balance = to_balance.add_checked(refund)?;
         self.sstore_balances(to, new_to_balance)?;
 
         self.emit_transfer(to, TIP_FEE_MANAGER_ADDRESS, actual_used)

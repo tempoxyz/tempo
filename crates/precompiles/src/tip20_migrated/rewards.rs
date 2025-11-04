@@ -3,6 +3,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::PrecompileStorageProvider,
     tip20_rewards_registry::TIP20RewardsRegistry,
+    utils::MathUtils,
 };
 use alloy::primitives::{Address, I256, U256, uint};
 use tempo_contracts::precompiles::{
@@ -79,14 +80,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20Rewards for TIP20Token<'
                 return Err(TIP20RewardsError::no_opted_in_supply().into());
             }
 
-            let delta_rpt = amount
-                .checked_mul(ACC_PRECISION)
-                .and_then(|v| v.checked_div(opted_in_supply))
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let delta_rpt = amount.mul_div(ACC_PRECISION, opted_in_supply)?;
             let current_rpt = self.sload_reward_per_token_stored()?;
-            let new_rpt = current_rpt
-                .checked_add(delta_rpt)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let new_rpt = current_rpt.add_checked(delta_rpt)?;
             self.sstore_reward_per_token_stored(new_rpt)?;
 
             // Emit reward scheduled event for immediate payout
@@ -95,10 +91,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20Rewards for TIP20Token<'
             return Ok(0);
         }
 
-        let rate = amount
-            .checked_mul(ACC_PRECISION)
-            .and_then(|v| v.checked_div(U256::from(seconds)))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let rate = amount.mul_div(ACC_PRECISION, U256::from(seconds))?;
         let stream_id = self.get_next_stream_id()?;
         let next_stream_id = stream_id
             .checked_add(1)
@@ -106,9 +99,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20Rewards for TIP20Token<'
         self.sstore_next_stream_id(next_stream_id)?;
 
         let current_total = self.sload_total_reward_per_second()?;
-        let new_total = current_total
-            .checked_add(rate)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_total = current_total.add_checked(rate)?;
         self.sstore_total_reward_per_second(new_total)?;
 
         let current_time = self.storage.timestamp().to::<u128>();
@@ -128,9 +119,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20Rewards for TIP20Token<'
         )?;
 
         let current_decrease = self.sload_scheduled_rate_decrease(end_time)?;
-        let new_decrease = current_decrease
-            .checked_add(rate)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_decrease = current_decrease.add_checked(rate)?;
         self.sstore_scheduled_rate_decrease(end_time, new_decrease)?;
 
         // Add stream to registry
@@ -166,8 +155,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20Rewards for TIP20Token<'
             self.update_rewards(current_recipient)?;
             let delegated_balance = self
                 .sload_delegated_balance(current_recipient)?
-                .checked_sub(holder_balance)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .sub_checked(holder_balance)?;
             self.sstore_delegated_balance(current_recipient, delegated_balance)?;
         }
 
@@ -175,8 +163,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20Rewards for TIP20Token<'
         if recipient == Address::ZERO {
             let opted_in_supply = self
                 .sload_opted_in_supply()?
-                .checked_sub(holder_balance)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .sub_checked(holder_balance)?;
             self.sstore_opted_in_supply(opted_in_supply)?;
         } else {
             let delegated = self.sload_delegated_balance(recipient)?;
@@ -184,16 +171,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20Rewards for TIP20Token<'
                 self.update_rewards(recipient)?;
             }
 
-            let new_delegated = delegated
-                .checked_add(holder_balance)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let new_delegated = delegated.add_checked(holder_balance)?;
             self.sstore_delegated_balance(recipient, new_delegated)?;
 
             if current_recipient.is_zero() {
                 let opted_in = self
                     .sload_opted_in_supply()?
-                    .checked_add(holder_balance)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                    .add_checked(holder_balance)?;
                 self.sstore_opted_in_supply(opted_in)?;
             }
 
@@ -236,27 +220,20 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20Rewards for TIP20Token<'
 
         let mut distributed = stream
             .rate_per_second_scaled
-            .checked_mul(elapsed)
-            .and_then(|v| v.checked_div(ACC_PRECISION))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .mul_div(elapsed, ACC_PRECISION)?;
         distributed = distributed.min(stream.amount_total);
-        let remaining = stream
-            .amount_total
-            .checked_sub(distributed)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let remaining = stream.amount_total.sub_checked(distributed)?;
 
         let total_rps = self
             .sload_total_reward_per_second()?
-            .checked_sub(stream.rate_per_second_scaled)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .sub_checked(stream.rate_per_second_scaled)?;
         self.sstore_total_reward_per_second(total_rps)?;
 
         // Update the rate decrease and remove the stream
         let end_time = stream.end_time as u128;
         let rate_decrease = self
             .sload_scheduled_rate_decrease(end_time)?
-            .checked_sub(stream.rate_per_second_scaled)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .sub_checked(stream.rate_per_second_scaled)?;
         self.sstore_scheduled_rate_decrease(end_time, rate_decrease)?;
 
         self.clear_streams(stream_id)?;
@@ -269,14 +246,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token_ITIP20Rewards for TIP20Token<'
                 let contract_address = self.address;
                 let contract_balance = self
                     .sload_balances(contract_address)?
-                    .checked_sub(remaining)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                    .sub_checked(remaining)?;
                 self.sstore_balances(contract_address, contract_balance)?;
 
                 let funder_balance = self
                     .sload_balances(stream.funder)?
-                    .checked_add(remaining)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                    .add_checked(remaining)?;
                 self.sstore_balances(stream.funder, funder_balance)?;
 
                 self.emit_transfer(self.address, stream.funder, remaining)?;
@@ -303,8 +278,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
             let delegated = self
                 .sload_delegated_balance(from_recipient)?
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .sub_checked(amount)?;
             self.sstore_delegated_balance(from_recipient, delegated)?;
 
             Ok(Some(amount))
@@ -324,8 +298,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
             let delegated = self
                 .sload_delegated_balance(to_recipient)?
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .add_checked(amount)?;
             self.sstore_delegated_balance(to_recipient, delegated)?;
 
             Ok(Some(amount))
@@ -354,14 +327,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         let total_reward_per_second = self.sload_total_reward_per_second()?;
         if total_reward_per_second > U256::ZERO {
-            let delta_rpt = total_reward_per_second
-                .checked_mul(elapsed)
-                .and_then(|v| v.checked_div(opted_in_supply))
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let delta_rpt = total_reward_per_second.mul_div(elapsed, opted_in_supply)?;
             let current_rpt = self.sload_reward_per_token_stored()?;
-            let new_rpt = current_rpt
-                .checked_add(delta_rpt)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let new_rpt = current_rpt.add_checked(delta_rpt)?;
             self.sstore_reward_per_token_stored(new_rpt)?;
         }
 
@@ -382,11 +350,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let reward_per_token_stored = self.sload_reward_per_token_stored()?;
         let user_reward_per_token_paid = self.sload_user_reward_per_token_paid(recipient)?;
 
-        let mut accrued = reward_per_token_stored
-            .checked_sub(user_reward_per_token_paid)
-            .and_then(|diff| delegated.checked_mul(diff))
-            .and_then(|v| v.checked_div(ACC_PRECISION))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let diff = reward_per_token_stored.sub_checked(user_reward_per_token_paid)?;
+        let mut accrued = delegated.mul_div(diff, ACC_PRECISION)?;
 
         self.sstore_user_reward_per_token_paid(recipient, reward_per_token_stored)?;
 
@@ -401,29 +366,20 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             accrued = contract_balance;
         }
 
-        let new_contract_balance = contract_balance
-            .checked_sub(accrued)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_contract_balance = contract_balance.sub_checked(accrued)?;
         self.sstore_balances(token_address, new_contract_balance)?;
 
-        let recipient_balance = self
-            .sload_balances(recipient)?
-            .checked_add(accrued)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let recipient_balance = self.sload_balances(recipient)?.add_checked(accrued)?;
         self.sstore_balances(recipient, recipient_balance)?;
 
         // Since rewards are being claimed, we need to increase the delegated balance
         // and opted-in supply to reflect that these tokens are now part of the reward pool.
         let delegated_balance = self
             .sload_delegated_balance(recipient)?
-            .checked_add(accrued)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .add_checked(accrued)?;
         self.sstore_delegated_balance(recipient, delegated_balance)?;
 
-        let opted_in_supply = self
-            .sload_opted_in_supply()?
-            .checked_add(accrued)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let opted_in_supply = self.sload_opted_in_supply()?.add_checked(accrued)?;
         self.sstore_opted_in_supply(opted_in_supply)?;
 
         self.emit_transfer(token_address, recipient, accrued)
@@ -445,10 +401,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         self.accrue(U256::from(end_time))?;
 
-        let total_rps = self
-            .sload_total_reward_per_second()?
-            .checked_sub(rate_decrease)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let total_rps = self.sload_total_reward_per_second()?.sub_checked(rate_decrease)?;
         self.sstore_total_reward_per_second(total_rps)?;
 
         self.sstore_scheduled_rate_decrease(end_time, U256::ZERO)?;
@@ -488,14 +441,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         if opted_in_delta > I256::ZERO {
             let opted_in_supply = self
                 .sload_opted_in_supply()?
-                .checked_sub(U256::from(opted_in_delta))
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .sub_checked(U256::from(opted_in_delta))?;
             self.sstore_opted_in_supply(opted_in_supply)?;
         } else if opted_in_delta < I256::ZERO {
             let opted_in_supply = self
                 .sload_opted_in_supply()?
-                .checked_add(U256::from(-opted_in_delta))
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .add_checked(U256::from(-opted_in_delta))?;
             self.sstore_opted_in_supply(opted_in_supply)?;
         }
 
@@ -509,10 +460,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// since tokens are minted from the zero address.
     pub fn handle_rewards_on_mint(&mut self, to: Address, amount: U256) -> Result<()> {
         if let Some(delta) = self.handle_receiver_rewards(to, amount)? {
-            let opted_in_supply = self
-                .sload_opted_in_supply()?
-                .checked_add(delta)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let opted_in_supply = self.sload_opted_in_supply()?.add_checked(delta)?;
             self.sstore_opted_in_supply(opted_in_supply)?;
         }
 
