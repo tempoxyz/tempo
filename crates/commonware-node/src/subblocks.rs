@@ -385,7 +385,7 @@ impl<TContext: Spawner> Actor<TContext> {
 
         debug!(
             ?subblock,
-            ?next_proposer,
+            %next_proposer,
             "sending subblock to the next proposer"
         );
         if next_proposer != self.signer.public_key() {
