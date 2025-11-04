@@ -40,9 +40,10 @@ where
             tx_req.nonce = Some(nonce);
             tx_req.chain_id = Some(chain_id);
             tx_req.gas = tx_req.gas.or(Some(200_000));
-            tx_req.max_fee_per_gas = tx_req.max_fee_per_gas.or(Some(20e9 as u128));
-            tx_req.max_priority_fee_per_gas =
-                tx_req.max_priority_fee_per_gas.or(Some(20e9 as u128));
+            tx_req.max_fee_per_gas = tx_req.max_fee_per_gas.or(Some(TEMPO_BASE_FEE as u128));
+            tx_req.max_priority_fee_per_gas = tx_req
+                .max_priority_fee_per_gas
+                .or(Some(TEMPO_BASE_FEE as u128));
 
             let signed =
                 <TransactionRequest as TransactionBuilder<Ethereum>>::build(tx_req, &signer_clone)
