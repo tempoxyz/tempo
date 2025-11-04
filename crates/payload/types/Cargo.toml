@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth-codec", "serde"] }
 
 reth-ethereum-engine-primitives.workspace = true
 reth-node-api.workspace = true
