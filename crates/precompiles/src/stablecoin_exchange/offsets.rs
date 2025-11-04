@@ -8,7 +8,7 @@
 
 use alloy::primitives::{U256, uint};
 
-// Orderbook struct field offsets (relative to orderbook base slot)
+// Orderbook struct field offsets
 /// Base token address field offset
 pub const ORDERBOOK_BASE_OFFSET: U256 = uint!(0_U256);
 /// Quote token address field offset
@@ -22,7 +22,7 @@ pub const ORDERBOOK_BEST_BID_TICK_OFFSET: U256 = uint!(4_U256);
 /// Best ask tick field offset
 pub const ORDERBOOK_BEST_ASK_TICK_OFFSET: U256 = uint!(5_U256);
 
-// Order struct field offsets (relative to order base slot)
+// Order struct field offsets
 // Matches Solidity Order struct layout
 /// Maker address field offset
 pub const ORDER_MAKER_OFFSET: U256 = uint!(0_U256);
@@ -45,7 +45,7 @@ pub const ORDER_IS_FLIP_OFFSET: U256 = uint!(8_U256);
 /// Flip tick field offset
 pub const ORDER_FLIP_TICK_OFFSET: U256 = uint!(9_U256);
 
-// PriceLevel struct field offsets (relative to tick level base slot)
+// PriceLevel struct field offsets
 // Matches Solidity PriceLevel struct layout
 /// Head order ID field offset
 pub const TICK_LEVEL_HEAD_OFFSET: U256 = uint!(0_U256);

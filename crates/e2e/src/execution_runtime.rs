@@ -1,12 +1,12 @@
 //! The environment to launch tempo execution nodes in.
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use eyre::WrapErr as _;
 use reth_db::mdbx::DatabaseArguments;
 use reth_ethereum::tasks::{TaskExecutor, TaskManager};
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
-    args::{DatadirArgs, RpcServerArgs},
+    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
     exit::NodeExitFuture,
 };
 use reth_rpc_builder::RpcModuleSelection;
@@ -177,7 +177,9 @@ pub struct ExecutionNode {
 
 // TODO(janis): allow configuring this.
 fn chainspec() -> Arc<TempoChainSpec> {
-    tempo_chainspec::spec::ADAGIO.clone()
+    Arc::new(TempoChainSpec::from_genesis(
+        serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap(),
+    ))
 }
 
 // TODO(janis): would be nicer if we could identify the node somehow?
@@ -213,6 +215,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         .with_datadir_args(DatadirArgs {
             datadir: datadir.as_ref().to_path_buf().into(),
             ..DatadirArgs::default()
+        })
+        .with_payload_builder(PayloadBuilderArgs {
+            interval: Duration::from_millis(100),
+            ..Default::default()
         });
 
     let database = Arc::new(

@@ -1,11 +1,20 @@
+pub mod amm;
 pub mod dex;
+pub mod eth_ext;
+pub mod policy;
+pub mod token;
 
-mod request;
+mod pagination;
 
-pub use dex::TempoDexApiServer;
-pub use request::TempoTransactionRequest;
+pub use amm::{TempoAmm, TempoAmmApiServer};
+pub use dex::{TempoDex, api::TempoDexApiServer};
+pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
+pub use pagination::{FilterRange, PaginationParams};
+pub use policy::{TempoPolicy, TempoPolicyApiServer};
+pub use tempo_alloy::rpc::TempoTransactionRequest;
+pub use token::{TempoToken, TempoTokenApiServer};
 
-use crate::{TempoNetwork, node::TempoNode};
+use crate::node::TempoNode;
 use alloy::{consensus::TxReceipt, primitives::U256};
 use alloy_primitives::Address;
 use reth_ethereum::tasks::{
@@ -35,6 +44,7 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
+use tempo_alloy::TempoNetwork;
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::provider::TIPFeeDatabaseExt;
 use tempo_primitives::TempoReceipt;
@@ -76,7 +86,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
         DB: Database<Error: Into<EthApiError>>,
     {
         db.get_fee_token_balance(
-            env.fee_payer().map_err(EVMError::<DB::Error>::from)?,
+            env.fee_payer().map_err(EVMError::<DB::Error, _>::from)?,
             validator,
             env.fee_token,
         )
@@ -206,6 +216,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     #[inline]
     fn max_simulate_blocks(&self) -> u64 {
         self.inner.max_simulate_blocks()
+    }
+
+    #[inline]
+    fn evm_memory_limit(&self) -> u64 {
+        self.inner.evm_memory_limit()
     }
 
     /// Returns the max gas limit that the caller can afford given a transaction environment.

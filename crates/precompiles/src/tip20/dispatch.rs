@@ -141,6 +141,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.cancel_reward(s, call)
                 })
             }
+            ITIP20::claimRewardsCall::SELECTOR => {
+                mutate::<ITIP20::claimRewardsCall>(calldata, msg_sender, |_, _| {
+                    self.claim_rewards(msg_sender)
+                })
+            }
 
             ITIP20Rewards::totalRewardPerSecondCall::SELECTOR => {
                 view::<ITIP20Rewards::totalRewardPerSecondCall>(calldata, |_call| {

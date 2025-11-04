@@ -3,7 +3,10 @@ pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 pub use ITIP20Rewards::{
     ITIP20RewardsErrors as TIP20RewardsError, ITIP20RewardsEvents as TIP20RewardsEvent,
 };
-use alloy::sol;
+use alloy::{
+    primitives::{Address, U256},
+    sol,
+};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -37,8 +40,8 @@ sol! {
     #[allow(clippy::too_many_arguments)]
     interface ITIP20 {
         // Standard token functions
-        function name() external view returns (string);
-        function symbol() external view returns (string);
+        function name() external view returns (string memory);
+        function symbol() external view returns (string memory);
         function decimals() external view returns (uint8);
         function totalSupply() external view returns (uint256);
         function quoteToken() external view returns (address);
@@ -52,7 +55,7 @@ sol! {
         function burn(uint256 amount) external;
 
         // TIP20 Extension
-        function currency() external view returns (string);
+        function currency() external view returns (string memory);
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
@@ -84,7 +87,7 @@ sol! {
         event QuoteTokenUpdateFinalized(address indexed updater, address indexed newQuoteToken);
 
         // Errors
-        error InsufficientBalance();
+        error InsufficientBalance(uint256 available, uint256 required, address token);
         error InsufficientAllowance();
         error SupplyCapExceeded();
         error InvalidPayload();
@@ -139,8 +142,12 @@ impl RolesAuthError {
 
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
-    pub const fn insufficient_balance() -> Self {
-        Self::InsufficientBalance(ITIP20::InsufficientBalance {})
+    pub const fn insufficient_balance(available: U256, required: U256, token: Address) -> Self {
+        Self::InsufficientBalance(ITIP20::InsufficientBalance {
+            available,
+            required,
+            token,
+        })
     }
 
     /// Creates an error for insufficient spending allowance.

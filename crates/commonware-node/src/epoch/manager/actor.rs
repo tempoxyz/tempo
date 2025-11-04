@@ -49,6 +49,7 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 use bytes::Bytes;
 use commonware_codec::{DecodeExt as _, Encode as _, varint::UInt};
 use commonware_consensus::{
+    Reporters,
     simplex::{self, signing_scheme::bls12381_threshold::Scheme, types::Voter},
     types::Epoch,
 };
@@ -331,7 +332,10 @@ where
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
                 relay: self.config.application.clone(),
-                reporter: self.config.marshal.clone(),
+                reporter: Reporters::from((
+                    self.config.subblocks.clone(),
+                    self.config.marshal.clone(),
+                )),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix

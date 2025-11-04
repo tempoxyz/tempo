@@ -1,11 +1,6 @@
-use crate::rpc::dex::{FilterRange, types::Tick};
+use crate::rpc::{dex::orders::Tick, pagination::FilterRange};
 use alloy_primitives::{Address, B256};
-use jsonrpsee::core::Serialize;
-use serde::Deserialize;
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OrderbooksParam {}
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -82,8 +82,8 @@ sol! {
         function pools(bytes32 poolId) external view returns (Pool memory);
 
         // Liquidity Operations
-        function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) returns (uint256 liquidity);
-        function burn(address userToken, address validatorToken, uint256 liquidity, address to) returns (uint256 amountUserToken, uint256 amountValidatorToken);
+        function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
+        function burn(address userToken, address validatorToken, uint256 liquidity, address to) external returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
         // Liquidity Balances
         function totalSupply(bytes32 poolId) external view returns (uint256);

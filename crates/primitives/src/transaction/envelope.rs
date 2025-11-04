@@ -1,3 +1,5 @@
+use crate::subblock::PartialValidatorKey;
+
 use super::{aa_signed::AASigned, fee_token::TxFeeToken};
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
@@ -193,6 +195,20 @@ impl TempoTxEnvelope {
                     .to()
                     .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
             }),
+        }
+    }
+
+    /// Returns the proposer of the subblock if this is a subblock transaction.
+    pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
+        let Self::AA(tx) = &self else { return None };
+        tx.tx().subblock_proposer()
+    }
+
+    /// Returns the [`AASigned`] transaction if this is an AA transaction.
+    pub fn as_aa(&self) -> Option<&AASigned> {
+        match self {
+            Self::AA(tx) => Some(tx),
+            _ => None,
         }
     }
 }

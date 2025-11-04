@@ -5,7 +5,7 @@ sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc, abi)]
     interface ITipAccountRegistrar {
-        function delegateToDefault(bytes32 hash, bytes signature) external returns (address authority);
+        function delegateToDefault(bytes32 hash, bytes calldata signature) external returns (address authority);
         function getDelegationMessage() external pure returns (string memory);
 
         // Errors
