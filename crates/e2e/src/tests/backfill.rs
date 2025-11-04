@@ -62,7 +62,7 @@ async fn run_validator_late_join_test(
     if should_backfill {
         assert!(
             actual_runs > 0,
-            "Expected backfill to be triggered, got {actual_runs} runs"
+            "at least one backfill must have been triggered"
         );
     } else {
         assert!(
