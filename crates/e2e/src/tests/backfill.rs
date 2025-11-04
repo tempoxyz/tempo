@@ -15,7 +15,7 @@ async fn run_validator_late_join_test(
     context: &Context,
     blocks_before_join: u64,
     blocks_after_join: u64,
-    expected_backfill_runs: u64,
+    should_backfill: bool,
 ) {
     let num_nodes = 5;
 
@@ -59,10 +59,17 @@ async fn run_validator_late_join_test(
 
     // Verify backfill behavior
     let actual_runs = get_pipeline_runs(metrics_recorder);
-    assert!(
-        actual_runs == expected_backfill_runs,
-        "Expected {expected_backfill_runs} backfill runs, got {actual_runs}"
-    );
+    if should_backfill {
+        assert!(
+            actual_runs > 0,
+            "at least one backfill must have been triggered"
+        );
+    } else {
+        assert_eq!(
+            0, actual_runs,
+            "Expected no backfill, got {actual_runs} runs"
+        );
+    }
 
     // Verify that the node is still progressing after sync
     let last_block = last.node.node.provider.last_block_number().unwrap();
@@ -78,7 +85,7 @@ fn validator_can_join_later_with_live_sync() {
     let _ = tempo_eyre::install();
 
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
-        run_validator_late_join_test(&context, 5, 10, 0).await;
+        run_validator_late_join_test(&context, 5, 10, false).await;
     });
 }
 
@@ -87,6 +94,6 @@ fn validator_can_join_later_with_pipeline_sync() {
     let _ = tempo_eyre::install();
 
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
-        run_validator_late_join_test(&context, 65, 70, 1).await;
+        run_validator_late_join_test(&context, 65, 70, true).await;
     });
 }

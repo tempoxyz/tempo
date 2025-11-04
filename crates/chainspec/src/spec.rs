@@ -1,4 +1,7 @@
-use crate::hardfork::{TempoHardfork, TempoHardforks};
+use crate::{
+    bootnodes::andantino_nodes,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
@@ -181,7 +184,10 @@ impl EthChainSpec for TempoChainSpec {
     }
 
     fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
-        self.inner.bootnodes()
+        match self.inner.chain_id() {
+            42429 => Some(andantino_nodes()),
+            _ => self.inner.bootnodes(),
+        }
     }
 
     fn chain(&self) -> Chain {
