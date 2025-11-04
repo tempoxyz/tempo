@@ -374,7 +374,7 @@ impl<TContext: Spawner> Actor<TContext> {
         let subblock = match subblock {
             Ok(subblock) => subblock,
             Err(err) => {
-                warn!(%err, "failed to build subblock");
+                warn!(%error, "failed to build subblock");
                 return;
             }
         };
