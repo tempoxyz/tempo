@@ -394,13 +394,20 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Ok(());
         }
 
+        let total_rps = self.get_total_reward_per_second()?;
+
+        // Return early if state is invalid (rate_decrease > total_rps)
+        // This can happen if streams were cancelled or state was corrupted
+        if rate_decrease > total_rps {
+            return Ok(());
+        }
+
         self.accrue(U256::from(end_time))?;
 
-        let total_rps = self
-            .get_total_reward_per_second()?
+        let new_total_rps = total_rps
             .checked_sub(rate_decrease)
             .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_total_reward_per_second(total_rps)?;
+        self.set_total_reward_per_second(new_total_rps)?;
 
         self.set_scheduled_rate_decrease_at(end_time, U256::ZERO)?;
 

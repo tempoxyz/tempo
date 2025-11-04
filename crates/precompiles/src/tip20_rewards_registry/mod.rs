@@ -15,7 +15,6 @@ use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
 };
-use tracing::warn;
 
 pub use tempo_contracts::precompiles::{ITIP20RewardsRegistry, TIP20RewardsRegistryError};
 
@@ -198,211 +197,23 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
         while current_timestamp >= next_timestamp {
             let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
-            let mut failed_tokens = Vec::new();
 
             for token in tokens {
                 let token_id = address_to_token_id_unchecked(token);
                 let mut tip20_token = TIP20Token::new(token_id, self.storage);
+                tip20_token.finalize_streams(self.address, next_timestamp)?;
 
-                // Try to finalize streams for this token
-                match tip20_token.finalize_streams(self.address, next_timestamp) {
-                    Ok(()) => {
-                        // Successfully finalized - remove the stream index mapping
-                        let stream_key = keccak256((token, next_timestamp).abi_encode());
-                        self.remove_stream_index(stream_key)?;
-                    }
-                    Err(e) => {
-                        // Failed to finalize - keep in array for retry
-                        warn!(
-                            target: "tempo::precompiles::tip20_rewards_registry",
-                            token = ?token,
-                            timestamp = next_timestamp,
-                            error = ?e,
-                            "Failed to finalize streams for token, will retry on next block"
-                        );
-                        failed_tokens.push(token);
-                    }
-                }
-            }
-
-            // Rebuild the array with only failed tokens
-            let array_slot = mapping_slot(next_timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
-
-            for (i, token) in failed_tokens.iter().enumerate() {
-                let element_slot = array_slot + U256::from(i);
-                self.storage
-                    .sstore(self.address, element_slot, token.into_u256())?;
-
-                // Update the stream index mapping
                 let stream_key = keccak256((token, next_timestamp).abi_encode());
-                let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
-                self.storage
-                    .sstore(self.address, index_slot, U256::from(i))?;
+                self.remove_stream_index(stream_key)?;
             }
 
-            // Update the array length
-            self.storage
-                .sstore(self.address, array_slot, U256::from(failed_tokens.len()))?;
+            let array_slot = mapping_slot(next_timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
+            self.storage.sstore(self.address, array_slot, U256::ZERO)?;
 
             next_timestamp += 1;
         }
 
         self.set_last_updated_timestamp(current_timestamp)?;
-
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        LINKING_USD_ADDRESS,
-        storage::hashmap::HashMapStorageProvider,
-        tip20::{rewards::slots as reward_slots, token_id_to_address},
-        tip20_factory::TIP20Factory,
-    };
-    use alloy::primitives::{Address, U256};
-    use tempo_contracts::precompiles::ITIP20Factory;
-
-    /// Test that when finalize_streams fails for one token but succeeds for others,
-    /// only the successfully finalized tokens are removed from the registry array.
-    /// The failed token should remain in the array for retry on the next block.
-    #[test]
-    fn test_finalize_streams_partial_failure() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        // Create TIP20 factory and initialize it
-        let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize()?;
-
-        // Create three tokens
-        let token1_id_u256 = factory.create_token(
-            admin,
-            ITIP20Factory::createTokenCall {
-                name: "Token1".to_string(),
-                symbol: "TK1".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: LINKING_USD_ADDRESS,
-                admin,
-            },
-        )?;
-        let token1_id = token1_id_u256.to::<u64>();
-        let token1_address = token_id_to_address(token1_id);
-
-        let token2_id_u256 = factory.create_token(
-            admin,
-            ITIP20Factory::createTokenCall {
-                name: "Token2".to_string(),
-                symbol: "TK2".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: LINKING_USD_ADDRESS,
-                admin,
-            },
-        )?;
-        let token2_id = token2_id_u256.to::<u64>();
-        let token2_address = token_id_to_address(token2_id);
-
-        let token3_id_u256 = factory.create_token(
-            admin,
-            ITIP20Factory::createTokenCall {
-                name: "Token3".to_string(),
-                symbol: "TK3".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: LINKING_USD_ADDRESS,
-                admin,
-            },
-        )?;
-        let token3_id = token3_id_u256.to::<u64>();
-        let token3_address = token_id_to_address(token3_id);
-
-        // Initialize registry
-        let mut registry = TIP20RewardsRegistry::new(&mut storage);
-        registry.initialize()?;
-
-        let end_time = 100u128;
-
-        // Add all three tokens to the registry for the same end time
-        registry.add_stream(token1_address, end_time)?;
-        registry.add_stream(token2_address, end_time)?;
-        registry.add_stream(token3_address, end_time)?;
-
-        // Verify all three are in the array
-        let tokens_before = registry.get_streams_ending_at_timestamp(end_time)?;
-        assert_eq!(tokens_before.len(), 3);
-
-        // Set up token1 and token3 with valid state (scheduled rate decrease)
-        let rate = U256::from(100);
-        let slot1 = mapping_slot(
-            end_time.to_be_bytes(),
-            reward_slots::SCHEDULED_RATE_DECREASE,
-        );
-        registry.storage.sstore(token1_address, slot1, rate)?;
-        registry
-            .storage
-            .sstore(token1_address, reward_slots::TOTAL_REWARD_PER_SECOND, rate)?;
-
-        let slot3 = mapping_slot(
-            end_time.to_be_bytes(),
-            reward_slots::SCHEDULED_RATE_DECREASE,
-        );
-        registry.storage.sstore(token3_address, slot3, rate)?;
-        registry
-            .storage
-            .sstore(token3_address, reward_slots::TOTAL_REWARD_PER_SECOND, rate)?;
-
-        // Corrupt token2's state: set scheduled_rate_decrease > total_reward_per_second
-        // This will cause an underflow error when trying to finalize
-        let slot2 = mapping_slot(
-            end_time.to_be_bytes(),
-            reward_slots::SCHEDULED_RATE_DECREASE,
-        );
-        registry
-            .storage
-            .sstore(token2_address, slot2, U256::from(1000))?; // Large decrease
-        registry.storage.sstore(
-            token2_address,
-            reward_slots::TOTAL_REWARD_PER_SECOND,
-            U256::from(10),
-        )?; // Small total
-
-        // Set timestamp and call finalize_streams
-        registry.storage.set_timestamp(U256::from(end_time));
-        registry.finalize_streams(Address::ZERO)?;
-
-        // Check the results:
-        // - Token2 should still be in the array (failed to finalize)
-        // - Token1 and Token3 should be removed (successfully finalized)
-        let tokens_after = registry.get_streams_ending_at_timestamp(end_time)?;
-        assert_eq!(tokens_after.len(), 1, "Only the failed token should remain");
-        assert_eq!(
-            tokens_after[0], token2_address,
-            "Token2 should remain in array"
-        );
-
-        // Verify token1 and token3 were finalized (scheduled_rate_decrease cleared)
-        let token1_rate = registry.storage.sload(token1_address, slot1)?;
-        assert_eq!(
-            token1_rate,
-            U256::ZERO,
-            "Token1 should have cleared scheduled decrease"
-        );
-
-        let token3_rate = registry.storage.sload(token3_address, slot3)?;
-        assert_eq!(
-            token3_rate,
-            U256::ZERO,
-            "Token3 should have cleared scheduled decrease"
-        );
-
-        // Verify token2 was NOT finalized (scheduled_rate_decrease still set)
-        let token2_rate = registry.storage.sload(token2_address, slot2)?;
-        assert_eq!(
-            token2_rate,
-            U256::from(1000),
-            "Token2 should still have scheduled decrease"
-        );
 
         Ok(())
     }
