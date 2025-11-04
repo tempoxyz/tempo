@@ -18,7 +18,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             .try_into()
             .unwrap();
 
-        match selector {
+        let result = match selector {
             // Metadata
             ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(|| self.name()),
             ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(|| self.symbol()),
@@ -189,7 +189,12 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
             )),
-        }
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.storage.gas_remaining();
+            res
+        })
     }
 }
 

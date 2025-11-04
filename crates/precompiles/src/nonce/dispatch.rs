@@ -14,7 +14,7 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
             .try_into()
             .unwrap();
 
-        match selector {
+        let result = match selector {
             INonce::getNonceCall::SELECTOR => {
                 view::<INonce::getNonceCall>(calldata, |call| self.get_nonce(call))
             }
@@ -26,6 +26,11 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
             )),
-        }
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.storage.gas_remaining();
+            res
+        })
     }
 }

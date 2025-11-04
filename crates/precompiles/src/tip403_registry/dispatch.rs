@@ -17,7 +17,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {
             .try_into()
             .unwrap();
 
-        match selector {
+        let result = match selector {
             ITIP403Registry::policyIdCounterCall::SELECTOR => {
                 view::<ITIP403Registry::policyIdCounterCall>(calldata, |_call| {
                     self.policy_id_counter()
@@ -65,7 +65,12 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
             )),
-        }
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.storage.gas_remaining();
+            res
+        })
     }
 }
 

@@ -39,7 +39,7 @@ where
         async move {
             tx_req.nonce = Some(nonce);
             tx_req.chain_id = Some(chain_id);
-            tx_req.gas = tx_req.gas.or(Some(400__000));
+            tx_req.gas = tx_req.gas.or(Some(400_000));
             tx_req.max_fee_per_gas = tx_req.max_fee_per_gas.or(Some(20e9 as u128));
             tx_req.max_priority_fee_per_gas =
                 tx_req.max_priority_fee_per_gas.or(Some(20e9 as u128));

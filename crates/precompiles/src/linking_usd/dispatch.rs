@@ -19,7 +19,7 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             .try_into()
             .unwrap();
 
-        match selector {
+        let result = match selector {
             // Metadata
             ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(|| self.name()),
             ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(|| self.symbol()),
@@ -156,6 +156,11 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             }
 
             _ => Err(PrecompileError::Other("Unknown selector".to_string())),
-        }
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.token.storage.gas_remaining();
+            res
+        })
     }
 }

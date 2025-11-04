@@ -114,6 +114,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .ok_or(TempoPrecompileError::OutOfGas)?;
         Ok(())
     }
+
+    #[inline]
+    fn gas_remaining(&self) -> u64 {
+        self.gas_remaining
+    }
 }
 
 impl From<EvmInternalsError> for TempoPrecompileError {

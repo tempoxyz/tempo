@@ -84,4 +84,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     fn deduct_gas(&mut self, _gas: u64) -> Result<(), TempoPrecompileError> {
         Ok(())
     }
+
+    fn gas_remaining(&self) -> u64 {
+        0
+    }
 }
