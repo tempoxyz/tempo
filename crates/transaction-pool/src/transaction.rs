@@ -35,7 +35,8 @@ impl TempoPooledTransaction {
                 cost: calc_gas_balance_spending(
                     transaction.gas_limit(),
                     transaction.max_fee_per_gas(),
-                ),
+                )
+                .saturating_add(transaction.value()),
                 encoded_length: transaction.encode_2718_len(),
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
