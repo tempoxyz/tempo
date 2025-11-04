@@ -58,8 +58,8 @@ fn validator_can_join_later() {
 
         // Verify that backfill was triggered
         assert!(
-            get_pipeline_runs(&metrics_recorder) >= 1,
-            "Backfill should have been triggered at least once"
+            get_pipeline_runs(&metrics_recorder) == 1,
+            "Backfill should have been triggered once"
         );
 
         // Verify that the node is still progressing after backfill
