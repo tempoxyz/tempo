@@ -237,9 +237,6 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         if !refund_amount.is_zero() {
             let mut tip20_token = TIP20Token::from_address(fee_token, self.storage);
             tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
-            println!(
-                "transfer_fee_post_tx {fee_token:?} {fee_payer:?} {refund_amount:?} {actual_spending:?}"
-            );
         }
 
         // Execute fee swap and track collected fees
