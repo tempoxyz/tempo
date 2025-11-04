@@ -313,8 +313,8 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         let value = self.storage.sload(TIP403_REGISTRY_ADDRESS, slot)?;
 
         // Extract policy type (low 128 bits) and admin policy ID (high 128 bits)
-        let policy_type = (value.to::<U256>() & U256::from(0xFF)).byte(0);
-        let admin: U256 = value.to::<U256>() >> 8;
+        let policy_type = (value & U256::from(0xFF)).byte(0);
+        let admin: U256 = value >> 8;
 
         Ok(PolicyData {
             policy_type: policy_type.try_into().unwrap(),
