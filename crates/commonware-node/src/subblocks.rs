@@ -202,36 +202,36 @@ impl<TContext: Spawner + Metrics> Actor<TContext> {
     /// Tracking of the current sconsensus state by listening to notarizations and nullifications.
     #[instrument(skip_all, fields(event.epoch = event.epoch(), event.view = event.view()))]
     fn on_consensus_event(&mut self, event: Activity<Scheme<PublicKey, MinSig>, Digest>) {
-        match event {
+        let (new_tip, new_round, new_cert) = match event {
             Activity::Notarization(n) => {
-                // If we have a newer notarization, record new tip and certificate.
-                if let Some((round, tip, cert)) = &mut self.consensus_tip
-                    && *round < n.proposal.round
-                {
-                    if *tip != n.proposal.payload.0 {
-                        // Clear collected subblocks if we have a new tip.
-                        self.subblocks.clear();
-                    }
-                    *round = n.proposal.round;
-                    *tip = n.proposal.payload.0;
-                    *cert = n.certificate;
-                } else if self.consensus_tip.is_none() {
-                    // Record initial tip on first notarization.
-                    self.consensus_tip =
-                        Some((n.proposal.round, n.proposal.payload.0, n.certificate));
-                }
+                (Some(n.proposal.payload.0), n.proposal.round, n.certificate)
             }
-            Activity::Nullification(n) => {
-                // On a newer nullification, update round and certificate.
-                if let Some((round, _, cert)) = &mut self.consensus_tip
-                    && *round < n.round
-                {
-                    *round = n.round;
-                    *cert = n.certificate;
-                }
+            Activity::Finalization(n) => {
+                (Some(n.proposal.payload.0), n.proposal.round, n.certificate)
             }
+            Activity::Nullification(n) => (None, n.round, n.certificate),
             _ => return,
         };
+
+        if let Some((round, tip, cert)) = &mut self.consensus_tip
+            && *round <= new_round
+        {
+            *round = new_round;
+            *cert = new_cert;
+
+            if let Some(new_tip) = new_tip
+                && *tip != new_tip
+            {
+                // Clear collected subblocks if we have a new tip.
+                self.subblocks.clear();
+                *tip = new_tip;
+            }
+        } else if self.consensus_tip.is_none()
+            && let Some(new_tip) = new_tip
+        {
+            // Initialize consensus tip once we know the tip block hash.
+            self.consensus_tip = Some((new_round, new_tip, new_cert));
+        }
 
         let Some((round, tip, certificate)) = &self.consensus_tip else {
             return;
@@ -378,7 +378,7 @@ impl<TContext: Spawner + Metrics> Actor<TContext> {
     ) {
         let subblock = match subblock {
             Ok(subblock) => subblock,
-            Err(err) => {
+            Err(error) => {
                 warn!(%error, "failed to build subblock");
                 return;
             }
