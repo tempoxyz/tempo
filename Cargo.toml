@@ -177,6 +177,7 @@ alloy-eips = "1.0.41"
 alloy-genesis = "1.0.41"
 alloy-hardforks = "0.4.3"
 alloy-primitives = "1.4.1"
+alloy-provider = { version = "1.0.41", default-features = false }
 alloy-sol-types = "1.4.1"
 alloy-rlp = "0.3.12"
 alloy-rpc-types-engine = "1.0.41"

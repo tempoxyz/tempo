@@ -6,6 +6,9 @@ use alloy_network::{
     UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
+use alloy_provider::fillers::{
+    ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
+};
 use alloy_rpc_types_eth::AccessList;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
@@ -272,6 +275,14 @@ impl TempoTransactionRequest {
         } else {
             Err(fields)
         }
+    }
+}
+
+impl RecommendedFillers for TempoNetwork {
+    type RecommendedFillers = JoinFill<GasFiller, JoinFill<NonceFiller, ChainIdFiller>>;
+
+    fn recommended_fillers() -> Self::RecommendedFillers {
+        Default::default()
     }
 }
 

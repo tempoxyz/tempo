@@ -11428,6 +11428,7 @@ dependencies = [
  "alloy-eips",
  "alloy-network",
  "alloy-primitives",
+ "alloy-provider",
  "alloy-rpc-types-eth",
  "reth-evm",
  "reth-rpc-convert",
