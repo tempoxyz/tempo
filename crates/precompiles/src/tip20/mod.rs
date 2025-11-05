@@ -915,7 +915,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let bytes = value.to_be_bytes::<32>();
         let len = bytes[31] as usize / 2; // Last byte stores length * 2 for short strings
         if len > 31 {
-            panic!("String too long, we shouldn't have stored this in the first place.");
+            // NOTE: This should never happen given that we safeguard this in `write_string`.
+            // Regardless, we return an error in this case rather than panicking.
+            Err(TIP20Error::string_too_long().into())
         } else {
             Ok(String::from_utf8_lossy(&bytes[..len]).to_string())
         }
