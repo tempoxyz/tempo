@@ -22,6 +22,7 @@ reth-storage-api.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
 alloy-eips.workspace = true
 
 thiserror.workspace = true

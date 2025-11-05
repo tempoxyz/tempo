@@ -194,12 +194,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         max_amount: U256,
     ) -> Result<Address> {
         // Get the validator's token preference
-        let validator_slot = validator_token_slot(self.beneficiary);
-        let mut validator_token = self.sload(validator_slot)?.into_address();
-
-        if validator_token.is_zero() {
-            validator_token = DEFAULT_FEE_TOKEN;
-        }
+        let validator_token = self.get_validator_token()?;
 
         // Verify pool liquidity if user token differs from validator token
         if user_token != validator_token {

@@ -1,4 +1,6 @@
 use crate::transaction::TempoPooledTransaction;
+use alloy_consensus::Transaction;
+use alloy_sol_types::SolCall;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -8,7 +10,10 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator,
 };
-use tempo_precompiles::provider::TIPFeeStateProviderExt;
+use tempo_precompiles::{
+    TIP_FEE_MANAGER_ADDRESS, provider::TIPFeeStateProviderExt,
+    tip_fee_manager::IFeeManager::setUserTokenCall,
+};
 use tempo_primitives::TempoTxEnvelope;
 
 /// Validator for Tempo transactions.
@@ -58,9 +63,18 @@ where
             }
         };
 
-        let balance = match state_provider
-            .get_fee_token_balance(fee_payer, transaction.inner().fee_token())
+        let tx_fee_token = if let Some(fee_token) = transaction.inner().fee_token() {
+            Some(fee_token)
+        } else if fee_payer == transaction.sender()
+            && transaction.inner().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+            && let Ok(call) = setUserTokenCall::abi_decode(transaction.inner().input())
         {
+            Some(call.token)
+        } else {
+            None
+        };
+
+        let balance = match state_provider.get_fee_token_balance(fee_payer, tx_fee_token) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));

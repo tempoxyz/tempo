@@ -1,5 +1,14 @@
-use alloy::{primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder};
+use alloy::{
+    primitives::U256,
+    providers::{Provider, ProviderBuilder},
+    signers::local::MnemonicBuilder,
+    sol_types::SolCall,
+};
+use alloy_eips::Encodable2718;
+use alloy_network::TxSignerSync;
+use tempo_contracts::precompiles::IFeeManager::setUserTokenCall;
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_primitives::TxFeeToken;
 
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
 #[tokio::test(flavor = "multi_thread")]
@@ -15,7 +24,9 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .index(0)?
         .build()?;
     let sender_address = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+    let provider = ProviderBuilder::new()
+        .wallet(wallet.clone())
+        .connect_http(http_url);
 
     // Setup payment token
     let payment_token = crate::utils::setup_test_token(provider.clone(), sender_address).await?;
@@ -110,13 +121,27 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // Now set the user's fee token to our custom payment token (not USDC)
     // This ensures subsequent transactions will require a swap through the drained FeeAMM
     println!("Setting user's fee token preference...");
-    use tempo_contracts::precompiles::IFeeManager;
-    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    fee_manager
-        .setUserToken(payment_token_addr)
-        .send()
+    let mut tx = TxFeeToken {
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        to: TIP_FEE_MANAGER_ADDRESS.into(),
+        input: setUserTokenCall {
+            token: payment_token_addr,
+        }
+        .abi_encode()
+        .into(),
+        chain_id: provider.get_chain_id().await?,
+        max_fee_per_gas: provider.get_gas_price().await?,
+        max_priority_fee_per_gas: provider.get_gas_price().await?,
+        nonce: provider.get_transaction_count(sender_address).await?,
+        gas_limit: 100000,
+        ..Default::default()
+    };
+    let signature = wallet.sign_transaction_sync(&mut tx).unwrap();
+    let tx = tx.into_signed(signature);
+    provider
+        .send_raw_transaction(&tx.encoded_2718())
         .await?
-        .get_receipt()
+        .watch()
         .await?;
 
     // Now try to send payment transactions that require fee swaps
