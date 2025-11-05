@@ -3,7 +3,7 @@
 use std::{cmp::Ordering, fmt::Debug};
 
 use alloy_evm::EvmInternals;
-use alloy_primitives::{Address, B256, U256, b256};
+use alloy_primitives::{Address, B256, Log, U256, b256};
 use revm::{
     Database,
     context::{
@@ -12,7 +12,7 @@ use revm::{
         transaction::{AccessListItem, AccessListItemTr},
     },
     handler::{
-        EvmTr, FrameResult, FrameTr, Handler,
+        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
         pre_execution::{self, calculate_caller_fee},
         validation,
     },
@@ -77,6 +77,8 @@ pub struct TempoEvmHandler<DB, I> {
     fee_token: Address,
     /// Fee payer for the transaction.
     fee_payer: Address,
+    /// Logs
+    logs: Vec<Log>,
     /// Phantom data to avoid type inference issues.
     _phantom: core::marker::PhantomData<(DB, I)>,
 }
@@ -87,6 +89,7 @@ impl<DB, I> TempoEvmHandler<DB, I> {
         Self {
             fee_token: Address::default(),
             fee_payer: Address::default(),
+            logs: Vec::new(),
             _phantom: core::marker::PhantomData,
         }
     }
@@ -108,6 +111,12 @@ impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
 {
+    /// Take logs from the handler
+    #[inline]
+    pub fn take_logs(&mut self) -> Vec<Log> {
+        std::mem::take(&mut self.logs)
+    }
+
     /// Generic single-call execution that works with both standard and inspector exec loops.
     ///
     /// This is the core implementation that both `execute_single_call` and inspector-aware
@@ -367,6 +376,20 @@ where
             // Standard transaction - use single-call execution
             self.execute_single_call(evm, init_and_floor_gas)
         }
+    }
+
+    #[inline]
+    fn last_frame_result(
+        &mut self,
+        evm: &mut Self::Evm,
+        frame_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+    ) -> Result<(), Self::Error> {
+        self.logs.clear();
+        if !frame_result.instruction_result().is_ok() {
+            self.logs = evm.journal_mut().take_logs();
+        }
+        let mut mainnet = MainnetHandler::default();
+        mainnet.last_frame_result(evm, frame_result)
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
