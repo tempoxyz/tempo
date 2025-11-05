@@ -675,11 +675,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             quote_token.into_u256(),
         )?;
 
-        // Validate currency via TIP4217 registry
-        if self.decimals()? == 0 {
-            return Err(TIP20Error::invalid_currency().into());
-        }
-
         // Set default values
         self.storage
             .sstore(self.token_address, slots::SUPPLY_CAP, U256::MAX)?;
