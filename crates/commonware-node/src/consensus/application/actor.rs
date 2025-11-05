@@ -254,7 +254,7 @@ impl Inner<Init> {
         let source = if genesis.epoch == 0 {
             self.genesis_block.digest()
         } else {
-            // The last block of the *previous* genesis provides the "genesis"
+            // The last block of the *previous* epoch provides the "genesis"
             // of the *current* epoch. Only epoch 0 is special cased above.
             let height =
                 utils::last_block_in_epoch(self.epoch_length, genesis.epoch.saturating_sub(1));
