@@ -16,7 +16,7 @@ use std::sync::{Arc, LazyLock};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_primitives::TempoHeader;
 
-pub const TEMPO_BASE_FEE: u64 = 44_000_000_000_000;
+pub const TEMPO_BASE_FEE: u64 = 10_000_000_000;
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]

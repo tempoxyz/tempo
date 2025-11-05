@@ -159,6 +159,38 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .to::<u64>())
     }
 
+    /// Returns the PAUSE_ROLE constant
+    ///
+    /// This role identifier grants permission to pause the token contract.
+    /// The role is computed as `keccak256("PAUSE_ROLE")`.
+    pub fn pause_role() -> B256 {
+        *PAUSE_ROLE
+    }
+
+    /// Returns the UNPAUSE_ROLE constant
+    ///
+    /// This role identifier grants permission to unpause the token contract.
+    /// The role is computed as `keccak256("UNPAUSE_ROLE")`.
+    pub fn unpause_role() -> B256 {
+        *UNPAUSE_ROLE
+    }
+
+    /// Returns the ISSUER_ROLE constant
+    ///
+    /// This role identifier grants permission to mint and burn tokens.
+    /// The role is computed as `keccak256("ISSUER_ROLE")`.
+    pub fn issuer_role() -> B256 {
+        *ISSUER_ROLE
+    }
+
+    /// Returns the BURN_BLOCKED_ROLE constant
+    ///
+    /// This role identifier grants permission to burn tokens from blocked accounts.
+    /// The role is computed as `keccak256("BURN_BLOCKED_ROLE")`.
+    pub fn burn_blocked_role() -> B256 {
+        *BURN_BLOCKED_ROLE
+    }
+
     // View functions
     pub fn balance_of(&mut self, call: ITIP20::balanceOfCall) -> Result<U256> {
         self.get_balance(call.account)

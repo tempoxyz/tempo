@@ -70,6 +70,22 @@ sol! {
         function updateQuoteToken(address newQuoteToken) external;
         function finalizeQuoteTokenUpdate() external;
 
+        /// @notice Returns the role identifier for pausing the contract
+        /// @return The pause role identifier
+        function PAUSE_ROLE() external view returns (bytes32);
+
+        /// @notice Returns the role identifier for unpausing the contract
+        /// @return The unpause role identifier
+        function UNPAUSE_ROLE() external view returns (bytes32);
+
+        /// @notice Returns the role identifier for issuing tokens
+        /// @return The issuer role identifier
+        function ISSUER_ROLE() external view returns (bytes32);
+
+        /// @notice Returns the role identifier for burning tokens from blocked accounts
+        /// @return The burn blocked role identifier
+        function BURN_BLOCKED_ROLE() external view returns (bytes32);
+
         struct RewardStream {
             address funder;
             uint64 startTime;

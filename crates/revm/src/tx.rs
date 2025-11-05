@@ -74,6 +74,13 @@ impl TempoTxEnv {
             Ok(self.caller())
         }
     }
+
+    /// Returns true if the transaction is a subblock transaction.
+    pub fn is_subblock_transaction(&self) -> bool {
+        self.aa_tx_env
+            .as_ref()
+            .is_some_and(|aa| aa.subblock_transaction)
+    }
 }
 
 impl From<TxEnv> for TempoTxEnv {

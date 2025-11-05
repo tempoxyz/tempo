@@ -51,6 +51,18 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             ITIP20::allowanceCall::SELECTOR => {
                 view::<ITIP20::allowanceCall>(calldata, |call| self.allowance(call))
             }
+            ITIP20::PAUSE_ROLECall::SELECTOR => {
+                view::<ITIP20::PAUSE_ROLECall>(calldata, |_| Ok(Self::pause_role()))
+            }
+            ITIP20::UNPAUSE_ROLECall::SELECTOR => {
+                view::<ITIP20::UNPAUSE_ROLECall>(calldata, |_| Ok(Self::unpause_role()))
+            }
+            ITIP20::ISSUER_ROLECall::SELECTOR => {
+                view::<ITIP20::ISSUER_ROLECall>(calldata, |_| Ok(Self::issuer_role()))
+            }
+            ITIP20::BURN_BLOCKED_ROLECall::SELECTOR => {
+                view::<ITIP20::BURN_BLOCKED_ROLECall>(calldata, |_| Ok(Self::burn_blocked_role()))
+            }
 
             // Mutating functions that work normally
             ITIP20::approveCall::SELECTOR => {

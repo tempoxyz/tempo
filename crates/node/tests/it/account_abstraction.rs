@@ -502,8 +502,8 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
 
     let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
 
-    // Verify alice has ZERO native ETH (this is expected - gas paid via fee tokens)
-    let alice_eth_balance = provider.get_balance(alice_addr).await?;
+    // Verify alice has zero native balance
+    let alice_eth_balance = provider.get_account_info(alice_addr).await?.balance;
     assert_eq!(
         alice_eth_balance,
         U256::ZERO,
@@ -2021,8 +2021,8 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
 
     let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
 
-    // Verify alice has ZERO native ETH (this is expected - gas paid via fee tokens)
-    let alice_eth_balance = provider.get_balance(alice_addr).await?;
+    // Verify alice has zero native balance
+    let alice_eth_balance = provider.get_account_info(alice_addr).await?.balance;
     assert_eq!(
         alice_eth_balance,
         U256::ZERO,
