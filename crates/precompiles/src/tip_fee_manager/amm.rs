@@ -65,7 +65,7 @@ pub mod slots {
     pub const POOLS: U256 = uint!(0_U256);
     pub const PENDING_FEE_SWAP_IN: U256 = uint!(1_U256);
     pub const TOTAL_SUPPLY: U256 = uint!(2_U256);
-    pub const BALANCE_OF: U256 = uint!(3_U256);
+    pub const LIQUIDITY_BALANCES: U256 = uint!(3_U256);
 
     /// Get storage slot for pool data
     pub fn pool_slot(pool_id: B256) -> U256 {
@@ -83,8 +83,8 @@ pub mod slots {
     }
 
     /// Get storage slot for user's LP token balance
-    pub fn balance_of_slot(pool_id: B256, user: Address) -> U256 {
-        double_mapping_slot(pool_id, user, BALANCE_OF)
+    pub fn liquidity_balances_slot(pool_id: B256, user: Address) -> U256 {
+        double_mapping_slot(pool_id, user, LIQUIDITY_BALANCES)
     }
 }
 
@@ -713,14 +713,14 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Get user's LP token balance
-    pub fn get_balance_of(&mut self, pool_id: B256, user: Address) -> Result<U256> {
-        let slot = slots::balance_of_slot(pool_id, user);
+    pub fn get_liquidity_balances(&mut self, pool_id: B256, user: Address) -> Result<U256> {
+        let slot = slots::liquidity_balances_slot(pool_id, user);
         self.sload(slot)
     }
 
     /// Set user's LP token balance
-    fn set_balance_of(&mut self, pool_id: B256, user: Address, balance: U256) -> Result<()> {
-        let slot = slots::balance_of_slot(pool_id, user);
+    fn set_liquidity_balances(&mut self, pool_id: B256, user: Address, balance: U256) -> Result<()> {
+        let slot = slots::liquidity_balances_slot(pool_id, user);
         self.sstore(slot, balance)
     }
 

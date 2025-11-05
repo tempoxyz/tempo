@@ -486,7 +486,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// Get liquidity balance of a user for a pool (inherited from TIPFeeAMM)
     pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> Result<U256> {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.get_balance_of(call.poolId, call.user)
+        amm.get_liquidity_balances(call.poolId, call.user)
     }
 
     pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> B256 {
