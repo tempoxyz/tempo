@@ -1,8 +1,8 @@
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageOps},
-    tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
-    tip20::{ITIP20, TIP20Token},
+    tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, validate_usd_currency},
+    tip20::{ITIP20, TIP20Token, USD_CURRENCY},
 };
 use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
@@ -184,6 +184,10 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         amount_out: U256,
         to: Address,
     ) -> Result<U256, TempoPrecompileError> {
+        // Validate both tokens are USD currency
+        validate_usd_currency(user_token, self.storage)?;
+        validate_usd_currency(validator_token, self.storage)?;
+
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(pool_id)?;
 
@@ -254,6 +258,10 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         if user_token == validator_token {
             return Err(TIPFeeAMMError::identical_addresses().into());
         }
+
+        // Validate both tokens are USD currency
+        validate_usd_currency(user_token, self.storage)?;
+        validate_usd_currency(validator_token, self.storage)?;
 
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(pool_id)?;
@@ -354,6 +362,10 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         if user_token == validator_token {
             return Err(TIPFeeAMMError::identical_addresses().into());
         }
+
+        // Validate both tokens are USD currency
+        validate_usd_currency(user_token, self.storage)?;
+        validate_usd_currency(validator_token, self.storage)?;
 
         let pool_id = self.get_pool_id(user_token, validator_token);
         // Check user has sufficient liquidity
