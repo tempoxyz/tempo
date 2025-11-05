@@ -1731,6 +1731,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
+        // Generate random currency strings using FixedBytes up to the 31 character limit
         for _ in 0..50 {
             let mut token = TIP20Token::new(1, &mut storage);
 
@@ -1752,10 +1753,11 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_currency() -> eyre::Result<()> {
+    fn test_invalid_currency_string() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
+        // Generate random currency strings longer than the 31 character limit
         for _ in 0..10 {
             let mut token = TIP20Token::new(1, &mut storage);
 
