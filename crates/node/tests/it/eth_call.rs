@@ -237,12 +237,11 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
     let calldata = token.mint(caller, U256::from(1000)).calldata().clone();
     let tx = TransactionRequest::default()
         .to(*token.address())
-        .gas_limit(300_000)
         .input(calldata.into());
 
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
-    assert_eq!(gas, 218725);
+    assert_eq!(gas, 106741);
 
     // ensure we can successfully send the tx with that gas
     let receipt = provider
@@ -343,7 +342,6 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .from(user_address)
         .to(*user_fee_token.address())
-        .gas_limit(300_000)
         .input(TransactionInput::new(calldata));
 
     // Estimate gas when user fee token differs from validator fee token
