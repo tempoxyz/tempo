@@ -183,6 +183,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         *ISSUER_ROLE
     }
 
+    /// Returns the BURN_BLOCKED_ROLE constant
+    ///
+    /// This role identifier grants permission to burn tokens from blocked accounts.
+    /// The role is computed as `keccak256("BURN_BLOCKED_ROLE")`.
+    pub fn burn_blocked_role() -> B256 {
+        *BURN_BLOCKED_ROLE
+    }
+
     // View functions
     pub fn balance_of(&mut self, call: ITIP20::balanceOfCall) -> Result<U256> {
         self.get_balance(call.account)

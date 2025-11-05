@@ -62,6 +62,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::ISSUER_ROLECall::SELECTOR => {
                 view::<ITIP20::ISSUER_ROLECall>(calldata, |_| Ok(Self::issuer_role()))
             }
+            ITIP20::BURN_BLOCKED_ROLECall::SELECTOR => {
+                view::<ITIP20::BURN_BLOCKED_ROLECall>(calldata, |_| Ok(Self::burn_blocked_role()))
+            }
 
             // State changing functions
             ITIP20::transferFromCall::SELECTOR => {
