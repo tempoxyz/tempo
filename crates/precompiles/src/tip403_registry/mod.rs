@@ -1,5 +1,6 @@
 pub mod dispatch;
 
+use tempo_contracts::precompiles::ITIP403Registry::PolicyType;
 pub use tempo_contracts::precompiles::{ITIP403Registry, TIP403RegistryError, TIP403RegistryEvent};
 
 use crate::{
@@ -316,8 +317,10 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         let policy_type = (value & U256::from(0xFF)).byte(0);
         let admin: U256 = value >> 8;
 
+        let policy_type: PolicyType = policy_type.try_into().unwrap_or(PolicyType::__Invalid);
+
         Ok(PolicyData {
-            policy_type: policy_type.try_into().unwrap(),
+            policy_type,
             admin: admin.into_address(),
         })
     }
