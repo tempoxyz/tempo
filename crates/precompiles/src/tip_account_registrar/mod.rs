@@ -2,7 +2,7 @@ pub mod dispatch;
 
 pub use tempo_contracts::precompiles::ITipAccountRegistrar;
 
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{error::Result, storage::PrecompileStorageProvider};
 use alloy::{
     eips::eip7702::constants::SECP256K1N_HALF,
     primitives::{Address, B512, U256},
@@ -24,7 +24,7 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
     pub fn delegate_to_default(
         &mut self,
         call: ITipAccountRegistrar::delegateToDefaultCall,
-    ) -> Result<Address, TempoPrecompileError> {
+    ) -> Result<Address> {
         let ITipAccountRegistrar::delegateToDefaultCall { hash, signature } = call;
 
         let (sig, v) = validate_signature(&signature)?;
@@ -56,15 +56,16 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
 
 /// Validates an ECDSA signature according to Ethereum standards.
 /// Accepts recovery values `v ∈ {0, 1, 27, 28}` and enforces EIP-2 low-s requirement.
-fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TIPAccountRegistrarError> {
+fn validate_signature(signature: &[u8]) -> Result<(B512, u8)> {
     if signature.len() != 65 {
-        return Err(TIPAccountRegistrarError::invalid_signature());
+        return Err(TIPAccountRegistrarError::invalid_signature().into());
     }
 
     // Extract signature components
     // r: bytes 0-31 bytes
     // s: bytes 32-63 bytes
     // v: byte 64
+    // SAFETY: This is safe to unwrap because we already validated length == 65
     let sig: &[u8; 64] = signature[0..64].try_into().unwrap();
     let mut v = signature[64];
     // Normalize v and bound-check
@@ -72,14 +73,14 @@ fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TIPAccountRegistra
         27 | 28 => v - 27,
         0 | 1 => v,
         _ => {
-            return Err(TIPAccountRegistrarError::invalid_signature());
+            return Err(TIPAccountRegistrarError::invalid_signature().into());
         }
     };
 
     // Enforce EIP-2 low-s
     let s = U256::from_be_slice(&sig[32..64]);
     if s > SECP256K1N_HALF {
-        return Err(TIPAccountRegistrarError::invalid_signature());
+        return Err(TIPAccountRegistrarError::invalid_signature().into());
     }
 
     Ok((sig.into(), v))
@@ -88,7 +89,7 @@ fn validate_signature(signature: &[u8]) -> Result<(B512, u8), TIPAccountRegistra
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::hashmap::HashMapStorageProvider;
+    use crate::{error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider};
     use alloy::primitives::keccak256;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
