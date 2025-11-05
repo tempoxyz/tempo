@@ -374,18 +374,20 @@ where
         }
     }
 
+    /// Take logs from the Journal if outcome is Halt Or Revert.
     #[inline]
-    fn last_frame_result(
+    fn execution_result(
         &mut self,
         evm: &mut Self::Evm,
-        frame_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
-    ) -> Result<(), Self::Error> {
+        result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.logs.clear();
-        if !frame_result.instruction_result().is_ok() {
+        if !result.instruction_result().is_ok() {
             evm.logs = evm.journal_mut().take_logs();
         }
+
         let mut mainnet = MainnetHandler::default();
-        mainnet.last_frame_result(evm, frame_result)
+        mainnet.execution_result(evm, result)
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
