@@ -421,7 +421,13 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
 
-            self.set_total_supply(pool_id, MIN_LIQUIDITY)?;
+            self.set_total_supply(
+                pool_id,
+                total_supply
+                    .checked_add(MIN_LIQUIDITY)
+                    .ok_or(TempoPrecompileError::under_overflow())?,
+            )?;
+
             half_amount
                 .checked_sub(MIN_LIQUIDITY)
                 .ok_or(TIPFeeAMMError::insufficient_liquidity())?
