@@ -365,8 +365,8 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
                 .checked_add(liquidity)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
-        let balance = self.get_balance_of(pool_id, to)?;
-        self.set_balance_of(
+        let balance = self.get_liquidity_balances(pool_id, to)?;
+        self.set_liquidity_balances(
             pool_id,
             to,
             balance
@@ -485,8 +485,8 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
-        let balance = self.get_balance_of(pool_id, to)?;
-        self.set_balance_of(
+        let balance = self.get_liquidity_balances(pool_id, to)?;
+        self.set_liquidity_balances(
             pool_id,
             to,
             balance
@@ -530,7 +530,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
 
         let pool_id = self.get_pool_id(user_token, validator_token);
         // Check user has sufficient liquidity
-        let balance = self.get_balance_of(pool_id, msg_sender)?;
+        let balance = self.get_liquidity_balances(pool_id, msg_sender)?;
         if balance < liquidity {
             return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
@@ -541,7 +541,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             self.calculate_burn_amounts(&pool, pool_id, liquidity)?;
 
         // Burn LP tokens
-        self.set_balance_of(
+        self.set_liquidity_balances(
             pool_id,
             msg_sender,
             balance
@@ -719,7 +719,12 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
     }
 
     /// Set user's LP token balance
-    fn set_liquidity_balances(&mut self, pool_id: B256, user: Address, balance: U256) -> Result<()> {
+    fn set_liquidity_balances(
+        &mut self,
+        pool_id: B256,
+        user: Address,
+        balance: U256,
+    ) -> Result<()> {
         let slot = slots::liquidity_balances_slot(pool_id, user);
         self.sstore(slot, balance)
     }
