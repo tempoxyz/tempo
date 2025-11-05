@@ -469,6 +469,15 @@ fn initialize_fee_manager(
             .expect("Could not set fee token");
     }
 
+    fee_manager
+        .set_validator_token(
+            Address::ZERO,
+            IFeeManager::setValidatorTokenCall {
+                token: default_fee_address,
+            },
+        )
+        .expect("Could not set 0x00 validator fee token");
+
     // Set validator fee tokens to linking USD
     for validator in validators {
         fee_manager
@@ -478,7 +487,7 @@ fn initialize_fee_manager(
                     token: LINKING_USD_ADDRESS,
                 },
             )
-            .expect("Could not 0x00 validator fee token");
+            .expect("Could not set validator fee token");
     }
 }
 
