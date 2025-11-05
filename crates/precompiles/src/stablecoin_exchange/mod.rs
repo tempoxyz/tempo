@@ -18,7 +18,7 @@ pub use orderbook::{
 
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
-    error::TempoPrecompileError,
+    error::Result,
     linking_usd::LinkingUSD,
     stablecoin_exchange::orderbook::{
         compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
@@ -61,7 +61,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Initializes the contract
     ///
     /// This ensures the [`StablecoinExchange`] isn't empty and prevents state clear.
-    pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
+    pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
         self.storage.set_code(
             self.address,
@@ -70,7 +70,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Read pending order ID
-    fn get_pending_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
+    fn get_pending_order_id(&mut self) -> Result<u128> {
         Ok(self
             .storage
             .sload(self.address, slots::PENDING_ORDER_ID)?
@@ -78,13 +78,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Set pending order ID
-    fn set_pending_order_id(&mut self, order_id: u128) -> Result<(), TempoPrecompileError> {
+    fn set_pending_order_id(&mut self, order_id: u128) -> Result<()> {
         self.storage
             .sstore(self.address, slots::PENDING_ORDER_ID, U256::from(order_id))
     }
 
     /// Read active order ID
-    fn get_active_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
+    fn get_active_order_id(&mut self) -> Result<u128> {
         Ok(self
             .storage
             .sload(self.address, slots::ACTIVE_ORDER_ID)?
@@ -92,24 +92,20 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Set active order ID
-    fn set_active_order_id(&mut self, order_id: u128) -> Result<(), TempoPrecompileError> {
+    fn set_active_order_id(&mut self, order_id: u128) -> Result<()> {
         self.storage
             .sstore(self.address, slots::ACTIVE_ORDER_ID, U256::from(order_id))
     }
 
     /// Increment and return the pending order id
-    fn increment_pending_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
+    fn increment_pending_order_id(&mut self) -> Result<u128> {
         let next_id = self.get_pending_order_id()? + 1;
         self.set_pending_order_id(next_id)?;
         Ok(next_id)
     }
 
     /// Get user's balance for a specific token
-    pub fn balance_of(
-        &mut self,
-        user: Address,
-        token: Address,
-    ) -> Result<u128, TempoPrecompileError> {
+    pub fn balance_of(&mut self, user: Address, token: Address) -> Result<u128> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
         let balance = self.storage.sload(self.address, balance_slot)?.to::<u128>();
@@ -119,7 +115,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`
-    pub fn get_order(&mut self, order_id: u128) -> Result<Order, TempoPrecompileError> {
+    pub fn get_order(&mut self, order_id: u128) -> Result<Order> {
         let order = Order::from_storage(order_id, self.storage, self.address)?;
 
         // If the order is not filled and currently active
@@ -131,12 +127,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Set user's balance for a specific token
-    fn set_balance(
-        &mut self,
-        user: Address,
-        token: Address,
-        amount: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    fn set_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let user_slot = mapping_slot(user.as_slice(), slots::BALANCES);
         let balance_slot = mapping_slot(token.as_slice(), user_slot);
         self.storage
@@ -144,34 +135,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Add to user's balance
-    fn increment_balance(
-        &mut self,
-        user: Address,
-        token: Address,
-        amount: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    fn increment_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
         self.set_balance(user, token, current + amount)
     }
 
     /// Subtract from user's balance
-    fn sub_balance(
-        &mut self,
-        user: Address,
-        token: Address,
-        amount: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
         self.set_balance(user, token, current.saturating_sub(amount))
     }
 
     /// Transfer tokens, accounting for linking USD
-    fn transfer(
-        &mut self,
-        token: Address,
-        to: Address,
-        amount: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<()> {
         if token == LINKING_USD_ADDRESS {
             LinkingUSD::new(self.storage).transfer(
                 self.address,
@@ -193,12 +169,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Transfer tokens from user, accounting for linking USD
-    fn transfer_from(
-        &mut self,
-        token: Address,
-        from: Address,
-        amount: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    fn transfer_from(&mut self, token: Address, from: Address, amount: u128) -> Result<()> {
         if token == LINKING_USD_ADDRESS {
             LinkingUSD::new(self.storage).transfer_from(
                 self.address,
@@ -227,7 +198,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         user: Address,
         token: Address,
         amount: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
             self.sub_balance(user, token, amount)
@@ -243,7 +214,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_in: Address,
         token_out: Address,
         amount_out: u128,
-    ) -> Result<u128, TempoPrecompileError> {
+    ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
@@ -261,7 +232,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_in: Address,
         token_out: Address,
         amount_in: u128,
-    ) -> Result<u128, TempoPrecompileError> {
+    ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
@@ -281,7 +252,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_in: u128,
         min_amount_out: u128,
-    ) -> Result<u128, TempoPrecompileError> {
+    ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
@@ -312,7 +283,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         token_out: Address,
         amount_out: u128,
         max_amount_in: u128,
-    ) -> Result<u128, TempoPrecompileError> {
+    ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
@@ -347,14 +318,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         base: Address,
         tick: i16,
         is_bid: bool,
-    ) -> Result<PriceLevel, TempoPrecompileError> {
+    ) -> Result<PriceLevel> {
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
         let key = compute_book_key(base, quote);
         PriceLevel::from_storage(self.storage, self.address, key, tick, is_bid)
     }
 
     /// Get active order ID
-    pub fn active_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
+    pub fn active_order_id(&mut self) -> Result<u128> {
         Ok(self
             .storage
             .sload(self.address, slots::ACTIVE_ORDER_ID)?
@@ -362,7 +333,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Get pending order ID
-    pub fn pending_order_id(&mut self) -> Result<u128, TempoPrecompileError> {
+    pub fn pending_order_id(&mut self) -> Result<u128> {
         Ok(self
             .storage
             .sload(self.address, slots::PENDING_ORDER_ID)?
@@ -370,14 +341,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Get orderbook by pair key
-    pub fn books(&mut self, pair_key: B256) -> Result<Orderbook, TempoPrecompileError> {
+    pub fn books(&mut self, pair_key: B256) -> Result<Orderbook> {
         Orderbook::from_storage(pair_key, self.storage, self.address)
     }
 
     /// Add book key to book keys array
     /// This function adds the specified book key to the `book_keys` array in storage
     /// and increments the length of the array
-    fn push_to_book_keys(&mut self, book_key: B256) -> Result<(), TempoPrecompileError> {
+    fn push_to_book_keys(&mut self, book_key: B256) -> Result<()> {
         let length = self.storage.sload(self.address, slots::BOOK_KEYS_LENGTH)?;
         self.storage.sstore(
             self.address,
@@ -390,7 +361,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Get all book keys
-    pub fn get_book_keys(&mut self) -> Result<Vec<B256>, TempoPrecompileError> {
+    pub fn get_book_keys(&mut self) -> Result<Vec<B256>> {
         let length = self.storage.sload(self.address, slots::BOOK_KEYS_LENGTH)?;
         let mut book_keys = Vec::new();
         let mut i = U256::ZERO;
@@ -404,7 +375,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         Ok(book_keys)
     }
 
-    pub fn create_pair(&mut self, base: Address) -> Result<B256, TempoPrecompileError> {
+    pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
 
         let book_key = compute_book_key(base, quote);
@@ -451,7 +422,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         amount: u128,
         is_bid: bool,
         tick: i16,
-    ) -> Result<u128, TempoPrecompileError> {
+    ) -> Result<u128> {
         let quote_token = TIP20Token::from_address(token, self.storage).quote_token()?;
 
         // Compute book_key from token pair
@@ -528,7 +499,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         is_bid: bool,
         tick: i16,
         flip_tick: i16,
-    ) -> Result<u128, TempoPrecompileError> {
+    ) -> Result<u128> {
         let quote_token = TIP20Token::from_address(token, self.storage).quote_token()?;
 
         // Compute book_key from token pair
@@ -595,7 +566,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Process all pending orders into the active orderbook
     ///
     /// Only callable by the protocol via system transaction (sender must be Address::ZERO)
-    pub fn execute_block(&mut self, sender: Address) -> Result<(), TempoPrecompileError> {
+    pub fn execute_block(&mut self, sender: Address) -> Result<()> {
         // Only protocol can call this
         if sender != Address::ZERO {
             return Err(StablecoinExchangeError::unauthorized().into());
@@ -620,7 +591,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Process a single pending order into the active orderbook
-    fn process_pending_order(&mut self, order_id: u128) -> Result<(), TempoPrecompileError> {
+    fn process_pending_order(&mut self, order_id: u128) -> Result<()> {
         let order = Order::from_storage(order_id, self.storage, self.address)?;
 
         // If the order is already canceled, return early
@@ -688,7 +659,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         order: &mut Order,
         level: &mut PriceLevel,
         fill_amount: u128,
-    ) -> Result<u128, TempoPrecompileError> {
+    ) -> Result<u128> {
         let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address)?;
         let price = tick_to_price(order.tick());
 
@@ -743,7 +714,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         book_key: B256,
         order: &mut Order,
         mut level: PriceLevel,
-    ) -> Result<(u128, Option<(PriceLevel, Order)>), TempoPrecompileError> {
+    ) -> Result<(u128, Option<(PriceLevel, Order)>)> {
         let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address)?;
         let price = tick_to_price(order.tick());
         let fill_amount = order.remaining();
@@ -856,7 +827,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         bid: bool,
         mut amount_out: u128,
         max_amount_in: u128,
-    ) -> Result<u128, TempoPrecompileError> {
+    ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = Order::from_storage(level.head, self.storage, self.address)?;
 
@@ -909,7 +880,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         bid: bool,
         mut amount_in: u128,
         min_amount_out: u128,
-    ) -> Result<u128, TempoPrecompileError> {
+    ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = Order::from_storage(level.head, self.storage, self.address)?;
 
@@ -942,11 +913,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Helper function to get best tick from orderbook
-    fn get_best_price_level(
-        &mut self,
-        book_key: B256,
-        bid: bool,
-    ) -> Result<PriceLevel, TempoPrecompileError> {
+    fn get_best_price_level(&mut self, book_key: B256, bid: bool) -> Result<PriceLevel> {
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address)?;
 
         let current_tick = if bid {
@@ -969,7 +936,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Cancel an order and refund tokens to maker
     /// Only the order maker can cancel their own order
-    pub fn cancel(&mut self, sender: Address, order_id: u128) -> Result<(), TempoPrecompileError> {
+    pub fn cancel(&mut self, sender: Address, order_id: u128) -> Result<()> {
         let order = Order::from_storage(order_id, self.storage, self.address)?;
 
         if order.maker().is_zero() {
@@ -1000,7 +967,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Cancel a pending order (not yet in the active orderbook)
-    fn cancel_pending_order(&mut self, order: Order) -> Result<(), TempoPrecompileError> {
+    fn cancel_pending_order(&mut self, order: Order) -> Result<()> {
         let orderbook = Orderbook::from_storage(order.book_key(), self.storage, self.address)?;
         let token = if order.is_bid() {
             orderbook.quote
@@ -1033,7 +1000,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Cancel an active order (already in the orderbook)
-    fn cancel_active_order(&mut self, order: Order) -> Result<(), TempoPrecompileError> {
+    fn cancel_active_order(&mut self, order: Order) -> Result<()> {
         let mut level = PriceLevel::from_storage(
             self.storage,
             self.address,
@@ -1105,12 +1072,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Withdraw tokens from exchange balance
-    pub fn withdraw(
-        &mut self,
-        user: Address,
-        token: Address,
-        amount: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    pub fn withdraw(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current_balance = self.balance_of(user, token)?;
         if current_balance < amount {
             return Err(StablecoinExchangeError::insufficient_balance().into());
@@ -1122,12 +1084,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Quote exact output amount without executing trades
-    fn quote_exact_out(
-        &mut self,
-        book_key: B256,
-        amount_out: u128,
-        is_bid: bool,
-    ) -> Result<u128, TempoPrecompileError> {
+    fn quote_exact_out(&mut self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
         let mut remaining_out = amount_out;
         let mut amount_in = 0u128;
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address)?;
@@ -1250,7 +1207,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         &mut self,
         token_in: Address,
         token_out: Address,
-    ) -> Result<Vec<(B256, bool)>, TempoPrecompileError> {
+    ) -> Result<Vec<(B256, bool)>> {
         // Cannot trade same token
         if token_in == token_out {
             return Err(StablecoinExchangeError::identical_tokens().into());
@@ -1304,10 +1261,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Validates that all pairs in the path exist and returns book keys with direction info
-    fn validate_and_build_route(
-        &mut self,
-        path: &[Address],
-    ) -> Result<Vec<(B256, bool)>, TempoPrecompileError> {
+    fn validate_and_build_route(&mut self, path: &[Address]) -> Result<Vec<(B256, bool)>> {
         let mut route = Vec::new();
 
         for i in 0..path.len() - 1 {
@@ -1333,10 +1287,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Find the path from a token to the root (LinkingUSD)
     /// Returns a vector of addresses starting with the token and ending with LinkingUSD
-    fn find_path_to_root(
-        &mut self,
-        mut token: Address,
-    ) -> Result<Vec<Address>, TempoPrecompileError> {
+    fn find_path_to_root(&mut self, mut token: Address) -> Result<Vec<Address>> {
         let mut path = vec![token];
 
         while token != LINKING_USD_ADDRESS {
@@ -1348,12 +1299,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Quote exact input amount without executing trades
-    fn quote_exact_in(
-        &mut self,
-        book_key: B256,
-        amount_in: u128,
-        is_bid: bool,
-    ) -> Result<u128, TempoPrecompileError> {
+    fn quote_exact_in(&mut self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
         let mut remaining_in = amount_in;
         let mut amount_out = 0u128;
         let orderbook = Orderbook::from_storage(book_key, self.storage, self.address)?;
@@ -1447,11 +1393,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 }
 
 impl<'a, S: PrecompileStorageProvider> StorageOps for StablecoinExchange<'a, S> {
-    fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError> {
+    fn sstore(&mut self, slot: U256, value: U256) -> Result<()> {
         self.storage.sstore(self.address, slot, value)
     }
 
-    fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError> {
+    fn sload(&mut self, slot: U256) -> Result<U256> {
         self.storage.sload(self.address, slot)
     }
 }
