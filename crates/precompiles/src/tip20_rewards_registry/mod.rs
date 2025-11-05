@@ -287,6 +287,35 @@ mod tests {
 
     #[test]
     fn test_add_stream() -> eyre::Result<()> {
+        let (mut storage, _admin) = setup_registry(1000);
+        let mut registry = TIP20RewardsRegistry::new(&mut storage);
+        registry.initialize()?;
+
+        let token_addr = Address::random();
+        let end_time = 2000u128;
+
+        registry.add_stream(token_addr, end_time)?;
+
+        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0], token_addr);
+
+        let stream_key = keccak256((token_addr, end_time).abi_encode());
+        let index = registry.get_stream_index(stream_key)?;
+        assert_eq!(index, U256::ZERO);
+
+        let token_addr2 = Address::random();
+        registry.add_stream(token_addr2, end_time)?;
+
+        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        assert_eq!(streams.len(), 2);
+        assert!(streams.contains(&token_addr));
+        assert!(streams.contains(&token_addr2));
+
+        let stream_key2 = keccak256((token_addr2, end_time).abi_encode());
+        let index2 = registry.get_stream_index(stream_key2)?;
+        assert_eq!(index2, U256::ONE);
+
         Ok(())
     }
 
