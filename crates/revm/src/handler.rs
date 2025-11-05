@@ -35,7 +35,7 @@ use tempo_contracts::{
     precompiles::{FeeManagerError, IFeeManager},
 };
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
@@ -920,6 +920,7 @@ where
     if ctx.tx().fee_payer()? == ctx.tx().caller()
         && ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
         && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input())
+        && is_tip20(call.token)
     {
         return Ok(call.token);
     }
@@ -952,7 +953,11 @@ where
         .data
         .into_address();
 
-    Ok(validator_fee_token)
+    if !validator_fee_token.is_zero() {
+        return Ok(validator_fee_token);
+    }
+
+    Ok(DEFAULT_FEE_TOKEN)
 }
 
 pub fn get_token_balance<JOURNAL>(

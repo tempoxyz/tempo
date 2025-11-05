@@ -12,7 +12,7 @@ use reth_transaction_pool::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, provider::TIPFeeStateProviderExt,
-    tip_fee_manager::IFeeManager::setUserTokenCall,
+    tip_fee_manager::IFeeManager::setUserTokenCall, tip20::is_tip20,
 };
 use tempo_primitives::TempoTxEnvelope;
 
@@ -68,6 +68,7 @@ where
         } else if fee_payer == transaction.sender()
             && transaction.inner().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
             && let Ok(call) = setUserTokenCall::abi_decode(transaction.inner().input())
+            && is_tip20(call.token)
         {
             Some(call.token)
         } else {
