@@ -1347,4 +1347,51 @@ mod tests {
             Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
     }
+
+    #[test]
+    fn test_mint_with_validator_token_identical_addresses() {
+        let (mut amm, _, user_token, _) = setup_test_amm();
+        let msg_sender = Address::random();
+        let to = Address::random();
+        let amount = uint!(10000_U256);
+
+        // Try to mint with identical user and validator tokens
+        let result = amm.mint_with_validator_token(
+            msg_sender, user_token, user_token, // Same as user_token
+            amount, to,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::IdenticalAddresses(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_mint_with_validator_token_insufficient_amount() {
+        let (mut amm, _, user_token, validator_token) = setup_test_amm();
+        let msg_sender = Address::random();
+        let to = Address::random();
+
+        // Try to mint with amount that would result in insufficient liquidity
+        // MIN_LIQUIDITY is 1000, so amount/2 must be > 1000, meaning amount must be > 2000
+        let insufficient_amount = uint!(2000_U256); // This equals MIN_LIQUIDITY when divided by 2
+
+        let result = amm.mint_with_validator_token(
+            msg_sender,
+            user_token,
+            validator_token,
+            insufficient_amount,
+            to,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InsufficientLiquidity(_)
+            ))
+        ));
+    }
 }

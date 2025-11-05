@@ -379,4 +379,73 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_mint_with_validator_token() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let validator = Address::random();
+        let admin = Address::random();
+
+        // Initialize LinkingUSD first
+        initialize_linking_usd(&mut storage, admin)?;
+
+        // Create two USD tokens
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
+
+        // Setup both tokens
+        setup_token_with_balance(&mut storage, user_token, user, U256::from(1000000u64));
+        setup_token_with_balance(&mut storage, validator_token, user, U256::from(1000000u64));
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
+
+        // Test minting with validator token only
+        let amount_validator_token = U256::from(10000u64);
+        let to = user;
+
+        let call = ITIPFeeAMM::mintWithValidatorTokenCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+            amountValidatorToken: amount_validator_token,
+            to,
+        };
+
+        let calldata = call.abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), user)?;
+
+        // Should return liquidity amount
+        let liquidity = U256::abi_decode(&result.bytes)?;
+        
+        // For first mint with validator token only, liquidity should be (amount / 2) - MIN_LIQUIDITY
+        // MIN_LIQUIDITY = 1000, so (10000 / 2) - 1000 = 4000
+        assert_eq!(liquidity, U256::from(4000u64));
+
+        // Verify pool state
+        let pool_call = ITIPFeeAMM::getPoolCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+        };
+        let pool_result = fee_manager.call(&Bytes::from(pool_call.abi_encode()), user)?;
+        let pool = ITIPFeeAMM::Pool::abi_decode(&pool_result.bytes)?;
+        
+        assert_eq!(pool.reserveUserToken, 0);
+        assert_eq!(pool.reserveValidatorToken, 10000);
+
+        // Verify LP token balance
+        let pool_id_call = ITIPFeeAMM::getPoolIdCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+        };
+        let pool_id_result = fee_manager.call(&Bytes::from(pool_id_call.abi_encode()), user)?;
+        let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
+
+        let balance_call = ITIPFeeAMM::liquidityBalancesCall { poolId: pool_id, user: to };
+        let balance_result = fee_manager.call(&Bytes::from(balance_call.abi_encode()), user)?;
+        let balance = U256::abi_decode(&balance_result.bytes)?;
+        
+        assert_eq!(balance, liquidity);
+
+        Ok(())
+    }
 }
