@@ -5,9 +5,7 @@ use revm::state::Bytecode;
 pub use tempo_contracts::precompiles::INonce;
 use tempo_contracts::precompiles::NonceError;
 
-use crate::{
-    NONCE_PRECOMPILE_ADDRESS, error::TempoPrecompileError, storage::PrecompileStorageProvider,
-};
+use crate::{NONCE_PRECOMPILE_ADDRESS, error::Result, storage::PrecompileStorageProvider};
 use alloy::primitives::{Address, U256};
 
 /// Storage slots for Nonce precompile data
@@ -58,7 +56,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     }
 
     /// Initializes the nonce manager contract.
-    pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
+    pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
         self.storage.set_code(
             NONCE_PRECOMPILE_ADDRESS,
@@ -67,7 +65,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     }
 
     /// Get the nonce for a specific account and nonce key
-    pub fn get_nonce(&mut self, call: INonce::getNonceCall) -> Result<u64, TempoPrecompileError> {
+    pub fn get_nonce(&mut self, call: INonce::getNonceCall) -> Result<u64> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
         if call.nonceKey == 0 {
@@ -85,7 +83,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     pub fn get_active_nonce_key_count(
         &mut self,
         call: INonce::getActiveNonceKeyCountCall,
-    ) -> Result<U256, TempoPrecompileError> {
+    ) -> Result<U256> {
         let slot = slots::active_key_count_slot(call.account);
         let count = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
@@ -93,11 +91,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     }
 
     /// Internal: Increment nonce for a specific account and nonce key
-    pub fn increment_nonce(
-        &mut self,
-        account: Address,
-        nonce_key: U256,
-    ) -> Result<u64, TempoPrecompileError> {
+    pub fn increment_nonce(&mut self, account: Address, nonce_key: U256) -> Result<u64> {
         if nonce_key == 0 {
             // TODO: Should this be a different error?
             return Err(NonceError::invalid_nonce_key().into());
@@ -122,7 +116,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     }
 
     /// Increment the active key count for an account
-    fn increment_active_key_count(&mut self, account: Address) -> Result<(), TempoPrecompileError> {
+    fn increment_active_key_count(&mut self, account: Address) -> Result<()> {
         let slot = slots::active_key_count_slot(account);
         let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
 
@@ -137,7 +131,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::hashmap::HashMapStorageProvider;
+    use crate::{error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider};
 
     use super::*;
     use alloy::primitives::address;
