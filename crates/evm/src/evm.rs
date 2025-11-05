@@ -8,7 +8,7 @@ use alloy_evm::{
         primitives::hardfork::SpecId,
     },
 };
-use alloy_primitives::{Address, Bytes, TxKind};
+use alloy_primitives::{Address, Bytes, Log, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
@@ -92,6 +92,14 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inner: self.inner.with_inspector(inspector),
             inspect: true,
         }
+    }
+
+    /// Takes the inner EVM's revert logs.
+    ///
+    /// This is used as a work around to allow logs to be
+    /// included for reverting transactions.
+    pub fn take_revert_logs(&mut self) -> Vec<Log> {
+        std::mem::take(&mut self.inner.logs)
     }
 }
 
