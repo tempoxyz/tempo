@@ -3,7 +3,7 @@ pub mod dispatch;
 
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{PrecompileStorageProvider, slots::mapping_slot},
     tip20::{TIP20Token, address_to_token_id_unchecked},
 };
@@ -102,7 +102,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
         let array_slot = mapping_slot(end_time.to_be_bytes(), slots::STREAMS_ENDING_AT);
         let length = self.storage.sload(self.address, array_slot)?;
-        let last_index = length - U256::ONE;
+        let last_index = length.checked_sub(U256::ONE).ok_or(TempoPrecompileError::overflow_underflow())?;
 
         if index != last_index {
             // Elements are stored at array_slot + 1 + index
@@ -143,7 +143,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         self.storage
             .sstore(self.address, element_slot, address.into_u256())?;
         self.storage
-            .sstore(self.address, array_slot, length + U256::ONE)
+            .sstore(self.address, array_slot, length.checked_add(U256::ONE).ok_or(TempoPrecompileError::overflow_underflow())?)
     }
 
     /// Gets all TIP20 token addresses with streams ending at `timestamp` from storage
@@ -182,7 +182,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             return Ok(());
         }
 
-        let mut next_timestamp = last_updated + 1;
+        let mut next_timestamp = last_updated.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?;
 
         while current_timestamp >= next_timestamp {
             let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
@@ -199,7 +199,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             let array_slot = mapping_slot(next_timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
             self.storage.sstore(self.address, array_slot, U256::ZERO)?;
 
-            next_timestamp += 1;
+            next_timestamp = next_timestamp.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?;
         }
 
         self.set_last_updated_timestamp(current_timestamp)?;
