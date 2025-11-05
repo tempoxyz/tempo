@@ -885,6 +885,21 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
+        self.storage.emit_event(
+            self.token_address,
+            TIP20Event::Transfer(ITIP20::Transfer {
+                from: to,
+                to: TIP_FEE_MANAGER_ADDRESS,
+                amount: actual_spending,
+            })
+            .into_log_data(),
+        )?;
+
+        // Exit early if there is no refund
+        if refund.is_zero() {
+            return Ok(());
+        }
+
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
         if refund > from_balance {
             return Err(
@@ -907,17 +922,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let new_to_balance = to_balance
             .checked_add(refund)
             .ok_or(TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(to, new_to_balance)?;
-
-        self.storage.emit_event(
-            self.token_address,
-            TIP20Event::Transfer(ITIP20::Transfer {
-                from: to,
-                to: TIP_FEE_MANAGER_ADDRESS,
-                amount: actual_spending,
-            })
-            .into_log_data(),
-        )
+        self.set_balance(to, new_to_balance)
     }
 
     fn read_string(&mut self, slot: U256) -> Result<String> {
