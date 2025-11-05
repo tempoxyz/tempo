@@ -31,17 +31,17 @@ where
     type ExecutionResult = ExecutionResult<HaltReason>;
 
     fn set_block(&mut self, block: Self::Block) {
-        self.0.ctx.set_block(block);
+        self.inner.ctx.set_block(block);
     }
 
     fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0.ctx.set_tx(tx);
+        self.inner.ctx.set_tx(tx);
         let mut h = TempoEvmHandler::new();
         h.run(self)
     }
 
     fn finalize(&mut self) -> Self::State {
-        self.0.ctx.journal_mut().finalize()
+        self.inner.ctx.journal_mut().finalize()
     }
 
     fn replay(
@@ -60,7 +60,7 @@ where
     DB: Database + DatabaseCommit,
 {
     fn commit(&mut self, state: Self::State) {
-        self.0.ctx.db_mut().commit(state);
+        self.inner.ctx.db_mut().commit(state);
     }
 }
 
@@ -72,11 +72,11 @@ where
     type Inspector = I;
 
     fn set_inspector(&mut self, inspector: Self::Inspector) {
-        self.0.inspector = inspector;
+        self.inner.inspector = inspector;
     }
 
     fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0.ctx.set_tx(tx);
+        self.inner.ctx.set_tx(tx);
         let mut h = TempoEvmHandler::new();
         h.inspect_run(self)
     }
@@ -99,7 +99,7 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0
+        self.inner
             .ctx
             .set_tx(TxEnv::new_system_tx_with_caller(caller, system_contract_address, data).into());
         let mut h = TempoEvmHandler::new();
@@ -118,7 +118,7 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0
+        self.inner
             .ctx
             .set_tx(TxEnv::new_system_tx_with_caller(caller, system_contract_address, data).into());
         let mut h = TempoEvmHandler::new();

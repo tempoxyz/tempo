@@ -13,7 +13,7 @@ use revm::{
         transaction::{AccessListItem, AccessListItemTr},
     },
     handler::{
-        EvmTr, FrameResult, FrameTr, Handler,
+        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
         pre_execution::{self, calculate_caller_fee},
         validation,
     },
@@ -372,6 +372,22 @@ where
             // Standard transaction - use single-call execution
             self.execute_single_call(evm, init_and_floor_gas)
         }
+    }
+
+    /// Take logs from the Journal if outcome is Halt Or Revert.
+    #[inline]
+    fn execution_result(
+        &mut self,
+        evm: &mut Self::Evm,
+        result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        evm.logs.clear();
+        if !result.instruction_result().is_ok() {
+            evm.logs = evm.journal_mut().take_logs();
+        }
+
+        let mut mainnet = MainnetHandler::default();
+        mainnet.execution_result(evm, result)
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.

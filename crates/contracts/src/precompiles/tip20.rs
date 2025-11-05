@@ -70,17 +70,6 @@ sol! {
         function updateQuoteToken(address newQuoteToken) external;
         function finalizeQuoteTokenUpdate() external;
 
-        // EIP-712 Permit
-        struct Permit {
-            address owner;
-            address spender;
-            uint256 value;
-            uint256 nonce;
-            uint256 deadline;
-        }
-        function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
-
-        function DOMAIN_SEPARATOR() external view returns (bytes32);
         /// @notice Returns the role identifier for pausing the contract
         /// @return The pause role identifier
         function PAUSE_ROLE() external view returns (bytes32);
@@ -96,7 +85,6 @@ sol! {
         /// @notice Returns the role identifier for burning tokens from blocked accounts
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
-
 
         struct RewardStream {
             address funder;
@@ -121,7 +109,7 @@ sol! {
         event Mint(address indexed to, uint256 amount);
         event Burn(address indexed from, uint256 amount);
         event BurnBlocked(address indexed from, uint256 amount);
-        event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 memo);
+        event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 indexed memo);
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
