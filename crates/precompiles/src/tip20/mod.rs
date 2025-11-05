@@ -16,7 +16,6 @@ use crate::{
     tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
-    tip4217_registry::{ITIP4217Registry, TIP4217Registry},
 };
 use alloy::{
     hex,
@@ -31,6 +30,9 @@ use tracing::trace;
 
 /// u128::MAX as U256
 const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
+
+/// Decimal precision for TIP-20 tokens
+const TIP20_DECIMALS: u8 = 6;
 
 /// TIP20 token address prefix (12 bytes for token ID encoding)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
@@ -101,9 +103,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     pub fn decimals(&mut self) -> Result<u8, TempoPrecompileError> {
-        let currency = self.currency()?;
-        Ok(TIP4217Registry::default()
-            .get_currency_decimals(ITIP4217Registry::getCurrencyDecimalsCall { currency }))
+        Ok(TIP20_DECIMALS)
     }
 
     pub fn currency(&mut self) -> Result<String, TempoPrecompileError> {
