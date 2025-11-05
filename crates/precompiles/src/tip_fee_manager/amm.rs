@@ -619,7 +619,7 @@ mod tests {
     use super::*;
     use crate::{storage::hashmap::HashMapStorageProvider, tip20::token_id_to_address};
     use alloy::primitives::{Address, uint};
-    use tempo_contracts::precompiles::{FeeManagerError, LINKING_USD_ADDRESS, TIP20Error};
+    use tempo_contracts::precompiles::{LINKING_USD_ADDRESS, TIP20Error};
 
     #[test]
     fn test_mint_identical_addresses() {
@@ -1162,9 +1162,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::FeeManagerError(
-                FeeManagerError::InvalidToken(_)
-            ))
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
 
         // Test the inverse tokens
@@ -1179,9 +1177,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::FeeManagerError(
-                FeeManagerError::InvalidToken(_)
-            ))
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
     }
 }
