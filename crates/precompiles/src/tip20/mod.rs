@@ -16,7 +16,6 @@ use crate::{
     tip20::roles::{DEFAULT_ADMIN_ROLE, RolesAuthContract},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
-    tip4217_registry::{ITIP4217Registry, TIP4217Registry},
 };
 use alloy::{
     hex,
@@ -31,6 +30,12 @@ use tracing::trace;
 
 /// u128::MAX as U256
 const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
+
+/// Decimal precision for TIP-20 tokens
+const TIP20_DECIMALS: u8 = 6;
+
+/// USD currency string constant
+pub const USD_CURRENCY: &str = "USD";
 
 /// TIP20 token address prefix (12 bytes for token ID encoding)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
@@ -91,6 +96,19 @@ pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_R
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
+/// Validates that a token has USD currency
+pub fn validate_usd_currency<S: PrecompileStorageProvider>(
+    token: Address,
+    storage: &mut S,
+) -> Result<(), TempoPrecompileError> {
+    let mut tip20_token = TIP20Token::from_address(token, storage);
+    let currency = tip20_token.currency()?;
+    if currency != USD_CURRENCY {
+        return Err(TIP20Error::invalid_currency().into());
+    }
+    Ok(())
+}
+
 impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn name(&mut self) -> Result<String> {
         self.read_string(slots::NAME)
@@ -101,9 +119,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     pub fn decimals(&mut self) -> Result<u8> {
-        let currency = self.currency()?;
-        Ok(TIP4217Registry::default()
-            .get_currency_decimals(ITIP4217Registry::getCurrencyDecimalsCall { currency }))
+        Ok(TIP20_DECIMALS)
     }
 
     pub fn currency(&mut self) -> Result<String> {
@@ -242,6 +258,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         // Verify the new quote token is a valid TIP20 token that has been deployed
         if !is_tip20(call.newQuoteToken) {
             return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // Check if the currency is USD, if so then the quote token's currency MUST also be USD
+        let currency = self.currency()?;
+        if currency == USD_CURRENCY {
+            let quote_token_currency =
+                TIP20Token::from_address(call.newQuoteToken, self.storage).currency()?;
+            if quote_token_currency != USD_CURRENCY {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
         }
 
         let new_token_id = address_to_token_id_unchecked(call.newQuoteToken);
@@ -631,6 +657,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.write_string(slots::NAME, name.to_string())?;
         self.write_string(slots::SYMBOL, symbol.to_string())?;
         self.write_string(slots::CURRENCY, currency.to_string())?;
+
+        // If the currency is USD, the quote token must also be USD
+        if currency == USD_CURRENCY {
+            let quote_token_currency =
+                TIP20Token::from_address(quote_token, self.storage).currency()?;
+            if quote_token_currency != USD_CURRENCY {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+        }
+
         self.storage.sstore(
             self.token_address,
             slots::QUOTE_TOKEN,
@@ -642,11 +678,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             slots::NEXT_QUOTE_TOKEN,
             quote_token.into_u256(),
         )?;
-
-        // Validate currency via TIP4217 registry
-        if self.decimals()? == 0 {
-            return Err(TIP20Error::invalid_currency().into());
-        }
 
         // Set default values
         self.storage
@@ -862,7 +893,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let bytes = value.to_be_bytes::<32>();
         let len = bytes[31] as usize / 2; // Last byte stores length * 2 for short strings
         if len > 31 {
-            panic!("String too long, we shouldn't have stored this in the first place.");
+            // NOTE: This should never happen given that we safeguard this in `write_string`.
+            // Regardless, we return an error in this case rather than panicking.
+            Err(TIP20Error::string_too_long().into())
         } else {
             Ok(String::from_utf8_lossy(&bytes[..len]).to_string())
         }
@@ -884,7 +917,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, U256};
 
     use super::*;
@@ -892,6 +925,16 @@ mod tests {
         DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, error::TempoPrecompileError,
         storage::hashmap::HashMapStorageProvider, tip20_factory::ITIP20Factory,
     };
+    use rand::{Rng, distributions::Alphanumeric, thread_rng};
+
+    /// Initialize LinkingUSD token (required before creating other USD tokens)
+    pub(crate) fn initialize_linking_usd(
+        storage: &mut HashMapStorageProvider,
+        admin: Address,
+    ) -> Result<(), TempoPrecompileError> {
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, storage);
+        linking_usd.initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+    }
 
     /// Initialize a factory and create a single token
     fn setup_factory_with_token(
@@ -900,10 +943,11 @@ mod tests {
         name: &str,
         symbol: &str,
     ) -> u64 {
+        initialize_linking_usd(storage, admin).unwrap();
         let mut factory = TIP20Factory::new(storage);
         factory.initialize().unwrap();
 
-        factory
+        let token_address = factory
             .create_token(
                 admin,
                 ITIP20Factory::createTokenCall {
@@ -914,8 +958,9 @@ mod tests {
                     admin,
                 },
             )
-            .unwrap()
-            .to::<u64>()
+            .unwrap();
+
+        address_to_token_id_unchecked(token_address)
     }
 
     /// Create a token via an already-initialized factory
@@ -926,7 +971,7 @@ mod tests {
         symbol: &str,
         quote_token: Address,
     ) -> u64 {
-        factory
+        let token_address = factory
             .create_token(
                 admin,
                 ITIP20Factory::createTokenCall {
@@ -937,8 +982,9 @@ mod tests {
                     admin,
                 },
             )
-            .unwrap()
-            .to::<u64>()
+            .unwrap();
+
+        address_to_token_id_unchecked(token_address)
     }
 
     /// Setup factory and create a token with a separate quote token (both linking to LINKING_USD)
@@ -946,6 +992,7 @@ mod tests {
         storage: &mut HashMapStorageProvider,
         admin: Address,
     ) -> (u64, u64) {
+        initialize_linking_usd(storage, admin).unwrap();
         let mut factory = TIP20Factory::new(storage);
         factory.initialize().unwrap();
 
@@ -965,6 +1012,7 @@ mod tests {
         let amount = U256::from(100);
         let token_id = 1;
         {
+            initialize_linking_usd(&mut storage, admin).unwrap();
             let mut token = TIP20Token::new(token_id, &mut storage);
             // Initialize with admin
             token
@@ -1009,6 +1057,7 @@ mod tests {
         let amount = U256::from(100);
         let token_id = 1;
         {
+            initialize_linking_usd(&mut storage, admin).unwrap();
             let mut token = TIP20Token::new(token_id, &mut storage);
             token
                 .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1053,6 +1102,7 @@ mod tests {
     fn test_transfer_insufficient_balance_fails() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1077,6 +1127,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1129,6 +1180,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1188,6 +1240,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1256,6 +1309,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1286,6 +1340,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1307,6 +1362,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1347,6 +1403,7 @@ mod tests {
         let to = Address::random();
         let amount = U256::from(100);
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1378,6 +1435,7 @@ mod tests {
         let to = Address::random();
         let amount = U256::from(100);
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1459,6 +1517,7 @@ mod tests {
         let admin = Address::random();
         let non_admin = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1586,6 +1645,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut factory = TIP20Factory::new(&mut storage);
         factory.initialize().unwrap();
 
@@ -1669,6 +1729,55 @@ mod tests {
     }
 
     #[test]
+    fn test_arbitrary_currency() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        for _ in 0..50 {
+            let mut token = TIP20Token::new(1, &mut storage);
+
+            let currency: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(31)
+                .map(char::from)
+                .collect();
+
+            // Initialize token with the random currency
+            token.initialize("Test", "TST", &currency, LINKING_USD_ADDRESS, admin)?;
+
+            // Verify the currency was stored and can be retrieved correctly
+            let stored_currency = token.currency()?;
+            assert_eq!(stored_currency, currency,);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_currency() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        for _ in 0..10 {
+            let mut token = TIP20Token::new(1, &mut storage);
+
+            let currency: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(32)
+                .map(char::from)
+                .collect();
+
+            let result = token.initialize("Test", "TST", &currency, LINKING_USD_ADDRESS, admin);
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::StringTooLong(_)))
+            ),);
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn test_tip20_payment_prefix() {
         assert_eq!(
             TIP20_PAYMENT_PREFIX,
@@ -1709,5 +1818,131 @@ mod tests {
             addr_via_from_address, token_address,
             "from_address should use the provided address"
         );
+    }
+
+    #[test]
+    fn test_new_invalid_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        let currency: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(31)
+            .map(char::from)
+            .collect();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Token", "T", &currency, LINKING_USD_ADDRESS, admin)?;
+
+        // Try to create a new USD token with the arbitrary token as the quote token, this should fail
+        let token_address = token.token_address;
+        let mut usd_token = TIP20Token::new(2, &mut storage);
+        let result = usd_token.initialize("USD Token", "USDT", USD_CURRENCY, token_address, admin);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                _
+            )))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_valid_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        initialize_linking_usd(&mut storage, admin)?;
+        let mut usd_token1 = TIP20Token::new(1, &mut storage);
+        usd_token1.initialize(
+            "USD Token",
+            "USDT",
+            USD_CURRENCY,
+            LINKING_USD_ADDRESS,
+            admin,
+        )?;
+
+        // USD token with USD token as quote
+        let usd_token1_address = token_id_to_address(1);
+        let mut usd_token2 = TIP20Token::new(2, &mut storage);
+        let result = usd_token2.initialize(
+            "USD Token 2",
+            "USD2",
+            USD_CURRENCY,
+            usd_token1_address,
+            admin,
+        );
+        assert!(result.is_ok());
+
+        // Create non USD token
+        let currency_1: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(31)
+            .map(char::from)
+            .collect();
+
+        let mut token_1 = TIP20Token::new(3, &mut storage);
+        token_1.initialize("Token 1", "TK1", &currency_1, LINKING_USD_ADDRESS, admin)?;
+
+        // Create a non USD token with non USD quote token
+        let currency_2: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(31)
+            .map(char::from)
+            .collect();
+
+        let token_1_address = token_id_to_address(3);
+        let mut token_2 = TIP20Token::new(4, &mut storage);
+        let result = token_2.initialize("Token 2", "TK2", &currency_2, token_1_address, admin);
+        assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_quote_token_invalid_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        initialize_linking_usd(&mut storage, admin)?;
+
+        let currency: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(31)
+            .map(char::from)
+            .collect();
+
+        let mut token_1 = TIP20Token::new(1, &mut storage);
+        token_1.initialize("Token 1", "TK1", &currency, LINKING_USD_ADDRESS, admin)?;
+
+        // Create a new USD token
+        let mut usd_token = TIP20Token::new(2, &mut storage);
+        usd_token.initialize(
+            "USD Token",
+            "USDT",
+            USD_CURRENCY,
+            LINKING_USD_ADDRESS,
+            admin,
+        )?;
+
+        // Try to update the USD token's quote token to the arbitrary currency token, this should fail
+        let token_1_address = token_id_to_address(1);
+        let result = usd_token.update_quote_token(
+            admin,
+            ITIP20::updateQuoteTokenCall {
+                newQuoteToken: token_1_address,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                _
+            )))
+        ));
+
+        Ok(())
     }
 }

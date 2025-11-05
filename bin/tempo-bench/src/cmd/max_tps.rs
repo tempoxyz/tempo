@@ -248,7 +248,7 @@ fn send_transactions(
                         Ok(Ok(_)) => {
                             tx_counter.fetch_add(1, Ordering::Relaxed);
                         }
-                        Ok(Err(e)) => eprintln!("Failed to send transaction: {}", e),
+                        Ok(Err(e)) => eprintln!("Failed to send transaction: {e}"),
                         Err(_) => eprintln!("Tx send timed out"),
                     }
                 }

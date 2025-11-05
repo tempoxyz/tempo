@@ -192,7 +192,7 @@ impl<
 
         let ctx = evm.ctx_mut();
         let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-        let mut storage = EvmPrecompileStorageProvider::new(internals, ctx.cfg.chain_id);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, ctx.cfg.chain_id);
 
         f(&mut storage)
     }

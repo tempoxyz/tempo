@@ -45,6 +45,20 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
+  genesis:
+    name: Genesis generation
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88" # MSRV
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Generate genesis
+        run: cargo run --bin tempo-xtask -- generate-genesis --accounts 100 --base-fee-per-gas 44 --chain-id 42427 --output andante-temp.json --gas-limit 500000000
+
   test-success:
     name: test success
     runs-on: depot-ubuntu-latest-4
@@ -52,6 +66,7 @@ jobs:
     needs:
       - test
       - msrv
+      - genesis
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed

@@ -14,7 +14,7 @@ use crate::{
         amm::{PoolKey, TIPFeeAMM},
         slots::{collected_fees_slot, user_token_slot, validator_token_slot},
     },
-    tip20::{ITIP20, TIP20Token, is_tip20},
+    tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 
 // Re-export PoolKey for backward compatibility with tests
@@ -139,8 +139,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::cannot_change_within_block().into());
         }
 
-        // TODO: validate USD currency requirement
-        // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
+        // Validate that the fee token is USD
+        validate_usd_currency(call.token, self.storage)?;
 
         let slot = validator_token_slot(sender);
         self.sstore(slot, call.token.into_u256())?;
@@ -165,8 +165,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // TODO: validate USD currency requirement
-        // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
+        // Validate that the fee token is USD
+        validate_usd_currency(call.token, self.storage)?;
 
         let slot = user_token_slot(sender);
         self.sstore(slot, call.token.into_u256())?;
@@ -511,13 +511,17 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for TipFeeManager<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use tempo_contracts::precompiles::TIP20Error;
+
     use super::*;
     use crate::{
         LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::hashmap::HashMapStorageProvider,
         tip_fee_manager::slots::collected_fees_slot,
-        tip20::{ISSUER_ROLE, ITIP20, TIP20Token, token_id_to_address},
+        tip20::{
+            ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_linking_usd, token_id_to_address,
+        },
     };
 
     fn setup_token_with_balance(
@@ -526,6 +530,7 @@ mod tests {
         user: Address,
         amount: U256,
     ) {
+        initialize_linking_usd(storage, user).unwrap();
         let mut tip20_token = TIP20Token::from_address(token, storage);
 
         // Initialize token
@@ -557,10 +562,19 @@ mod tests {
     fn test_set_user_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let validator = Address::random();
-        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
-
         let user = Address::random();
-        let token = token_id_to_address(rand::random::<u64>());
+
+        // Initialize LinkingUSD first
+        initialize_linking_usd(&mut storage, user).unwrap();
+
+        // Create a USD token to use as fee token
+        let token = token_id_to_address(1);
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        tip20_token
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, user)
+            .unwrap();
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
 
         let call = IFeeManager::setUserTokenCall { token };
         let result = fee_manager.set_user_token(user, call);
@@ -575,8 +589,19 @@ mod tests {
     fn test_set_validator_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let validator = Address::random();
+        let admin = Address::random();
+
+        // Initialize LinkingUSD first
+        initialize_linking_usd(&mut storage, admin).unwrap();
+
+        // Create a USD token to use as fee token
+        let token = token_id_to_address(1);
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        tip20_token
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
         let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
-        let token = token_id_to_address(rand::random::<u64>());
 
         let call = IFeeManager::setValidatorTokenCall { token };
         let result = fee_manager.set_validator_token(validator, call.clone());
@@ -654,6 +679,7 @@ mod tests {
 
         // Initialize token and give fee manager tokens (simulating that collect_fee_pre_tx already happened)
         {
+            initialize_linking_usd(&mut storage, admin).unwrap();
             let mut tip20_token = TIP20Token::from_address(token, &mut storage);
             tip20_token
                 .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
@@ -704,6 +730,44 @@ mod tests {
         let fees_slot = collected_fees_slot();
         let tracked_amount = storage.sload(TIP_FEE_MANAGER_ADDRESS, fees_slot).unwrap();
         assert_eq!(tracked_amount, actual_used);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rejects_non_usd() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let admin = Address::random();
+        let token = token_id_to_address(rand::random::<u64>());
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        tip20_token
+            .initialize("NonUSD", "NonUSD", "NonUSD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        let validator = Address::random();
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
+
+        let user = Address::random();
+
+        let call = IFeeManager::setUserTokenCall { token };
+        let result = fee_manager.set_user_token(user, call);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
+
+        // Set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
+        fee_manager.beneficiary = Address::random();
+
+        let call = IFeeManager::setValidatorTokenCall { token };
+        let result = fee_manager.set_validator_token(validator, call);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
 
         Ok(())
     }

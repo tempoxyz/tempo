@@ -1,6 +1,6 @@
 use super::ITIP20;
 use crate::{
-    Precompile, metadata, mutate, mutate_void,
+    Precompile, input_cost, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip20::{IRolesAuth, TIP20Token},
     view,
@@ -10,6 +10,10 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        self.storage
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
@@ -18,7 +22,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             .try_into()
             .unwrap();
 
-        match selector {
+        let result = match selector {
             // Metadata
             ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(|| self.name()),
             ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(|| self.symbol()),
@@ -189,15 +193,21 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
             )),
-        }
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.storage.gas_remaining();
+            res
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        LINKING_USD_ADDRESS, METADATA_GAS, MUTATE_FUNC_GAS, VIEW_FUNC_GAS,
-        storage::hashmap::HashMapStorageProvider, tip20::TIP20Token,
+        LINKING_USD_ADDRESS,
+        storage::hashmap::HashMapStorageProvider,
+        tip20::{TIP20Token, tests::initialize_linking_usd},
     };
 
     use alloy::{
@@ -225,11 +235,12 @@ mod tests {
     #[test]
     fn test_balance_of_calldata_handling() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let account = Address::from([2u8; 20]);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -266,7 +277,8 @@ mod tests {
         let calldata = balance_of_call.abi_encode();
 
         let result = token.call(&Bytes::from(calldata), sender).unwrap();
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
 
         // Verify we get the correct balance
         let decoded = U256::abi_decode(&result.bytes).unwrap();
@@ -276,12 +288,13 @@ mod tests {
     #[test]
     fn test_mint_updates_storage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
         let mint_amount = U256::from(500);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -314,7 +327,8 @@ mod tests {
 
         // Execute mint
         let result = token.call(&Bytes::from(calldata), sender).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify balance was updated in storage
         let final_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
@@ -326,13 +340,14 @@ mod tests {
     #[test]
     fn test_transfer_updates_balances() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
         let transfer_amount = U256::from(300);
         let initial_sender_balance = U256::from(1000);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -382,7 +397,8 @@ mod tests {
 
         // Execute transfer
         let result = token.call(&Bytes::from(calldata), sender).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Decode the return value (should be true)
         let success = bool::abi_decode(&result.bytes).unwrap();
@@ -405,7 +421,6 @@ mod tests {
     #[test]
     fn test_approve_and_transfer_from() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::random();
         let owner = Address::random();
         let spender = Address::random();
@@ -414,6 +429,8 @@ mod tests {
         let transfer_amount = U256::from(300);
         let initial_owner_balance = U256::from(1000);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -450,7 +467,8 @@ mod tests {
         };
         let calldata = approve_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), owner).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
         let success = bool::abi_decode(&result.bytes).unwrap();
         assert!(success);
 
@@ -466,7 +484,8 @@ mod tests {
         };
         let calldata = transfer_from_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), spender).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
         let success = bool::abi_decode(&result.bytes).unwrap();
         assert!(success);
 
@@ -490,11 +509,12 @@ mod tests {
     #[test]
     fn test_pause_and_unpause() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let pauser = Address::from([1u8; 20]);
         let unpauser = Address::from([2u8; 20]);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -534,7 +554,8 @@ mod tests {
         let pause_call = ITIP20::pauseCall {};
         let calldata = pause_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), pauser).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify token is paused
         assert!(token.paused()?);
@@ -543,7 +564,8 @@ mod tests {
         let unpause_call = ITIP20::unpauseCall {};
         let calldata = unpause_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), unpauser).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify token is unpaused
         assert!(!token.paused()?);
@@ -554,12 +576,13 @@ mod tests {
     #[test]
     fn test_burn_functionality() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let burner = Address::from([1u8; 20]);
         let initial_balance = U256::from(1000);
         let burn_amount = U256::from(300);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -615,7 +638,8 @@ mod tests {
         };
         let calldata = burn_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), burner).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify balances and total supply after burn
         assert_eq!(
@@ -630,10 +654,11 @@ mod tests {
     #[test]
     fn test_metadata_functions() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let caller = Address::from([1u8; 20]);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
         token
             .initialize("Test Token", "TEST", "USD", LINKING_USD_ADDRESS, admin)
@@ -643,7 +668,8 @@ mod tests {
         let name_call = ITIP20::nameCall {};
         let calldata = name_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), caller).unwrap();
-        assert_eq!(result.gas_used, METADATA_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
         let name = String::abi_decode(&result.bytes).unwrap();
         assert_eq!(name, "Test Token");
 
@@ -651,7 +677,8 @@ mod tests {
         let symbol_call = ITIP20::symbolCall {};
         let calldata = symbol_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), caller).unwrap();
-        assert_eq!(result.gas_used, METADATA_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
         let symbol = String::abi_decode(&result.bytes).unwrap();
         assert_eq!(symbol, "TEST");
 
@@ -659,7 +686,8 @@ mod tests {
         let decimals_call = ITIP20::decimalsCall {};
         let calldata = decimals_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), caller).unwrap();
-        assert_eq!(result.gas_used, METADATA_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
         let decimals = ITIP20::decimalsCall::abi_decode_returns(&result.bytes).unwrap();
         assert_eq!(decimals, 6);
 
@@ -667,7 +695,8 @@ mod tests {
         let currency_call = ITIP20::currencyCall {};
         let calldata = currency_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), caller).unwrap();
-        assert_eq!(result.gas_used, METADATA_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
         let currency = String::abi_decode(&result.bytes).unwrap();
         assert_eq!(currency, "USD");
 
@@ -675,7 +704,8 @@ mod tests {
         let total_supply_call = ITIP20::totalSupplyCall {};
         let calldata = total_supply_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), caller).unwrap();
-        assert_eq!(result.gas_used, METADATA_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
         let total_supply = U256::abi_decode(&result.bytes).unwrap();
         assert_eq!(total_supply, U256::ZERO);
     }
@@ -683,12 +713,13 @@ mod tests {
     #[test]
     fn test_supply_cap_enforcement() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let recipient = Address::from([1u8; 20]);
         let supply_cap = U256::from(1000);
         let mint_amount = U256::from(1001);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -714,7 +745,8 @@ mod tests {
         };
         let calldata = set_cap_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Try to mint more than supply cap
         let mint_call = ITIP20::mintCall {
@@ -734,12 +766,13 @@ mod tests {
     #[test]
     fn test_role_based_access_control() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let user1 = Address::from([1u8; 20]);
         let user2 = Address::from([2u8; 20]);
         let unauthorized = Address::from([3u8; 20]);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -755,7 +788,8 @@ mod tests {
         };
         let calldata = grant_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Check that user1 has the role
         let has_role_call = IRolesAuth::hasRoleCall {
@@ -764,7 +798,8 @@ mod tests {
         };
         let calldata = has_role_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
         let has_role = bool::abi_decode(&result.bytes).unwrap();
         assert!(has_role);
 
@@ -791,7 +826,8 @@ mod tests {
 
         // Test authorized mint (should succeed)
         let result = token.call(&Bytes::from(calldata), user1).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         Ok(())
     }
@@ -799,13 +835,14 @@ mod tests {
     #[test]
     fn test_transfer_with_memo() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
         let transfer_amount = U256::from(100);
         let initial_balance = U256::from(500);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize and setup
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -844,7 +881,8 @@ mod tests {
         };
         let calldata = transfer_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), sender).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify balances
         assert_eq!(
@@ -862,11 +900,12 @@ mod tests {
     #[test]
     fn test_change_transfer_policy_id() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let non_admin = Address::from([1u8; 20]);
         let new_policy_id = 42u64;
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -878,7 +917,8 @@ mod tests {
         };
         let calldata = change_policy_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify policy ID was changed
         assert_eq!(token.transfer_policy_id()?, new_policy_id);

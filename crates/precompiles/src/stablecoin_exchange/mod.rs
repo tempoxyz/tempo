@@ -24,7 +24,7 @@ use crate::{
         compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
     },
     storage::{PrecompileStorageProvider, StorageOps, slots::mapping_slot},
-    tip20::{ITIP20, TIP20Token},
+    tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -377,6 +377,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
+        validate_usd_currency(base, self.storage)?;
+        validate_usd_currency(quote, self.storage)?;
 
         let book_key = compute_book_key(base, quote);
 
@@ -1404,6 +1406,8 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for StablecoinExchange<'a, S> 
 
 #[cfg(test)]
 mod tests {
+    use tempo_contracts::precompiles::TIP20Error;
+
     use crate::{
         linking_usd::TRANSFER_ROLE, storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE,
     };
@@ -3395,6 +3399,37 @@ mod tests {
             bob_linking_usd_exchange, 0,
             "Bob should have ZERO LinkingUSD on exchange (transitory)"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_pair_invalid_currency() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let admin = Address::random();
+        // Init Linking USD
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
+        linking_usd
+            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .unwrap();
+
+        // Create EUR token with LINKING_USD as quote (valid non-USD token)
+        let mut token_0 = TIP20Token::new(1, linking_usd.storage);
+        token_0
+            .initialize("EuroToken", "EURO", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        let token_0_address = token_0.token_address;
+
+        let mut exchange = StablecoinExchange::new(token_0.storage);
+        exchange.initialize()?;
+
+        // Test: create_pair should reject non-USD token (EUR token has EUR currency)
+        let result = exchange.create_pair(token_0_address);
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
 
         Ok(())
     }

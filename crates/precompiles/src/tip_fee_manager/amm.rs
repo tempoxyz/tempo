@@ -2,7 +2,7 @@ use crate::{
     error::Result,
     storage::{PrecompileStorageProvider, StorageOps},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
-    tip20::{ITIP20, TIP20Token},
+    tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
 use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
@@ -181,6 +181,10 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         amount_out: U256,
         to: Address,
     ) -> Result<U256> {
+        // Validate both tokens are USD currency
+        validate_usd_currency(user_token, self.storage)?;
+        validate_usd_currency(validator_token, self.storage)?;
+
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(pool_id)?;
 
@@ -252,27 +256,45 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             return Err(TIPFeeAMMError::identical_addresses().into());
         }
 
+        // Validate both tokens are USD currency
+        validate_usd_currency(user_token, self.storage)?;
+        validate_usd_currency(validator_token, self.storage)?;
+
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(pool_id)?;
         let total_supply = self.get_total_supply(pool_id)?;
 
         let liquidity = if total_supply.is_zero() {
-            // TODO: checked math
-            let mean = (amount_user_token * amount_validator_token) / uint!(2_U256);
+            // Use checked math for multiplication and division
+            let mean = amount_user_token
+                .checked_mul(amount_validator_token)
+                .and_then(|product| product.checked_div(uint!(2_U256)))
+                .ok_or(TIPFeeAMMError::invalid_amount())?;
             if mean <= MIN_LIQUIDITY {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
             self.set_total_supply(pool_id, MIN_LIQUIDITY)?;
-            mean - MIN_LIQUIDITY
+            mean.checked_sub(MIN_LIQUIDITY)
+                .ok_or(TIPFeeAMMError::insufficient_liquidity())?
         } else {
             let liquidity_user = if pool.reserve_user_token > 0 {
-                (amount_user_token * total_supply) / U256::from(pool.reserve_user_token)
+                amount_user_token
+                    .checked_mul(total_supply)
+                    .and_then(|numerator| {
+                        numerator.checked_div(U256::from(pool.reserve_user_token))
+                    })
+                    .ok_or(TIPFeeAMMError::invalid_amount())?
             } else {
                 U256::MAX
             };
 
             let liquidity_validator = if pool.reserve_validator_token > 0 {
-                (amount_validator_token * total_supply) / U256::from(pool.reserve_validator_token)
+                amount_validator_token
+                    .checked_mul(total_supply)
+                    .and_then(|numerator| {
+                        numerator.checked_div(U256::from(pool.reserve_validator_token))
+                    })
+                    .ok_or(TIPFeeAMMError::invalid_amount())?
             } else {
                 U256::MAX
             };
@@ -351,6 +373,10 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         if user_token == validator_token {
             return Err(TIPFeeAMMError::identical_addresses().into());
         }
+
+        // Validate both tokens are USD currency
+        validate_usd_currency(user_token, self.storage)?;
+        validate_usd_currency(validator_token, self.storage)?;
 
         let pool_id = self.get_pool_id(user_token, validator_token);
         // Check user has sufficient liquidity
@@ -573,9 +599,11 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
-        tip20::token_id_to_address,
+        LINKING_USD_ADDRESS,
+        tip20::{TIP20Token, tests::initialize_linking_usd, token_id_to_address},
     };
     use alloy::primitives::{Address, uint};
+    use tempo_contracts::precompiles::TIP20Error;
 
     #[test]
     fn test_mint_identical_addresses() {
@@ -626,8 +654,24 @@ mod tests {
         Address,
     ) {
         let storage = Box::leak(Box::new(HashMapStorageProvider::new(1)));
+        let admin = Address::random();
+
+        // Initialize LinkingUSD first
+        initialize_linking_usd(storage, admin).unwrap();
+
+        // Create USD tokens for user and validator
         let user_token = token_id_to_address(1);
+        let mut user_tip20 = TIP20Token::from_address(user_token, storage);
+        user_tip20
+            .initialize("UserToken", "UTK", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
         let validator_token = token_id_to_address(2);
+        let mut validator_tip20 = TIP20Token::from_address(validator_token, storage);
+        validator_tip20
+            .initialize("ValidatorToken", "VTK", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
         let amm = TIPFeeAMM::new(Address::ZERO, storage);
         (amm, Address::ZERO, user_token, validator_token)
     }
@@ -962,5 +1006,177 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_mint_rejects_non_usd_user_token() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_address = Address::random();
+        let amount = U256::from(1000);
+
+        let admin = Address::random();
+        let msg_sender = Address::random();
+        let to = Address::random();
+
+        // Init Linking USD, user token and validator tokens
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
+        linking_usd
+            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .unwrap();
+
+        let mut user_token = TIP20Token::new(1, linking_usd.storage);
+        user_token
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        let user_token_address = user_token.token_address;
+
+        let mut validator_token = TIP20Token::new(2, user_token.storage);
+        validator_token
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        let validator_token_address = validator_token.token_address;
+
+        let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
+        let result = amm.mint(
+            msg_sender,
+            user_token_address,
+            validator_token_address,
+            amount,
+            amount,
+            to,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
+
+        // Test the inverse tokens
+        let result = amm.mint(
+            msg_sender,
+            validator_token_address,
+            user_token_address,
+            amount,
+            amount,
+            to,
+        );
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
+    }
+
+    #[test]
+    fn test_burn_rejects_non_usd_tokens() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_address = Address::random();
+        let liquidity = U256::from(1000);
+
+        let admin = Address::random();
+        let msg_sender = Address::random();
+        let to = Address::random();
+
+        // Init Linking USD, user token and validator tokens
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
+        linking_usd
+            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .unwrap();
+
+        let mut user_token = TIP20Token::new(1, linking_usd.storage);
+        user_token
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        let user_token_address = user_token.token_address;
+
+        let mut validator_token = TIP20Token::new(2, user_token.storage);
+        validator_token
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        let validator_token_address = validator_token.token_address;
+
+        let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
+        let result = amm.burn(
+            msg_sender,
+            user_token_address,
+            validator_token_address,
+            liquidity,
+            to,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
+
+        // Test the inverse tokens
+        let result = amm.burn(
+            msg_sender,
+            validator_token_address,
+            user_token_address,
+            liquidity,
+            to,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
+    }
+    #[test]
+    fn test_rebalance_swap_rejects_non_usd_tokens() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_address = Address::random();
+
+        let admin = Address::random();
+        let msg_sender = Address::random();
+        let amount_out = U256::from(1000);
+        let to = Address::random();
+
+        // Init Linking USD, user token and validator tokens
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
+        linking_usd
+            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .unwrap();
+
+        let mut user_token = TIP20Token::new(1, linking_usd.storage);
+        user_token
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        let user_token_address = user_token.token_address;
+
+        let mut validator_token = TIP20Token::new(2, user_token.storage);
+        validator_token
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        let validator_token_address = validator_token.token_address;
+
+        let mut amm = TIPFeeAMM::new(contract_address, validator_token.storage);
+        let result = amm.rebalance_swap(
+            msg_sender,
+            user_token_address,
+            validator_token_address,
+            amount_out,
+            to,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
+
+        // Test the inverse tokens
+        let mut amm = TIPFeeAMM::new(contract_address, validator_token.storage);
+        let result = amm.rebalance_swap(
+            msg_sender,
+            validator_token_address,
+            user_token_address,
+            amount_out,
+            to,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
     }
 }

@@ -5,7 +5,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
-    Precompile, mutate, mutate_void,
+    Precompile, input_cost, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
     view,
@@ -13,6 +13,10 @@ use crate::{
 
 impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        self.storage
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
@@ -21,7 +25,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             .try_into()
             .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
 
-        match selector {
+        let result = match selector {
             IStablecoinExchange::placeCall::SELECTOR => {
                 mutate::<IStablecoinExchange::placeCall>(calldata, msg_sender, |s, call| {
                     self.place(s, call.token, call.amount, call.isBid, call.tick)
@@ -137,7 +141,12 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
             )),
-        }
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.storage.gas_remaining();
+            res
+        })
     }
 }
 
