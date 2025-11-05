@@ -24,11 +24,11 @@ use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
 
-const TEMPO_SYSTEM_TX_COUNT: usize = 4;
-const TEMPO_SYSTEM_TX_ADDRESSES: [Address; TEMPO_SYSTEM_TX_COUNT] = [
+// End-of-block system transactions (required)
+const END_OF_BLOCK_SYSTEM_TX_COUNT: usize = 3;
+const END_OF_BLOCK_SYSTEM_TX_ADDRESSES: [Address; END_OF_BLOCK_SYSTEM_TX_COUNT] = [
     TIP_FEE_MANAGER_ADDRESS,
     STABLECOIN_EXCHANGE_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS,
     Address::ZERO,
 ];
 
@@ -206,9 +206,23 @@ impl Consensus<Block> for TempoConsensus {
     fn validate_block_pre_execution(&self, block: &SealedBlock<Block>) -> Result<(), Self::Error> {
         let transactions = &block.body().transactions;
 
-        // Get the last three transactions in the block and validate that they are system txs
-        let system_txs = transactions
-            .get(transactions.len().saturating_sub(TEMPO_SYSTEM_TX_COUNT)..)
+        // Check for optional rewards registry system transaction at the start
+        if let Some(first_tx) = transactions.first()
+            && first_tx.is_system_tx()
+            && first_tx.to().unwrap_or_default() != TIP20_REWARDS_REGISTRY_ADDRESS
+        {
+            return Err(ConsensusError::Other(
+                "First transaction must be rewards registry if it's a system tx".to_string(),
+            ));
+        }
+
+        // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
+        let end_of_block_system_txs = transactions
+            .get(
+                transactions
+                    .len()
+                    .saturating_sub(END_OF_BLOCK_SYSTEM_TX_COUNT)..,
+            )
             .map(|slice| {
                 slice
                     .iter()
@@ -217,16 +231,21 @@ impl Consensus<Block> for TempoConsensus {
             })
             .unwrap_or_default();
 
-        if system_txs.len() != TEMPO_SYSTEM_TX_COUNT {
+        if end_of_block_system_txs.len() != END_OF_BLOCK_SYSTEM_TX_COUNT {
             return Err(ConsensusError::Other(
-                "Block must contain Tempo system txs".to_string(),
+                "Block must contain end-of-block system txs".to_string(),
             ));
         }
 
-        // Valdiate that the sequence of system txs is correct
-        for (tx, expected_to) in system_txs.into_iter().zip(TEMPO_SYSTEM_TX_ADDRESSES) {
+        // Validate that the sequence of end-of-block system txs is correct
+        for (tx, expected_to) in end_of_block_system_txs
+            .into_iter()
+            .zip(END_OF_BLOCK_SYSTEM_TX_ADDRESSES)
+        {
             if tx.to().unwrap_or_default() != expected_to {
-                return Err(ConsensusError::Other("Invalid system tx order".to_string()));
+                return Err(ConsensusError::Other(
+                    "Invalid end-of-block system tx order".to_string(),
+                ));
             }
         }
 

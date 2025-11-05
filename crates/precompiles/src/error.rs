@@ -57,6 +57,9 @@ pub enum TempoPrecompileError {
     #[error("Validator config error: {0:?}")]
     ValidatorConfigError(ValidatorConfigError),
 
+    #[error("Gas limit exceeded")]
+    OutOfGas,
+
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
     Fatal(String),
@@ -109,6 +112,9 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                         panic.abi_encode().into()
                     }
                     TPErr::ValidatorConfigError(e) => e.abi_encode().into(),
+                    TPErr::OutOfGas => {
+                        return Err(PrecompileError::OutOfGas);
+                    }
                     TPErr::Fatal(msg) => {
                         return Err(PrecompileError::Fatal(msg));
                     }

@@ -1,10 +1,14 @@
 use super::{IValidatorConfig, ValidatorConfig};
-use crate::{Precompile, mutate_void, storage::PrecompileStorageProvider, view};
+use crate::{Precompile, input_cost, mutate_void, storage::PrecompileStorageProvider, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        self.storage
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
@@ -13,7 +17,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
             .try_into()
             .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
 
-        match selector {
+        let result = match selector {
             // View functions
             IValidatorConfig::ownerCall::SELECTOR => {
                 view::<IValidatorConfig::ownerCall>(calldata, |_call| self.owner())
@@ -55,17 +59,19 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
             )),
-        }
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.storage.gas_remaining();
+            res
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        MUTATE_FUNC_GAS, VIEW_FUNC_GAS, expect_precompile_revert,
-        storage::hashmap::HashMapStorageProvider,
-    };
+    use crate::{expect_precompile_revert, storage::hashmap::HashMapStorageProvider};
     use alloy::{
         primitives::{Bytes, FixedBytes},
         sol_types::SolValue,
@@ -110,7 +116,8 @@ mod tests {
         let result = validator_config
             .call(&Bytes::from(calldata), sender)
             .unwrap();
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
 
         // Verify we get the correct owner
         let decoded = Address::abi_decode(&result.bytes).unwrap();
@@ -142,7 +149,9 @@ mod tests {
         let result = validator_config
             .call(&Bytes::from(calldata), owner)
             .unwrap();
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify validator was added by calling getValidators
         let get_call = IValidatorConfig::getValidatorsCall {};

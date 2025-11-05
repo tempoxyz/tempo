@@ -46,7 +46,7 @@ pub struct Token {
     pub creator: Address,
     /// Currency code (e.g., "USD", "EUR")
     pub currency: String,
-    /// Token decimals (from TIP-4217 registry based on currency)
+    /// Token decimals
     #[serde(with = "alloy_serde::quantity")]
     pub decimals: u32,
     /// Token name

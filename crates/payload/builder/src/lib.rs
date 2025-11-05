@@ -100,13 +100,45 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 }
 
 impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
-    /// Builds all system transactions to seal the block.
+    /// Builds system transactions to execute at the start of the block.
+    ///
+    /// Returns a vector of system transactions that must be executed at the beginning of each block:
+    /// 1. TIP20 Rewards Registry finalizeStreams - finalizes expired reward streams
+    fn build_start_block_txs(&self, block_env: &BlockEnv) -> Vec<Recovered<TempoTxEnvelope>> {
+        let chain_id = Some(self.provider.chain_spec().chain().id());
+
+        // Build rewards registry system transaction
+        let rewards_registry_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
+            .abi_encode()
+            .into_iter()
+            .chain(block_env.number.to_be_bytes_vec())
+            .collect();
+
+        let rewards_registry_tx = Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    chain_id,
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 0,
+                    to: TIP20_REWARDS_REGISTRY_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input: rewards_registry_input,
+                },
+                TEMPO_SYSTEM_TX_SIGNATURE,
+            )),
+            TEMPO_SYSTEM_TX_SENDER,
+        );
+
+        vec![rewards_registry_tx]
+    }
+
+    /// Builds system transactions to seal the block.
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
     /// 1. Fee manager executeBlock - processes collected fees
     /// 2. Stablecoin exchange executeBlock - commits pending orders
-    /// 3. TIP20 rewards registry finalizeStreams - finalizes TIP20 rewards streams
-    /// 4. Subblocks signatures - includes subblock signatures for the block
+    /// 3. Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
         block_env: &BlockEnv,
@@ -160,34 +192,12 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             TEMPO_SYSTEM_TX_SENDER,
         );
 
-        // Build rewards registry system transaction
-        let rewards_registry_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
-            .abi_encode()
-            .into_iter()
-            .chain(block_env.number.to_be_bytes_vec())
-            .collect();
-
-        let rewards_registry_tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    chain_id,
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 0,
-                    to: TIP20_REWARDS_REGISTRY_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: rewards_registry_input,
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
-            TEMPO_SYSTEM_TX_SENDER,
-        );
-
-        let subblocks = subblocks
+        // Build subblocks signatures system transaction
+        let subblocks_metadata = subblocks
             .iter()
             .map(|s| s.metadata())
             .collect::<Vec<SubBlockMetadata>>();
-        let subblocks_input = alloy_rlp::encode(&subblocks)
+        let subblocks_input = alloy_rlp::encode(&subblocks_metadata)
             .into_iter()
             .chain(block_env.number.to_be_bytes_vec())
             .collect();
@@ -211,7 +221,6 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
         vec![
             fee_manager_tx,
             stablecoin_exchange_tx,
-            rewards_registry_tx,
             subblocks_signatures_tx,
         ]
     }
@@ -401,6 +410,15 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+
+        // Execute start-of-block system transactions (rewards registry finalize)
+        for tx in self.build_start_block_txs(builder.evm().block()) {
+            block_size_used += tx.inner().length();
+
+            builder
+                .execute_transaction(tx)
+                .map_err(PayloadBuilderError::evm)?;
+        }
 
         let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {

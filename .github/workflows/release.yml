@@ -43,6 +43,22 @@ jobs:
           else
             echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
+  check-version:
+    name: check version
+    runs-on: depot-ubuntu-latest
+    needs: get-version
+    if: ${{ github.event.inputs.dry_run != 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify crate version matches tag
+        # Check that the Cargo version starts with the tag,
+        # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
+        run: |
+          tag="${{ needs.get-version.outputs.version }}"
+          tag=${tag#v}
+          cargo_ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          [[ "$tag" == "$cargo_ver"* ]] || { echo "Tag $tag doesn’t match the Cargo version $cargo_ver"; exit 1; }
 
   build-release:
     name: Build Release Binaries

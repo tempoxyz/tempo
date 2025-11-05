@@ -13,7 +13,6 @@ pub mod tip20;
 pub mod tip20_factory;
 pub mod tip20_rewards_registry;
 pub mod tip403_registry;
-pub mod tip4217_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
@@ -30,7 +29,6 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
-    tip4217_registry::TIP4217Registry,
     validator_config::ValidatorConfig,
 };
 
@@ -50,13 +48,18 @@ use revm::{
 pub use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
 
-const METADATA_GAS: u64 = 50;
-const VIEW_FUNC_GAS: u64 = 100;
-const MUTATE_FUNC_GAS: u64 = 1000;
+/// Input per word cost. It covers abi decoding and cloning of input into call data.
+///
+/// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.
+pub const INPUT_PER_WORD_COST: u64 = 6;
+
+#[inline]
+pub fn input_cost(calldata_len: usize) -> u64 {
+    revm::interpreter::gas::cost_per_word(calldata_len, INPUT_PER_WORD_COST).unwrap_or(u64::MAX)
+}
 
 pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
@@ -77,8 +80,6 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             Some(TIP20RewardsRegistryPrecompile::create(chain_id))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403RegistryPrecompile::create(chain_id))
-        } else if *address == TIP4217_REGISTRY_ADDRESS {
-            Some(TIP4217RegistryPrecompile::create())
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id))
         } else if *address == TIP_ACCOUNT_REGISTRAR {
@@ -119,7 +120,7 @@ impl TipFeeManagerPrecompile {
         tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
             TIP_FEE_MANAGER_ADDRESS,
             input.internals.block_env().beneficiary(),
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
         ))
     }
 }
@@ -128,15 +129,12 @@ pub struct TipAccountRegistrarPrecompile;
 impl TipAccountRegistrarPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("TipAccountRegistrar", |input| TipAccountRegistrar::new(
-            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(input.internals, chain_id),
+            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(
+                input.internals,
+                input.gas,
+                chain_id
+            ),
         ))
-    }
-}
-
-pub struct TIP4217RegistryPrecompile;
-impl TIP4217RegistryPrecompile {
-    pub fn create() -> DynPrecompile {
-        tempo_precompile!("TIP4217Registry", |input| TIP4217Registry::default())
     }
 }
 
@@ -144,7 +142,7 @@ pub struct TIP20RewardsRegistryPrecompile;
 impl TIP20RewardsRegistryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("TIP20RewardsRegistry", |input| TIP20RewardsRegistry::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
         ))
     }
 }
@@ -153,7 +151,11 @@ pub struct TIP403RegistryPrecompile;
 impl TIP403RegistryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("TIP403Registry", |input| TIP403Registry::new(
-            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(input.internals, chain_id),
+            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(
+                input.internals,
+                input.gas,
+                chain_id
+            ),
         ))
     }
 }
@@ -162,7 +164,7 @@ pub struct TIP20FactoryPrecompile;
 impl TIP20FactoryPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("TIP20Factory", |input| TIP20Factory::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
         ))
     }
 }
@@ -173,7 +175,7 @@ impl TIP20Precompile {
         let token_id = address_to_token_id_unchecked(address);
         tempo_precompile!("TIP20Token", |input| TIP20Token::new(
             token_id,
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
         ))
     }
 }
@@ -182,7 +184,7 @@ pub struct StablecoinExchangePrecompile;
 impl StablecoinExchangePrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
         ))
     }
 }
@@ -191,7 +193,7 @@ pub struct NoncePrecompile;
 impl NoncePrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("NonceManager", |input| NonceManager::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
         ))
     }
 }
@@ -200,7 +202,7 @@ pub struct LinkingUSDPrecompile;
 impl LinkingUSDPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
         ))
     }
 }
@@ -210,22 +212,23 @@ impl ValidatorConfigPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", |input| ValidatorConfig::new(
             VALIDATOR_CONFIG_ADDRESS,
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
         ))
     }
 }
 
 #[inline]
 fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    f().into_precompile_result(METADATA_GAS, |ret| T::abi_encode_returns(&ret).into())
+    f().into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
 fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(VIEW_FUNC_GAS, Bytes::new()));
+        // TODO refactor
+        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
-    f(call).into_precompile_result(VIEW_FUNC_GAS, |ret| T::abi_encode_returns(&ret).into())
+    f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
@@ -235,13 +238,9 @@ pub fn mutate<T: SolCall>(
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            Bytes::new(),
-        ));
+        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
-    f(sender, call)
-        .into_precompile_result(MUTATE_FUNC_GAS, |ret| T::abi_encode_returns(&ret).into())
+    f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
@@ -251,12 +250,9 @@ fn mutate_void<T: SolCall>(
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(
-            MUTATE_FUNC_GAS,
-            Bytes::new(),
-        ));
+        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
-    f(sender, call).into_precompile_result(MUTATE_FUNC_GAS, |()| Bytes::new())
+    f(sender, call).into_precompile_result(0, |()| Bytes::new())
 }
 
 #[cfg(test)]
@@ -294,7 +290,7 @@ mod tests {
     fn test_precompile_delegatecall() {
         let precompile = tempo_precompile!("TIP20Token", |input| TIP20Token::new(
             1,
-            &mut EvmPrecompileStorageProvider::new(input.internals, 1),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, 1),
         ));
 
         let db = CacheDB::new(EmptyDB::new());

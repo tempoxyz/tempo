@@ -21,6 +21,11 @@ COPY xtask/ ./xtask/
 ARG RUST_BINARY
 ARG RUST_PROFILE
 ARG RUST_FEATURES
+ARG VERGEN_GIT_SHA=""
+ARG VERGEN_GIT_SHA_SHORT=""
+
+ENV VERGEN_GIT_SHA=${VERGEN_GIT_SHA:-}
+ENV VERGEN_GIT_SHA_SHORT=${VERGEN_GIT_SHA_SHORT:-}
 
 # Install nightly Rust and build the tempo binary
 RUN rustup toolchain install nightly && rustup default nightly
@@ -41,4 +46,7 @@ COPY --from=builder /app/target/${RUST_PROFILE}/${RUST_BINARY} /usr/local/bin/${
 
 WORKDIR /data
 
-ENTRYPOINT ["${RUST_BINARY}"]
+RUN echo "#!/bin/bash\n/usr/local/bin/${RUST_BINARY} \$@" > /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

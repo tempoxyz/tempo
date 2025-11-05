@@ -49,7 +49,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         &mut self,
         sender: Address,
         call: ITIP20Factory::createTokenCall,
-    ) -> Result<U256, TempoPrecompileError> {
+    ) -> Result<Address, TempoPrecompileError> {
         let token_id = self.token_id_counter()?.to::<u64>();
         trace!(%sender, %token_id, ?call, "Create token");
 
@@ -68,11 +68,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             call.admin,
         )?;
 
+        let token_address = token_id_to_address(token_id);
         let token_id = U256::from(token_id);
         self.storage.emit_event(
             TIP20_FACTORY_ADDRESS,
             TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-                token: token_id_to_address(token_id.to::<u64>()),
+                token: token_address,
                 tokenId: token_id,
                 name: call.name,
                 symbol: call.symbol,
@@ -89,7 +90,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             token_id + U256::ONE,
         )?;
 
-        Ok(token_id)
+        Ok(token_address)
     }
 
     pub fn token_id_counter(&mut self) -> Result<U256, TempoPrecompileError> {
@@ -128,21 +129,21 @@ mod tests {
             admin: sender,
         };
 
-        let token_id_0 = factory
+        let token_addr_0 = factory
             .create_token(sender, call.clone())
             .expect("Token creation should succeed");
 
-        let token_id_1 = factory
+        let token_addr_1 = factory
             .create_token(sender, call)
             .expect("Token creation should succeed");
 
         let factory_events = storage.events.get(&TIP20_FACTORY_ADDRESS).unwrap();
         assert_eq!(factory_events.len(), 2);
 
-        let token_addr_0 = token_id_to_address(token_id_0.to::<u64>());
+        let token_id_0 = address_to_token_id_unchecked(token_addr_0);
         let expected_event_0 = TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
             token: token_addr_0,
-            tokenId: token_id_0,
+            tokenId: U256::from(token_id_0),
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
@@ -150,10 +151,10 @@ mod tests {
         });
         assert_eq!(factory_events[0], expected_event_0.into_log_data());
 
-        let token_addr_1 = token_id_to_address(token_id_1.to::<u64>());
+        let token_id_1 = address_to_token_id_unchecked(token_addr_1);
         let expected_event_1 = TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
             token: token_addr_1,
-            tokenId: token_id_1,
+            tokenId: U256::from(token_id_1),
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
