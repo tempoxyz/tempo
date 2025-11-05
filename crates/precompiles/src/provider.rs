@@ -26,7 +26,6 @@ pub trait TIPFeeStateProviderExt: StateProvider {
             fee_token
         } else {
             // Look up user's configured fee token in TIPFeeManager storage
-
             use crate::tip_fee_manager;
             let user_token_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
             let fee_token = self

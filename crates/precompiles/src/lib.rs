@@ -13,7 +13,6 @@ pub mod tip20;
 pub mod tip20_factory;
 pub mod tip20_rewards_registry;
 pub mod tip403_registry;
-pub mod tip4217_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
@@ -30,7 +29,6 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
-    tip4217_registry::TIP4217Registry,
     validator_config::ValidatorConfig,
 };
 
@@ -50,8 +48,7 @@ use revm::{
 pub use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP4217_REGISTRY_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
@@ -83,8 +80,6 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64)
             Some(TIP20RewardsRegistryPrecompile::create(chain_id))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403RegistryPrecompile::create(chain_id))
-        } else if *address == TIP4217_REGISTRY_ADDRESS {
-            Some(TIP4217RegistryPrecompile::create())
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id))
         } else if *address == TIP_ACCOUNT_REGISTRAR {
@@ -140,13 +135,6 @@ impl TipAccountRegistrarPrecompile {
                 chain_id
             ),
         ))
-    }
-}
-
-pub struct TIP4217RegistryPrecompile;
-impl TIP4217RegistryPrecompile {
-    pub fn create() -> DynPrecompile {
-        tempo_precompile!("TIP4217Registry", |input| TIP4217Registry::default())
     }
 }
 
