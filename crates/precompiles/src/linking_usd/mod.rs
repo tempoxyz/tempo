@@ -157,6 +157,54 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     pub fn paused(&mut self) -> Result<bool> {
         self.token.paused()
     }
+
+    /// Returns the PAUSE_ROLE constant
+    ///
+    /// This role identifier grants permission to pause the token contract.
+    /// The role is computed as `keccak256("PAUSE_ROLE")`.
+    pub fn pause_role() -> B256 {
+        TIP20Token::<S>::pause_role()
+    }
+
+    /// Returns the UNPAUSE_ROLE constant
+    ///
+    /// This role identifier grants permission to unpause the token contract.
+    /// The role is computed as `keccak256("UNPAUSE_ROLE")`.
+    pub fn unpause_role() -> B256 {
+        TIP20Token::<S>::unpause_role()
+    }
+
+    /// Returns the ISSUER_ROLE constant
+    ///
+    /// This role identifier grants permission to mint and burn tokens.
+    /// The role is computed as `keccak256("ISSUER_ROLE")`.
+    pub fn issuer_role() -> B256 {
+        TIP20Token::<S>::issuer_role()
+    }
+
+    /// Returns the BURN_BLOCKED_ROLE constant
+    ///
+    /// This role identifier grants permission to burn tokens from blocked accounts.
+    /// The role is computed as `keccak256("BURN_BLOCKED_ROLE")`.
+    pub fn burn_blocked_role() -> B256 {
+        TIP20Token::<S>::burn_blocked_role()
+    }
+
+    /// Returns the TRANSFER_ROLE constant
+    ///
+    /// This role identifier grants permission to transfer linkingUSD tokens.
+    /// The role is computed as `keccak256("TRANSFER_ROLE")`.
+    pub fn transfer_role() -> B256 {
+        *TRANSFER_ROLE
+    }
+
+    /// Returns the RECEIVE_ROLE constant
+    ///
+    /// This role identifier grants permission to receive linkingUSD tokens.
+    /// The role is computed as `keccak256("RECEIVE_ROLE")`.
+    pub fn receive_role() -> B256 {
+        *RECEIVE_ROLE
+    }
 }
 
 #[cfg(test)]

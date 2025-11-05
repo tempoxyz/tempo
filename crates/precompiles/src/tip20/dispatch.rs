@@ -52,7 +52,6 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::nextQuoteTokenCall::SELECTOR => {
                 view::<ITIP20::nextQuoteTokenCall>(calldata, |_| self.next_quote_token())
             }
-
             ITIP20::PAUSE_ROLECall::SELECTOR => {
                 view::<ITIP20::PAUSE_ROLECall>(calldata, |_| Ok(Self::pause_role()))
             }
