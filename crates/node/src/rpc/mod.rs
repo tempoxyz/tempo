@@ -15,7 +15,10 @@ pub use tempo_alloy::rpc::TempoTransactionRequest;
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::node::TempoNode;
-use alloy::{consensus::TxReceipt, primitives::U256};
+use alloy::{
+    consensus::TxReceipt,
+    primitives::{U256, uint},
+};
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -48,6 +51,11 @@ use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::provider::TIPFeeDatabaseExt;
 use tempo_primitives::{TEMPO_GAS_PRICE_SCALING_FACTOR, TempoReceipt};
 use tokio::sync::Mutex;
+
+/// Placeholder constant for `eth_getBalance` calls because the native token balance is N/A on
+/// Tempo.
+const NATIVE_BALANCE_PLACEHOLDER: U256 =
+    uint!(4242424242424242424242424242424242424242424242424242424242424242424242424242_U256);
 
 /// Tempo `Eth` API implementation.
 ///
@@ -181,7 +189,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthState for TempoEthApi<N> {
         _address: alloy_primitives::Address,
         _block_id: Option<alloy_eips::BlockId>,
     ) -> Result<U256, Self::Error> {
-        Ok(U256::MAX)
+        Ok(NATIVE_BALANCE_PLACEHOLDER)
     }
 
     #[inline]
