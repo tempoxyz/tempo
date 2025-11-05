@@ -321,16 +321,139 @@ mod tests {
 
     #[test]
     fn test_remove_stream() -> eyre::Result<()> {
+        let (mut storage, _admin) = setup_registry(1000);
+        let mut registry = TIP20RewardsRegistry::new(&mut storage);
+        registry.initialize()?;
+
+        let token1 = Address::random();
+        let token2 = Address::random();
+        let token3 = Address::random();
+        let end_time = 2000u128;
+
+        // Add three streams
+        registry.add_stream(token1, end_time)?;
+        registry.add_stream(token2, end_time)?;
+        registry.add_stream(token3, end_time)?;
+
+        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        assert_eq!(streams.len(), 3);
+        assert_eq!(streams[0], token1);
+        assert_eq!(streams[1], token2);
+        assert_eq!(streams[2], token3);
+
+        registry.remove_stream(token2, end_time)?;
+
+        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        assert_eq!(streams.len(), 2);
+        assert_eq!(streams[0], token1);
+        assert_eq!(streams[1], token3);
+
+        // Verify indices are updated correctly
+        let stream_key1 = keccak256((token1, end_time).abi_encode());
+        let stream_key2 = keccak256((token2, end_time).abi_encode());
+        let stream_key3 = keccak256((token3, end_time).abi_encode());
+
+        let index1 = registry.get_stream_index(stream_key1)?;
+        let index2 = registry.get_stream_index(stream_key2)?;
+        let index3 = registry.get_stream_index(stream_key3)?;
+
+        assert_eq!(index1, U256::ZERO);
+        assert_eq!(index2, U256::ZERO);
+        assert_eq!(index3, U256::ONE);
+
+        registry.remove_stream(token3, end_time)?;
+        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0], token1);
+
+        registry.remove_stream(token1, end_time)?;
+
+        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        assert_eq!(streams.len(), 0);
+
+        // Test removing non-existent stream
+        let non_existent_token = Address::random();
+        let result = registry.remove_stream(non_existent_token, end_time);
+        assert!(result.is_err());
+
         Ok(())
     }
 
     #[test]
     fn test_push_stream_ending_at_timestamp() -> eyre::Result<()> {
+        let (mut storage, _admin) = setup_registry(1000);
+        let mut registry = TIP20RewardsRegistry::new(&mut storage);
+        registry.initialize()?;
+
+        let timestamp = 2000u128;
+        let token1 = Address::random();
+        let token2 = Address::random();
+
+        registry.push_stream_ending_at_timestamp(token1, timestamp)?;
+
+        let streams = registry.get_streams_ending_at_timestamp(timestamp)?;
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0], token1);
+
+        registry.push_stream_ending_at_timestamp(token2, timestamp)?;
+
+        let streams = registry.get_streams_ending_at_timestamp(timestamp)?;
+        assert_eq!(streams.len(), 2);
+        assert_eq!(streams[0], token1);
+        assert_eq!(streams[1], token2);
+
+        let timestamp2 = 3000u128;
+        let token3 = Address::random();
+        registry.push_stream_ending_at_timestamp(token3, timestamp2)?;
+
+        let streams1 = registry.get_streams_ending_at_timestamp(timestamp)?;
+        let streams2 = registry.get_streams_ending_at_timestamp(timestamp2)?;
+        assert_eq!(streams1.len(), 2);
+        assert_eq!(streams2.len(), 1);
+        assert_eq!(streams2[0], token3);
+
         Ok(())
     }
 
     #[test]
     fn test_get_streams_ending_at_timestamp() -> eyre::Result<()> {
+        let (mut storage, _admin) = setup_registry(1000);
+        let mut registry = TIP20RewardsRegistry::new(&mut storage);
+        registry.initialize()?;
+
+        let timestamp = 2000u128;
+
+        let empty_streams = registry.get_streams_ending_at_timestamp(timestamp)?;
+        assert_eq!(empty_streams.len(), 0);
+
+        let token1 = Address::random();
+        let token2 = Address::random();
+        let token3 = Address::random();
+
+        registry.push_stream_ending_at_timestamp(token1, timestamp)?;
+        registry.push_stream_ending_at_timestamp(token2, timestamp)?;
+        registry.push_stream_ending_at_timestamp(token3, timestamp)?;
+
+        let streams = registry.get_streams_ending_at_timestamp(timestamp)?;
+        assert_eq!(streams.len(), 3);
+        assert_eq!(streams[0], token1);
+        assert_eq!(streams[1], token2);
+        assert_eq!(streams[2], token3);
+
+        let other_timestamp = 3000u128;
+        let other_streams = registry.get_streams_ending_at_timestamp(other_timestamp)?;
+        assert_eq!(other_streams.len(), 0);
+
+        let token4 = Address::random();
+        registry.push_stream_ending_at_timestamp(token4, other_timestamp)?;
+
+        let streams1 = registry.get_streams_ending_at_timestamp(timestamp)?;
+        let streams2 = registry.get_streams_ending_at_timestamp(other_timestamp)?;
+
+        assert_eq!(streams1.len(), 3);
+        assert_eq!(streams2.len(), 1);
+        assert_eq!(streams2[0], token4);
+
         Ok(())
     }
 
