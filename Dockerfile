@@ -46,7 +46,10 @@ ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_SHA_SHORT
 
 # Install nightly Rust and build the tempo binary
-RUN cargo build --bin ${RUST_BINARY} --profile ${RUST_PROFILE} --features "${RUST_FEATURES}"
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo build --bin ${RUST_BINARY} --profile ${RUST_PROFILE} --features "${RUST_FEATURES}"
 
 FROM debian:bookworm-slim
 
