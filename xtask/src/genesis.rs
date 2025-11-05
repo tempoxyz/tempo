@@ -130,6 +130,9 @@ impl GenesisArgs {
         println!("Initializing registry");
         initialize_registry(&mut evm)?;
 
+        println!("Initializing LinkingUSD");
+        initialize_linking_usd(admin, &addresses, &mut evm)?;
+
         let (_, alpha_token_address) = create_and_mint_token(
             "AlphaUSD",
             "AlphaUSD",
@@ -159,9 +162,6 @@ impl GenesisArgs {
             U256::from(u64::MAX),
             &mut evm,
         )?;
-
-        println!("Initializing LinkingUSD");
-        initialize_linking_usd(admin, &addresses, &mut evm)?;
 
         println!("Initializing TIP20RewardsRegistry");
         initialize_tip20_rewards_registry(&mut evm)?;
