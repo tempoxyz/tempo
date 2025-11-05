@@ -10,7 +10,7 @@ use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_transaction_pool::{TransactionOrigin, pool::AddedTransactionState};
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_node::{args::TempoArgs, node::TempoNode};
+use tempo_node::node::TempoNode;
 use tempo_precompiles::{storage::slots, tip_fee_manager};
 use tempo_primitives::TempoTxEnvelope;
 
@@ -33,13 +33,13 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
         .testing_node(executor.clone())
-        .node(TempoNode::new(TempoArgs::default()))
+        .node(TempoNode::new())
         .launch()
         .await?;
 
-    // <cast send 0x20c0000000000000000000000000000000000000 'transfer(address,uint256)' 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 100000000 --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d --gas-limit 2000000 --gas-price 4000000000>
+    // <cast mktx 0x20c0000000000000000000000000000000000000 'transfer(address,uint256)' 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 100000000 --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d --gas-limit 2000000 --gas-price 44000000000000 --priority-gas-price 1 --chain-id 1337 --nonce 0>
     let raw = hex!(
-        "0x02f8ae820539800184ee6b2800831e84809420c000000000000000000000000000000000000080b844a9059cbb0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc0000000000000000000000000000000000000000000000000000000005f5e100c001a07c453d4ffe1b391089656e70658aa839435e18a5edab6113076166035c7d7afca06f454ef1b016bbf55cc147f4b20cda2719c5be22169b9c5c31366bde0c546d67"
+        "0x02f8b082053980018628048c5ec000831e84809420c000000000000000000000000000000000000080b844a9059cbb0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc0000000000000000000000000000000000000000000000000000000005f5e100c001a0e7f78bca071cc3f0b41dabdee8b3b97c47ca8bfe3bf86861ba06cd97567d61f6a02ad11d6959be0eba004f1f3336c8b1c90aced228a00cbd5af990b519792e7b87"
     );
 
     let tx = TempoTxEnvelope::decode_2718_exact(&raw[..])?.try_into_recovered()?;

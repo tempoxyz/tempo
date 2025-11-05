@@ -1,13 +1,18 @@
 use alloy::{
+    consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     network::EthereumWallet,
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
 };
-use alloy_eips::BlockNumberOrTag;
+use alloy_eips::{BlockNumberOrTag, Encodable2718};
+use alloy_network::TxSignerSync;
+use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
-use reth_e2e_test_utils::{transaction::TransactionTestContext, wallet::Wallet};
+use reth_e2e_test_utils::wallet::Wallet;
 use reth_node_api::EngineApiMessageVersion;
+use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_primitives_traits::AlloyBlockHeader as _;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 
 /// Test that verifies backfill sync works correctly.
 ///
@@ -64,7 +69,20 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         let wallet_signer = wallets[i as usize].clone();
 
         // Create a new transaction for this block
-        let raw_tx = TransactionTestContext::transfer_tx_bytes(chain_id, wallet_signer).await;
+        let raw_tx = {
+            let mut tx = TxEip1559 {
+                chain_id,
+                gas_limit: 21000,
+                to: Address::ZERO.into(),
+                max_fee_per_gas: TEMPO_BASE_FEE as u128,
+                max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+                ..Default::default()
+            };
+            let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
+            TxEnvelope::Eip1559(tx.into_signed(signature))
+                .encoded_2718()
+                .into()
+        };
 
         // Send the transaction
         let tx_hash = node1.rpc.inject_tx(raw_tx).await?;
@@ -127,6 +145,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         finalized_block_hash: final_block_hash.0.into(),
     };
 
+    let metrics_recorder = install_prometheus_recorder();
     let result = node2
         .inner
         .add_ons_handle
@@ -209,6 +228,11 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     assert_eq!(
         mid_block1.header.hash, mid_block2.header.hash,
         "Intermediate block hashes don't match"
+    );
+
+    assert!(
+        tempo_e2e::get_pipeline_runs(metrics_recorder) == 1,
+        "Backfill was never triggered"
     );
 
     Ok(())

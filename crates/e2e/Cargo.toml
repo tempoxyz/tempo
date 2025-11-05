@@ -17,8 +17,10 @@ commonware-utils.workspace = true
 eyre.workspace = true
 reth-db.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
+reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
+reth-node-metrics.workspace = true
 reth-rpc-builder.workspace = true
 
 tempo-chainspec.workspace = true
@@ -30,10 +32,14 @@ futures.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 commonware-macros.workspace = true
 tracing-subscriber.workspace = true
+
+alloy-signer-local.workspace = true
+alloy-network.workspace = true
 
 [lints]
 workspace = true

@@ -92,7 +92,7 @@ sol! {
         }
 
         // Reward Functions
-        function startReward(uint256 amount, uint128 secs) external returns (uint64);
+        function startReward(uint256 amount, uint32 secs) external returns (uint64);
         function setRewardRecipient(address recipient) external;
         function cancelReward(uint64 id) external returns (uint256);
         function claimRewards() external returns (uint256);

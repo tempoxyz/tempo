@@ -161,7 +161,7 @@ impl GenesisArgs {
         )?;
 
         println!("Initializing LinkingUSD");
-        initialize_linking_usd(admin, &mut evm)?;
+        initialize_linking_usd(admin, &addresses, &mut evm)?;
 
         println!("Initializing TIP20RewardsRegistry");
         initialize_tip20_rewards_registry(&mut evm)?;
@@ -397,6 +397,7 @@ fn create_and_mint_token(
 
 fn initialize_linking_usd(
     admin: Address,
+    recipients: &[Address],
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<()> {
     let block = evm.block.clone();
@@ -407,9 +408,25 @@ fn initialize_linking_usd(
     linking_usd
         .initialize(admin)
         .expect("LinkingUSD initialization should succeed");
+
     let mut roles = linking_usd.get_roles_contract();
     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
     roles.grant_role_internal(admin, *TRANSFER_ROLE)?;
+    for recipient in recipients.iter().tqdm() {
+        roles.grant_role_internal(*recipient, *TRANSFER_ROLE)?;
+    }
+
+    for recipient in recipients.iter().tqdm() {
+        linking_usd
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: *recipient,
+                    amount: U256::from(u64::MAX),
+                },
+            )
+            .expect("Could not mint linkingUSD");
+    }
 
     Ok(())
 }

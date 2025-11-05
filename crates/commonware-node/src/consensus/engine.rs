@@ -33,6 +33,7 @@ use crate::{
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
+    subblocks,
 };
 
 use super::block::Block;
@@ -93,6 +94,7 @@ pub struct Builder<
     pub views_to_track: u64,
     pub views_until_leader_skip: u64,
     pub new_payload_wait_time: Duration,
+    pub time_to_build_subblock: Duration,
 }
 
 impl<TBlocker, TContext, TPeerManager> Builder<TBlocker, TContext, TPeerManager>
@@ -173,6 +175,16 @@ where
         )
         .await;
 
+        let subblocks = subblocks::Actor::new(subblocks::Config {
+            context: self.context.clone(),
+            signer: self.signer.clone(),
+            scheme_provider: scheme_provider.clone(),
+            node: self.execution_node.clone(),
+            fee_recipient: self.fee_recipient,
+            time_to_build_subblock: self.time_to_build_subblock,
+            epoch_length: self.epoch_length,
+        });
+
         let (application, application_mailbox) = application::init(super::application::Config {
             context: self.context.with_label("application"),
             // TODO: pass in from the outside,
@@ -181,7 +193,9 @@ where
             marshal: marshal_mailbox.clone(),
             execution_node: self.execution_node,
             new_payload_wait_time: self.new_payload_wait_time,
+            subblocks: subblocks.mailbox(),
             epoch_length: self.epoch_length,
+            scheme_provider: scheme_provider.clone(),
         })
         .await
         .wrap_err("failed initializing application actor")?;
@@ -195,8 +209,9 @@ where
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
+                subblocks: subblocks.mailbox(),
                 marshal: marshal_mailbox,
-                scheme_provider,
+                scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
@@ -238,6 +253,8 @@ where
             marshal,
 
             epoch_manager,
+
+            subblocks,
         })
     }
 }
@@ -281,6 +298,8 @@ where
     marshal: crate::alias::marshal::Actor<TContext>,
 
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
+
+    subblocks: subblocks::Actor<TContext>,
 }
 
 impl<TBlocker, TContext, TPeerManager> Engine<TBlocker, TContext, TPeerManager>
@@ -331,6 +350,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        subblocks_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> Handle<eyre::Result<()>> {
         self.context.clone().spawn(|_| {
             self.run(
@@ -341,6 +364,7 @@ where
                 marshal_network,
                 dkg_channel,
                 boundary_certificates_channel,
+                subblocks_channel,
             )
         })
     }
@@ -379,6 +403,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        subblocks_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_channel);
         let application = self.application.start(self.dkg_manager_mailbox.clone());
@@ -399,6 +427,10 @@ where
             boundary_certificates_channel,
         );
 
+        let subblocks = self
+            .context
+            .spawn(|_| self.subblocks.run(subblocks_channel));
+
         let dkg_manager = self.dkg_manager.start(dkg_channel);
 
         try_join_all(vec![
@@ -407,11 +439,17 @@ where
             epoch_manager,
             marshal,
             dkg_manager,
+            subblocks,
         ])
         .await
         .map(|_| ())
         // TODO: look into adding error context so that we know which
         // component failed.
         .wrap_err("one of the consensus engine's actors failed")
+    }
+
+    /// Returns a handle to the subblocks service.
+    pub fn subblocks_mailbox(&self) -> subblocks::Mailbox {
+        self.subblocks.mailbox()
     }
 }

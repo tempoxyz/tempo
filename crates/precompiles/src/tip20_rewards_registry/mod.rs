@@ -113,13 +113,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let last_index = length - U256::ONE;
 
         if index != last_index {
-            let last_element_slot = array_slot + last_index;
+            // Elements are stored at array_slot + 1 + index
+            let last_element_slot = array_slot + U256::ONE + last_index;
             let last_token = self
                 .storage
                 .sload(self.address, last_element_slot)?
                 .into_address();
 
-            let current_element_slot = array_slot + index;
+            let current_element_slot = array_slot + U256::ONE + index;
             self.storage
                 .sstore(self.address, current_element_slot, last_token.into_u256())?;
 
@@ -145,7 +146,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let length = self.storage.sload(self.address, array_slot)?;
 
         // Push the token address to the array and increment the array length
-        let element_slot = array_slot + length;
+        // Elements are stored at array_slot + 1 + index (array_slot stores the length)
+        let element_slot = array_slot + U256::ONE + length;
         self.storage
             .sstore(self.address, element_slot, address.into_u256())?;
         self.storage
@@ -162,7 +164,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
         let mut tokens = Vec::new();
         for i in 0..length.to::<u64>() {
-            let element_slot = array_slot + U256::from(i);
+            // Elements are stored at array_slot + 1 + index
+            let element_slot = array_slot + U256::ONE + U256::from(i);
             let token_addr = self
                 .storage
                 .sload(self.address, element_slot)?
@@ -183,7 +186,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let mut last_updated = self.get_last_updated_timestamp()?;
 
         if last_updated == 0 {
-            last_updated = current_timestamp - 1;
+            last_updated = current_timestamp.saturating_sub(1);
         }
 
         if current_timestamp == last_updated {

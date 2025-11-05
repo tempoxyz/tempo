@@ -5,7 +5,8 @@
 
 mod attrs;
 
-pub use crate::attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
+use alloy_primitives::B256;
+pub use attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
 
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
@@ -21,23 +22,28 @@ pub struct TempoPayloadTypes;
 
 /// Execution data for Tempo node. Simply wraps a sealed block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TempoExecutionData(pub SealedBlock<Block>);
+pub struct TempoExecutionData {
+    /// The built block.
+    pub block: SealedBlock<Block>,
+    /// Validator set active at the time this block was built.
+    pub validator_set: Option<Vec<B256>>,
+}
 
 impl ExecutionPayload for TempoExecutionData {
     fn parent_hash(&self) -> alloy_primitives::B256 {
-        self.0.parent_hash()
+        self.block.parent_hash()
     }
 
     fn block_hash(&self) -> alloy_primitives::B256 {
-        self.0.hash()
+        self.block.hash()
     }
 
     fn block_number(&self) -> u64 {
-        self.0.number()
+        self.block.number()
     }
 
     fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
-        self.0
+        self.block
             .body()
             .withdrawals
             .as_ref()
@@ -45,15 +51,15 @@ impl ExecutionPayload for TempoExecutionData {
     }
 
     fn parent_beacon_block_root(&self) -> Option<alloy_primitives::B256> {
-        self.0.parent_beacon_block_root()
+        self.block.parent_beacon_block_root()
     }
 
     fn timestamp(&self) -> u64 {
-        self.0.timestamp()
+        self.block.timestamp()
     }
 
     fn gas_used(&self) -> u64 {
-        self.0.gas_used()
+        self.block.gas_used()
     }
 }
 
@@ -65,6 +71,9 @@ impl PayloadTypes for TempoPayloadTypes {
     type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
 
     fn block_to_payload(block: SealedBlock<Block>) -> Self::ExecutionData {
-        TempoExecutionData(block)
+        TempoExecutionData {
+            block,
+            validator_set: None,
+        }
     }
 }

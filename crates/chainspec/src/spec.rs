@@ -1,4 +1,7 @@
-use crate::hardfork::{TempoHardfork, TempoHardforks};
+use crate::{
+    bootnodes::andantino_nodes,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
@@ -13,7 +16,7 @@ use std::sync::{Arc, LazyLock};
 use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_primitives::TempoHeader;
 
-pub const TEMPO_BASE_FEE: u64 = 44;
+pub const TEMPO_BASE_FEE: u64 = 44_000_000_000_000;
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -88,6 +91,7 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         inner: spec.map_header(|inner| TempoHeader {
             general_gas_limit: 0,
             timestamp_millis_part: 0,
+            shared_gas_limit: 0,
             inner,
         }),
     }
@@ -122,8 +126,9 @@ impl TempoChainSpec {
 
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
-                general_gas_limit: inner.gas_limit,
+                general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp * 1000,
+                shared_gas_limit: 0,
                 inner,
             }),
         }
@@ -136,9 +141,10 @@ impl From<ChainSpec> for TempoChainSpec {
     fn from(spec: ChainSpec) -> Self {
         Self {
             inner: spec.map_header(|inner| TempoHeader {
-                general_gas_limit: inner.gas_limit,
+                general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp * 1000,
                 inner,
+                shared_gas_limit: 0,
             }),
         }
     }
@@ -178,7 +184,10 @@ impl EthChainSpec for TempoChainSpec {
     }
 
     fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
-        self.inner.bootnodes()
+        match self.inner.chain_id() {
+            42429 => Some(andantino_nodes()),
+            _ => self.inner.bootnodes(),
+        }
     }
 
     fn chain(&self) -> Chain {

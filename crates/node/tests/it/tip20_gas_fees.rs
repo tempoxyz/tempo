@@ -9,6 +9,7 @@ use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
 use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
+use tempo_primitives::transaction::calc_gas_balance_spending;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_fee_in_stable() -> eyre::Result<()> {
@@ -47,7 +48,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     // Assert that the fee token balance has decreased by gas spent
     let balance_after = fee_token.balanceOf(caller).call().await?;
 
-    let cost = receipt.effective_gas_price() * receipt.gas_used as u128;
+    let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
     assert_eq!(balance_after, initial_balance - U256::from(cost));
 
     Ok(())

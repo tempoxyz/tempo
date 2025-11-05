@@ -266,6 +266,12 @@ impl AASignature {
     }
 }
 
+impl From<Signature> for AASignature {
+    fn from(signature: Signature) -> Self {
+        Self::Secp256k1(signature)
+    }
+}
+
 // ============================================================================
 // Helper Functions for Signature Verification
 // ============================================================================

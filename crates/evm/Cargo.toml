@@ -19,6 +19,9 @@ tempo-primitives.workspace = true
 tempo-precompiles.workspace = true
 tempo-revm.workspace = true
 
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+
 reth-consensus.workspace = true
 reth-chainspec.workspace = true
 reth-evm.workspace = true
@@ -27,6 +30,7 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-rpc-eth-api = { workspace = true, optional = true }
 
+alloy-rlp.workspace = true
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true

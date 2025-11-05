@@ -1,3 +1,4 @@
+use crate::TempoInvalidTransaction;
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -12,7 +13,7 @@ use revm::context::{
 };
 use tempo_primitives::{
     AASignature, AASigned, TempoTxEnvelope, TxAA, TxFeeToken,
-    transaction::{AASignedAuthorization, Call},
+    transaction::{AASignedAuthorization, Call, calc_gas_balance_spending},
 };
 
 /// Account Abstraction transaction environment.
@@ -35,6 +36,9 @@ pub struct AATxEnv {
 
     /// Nonce key for 2D nonce system
     pub nonce_key: U256,
+
+    /// Whether the transaction is a subblock transaction.
+    pub subblock_transaction: bool,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -63,10 +67,9 @@ pub struct TempoTxEnv {
 
 impl TempoTxEnv {
     /// Resolves fee payer from the signature.
-    pub fn fee_payer(&self) -> Result<Address, InvalidTransaction> {
+    pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
         if let Some(fee_payer) = self.fee_payer {
-            // todo: introduce custom error type or Other variant upstream
-            fee_payer.ok_or(InvalidTransaction::OverflowPaymentInTransaction)
+            fee_payer.ok_or(TempoInvalidTransaction::InvalidFeePayerSignature)
         } else {
             Ok(self.caller())
         }
@@ -77,10 +80,7 @@ impl From<TxEnv> for TempoTxEnv {
     fn from(inner: TxEnv) -> Self {
         Self {
             inner,
-            fee_token: None,
-            is_system_tx: false,
-            fee_payer: None,
-            aa_tx_env: None,
+            ..Default::default()
         }
     }
 }
@@ -151,6 +151,22 @@ impl Transaction for TempoTxEnv {
 
     fn max_priority_fee_per_gas(&self) -> Option<u128> {
         self.inner.max_priority_fee_per_gas()
+    }
+
+    fn max_balance_spending(&self) -> Result<U256, InvalidTransaction> {
+        calc_gas_balance_spending(self.gas_limit(), self.max_fee_per_gas())
+            .checked_add(self.value())
+            .ok_or(InvalidTransaction::OverflowPaymentInTransaction)
+    }
+
+    fn effective_balance_spending(
+        &self,
+        base_fee: u128,
+        _blob_price: u128,
+    ) -> Result<U256, InvalidTransaction> {
+        calc_gas_balance_spending(self.gas_limit(), self.effective_gas_price(base_fee))
+            .checked_add(self.value())
+            .ok_or(InvalidTransaction::OverflowPaymentInTransaction)
     }
 }
 
@@ -315,6 +331,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 aa_calls: calls.clone(),
                 aa_authorization_list: aa_authorization_list.clone(),
                 nonce_key: *nonce_key,
+                subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
             })),
         }
     }
@@ -364,26 +381,5 @@ impl FromTxWithEncoded<AASigned> for TempoTxEnv {
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
     fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
-    }
-}
-
-#[cfg(feature = "rpc")]
-impl reth_rpc_convert::transaction::TryIntoTxEnv<TempoTxEnv>
-    for alloy_rpc_types_eth::TransactionRequest
-{
-    type Err = reth_rpc_convert::transaction::EthTxEnvError;
-
-    fn try_into_tx_env<Spec>(
-        self,
-        cfg_env: &revm::context::CfgEnv<Spec>,
-        block_env: &revm::context::BlockEnv,
-    ) -> Result<TempoTxEnv, Self::Err> {
-        Ok(TempoTxEnv {
-            inner: self.try_into_tx_env(cfg_env, block_env)?,
-            fee_token: None,
-            is_system_tx: false,
-            fee_payer: None,
-            aa_tx_env: None, // RPC transactions are not AA transactions
-        })
     }
 }

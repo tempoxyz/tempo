@@ -11,12 +11,18 @@ use reth_primitives_traits::NodePrimitives;
 pub mod transaction;
 pub use transaction::{
     AA_TX_TYPE_ID, AASignature, AASigned, FEE_TOKEN_TX_TYPE_ID, MAX_WEBAUTHN_SIGNATURE_LENGTH,
-    P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType, TempoTxEnvelope, TempoTxType,
-    TxAA, TxFeeToken, derive_p256_address,
+    P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
+    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoTxEnvelope, TempoTxType, TxAA, TxFeeToken,
+    derive_p256_address,
 };
 
 mod header;
 pub use header::TempoHeader;
+
+pub mod subblock;
+pub use subblock::{
+    RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockMetadata, SubBlockVersion,
+};
 
 /// Tempo block.
 pub type Block = alloy_consensus::Block<TempoTxEnvelope, TempoHeader>;
