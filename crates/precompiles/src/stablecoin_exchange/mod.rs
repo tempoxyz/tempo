@@ -1409,7 +1409,8 @@ mod tests {
     use tempo_contracts::precompiles::TIP20Error;
 
     use crate::{
-        linking_usd::TRANSFER_ROLE, storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE,
+        error::TempoPrecompileError, linking_usd::TRANSFER_ROLE,
+        storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE,
     };
 
     use super::*;

@@ -100,7 +100,7 @@ pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN
 pub fn validate_usd_currency<S: PrecompileStorageProvider>(
     token: Address,
     storage: &mut S,
-) -> Result<(), TempoPrecompileError> {
+) -> Result<()> {
     let mut tip20_token = TIP20Token::from_address(token, storage);
     let currency = tip20_token.currency()?;
     if currency != USD_CURRENCY {
@@ -931,7 +931,7 @@ pub(crate) mod tests {
     pub(crate) fn initialize_linking_usd(
         storage: &mut HashMapStorageProvider,
         admin: Address,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, storage);
         linking_usd.initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
     }
