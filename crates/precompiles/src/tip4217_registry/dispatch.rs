@@ -6,6 +6,10 @@ use crate::tip4217_registry::{ITIP4217Registry, TIP4217Registry};
 
 impl Precompile for TIP4217Registry {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
+        // self.storage
+        //     .deduct_gas(input_cost(calldata.len()))
+        //     .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {

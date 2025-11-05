@@ -1,19 +1,34 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
-use revm::state::{AccountInfo, Bytecode};
+use revm::{
+    primitives::hardfork::SpecId,
+    state::{AccountInfo, Bytecode},
+};
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     chain_id: u64,
+    gas_remaining: u64,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
-    pub fn new(internals: EvmInternals<'a>, chain_id: u64) -> Self {
+    /// Create a new storage provider with a specific gas limit.
+    pub fn new(internals: EvmInternals<'a>, gas_remaining: u64, chain_id: u64) -> Self {
         Self {
             internals,
             chain_id,
+            gas_remaining,
+        }
+    }
+
+    /// Create a new storage provider with maximum gas limit.
+    pub fn new_max_gas(internals: EvmInternals<'a>, chain_id: u64) -> Self {
+        Self {
+            internals,
+            chain_id,
+            gas_remaining: u64::MAX,
         }
     }
 
@@ -35,6 +50,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         self.ensure_loaded_account(address)?;
+        self.deduct_gas(code.len() as u64 * revm::interpreter::gas::CODEDEPOSIT)?;
+
         self.internals.set_code(address, code);
 
         Ok(())
@@ -43,8 +60,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, TempoPrecompileError> {
         self.ensure_loaded_account(address)?;
         let account = self.internals.load_account_code(address)?;
+        let info = account.info.clone();
+        let is_cold = account.is_cold;
+        self.deduct_gas(revm::interpreter::gas::warm_cold_cost(is_cold))?;
 
-        Ok(account.data.info.clone())
+        Ok(info)
     }
 
     fn sstore(
@@ -54,12 +74,23 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         self.ensure_loaded_account(address)?;
-        self.internals.sstore(address, key, value)?;
+        let result = self.internals.sstore(address, key, value)?;
+
+        self.deduct_gas(revm::interpreter::gas::sstore_cost(
+            SpecId::AMSTERDAM,
+            &result.data,
+            result.is_cold,
+        ))?;
 
         Ok(())
     }
 
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
+        self.deduct_gas(
+            revm::interpreter::gas::log_cost(event.topics().len() as u8, event.data.len() as u64)
+                .unwrap_or(u64::MAX),
+        )?;
+
         self.internals.log(Log {
             address,
             data: event,
@@ -72,7 +103,26 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.ensure_loaded_account(address)?;
         let val = self.internals.sload(address, key)?;
 
+        self.deduct_gas(revm::interpreter::gas::sload_cost(
+            SpecId::AMSTERDAM,
+            val.is_cold,
+        ))?;
+
         Ok(val.data)
+    }
+
+    #[inline]
+    fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        self.gas_remaining = self
+            .gas_remaining
+            .checked_sub(gas)
+            .ok_or(TempoPrecompileError::OutOfGas)?;
+        Ok(())
+    }
+
+    #[inline]
+    fn gas_remaining(&self) -> u64 {
+        self.gas_remaining
     }
 }
 
@@ -101,7 +151,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
         let addr = Address::random();
         let key = U256::random();
@@ -121,7 +171,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
         let addr = Address::random();
         let code = Bytecode::new_raw(vec![0xff].into());
@@ -142,7 +192,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
         let address = address!("3000000000000000000000000000000000000003");
 
@@ -166,7 +216,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
         let address = address!("4000000000000000000000000000000000000004");
         let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
@@ -188,7 +238,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
         let address = address!("5000000000000000000000000000000000000005");
 
@@ -216,7 +266,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
         let address = address!("6000000000000000000000000000000000000006");
         let key = U256::from(99);
@@ -240,7 +290,7 @@ mod tests {
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-        let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
         let address1 = address!("7000000000000000000000000000000000000001");
         let address2 = address!("7000000000000000000000000000000000000002");

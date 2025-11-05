@@ -44,7 +44,7 @@ async fn test_eth_call() -> eyre::Result<()> {
     token
         .mint(caller, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
+        .gas(300_000)
         .send()
         .await?
         .get_receipt()
@@ -87,7 +87,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     token
         .mint(caller, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
+        .gas(300_000)
         .send()
         .await?
         .get_receipt()
@@ -177,7 +177,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     let mint_receipt = token
         .mint(caller, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
+        .gas(300_000)
         .send()
         .await?
         .get_receipt()
@@ -187,7 +187,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     token
         .transfer(recipient, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
+        .gas(300_000)
         .send()
         .await?
         .get_receipt()
@@ -237,11 +237,12 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
     let calldata = token.mint(caller, U256::from(1000)).calldata().clone();
     let tx = TransactionRequest::default()
         .to(*token.address())
+        .gas_limit(300_000)
         .input(calldata.into());
 
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
-    assert_eq!(gas, 22919);
+    assert_eq!(gas, 218725);
 
     // ensure we can successfully send the tx with that gas
     let receipt = provider
@@ -342,11 +343,12 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .from(user_address)
         .to(*user_fee_token.address())
+        .gas_limit(300_000)
         .input(TransactionInput::new(calldata));
 
     // Estimate gas when user fee token differs from validator fee token
     let gas = provider.estimate_gas(tx.clone()).await?;
-    assert!(gas > 0 && gas < 30000);
+    assert!(gas > 0 && gas < 300_000, "Gas estimate {gas}");
 
     // Verify we can execute the transaction with the estimated gas
     let receipt = provider

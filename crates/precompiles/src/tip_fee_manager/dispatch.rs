@@ -1,5 +1,5 @@
 use crate::{
-    Precompile, mutate, mutate_void,
+    Precompile, input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
     view,
@@ -9,6 +9,10 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        self.storage
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
@@ -17,7 +21,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             .try_into()
             .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
 
-        match selector {
+        let result = match selector {
             // View functions
             IFeeManager::userTokensCall::SELECTOR => {
                 view::<IFeeManager::userTokensCall>(calldata, |call| self.user_tokens(call))
@@ -83,7 +87,12 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
             )),
-        }
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.storage.gas_remaining();
+            res
+        })
     }
 }
 
@@ -91,8 +100,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS, MUTATE_FUNC_GAS, TIP_FEE_MANAGER_ADDRESS, VIEW_FUNC_GAS,
-        expect_precompile_revert,
+        LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
         storage::hashmap::HashMapStorageProvider,
         tip_fee_manager::{TIPFeeAMMError, TipFeeManager, amm::PoolKey},
         tip20::{ISSUER_ROLE, ITIP20, TIP20Token, token_id_to_address},
@@ -146,12 +154,14 @@ mod tests {
 
         let calldata = IFeeManager::setValidatorTokenCall { token }.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), validator)?;
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify token was set
         let calldata = IFeeManager::validatorTokensCall { validator }.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), validator)?;
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
         let returned_token = Address::abi_decode(&result.bytes)?;
         assert_eq!(returned_token, token);
 
@@ -185,12 +195,14 @@ mod tests {
 
         let calldata = IFeeManager::setUserTokenCall { token }.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), user)?;
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         // Verify token was set
         let calldata = IFeeManager::userTokensCall { user }.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), user)?;
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
         let returned_token = Address::abi_decode(&result.bytes)?;
         assert_eq!(returned_token, token);
 
@@ -228,7 +240,8 @@ mod tests {
         let result = fee_manager
             .call(&Bytes::from(calldata), Address::random())
             .unwrap();
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
 
         let returned_id = B256::abi_decode(&result.bytes).unwrap();
         let expected_id = PoolKey::new(token_a, token_b).get_id();
@@ -250,7 +263,8 @@ mod tests {
         };
         let calldata = get_pool_call.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), Address::random())?;
-        assert_eq!(result.gas_used, VIEW_FUNC_GAS);
+        // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
+        assert_eq!(result.gas_used, 0);
 
         // Decode and verify pool
         let pool = ITIPFeeAMM::Pool::abi_decode(&result.bytes)?;
@@ -330,7 +344,8 @@ mod tests {
         // Call executeBlock (only system contract can call)
         let call = IFeeManager::executeBlockCall {};
         let result = fee_manager.call(&Bytes::from(call.abi_encode()), Address::ZERO)?;
-        assert_eq!(result.gas_used, MUTATE_FUNC_GAS);
+        // HashMapStorageProvider does not have gas accounting, so we expect 0
+        assert_eq!(result.gas_used, 0);
 
         Ok(())
     }

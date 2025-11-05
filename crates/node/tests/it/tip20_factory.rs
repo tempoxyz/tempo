@@ -40,7 +40,7 @@ async fn test_create_token() -> eyre::Result<()> {
             caller,
         )
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(30000)
+        .gas(300_000)
         .send()
         .await?
         .get_receipt()

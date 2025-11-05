@@ -335,7 +335,7 @@ fn create_and_mint_token(
     let chain_id = evm.chain_id();
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, chain_id);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, chain_id);
 
     let token_id = {
         let mut factory = TIP20Factory::new(&mut provider);
@@ -403,7 +403,7 @@ fn initialize_linking_usd(
 ) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
     let mut linking_usd = LinkingUSD::new(&mut provider);
     linking_usd
@@ -435,7 +435,7 @@ fn initialize_linking_usd(
 fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
     TIP20RewardsRegistry::new(&mut provider).initialize()?;
 
     Ok(())
@@ -450,7 +450,7 @@ fn initialize_fee_manager(
     let block = evm.block.clone();
 
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
     let mut fee_manager =
         TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut provider);
@@ -482,7 +482,7 @@ fn initialize_fee_manager(
 fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
     TIP403Registry::new(&mut provider).initialize().unwrap();
     Ok(())
 }
@@ -490,7 +490,7 @@ fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()>
 fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
     let mut exchange = StablecoinExchange::new(&mut provider);
     exchange.initialize()?;
@@ -501,7 +501,7 @@ fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre:
 fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
     NonceManager::new(&mut provider).initialize()?;
 
     Ok(())
@@ -514,7 +514,7 @@ fn initialize_validator_config(
 ) -> eyre::Result<()> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
     let mut validator_config = ValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, &mut provider);
     validator_config
@@ -560,7 +560,7 @@ fn mint_pairwise_liquidity(
 ) {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new(evm_internals, 1);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
     let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
 

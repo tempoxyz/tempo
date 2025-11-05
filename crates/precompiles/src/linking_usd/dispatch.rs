@@ -1,5 +1,5 @@
 use crate::{
-    Precompile,
+    Precompile, input_cost,
     linking_usd::LinkingUSD,
     metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
@@ -11,6 +11,11 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        self.token
+            .storage
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
@@ -19,7 +24,7 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             .try_into()
             .unwrap();
 
-        match selector {
+        let result = match selector {
             // Metadata
             ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(|| self.name()),
             ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(|| self.symbol()),
@@ -156,6 +161,11 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             }
 
             _ => Err(PrecompileError::Other("Unknown selector".to_string())),
-        }
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.token.storage.gas_remaining();
+            res
+        })
     }
 }
