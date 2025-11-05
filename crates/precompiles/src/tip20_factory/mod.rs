@@ -49,7 +49,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         &mut self,
         sender: Address,
         call: ITIP20Factory::createTokenCall,
-    ) -> Result<U256> {
+    ) -> Result<Address> {
         let token_id = self.token_id_counter()?.to::<u64>();
         trace!(%sender, %token_id, ?call, "Create token");
 
