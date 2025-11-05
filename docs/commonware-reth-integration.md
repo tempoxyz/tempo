@@ -7,7 +7,7 @@ back in a single node. For an overview of commonware's threshold simplex engine
 and its configuration refer to the [`commonware_consensus::threshold_simplex`]
 documentation.
 
-[`commonware-consensus::threshold_simnplex`]: https://docs.rs/commonware-consensus/0.0.61/commonware_consensus/threshold_simplex/index.html
+[`commonware_consensus::threshold_simplex`]: https://docs.rs/commonware-consensus/0.0.61/commonware_consensus/threshold_simplex/index.html
 
 ## Data flow: block production and state transition
 
@@ -164,9 +164,9 @@ alloy-primitives `B256`.
 
 ["consensus" `Block`]: ../crates/commonware-node/src/consensus/block.rs
 ["consensus" `Digest`]: ../crates/commonware-node-cryptography/src/lib.rs
-[`EncodeSize`]: https://docs.rs/commonware-codec/0.0.61/commonware_codec/trait.EncodeSize.html
-[`Read`]: https://docs.rs/commonware-codec/0.0.61/commonware_codec/trait.Read.html
-[`Write`]: https://docs.rs/commonware-codec/0.0.61/commonware_codec/trait.Write.html
+[`EncodeSize`]: https://docs.rs/commonware-codec/0.0.61/commonware_codec/codec/trait.EncodeSize.html
+[`Read`]: https://docs.rs/commonware-codec/0.0.61/commonware_codec/codec/trait.Read.html
+[`Write`]: https://docs.rs/commonware-codec/0.0.61/commonware_codec/codec/trait.Write.html
 [`Block`]: https://docs.rs/commonware-consensus/0.0.61/commonware_consensus/trait.Block.html
 [`Committable`]: https://docs.rs/commonware-cryptography/0.0.61/commonware_cryptography/trait.Committable.html
 [`Digest`]: https://docs.rs/commonware-cryptography/0.0.61/commonware_cryptography/trait.Digest.html
