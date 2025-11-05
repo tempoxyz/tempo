@@ -34,6 +34,9 @@ const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 /// Decimal precision for TIP-20 tokens
 const TIP20_DECIMALS: u8 = 6;
 
+/// USD currency string constant
+const USD_CURRENCY: &str = "USD";
+
 /// TIP20 token address prefix (12 bytes for token ID encoding)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
@@ -253,6 +256,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         // Verify the new quote token is a valid TIP20 token that has been deployed
         if !is_tip20(call.newQuoteToken) {
             return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // Check if the currency is USD, if so then the quote token's currency MUST also be USD
+        let currency = self.currency()?;
+        if currency == USD_CURRENCY {
+            let quote_token_currency =
+                TIP20Token::from_address(call.newQuoteToken, self.storage).currency()?;
+            if quote_token_currency != USD_CURRENCY {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
         }
 
         let new_token_id = address_to_token_id_unchecked(call.newQuoteToken);
@@ -663,6 +676,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.write_string(slots::NAME, name.to_string())?;
         self.write_string(slots::SYMBOL, symbol.to_string())?;
         self.write_string(slots::CURRENCY, currency.to_string())?;
+
+        // Check if the currency is USD, if so then the quote token's currency MUST also be USD
+        if currency == USD_CURRENCY {
+            let quote_token_currency =
+                TIP20Token::from_address(quote_token, self.storage).currency()?;
+            if quote_token_currency != USD_CURRENCY {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+        }
+
         self.storage.sstore(
             self.token_address,
             slots::QUOTE_TOKEN,
@@ -1814,5 +1837,111 @@ mod tests {
             addr_via_from_address, token_address,
             "from_address should use the provided address"
         );
+    }
+
+    #[test]
+    fn test_new_invalid_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        let currency: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(31)
+            .map(char::from)
+            .collect();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Token", "T", &currency, LINKING_USD_ADDRESS, admin)?;
+
+        // Try to create a new USD token with the arbitrary token as the quote token, this should fail
+        let token_address = token.token_address;
+        let mut usd_token = TIP20Token::new(2, &mut storage);
+        let result = usd_token.initialize("USD Token", "USDT", USD_CURRENCY, token_address, admin);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                _
+            )))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_valid_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        let mut usd_token1 = TIP20Token::new(1, &mut storage);
+        usd_token1.initialize(
+            "USD Token",
+            "USDT",
+            USD_CURRENCY,
+            LINKING_USD_ADDRESS,
+            admin,
+        )?;
+
+        // USD token with USD token as quote
+        let usd_token1_address = token_id_to_address(1);
+        let mut usd_token2 = TIP20Token::new(2, &mut storage);
+        let result = usd_token2.initialize(
+            "USD Token 2",
+            "USD2",
+            USD_CURRENCY,
+            usd_token1_address,
+            admin,
+        );
+        assert!(result.is_ok());
+
+        // Create non USD token
+        let currency1: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(31)
+            .map(char::from)
+            .collect();
+
+        let mut token1 = TIP20Token::new(3, &mut storage);
+        token1.initialize("Token 1", "TK1", &currency1, LINKING_USD_ADDRESS, admin)?;
+
+        // Create a non USD token with non USD quote token
+        let currency2: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(31)
+            .map(char::from)
+            .collect();
+
+        let token1_address = token_id_to_address(3);
+        let mut token2 = TIP20Token::new(4, &mut storage);
+        let result = token2.initialize("Token 2", "TK2", &currency2, token1_address, admin);
+        assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_quote_token_invalid_token() {
+        // TODO: create a new token  that uses linking usd, and set the currency to some arbitrary
+        // value
+
+        // TODO: then create a new token with the first token as the linking token and make the
+        // second token usd, this shoudl fail and expet tthe error pls
+        //
+    }
+
+    #[test]
+    fn test_update_quote_token() {
+
+        // TODO: create a new token with linking token as quote otken and make the new token
+        // use USD as the currency
+        //
+        // TODO: then create a new token and set the first token as the quote token but set it also
+        // to usd, this should PauseStateUpdate
+        //
+        //
+        //
+        // then create a new token non usd, linking token is quote
+        //
+        // then create another token, non usd and anythigns hould pass.
     }
 }
