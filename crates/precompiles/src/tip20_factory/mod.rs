@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryEvent};
 
 use crate::{
     TIP20_FACTORY_ADDRESS,
-    error::TempoPrecompileError,
+    error::Result,
     storage::PrecompileStorageProvider,
     tip20::{TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address},
 };
@@ -37,7 +37,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
     ///
     /// Sets the initial token counter to 1, reserving token ID 0 for the LinkingUSD precompile.
     /// Also ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
-    pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
+    pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
         self.storage.set_code(
             TIP20_FACTORY_ADDRESS,
@@ -49,7 +49,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         &mut self,
         sender: Address,
         call: ITIP20Factory::createTokenCall,
-    ) -> Result<U256, TempoPrecompileError> {
+    ) -> Result<U256> {
         let token_id = self.token_id_counter()?.to::<u64>();
         trace!(%sender, %token_id, ?call, "Create token");
 
@@ -92,7 +92,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         Ok(token_id)
     }
 
-    pub fn token_id_counter(&mut self) -> Result<U256, TempoPrecompileError> {
+    pub fn token_id_counter(&mut self) -> Result<U256> {
         let counter = self
             .storage
             .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)?;
@@ -108,7 +108,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::hashmap::HashMapStorageProvider;
+    use crate::{error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider};
 
     #[test]
     fn test_create_token() {
