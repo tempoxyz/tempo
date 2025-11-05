@@ -185,11 +185,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
         if call.newSupplyCap < self.total_supply()? {
-            return Err(TIP20Error::supply_cap_exceeded().into());
+            return Err(TIP20Error::invalid_supply_cap().into());
         }
 
         if call.newSupplyCap > U128_MAX {
-            return Err(TIP20Error::invalid_supply_cap().into());
+            return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
         self.storage
