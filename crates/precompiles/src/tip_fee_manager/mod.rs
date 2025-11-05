@@ -312,7 +312,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     }
 
     /// Add a token to the tokens with fees array
-    fn add_token_to_fees_array(&mut self, token: Address) -> error::Result<()> {
+    fn add_token_to_fees_array(&mut self, token: Address) -> Result<()> {
         let length_slot = slots::tokens_with_fees_length_slot();
         let length = self.sload(length_slot)?;
         let token_slot = slots::tokens_with_fees_slot(length);

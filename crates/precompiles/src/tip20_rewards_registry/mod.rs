@@ -3,7 +3,7 @@ pub mod dispatch;
 
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS,
-    error::TempoPrecompileError,
+    error::Result,
     storage::{PrecompileStorageProvider, slots::mapping_slot},
     tip20::{TIP20Token, address_to_token_id_unchecked},
 };
@@ -47,7 +47,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Initializes the TIP20 rewards registry contract.
     ///
     /// Ensures the [`TIP20RewardsRegistry`] account isn't empty and prevents state clear.
-    pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
+    pub fn initialize(&mut self) -> Result<()> {
         self.storage.set_code(
             TIP20_REWARDS_REGISTRY_ADDRESS,
             Bytecode::new_legacy(Bytes::from_static(&[0xef])),
@@ -55,7 +55,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     }
 
     /// Get the last updated timestamp
-    fn get_last_updated_timestamp(&mut self) -> Result<u128, TempoPrecompileError> {
+    fn get_last_updated_timestamp(&mut self) -> Result<u128> {
         let val = self
             .storage
             .sload(self.address, slots::LAST_UPDATED_TIMESTAMP)?;
@@ -63,7 +63,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     }
 
     /// Set the last updated timestamp
-    fn set_last_updated_timestamp(&mut self, timestamp: u128) -> Result<(), TempoPrecompileError> {
+    fn set_last_updated_timestamp(&mut self, timestamp: u128) -> Result<()> {
         self.storage.sstore(
             self.address,
             slots::LAST_UPDATED_TIMESTAMP,
@@ -71,22 +71,18 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         )
     }
 
-    fn get_stream_index(&mut self, stream_key: B256) -> Result<U256, TempoPrecompileError> {
+    fn get_stream_index(&mut self, stream_key: B256) -> Result<U256> {
         let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
         self.storage.sload(self.address, index_slot)
     }
 
-    fn remove_stream_index(&mut self, stream_key: B256) -> Result<(), TempoPrecompileError> {
+    fn remove_stream_index(&mut self, stream_key: B256) -> Result<()> {
         let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
         self.storage.sstore(self.address, index_slot, U256::ZERO)
     }
 
     /// Add a token to the registry for a given stream end time
-    pub fn add_stream(
-        &mut self,
-        token: Address,
-        end_time: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    pub fn add_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
         let stream_key = keccak256((token, end_time).abi_encode());
 
         let array_slot = mapping_slot(end_time.to_be_bytes(), slots::STREAMS_ENDING_AT);
@@ -100,11 +96,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     }
 
     /// Remove stream before it is finalized
-    pub fn remove_stream(
-        &mut self,
-        token: Address,
-        end_time: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    pub fn remove_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
         let stream_key = keccak256((token, end_time).abi_encode());
         let index = self.get_stream_index(stream_key)?;
 
@@ -141,7 +133,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         &mut self,
         address: Address,
         timestamp: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let array_slot = mapping_slot(timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
         let length = self.storage.sload(self.address, array_slot)?;
 
@@ -155,10 +147,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     }
 
     /// Gets all TIP20 token addresses with streams ending at `timestamp` from storage
-    pub fn get_streams_ending_at_timestamp(
-        &mut self,
-        timestamp: u128,
-    ) -> Result<Vec<Address>, TempoPrecompileError> {
+    pub fn get_streams_ending_at_timestamp(&mut self, timestamp: u128) -> Result<Vec<Address>> {
         let array_slot = mapping_slot(timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
         let length = self.storage.sload(self.address, array_slot)?;
 
@@ -177,7 +166,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     }
 
     /// Finalize streams for all tokens ending at the current timestamp
-    pub fn finalize_streams(&mut self, sender: Address) -> Result<(), TempoPrecompileError> {
+    pub fn finalize_streams(&mut self, sender: Address) -> Result<()> {
         if sender != Address::ZERO {
             return Err(TIP20RewardsRegistryError::unauthorized().into());
         }
