@@ -406,7 +406,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
 
         let pool_id = self.get_pool_id(user_token, validator_token);
         let mut pool = self.get_pool(pool_id)?;
-        let total_supply = self.get_total_supply(pool_id)?;
+        let mut total_supply = self.get_total_supply(pool_id)?;
 
         let liquidity = if pool.reserve_user_token == 0 && pool.reserve_validator_token == 0 {
             let half_amount = amount_validator_token
@@ -417,12 +417,10 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
 
-            self.set_total_supply(
-                pool_id,
-                total_supply
-                    .checked_add(MIN_LIQUIDITY)
-                    .ok_or(TempoPrecompileError::under_overflow())?,
-            )?;
+            total_supply = total_supply
+                .checked_add(MIN_LIQUIDITY)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_total_supply(pool_id, total_supply)?;
 
             half_amount
                 .checked_sub(MIN_LIQUIDITY)
