@@ -14,11 +14,11 @@ use crate::{
         amm::{PoolKey, TIPFeeAMM},
         slots::{collected_fees_slot, user_token_slot, validator_token_slot},
     },
-    tip20::{ITIP20, TIP20Token, USD_CURRENCY, is_tip20},
+    tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 
 // Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, Bytes, IntoLogData, U256, keccak256, uint};
+use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
@@ -89,19 +89,6 @@ pub struct TipFeeManager<'a, S: PrecompileStorageProvider> {
     contract_address: Address,
     beneficiary: Address,
     storage: &'a mut S,
-}
-
-/// Validates that a token has USD currency
-pub fn validate_usd_currency<S: PrecompileStorageProvider>(
-    token: Address,
-    storage: &mut S,
-) -> Result<(), TempoPrecompileError> {
-    let mut tip20_token = TIP20Token::from_address(token, storage);
-    let currency = tip20_token.currency()?;
-    if keccak256(currency.as_bytes()) != keccak256(USD_CURRENCY.as_bytes()) {
-        return Err(FeeManagerError::invalid_token().into());
-    }
-    Ok(())
 }
 
 impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
@@ -554,6 +541,8 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for TipFeeManager<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use tempo_contracts::precompiles::TIP20Error;
+
     use super::*;
     use crate::{
         LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -771,9 +760,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::FeeManagerError(
-                FeeManagerError::InvalidToken(_)
-            ))
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
 
         // Set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
@@ -784,9 +771,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::FeeManagerError(
-                FeeManagerError::InvalidToken(_)
-            ))
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
 
         Ok(())
