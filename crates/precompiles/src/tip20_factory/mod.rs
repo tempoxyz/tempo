@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryEvent};
 
 use crate::{
     TIP20_FACTORY_ADDRESS,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::PrecompileStorageProvider,
     tip20::{TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address},
 };
@@ -87,7 +87,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         self.storage.sstore(
             TIP20_FACTORY_ADDRESS,
             slots::TOKEN_ID_COUNTER,
-            token_id + U256::ONE,
+            token_id.checked_add(U256::ONE).ok_or(TempoPrecompileError::overflow_underflow())?,
         )?;
 
         Ok(token_address)
