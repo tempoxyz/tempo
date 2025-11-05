@@ -1,6 +1,6 @@
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS,
-    error::TempoPrecompileError,
+    error::{Result, TempoPrecompileError},
     storage::{PrecompileStorageProvider, slots::mapping_slot},
     tip20::TIP20Token,
     tip20_rewards_registry::TIP20RewardsRegistry,
@@ -35,7 +35,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: Address,
         call: ITIP20::startRewardCall,
-    ) -> Result<u64, TempoPrecompileError> {
+    ) -> Result<u64> {
         self.check_not_paused()?;
         let token_address = self.token_address;
         self.ensure_transfer_authorized(msg_sender, token_address)?;
@@ -141,7 +141,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// This function calculates and updates the reward per token stored based on
     /// the total reward rate and the time elapsed since the last update.
     /// Only processes rewards if there is an opted-in supply.
-    pub fn accrue(&mut self, accrue_to_timestamp: U256) -> Result<(), TempoPrecompileError> {
+    pub fn accrue(&mut self, accrue_to_timestamp: U256) -> Result<()> {
         let elapsed = accrue_to_timestamp - U256::from(self.get_last_update_time()?);
         if elapsed.is_zero() {
             return Ok(());
@@ -176,7 +176,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// balance and the reward per token difference since their last update.
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
-    pub fn update_rewards(&mut self, holder: Address) -> Result<Address, TempoPrecompileError> {
+    pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
         let mut info = UserRewardInfo::from_storage(holder, self.storage, self.token_address)?;
 
         let cached_delegate = info.delegated_recipient;
@@ -220,7 +220,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: Address,
         call: ITIP20::setRewardRecipientCall,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         self.check_not_paused()?;
         if call.recipient != Address::ZERO {
             self.ensure_transfer_authorized(msg_sender, call.recipient)?;
@@ -274,7 +274,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         &mut self,
         msg_sender: Address,
         call: ITIP20::cancelRewardCall,
-    ) -> Result<U256, TempoPrecompileError> {
+    ) -> Result<U256> {
         let stream_id = call.id;
         let stream = RewardStream::from_storage(stream_id, self.storage, self.token_address)?;
 
@@ -379,11 +379,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ///
     /// This function is called to clean up streams that have reached their end time,
     /// reducing the total reward per second rate by the amount of the expired streams.
-    pub fn finalize_streams(
-        &mut self,
-        msg_sender: Address,
-        end_time: u128,
-    ) -> Result<(), TempoPrecompileError> {
+    pub fn finalize_streams(&mut self, msg_sender: Address, end_time: u128) -> Result<()> {
         if msg_sender != TIP20_REWARDS_REGISTRY_ADDRESS {
             return Err(TIP20Error::unauthorized().into());
         }
@@ -411,7 +407,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ///
     /// This function allows a reward recipient to claim their accumulated rewards
     /// and receive them as token transfers to their own balance.
-    pub fn claim_rewards(&mut self, msg_sender: Address) -> Result<U256, TempoPrecompileError> {
+    pub fn claim_rewards(&mut self, msg_sender: Address) -> Result<U256> {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(msg_sender, msg_sender)?;
 
@@ -465,7 +461,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Gets the next available stream ID (minimum 1).
-    fn get_next_stream_id(&mut self) -> Result<u64, TempoPrecompileError> {
+    fn get_next_stream_id(&mut self) -> Result<u64> {
         let id = self
             .storage
             .sload(self.token_address, slots::NEXT_STREAM_ID)?
@@ -475,25 +471,25 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Sets the next stream ID counter.
-    fn set_next_stream_id(&mut self, value: u64) -> Result<(), TempoPrecompileError> {
+    fn set_next_stream_id(&mut self, value: u64) -> Result<()> {
         self.storage
             .sstore(self.token_address, slots::NEXT_STREAM_ID, U256::from(value))
     }
 
     /// Gets the accumulated global reward per token.
-    fn get_global_reward_per_token(&mut self) -> Result<U256, TempoPrecompileError> {
+    fn get_global_reward_per_token(&mut self) -> Result<U256> {
         self.storage
             .sload(self.token_address, slots::GLOBAL_REWARD_PER_TOKEN)
     }
 
     /// Sets the accumulated global reward per token in storage.
-    fn set_global_reward_per_token(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
+    fn set_global_reward_per_token(&mut self, value: U256) -> Result<()> {
         self.storage
             .sstore(self.token_address, slots::GLOBAL_REWARD_PER_TOKEN, value)
     }
 
     /// Gets the timestamp of the last reward update from storage.
-    fn get_last_update_time(&mut self) -> Result<u64, TempoPrecompileError> {
+    fn get_last_update_time(&mut self) -> Result<u64> {
         Ok(self
             .storage
             .sload(self.token_address, slots::LAST_UPDATE_TIME)?
@@ -501,50 +497,43 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Sets the timestamp of the last reward update in storage.
-    fn set_last_update_time(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
+    fn set_last_update_time(&mut self, value: U256) -> Result<()> {
         self.storage
             .sstore(self.token_address, slots::LAST_UPDATE_TIME, value)
     }
 
     /// Gets the total supply of tokens opted into rewards from storage.
-    pub fn get_opted_in_supply(&mut self) -> Result<U256, TempoPrecompileError> {
+    pub fn get_opted_in_supply(&mut self) -> Result<U256> {
         self.storage
             .sload(self.token_address, slots::OPTED_IN_SUPPLY)
     }
 
     /// Sets the total supply of tokens opted into rewards in storage.
-    pub fn set_opted_in_supply(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
+    pub fn set_opted_in_supply(&mut self, value: U256) -> Result<()> {
         self.storage
             .sstore(self.token_address, slots::OPTED_IN_SUPPLY, value)
     }
 
     /// Gets the scheduled rate decrease at a specific time from storage.
-    fn get_scheduled_rate_decrease_at(
-        &mut self,
-        end_time: u128,
-    ) -> Result<U256, TempoPrecompileError> {
+    fn get_scheduled_rate_decrease_at(&mut self, end_time: u128) -> Result<U256> {
         let slot = mapping_slot(end_time.to_be_bytes(), slots::SCHEDULED_RATE_DECREASE);
         self.storage.sload(self.token_address, slot)
     }
 
     /// Sets the scheduled rate decrease at a specific time in storage.
-    fn set_scheduled_rate_decrease_at(
-        &mut self,
-        end_time: u128,
-        value: U256,
-    ) -> Result<(), TempoPrecompileError> {
+    fn set_scheduled_rate_decrease_at(&mut self, end_time: u128, value: U256) -> Result<()> {
         let slot = mapping_slot(end_time.to_be_bytes(), slots::SCHEDULED_RATE_DECREASE);
         self.storage.sstore(self.token_address, slot, value)
     }
 
     /// Gets the total reward per second rate from storage.
-    pub fn get_total_reward_per_second(&mut self) -> Result<U256, TempoPrecompileError> {
+    pub fn get_total_reward_per_second(&mut self) -> Result<U256> {
         self.storage
             .sload(self.token_address, slots::TOTAL_REWARD_PER_SECOND)
     }
 
     /// Sets the total reward per second rate in storage.
-    fn set_total_reward_per_second(&mut self, value: U256) -> Result<(), TempoPrecompileError> {
+    fn set_total_reward_per_second(&mut self, value: U256) -> Result<()> {
         self.storage
             .sstore(self.token_address, slots::TOTAL_REWARD_PER_SECOND, value)
     }
@@ -555,7 +544,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         from: Address,
         to: Address,
         amount: U256,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let from_delegate = self.update_rewards(from)?;
         let to_delegate = self.update_rewards(to)?;
 
@@ -579,11 +568,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Handles reward accounting when tokens are minted to an address.
-    pub fn handle_rewards_on_mint(
-        &mut self,
-        to: Address,
-        amount: U256,
-    ) -> Result<(), TempoPrecompileError> {
+    pub fn handle_rewards_on_mint(&mut self, to: Address, amount: U256) -> Result<()> {
         let to_delegate = self.update_rewards(to)?;
 
         if !to_delegate.is_zero() {
@@ -598,7 +583,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Retrieves a reward stream by its ID.
-    pub fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream, TempoPrecompileError> {
+    pub fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream> {
         RewardStream::from_storage(stream_id, self.storage, self.token_address)
     }
 }
@@ -620,7 +605,7 @@ impl UserRewardInfo {
         account: Address,
         storage: &mut S,
         token_address: Address,
-    ) -> Result<Self, TempoPrecompileError> {
+    ) -> Result<Self> {
         let user_slot = mapping_slot(account, slots::USER_REWARD_INFO);
 
         let delegated_recipient = storage
@@ -646,7 +631,7 @@ impl UserRewardInfo {
         account: Address,
         storage: &mut S,
         token_address: Address,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let user_slot = mapping_slot(account, slots::USER_REWARD_INFO);
 
         storage.sstore(
@@ -712,7 +697,7 @@ impl RewardStream {
         stream_id: u64,
         storage: &mut S,
         token_address: Address,
-    ) -> Result<Self, TempoPrecompileError> {
+    ) -> Result<Self> {
         let stream_slot = mapping_slot(stream_id.to_be_bytes(), slots::STREAMS);
 
         let funder = storage
@@ -750,7 +735,7 @@ impl RewardStream {
         &self,
         storage: &mut S,
         token_address: Address,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let stream_slot = mapping_slot(self.stream_id.to_be_bytes(), slots::STREAMS);
 
         storage.sstore(
@@ -791,7 +776,7 @@ impl RewardStream {
         &self,
         storage: &mut S,
         token_address: Address,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let stream_slot = mapping_slot(self.stream_id.to_be_bytes(), slots::STREAMS);
 
         storage.sstore(

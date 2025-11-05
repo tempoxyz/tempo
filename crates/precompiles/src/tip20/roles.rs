@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, B256, IntoLogData, U256};
 
 use crate::{
-    error::TempoPrecompileError,
+    error::Result,
     storage::{
         PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
@@ -35,27 +35,21 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
     }
 
     /// Initialize the UNGRANTABLE_ROLE to be self-administered
-    pub fn initialize(&mut self) -> Result<(), TempoPrecompileError> {
+    pub fn initialize(&mut self) -> Result<()> {
         self.set_role_admin_internal(UNGRANTABLE_ROLE, UNGRANTABLE_ROLE)
     }
 
     /// Grant the default admin role to an account
-    pub fn grant_default_admin(&mut self, admin: Address) -> Result<(), TempoPrecompileError> {
+    pub fn grant_default_admin(&mut self, admin: Address) -> Result<()> {
         self.grant_role_internal(admin, DEFAULT_ADMIN_ROLE)
     }
 
     // Public functions that handle calldata and emit events
-    pub fn has_role(
-        &mut self,
-        call: IRolesAuth::hasRoleCall,
-    ) -> Result<bool, TempoPrecompileError> {
+    pub fn has_role(&mut self, call: IRolesAuth::hasRoleCall) -> Result<bool> {
         self.has_role_internal(call.account, call.role)
     }
 
-    pub fn get_role_admin(
-        &mut self,
-        call: IRolesAuth::getRoleAdminCall,
-    ) -> Result<B256, TempoPrecompileError> {
+    pub fn get_role_admin(&mut self, call: IRolesAuth::getRoleAdminCall) -> Result<B256> {
         self.get_role_admin_internal(call.role)
     }
 
@@ -63,7 +57,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         &mut self,
         msg_sender: Address,
         call: IRolesAuth::grantRoleCall,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let admin_role = self.get_role_admin_internal(call.role)?;
         self.check_role_internal(msg_sender, admin_role)?;
         self.grant_role_internal(call.account, call.role)?;
@@ -84,7 +78,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         &mut self,
         msg_sender: Address,
         call: IRolesAuth::revokeRoleCall,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let admin_role = self.get_role_admin_internal(call.role)?;
         self.check_role_internal(msg_sender, admin_role)?;
         self.revoke_role_internal(call.account, call.role)?;
@@ -105,7 +99,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         &mut self,
         msg_sender: Address,
         call: IRolesAuth::renounceRoleCall,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         self.check_role_internal(msg_sender, call.role)?;
         self.revoke_role_internal(msg_sender, call.role)?;
 
@@ -125,7 +119,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         &mut self,
         msg_sender: Address,
         call: IRolesAuth::setRoleAdminCall,
-    ) -> Result<(), TempoPrecompileError> {
+    ) -> Result<()> {
         let current_admin_role = self.get_role_admin_internal(call.role)?;
         self.check_role_internal(msg_sender, current_admin_role)?;
 
@@ -143,52 +137,36 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
     }
 
     // Utility functions for checking roles without calldata
-    pub fn check_role(&mut self, account: Address, role: B256) -> Result<(), TempoPrecompileError> {
+    pub fn check_role(&mut self, account: Address, role: B256) -> Result<()> {
         self.check_role_internal(account, role)
     }
 
     // Internal implementation functions
-    pub fn has_role_internal(
-        &mut self,
-        account: Address,
-        role: B256,
-    ) -> Result<bool, TempoPrecompileError> {
+    pub fn has_role_internal(&mut self, account: Address, role: B256) -> Result<bool> {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         let value = self.storage.sload(self.parent_contract_address, slot)?;
         Ok(value != U256::ZERO)
     }
 
-    pub fn grant_role_internal(
-        &mut self,
-        account: Address,
-        role: B256,
-    ) -> Result<(), TempoPrecompileError> {
+    pub fn grant_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         self.storage
             .sstore(self.parent_contract_address, slot, U256::ONE)
     }
 
-    fn revoke_role_internal(
-        &mut self,
-        account: Address,
-        role: B256,
-    ) -> Result<(), TempoPrecompileError> {
+    fn revoke_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
         let slot = double_mapping_slot(account, role, self.roles_slot);
         self.storage
             .sstore(self.parent_contract_address, slot, U256::ZERO)
     }
 
-    fn get_role_admin_internal(&mut self, role: B256) -> Result<B256, TempoPrecompileError> {
+    fn get_role_admin_internal(&mut self, role: B256) -> Result<B256> {
         let slot = mapping_slot(role, self.role_admin_slot);
         let admin = self.storage.sload(self.parent_contract_address, slot)?;
         Ok(B256::from(admin)) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     }
 
-    fn set_role_admin_internal(
-        &mut self,
-        role: B256,
-        admin_role: B256,
-    ) -> Result<(), TempoPrecompileError> {
+    fn set_role_admin_internal(&mut self, role: B256, admin_role: B256) -> Result<()> {
         let slot = mapping_slot(role, self.role_admin_slot);
         self.storage.sstore(
             self.parent_contract_address,
@@ -197,15 +175,9 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         )
     }
 
-    fn check_role_internal(
-        &mut self,
-        account: Address,
-        role: B256,
-    ) -> Result<(), TempoPrecompileError> {
+    fn check_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
         if !self.has_role_internal(account, role)? {
-            return Err(TempoPrecompileError::RolesAuthError(
-                RolesAuthError::unauthorized(),
-            ));
+            return Err(RolesAuthError::unauthorized().into());
         }
         Ok(())
     }
@@ -216,7 +188,7 @@ mod tests {
     use alloy::primitives::{address, keccak256};
 
     use super::*;
-    use crate::storage::hashmap::HashMapStorageProvider;
+    use crate::{error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider};
 
     #[test]
     fn test_role_contract_grant_and_check() {
