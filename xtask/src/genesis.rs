@@ -520,7 +520,7 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
-/// Initializes the initial set of validators with the spcified validator config.
+/// Initializes the initial set of validators with the specified validator config.
 /// Returns a vec of the validator public keys
 fn initialize_validator_config(
     owner: Address,
