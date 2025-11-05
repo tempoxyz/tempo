@@ -56,6 +56,7 @@ pub mod slots {
     pub fn unpack_active_index(value: U256) -> (bool, u64) {
         let bytes = value.to_be_bytes::<32>();
         let active = bytes[31] != 0;
+        // SAFETY: This is safe to unwrap because bytes is always 32 bytes and 23..31 is always 8 bytes
         let index = u64::from_be_bytes(bytes[23..31].try_into().unwrap());
         (active, index)
     }
