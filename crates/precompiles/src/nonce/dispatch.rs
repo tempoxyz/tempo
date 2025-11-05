@@ -40,3 +40,26 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        storage::hashmap::HashMapStorageProvider,
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
+    use tempo_contracts::precompiles::INonce::INonceCalls;
+
+    #[test]
+    fn nonce_test_selector_coverage() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut nonce_manager = NonceManager::new(&mut storage);
+
+        let unsupported =
+            check_selector_coverage(&mut nonce_manager, INonceCalls::SELECTORS, "INonce", |s| {
+                INonceCalls::name_by_selector(s)
+            });
+
+        assert_full_coverage([unsupported]);
+    }
+}

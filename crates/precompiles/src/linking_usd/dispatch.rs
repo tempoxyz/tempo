@@ -181,3 +181,34 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{storage::hashmap::HashMapStorageProvider, test_util::check_selector_coverage};
+    use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
+
+    #[test]
+    fn linking_usd_test_selector_coverage() {
+        use crate::test_util::assert_full_coverage;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+
+        linking_usd.initialize(Address::ZERO).unwrap();
+
+        let itip20_unsupported =
+            check_selector_coverage(&mut linking_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+                ITIP20Calls::name_by_selector(s)
+            });
+
+        let roles_unsupported = check_selector_coverage(
+            &mut linking_usd,
+            IRolesAuthCalls::SELECTORS,
+            "IRolesAuth",
+            |s| IRolesAuthCalls::name_by_selector(s),
+        );
+
+        assert_full_coverage([itip20_unsupported, roles_unsupported]);
+    }
+}

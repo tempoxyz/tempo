@@ -158,12 +158,14 @@ mod tests {
         linking_usd::{LinkingUSD, TRANSFER_ROLE},
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
         storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider},
+        test_util::{assert_full_coverage, check_selector_coverage},
         tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     };
     use alloy::{
         primitives::{Address, Bytes, U256},
         sol_types::SolCall,
     };
+    use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
     fn setup_exchange_with_liquidity<S: PrecompileStorageProvider>(
@@ -500,5 +502,20 @@ mod tests {
 
         let result = exchange.call(&calldata, sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
+    }
+
+    #[test]
+    fn stablecoin_exchange_test_selector_coverage() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+
+        let unsupported = check_selector_coverage(
+            &mut exchange,
+            IStablecoinExchangeCalls::SELECTORS,
+            "IStablecoinExchange",
+            |s| IStablecoinExchangeCalls::name_by_selector(s),
+        );
+
+        assert_full_coverage([unsupported]);
     }
 }
