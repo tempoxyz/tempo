@@ -204,7 +204,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider, tip20::TIP20Token};
+    use crate::{
+        LINKING_USD_ADDRESS,
+        storage::hashmap::HashMapStorageProvider,
+        tip20::{TIP20Token, tests::initialize_linking_usd},
+    };
 
     use alloy::{
         primitives::{Bytes, U256, keccak256},
@@ -231,11 +235,12 @@ mod tests {
     #[test]
     fn test_balance_of_calldata_handling() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let account = Address::from([2u8; 20]);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -283,12 +288,13 @@ mod tests {
     #[test]
     fn test_mint_updates_storage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
         let mint_amount = U256::from(500);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -334,13 +340,14 @@ mod tests {
     #[test]
     fn test_transfer_updates_balances() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
         let transfer_amount = U256::from(300);
         let initial_sender_balance = U256::from(1000);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -414,7 +421,6 @@ mod tests {
     #[test]
     fn test_approve_and_transfer_from() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::random();
         let owner = Address::random();
         let spender = Address::random();
@@ -423,6 +429,8 @@ mod tests {
         let transfer_amount = U256::from(300);
         let initial_owner_balance = U256::from(1000);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -501,11 +509,12 @@ mod tests {
     #[test]
     fn test_pause_and_unpause() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let pauser = Address::from([1u8; 20]);
         let unpauser = Address::from([2u8; 20]);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -567,12 +576,13 @@ mod tests {
     #[test]
     fn test_burn_functionality() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let burner = Address::from([1u8; 20]);
         let initial_balance = U256::from(1000);
         let burn_amount = U256::from(300);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -644,10 +654,11 @@ mod tests {
     #[test]
     fn test_metadata_functions() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let caller = Address::from([1u8; 20]);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
         token
             .initialize("Test Token", "TEST", "USD", LINKING_USD_ADDRESS, admin)
@@ -702,12 +713,13 @@ mod tests {
     #[test]
     fn test_supply_cap_enforcement() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let recipient = Address::from([1u8; 20]);
         let supply_cap = U256::from(1000);
         let mint_amount = U256::from(1001);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -754,12 +766,13 @@ mod tests {
     #[test]
     fn test_role_based_access_control() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let user1 = Address::from([1u8; 20]);
         let user2 = Address::from([2u8; 20]);
         let unauthorized = Address::from([3u8; 20]);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -822,13 +835,14 @@ mod tests {
     #[test]
     fn test_transfer_with_memo() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
         let transfer_amount = U256::from(100);
         let initial_balance = U256::from(500);
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize and setup
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -886,11 +900,12 @@ mod tests {
     #[test]
     fn test_change_transfer_policy_id() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = TIP20Token::new(1, &mut storage);
         let admin = Address::from([0u8; 20]);
         let non_admin = Address::from([1u8; 20]);
         let new_policy_id = 42u64;
 
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)

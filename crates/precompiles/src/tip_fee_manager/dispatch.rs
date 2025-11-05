@@ -103,7 +103,9 @@ mod tests {
         LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
         storage::hashmap::HashMapStorageProvider,
         tip_fee_manager::{TIPFeeAMMError, TipFeeManager, amm::PoolKey},
-        tip20::{ISSUER_ROLE, ITIP20, TIP20Token, token_id_to_address},
+        tip20::{
+            ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_linking_usd, token_id_to_address,
+        },
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -117,6 +119,7 @@ mod tests {
         user: Address,
         amount: U256,
     ) {
+        initialize_linking_usd(storage, user).unwrap();
         let mut tip20_token = TIP20Token::from_address(token, storage);
 
         // Initialize token
@@ -147,10 +150,21 @@ mod tests {
     #[test]
     fn test_set_validator_token() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
+        let validator = Address::random();
+        let admin = Address::random();
+
+        // Initialize LinkingUSD first
+        initialize_linking_usd(&mut storage, admin).unwrap();
+
+        // Create a USD token to use as fee token
+        let token = token_id_to_address(1);
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        tip20_token
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
         let mut fee_manager =
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
-        let validator = Address::random();
-        let token = token_id_to_address(rand::random::<u64>());
 
         let calldata = IFeeManager::setValidatorTokenCall { token }.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), validator)?;
@@ -188,10 +202,21 @@ mod tests {
     #[test]
     fn test_set_user_token() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let admin = Address::random();
+
+        // Initialize LinkingUSD first
+        initialize_linking_usd(&mut storage, admin).unwrap();
+
+        // Create a USD token to use as fee token
+        let token = token_id_to_address(1);
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        tip20_token
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
         let mut fee_manager =
             TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut storage);
-        let user = Address::random();
-        let token = token_id_to_address(rand::random::<u64>());
 
         let calldata = IFeeManager::setUserTokenCall { token }.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), user)?;
