@@ -1,6 +1,10 @@
 FROM rust:1.88-bookworm AS chef
 
-RUN cargo install cargo-chef
+RUN cargo install cargo-chef sccache
+
+ENV RUSTC_WRAPPER=sccache \
+    SCCACHE_DIR=/sccache
+
 WORKDIR /app
 
 FROM chef AS planner
@@ -38,10 +42,8 @@ COPY xtask/ ./xtask/
 ARG RUST_BINARY
 ARG RUST_PROFILE
 ARG RUST_FEATURES
-ARG VERGEN_GIT_SHA=""
-ARG VERGEN_GIT_SHA_SHORT=""
-ENV VERGEN_GIT_SHA=${VERGEN_GIT_SHA:-}
-ENV VERGEN_GIT_SHA_SHORT=${VERGEN_GIT_SHA_SHORT:-}
+ARG VERGEN_GIT_SHA
+ARG VERGEN_GIT_SHA_SHORT
 
 # Install nightly Rust and build the tempo binary
 RUN cargo build --bin ${RUST_BINARY} --profile ${RUST_PROFILE} --features "${RUST_FEATURES}"
