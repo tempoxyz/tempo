@@ -1018,11 +1018,11 @@ mod tests {
         let amount = U256::from(1000);
         let to = Address::random();
         let admin = Address::random();
-        let user_token = token_id_to_address(1);
-        let validator_token = token_id_to_address(2);
 
         let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
 
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
         TIP20Token::from_address(user_token, amm.storage)
             .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
             .unwrap();
@@ -1060,14 +1060,14 @@ mod tests {
         let contract_address = Address::random();
 
         let admin = Address::random();
-        let user_token = token_id_to_address(1);
-        let validator_token = token_id_to_address(2);
         let msg_sender = Address::random();
         let to = Address::random();
         let liquidity = U256::from(1000);
 
         let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
 
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
         TIP20Token::from_address(user_token, amm.storage)
             .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
             .unwrap();
@@ -1106,14 +1106,14 @@ mod tests {
         let contract_address = Address::random();
 
         let admin = Address::random();
-        let user_token = token_id_to_address(1);
-        let validator_token = token_id_to_address(2);
         let msg_sender = Address::random();
         let amount_out = U256::from(1000);
         let to = Address::random();
 
         let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
 
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
         TIP20Token::from_address(user_token, amm.storage)
             .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
             .unwrap();
