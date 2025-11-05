@@ -415,13 +415,13 @@ where
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, marshal_channel);
 
+        let application = self.application.start(self.dkg_manager_mailbox.clone());
+
         let marshal = self.marshal.start(
             Reporters::from((self.application_mailbox, self.dkg_manager_mailbox.clone())),
             self.broadcast_mailbox,
             resolver,
         );
-
-        let application = self.application.start(self.dkg_manager_mailbox.clone());
 
         let epoch_manager = self.epoch_manager.start(
             pending_channel,
