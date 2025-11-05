@@ -427,14 +427,14 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
                 .ok_or(TIPFeeAMMError::insufficient_liquidity())?
         } else {
             // Subsequent deposits: mint as if user called rebalanceSwap then minted with both
-            // Formula: liquidity = amountValidatorToken * _totalSupply / (V + n * U), with n = N / SCALE
-            let n_times_u = N
+            //  liquidity = amountValidatorToken * _totalSupply / (V + n * U), with n = N / SCALE
+            let product = N
                 .checked_mul(U256::from(pool.reserve_user_token))
                 .and_then(|product| product.checked_div(SCALE))
                 .ok_or(TIPFeeAMMError::invalid_swap_calculation())?;
 
             let denom = U256::from(pool.reserve_validator_token)
-                .checked_add(n_times_u)
+                .checked_add(product)
                 .ok_or(TIPFeeAMMError::invalid_amount())?;
 
             if denom.is_zero() {
