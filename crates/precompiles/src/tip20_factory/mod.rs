@@ -9,10 +9,7 @@ use crate::{
     storage::PrecompileStorageProvider,
     tip20::{TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address},
 };
-use alloy::{
-    dyn_abi::abi::token,
-    primitives::{Address, Bytes, IntoLogData, U256},
-};
+use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 use tracing::trace;
 
