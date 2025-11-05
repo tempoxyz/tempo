@@ -268,22 +268,36 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         let total_supply = self.get_total_supply(pool_id)?;
 
         let liquidity = if total_supply.is_zero() {
-            // TODO: checked math
-            let mean = (amount_user_token * amount_validator_token) / uint!(2_U256);
+            // Use checked math for multiplication and division
+            let mean = amount_user_token
+                .checked_mul(amount_validator_token)
+                .and_then(|product| product.checked_div(uint!(2_U256)))
+                .ok_or(TIPFeeAMMError::invalid_amount())?;
             if mean <= MIN_LIQUIDITY {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
             self.set_total_supply(pool_id, MIN_LIQUIDITY)?;
-            mean - MIN_LIQUIDITY
+            mean.checked_sub(MIN_LIQUIDITY)
+                .ok_or(TIPFeeAMMError::insufficient_liquidity())?
         } else {
             let liquidity_user = if pool.reserve_user_token > 0 {
-                (amount_user_token * total_supply) / U256::from(pool.reserve_user_token)
+                amount_user_token
+                    .checked_mul(total_supply)
+                    .and_then(|numerator| {
+                        numerator.checked_div(U256::from(pool.reserve_user_token))
+                    })
+                    .ok_or(TIPFeeAMMError::invalid_amount())?
             } else {
                 U256::MAX
             };
 
             let liquidity_validator = if pool.reserve_validator_token > 0 {
-                (amount_validator_token * total_supply) / U256::from(pool.reserve_validator_token)
+                amount_validator_token
+                    .checked_mul(total_supply)
+                    .and_then(|numerator| {
+                        numerator.checked_div(U256::from(pool.reserve_validator_token))
+                    })
+                    .ok_or(TIPFeeAMMError::invalid_amount())?
             } else {
                 U256::MAX
             };
